@@ -15,6 +15,7 @@
 """Inference-only Qwen3.5 model and Qwen3.5 MoE model compatible with HuggingFace weights."""
 
 import logging
+import sys
 from functools import lru_cache
 from typing import Iterable, Optional, Set, Tuple, Union
 
@@ -56,7 +57,16 @@ from sglang.srt.layers.linear import (
     QKVParallelLinear,
     RowParallelLinear,
 )
-from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+
+if sys.platform == "win32":
+
+    class FusedMoE:
+        @staticmethod
+        def make_expert_params_mapping(*args, **kwargs):
+            raise RuntimeError("Qwen3.5 MoE is not supported by the Windows backend")
+
+else:
+    from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 from sglang.srt.layers.moe.utils import (
     is_shared_experts_fusion_disabled,
 )
@@ -64,31 +74,172 @@ from sglang.srt.layers.parameter import (
     BlockQuantScaleParameter,
     PerTensorScaleParameter,
 )
+from sglang.srt.layers.logits_processor import LogitsProcessor
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.layers.radix_linear_attention import RadixLinearAttention
 from sglang.srt.layers.rotary_embedding import get_rope
 from sglang.srt.layers.utils import PPMissingLayer, get_layer_id
-from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
+from sglang.srt.layers.vocab_parallel_embedding import (
+    ParallelLMHead,
+    VocabParallelEmbedding,
+)
 from sglang.srt.model_executor.cuda_graph_config import (
     Backend,
     Phase,
     check_cuda_graph_backend,
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
-from sglang.srt.model_executor.runner import get_is_capture_mode
+from sglang.srt.model_executor.runner_utils import get_is_capture_mode
 from sglang.srt.model_loader.weight_utils import (
     default_weight_loader,
     sharded_weight_loader,
 )
-from sglang.srt.models.qwen2_moe import (
-    Qwen2MoeMLP,
-    Qwen2MoeSparseMoeBlock,
-    can_fuse_shared_expert,
-)
+
+if sys.platform == "win32":
+    from sglang.srt.layers.activation import SiluAndMul
+
+    class Qwen2MoeMLP(nn.Module):
+        def __init__(
+            self,
+            hidden_size,
+            intermediate_size,
+            hidden_act,
+            quant_config=None,
+            prefix="",
+            **kwargs,
+        ):
+            super().__init__()
+            if hidden_act != "silu":
+                raise ValueError(f"Unsupported activation: {hidden_act}")
+            self.gate_up_proj = MergedColumnParallelLinear(
+                hidden_size,
+                [intermediate_size] * 2,
+                bias=False,
+                quant_config=quant_config,
+                prefix=add_prefix("gate_up_proj", prefix),
+            )
+            self.down_proj = RowParallelLinear(
+                intermediate_size,
+                hidden_size,
+                bias=False,
+                quant_config=quant_config,
+                prefix=add_prefix("down_proj", prefix),
+            )
+            self.act_fn = SiluAndMul()
+
+        def forward(self, x):
+            x, _ = self.gate_up_proj(x)
+            x = self.act_fn(x)
+            x, _ = self.down_proj(x)
+            return x
+
+    class Qwen2MoeSparseMoeBlock(nn.Module):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+            raise RuntimeError("Qwen3.5 MoE is not supported by the Windows backend")
+
+    def can_fuse_shared_expert(*args, **kwargs):
+        return False
+
+else:
+    from sglang.srt.models.qwen2_moe import (
+        Qwen2MoeMLP,
+        Qwen2MoeSparseMoeBlock,
+        can_fuse_shared_expert,
+    )
 
 # Models
-from sglang.srt.models.qwen3_vl import Qwen3VLForConditionalGeneration
+if sys.platform == "win32":
+
+    class Qwen3VLForConditionalGeneration(nn.Module):
+        """Text-only Qwen3.5 conditional wrapper for native Windows."""
+
+        def __init__(
+            self,
+            config,
+            quant_config=None,
+            prefix="",
+            language_model_cls=None,
+        ):
+            super().__init__()
+            if not getattr(config, "language_model_only", False):
+                raise RuntimeError(
+                    "Multimodal Qwen3.5 is not supported by the Windows backend; "
+                    "start this checkpoint with --language-model-only"
+                )
+            if language_model_cls is None:
+                raise ValueError("A Qwen3.5 language model class is required")
+
+            self.pp_group = get_pp_group()
+            self.quant_config = quant_config
+            self.language_model_only = True
+            self.visual = None
+            self.config = config.text_config
+            self.config.language_model_only = True
+            if hasattr(config, "tie_word_embeddings"):
+                self.config.tie_word_embeddings = config.tie_word_embeddings
+
+            self.model = language_model_cls(
+                config=self.config,
+                quant_config=quant_config,
+                prefix=add_prefix("model.language_model", prefix),
+            )
+            if self.pp_group.is_last_rank:
+                if self.pp_group.world_size == 1 and self.config.tie_word_embeddings:
+                    self.lm_head = self.model.embed_tokens
+                else:
+                    self.lm_head = ParallelLMHead(
+                        self.config.vocab_size,
+                        self.config.hidden_size,
+                        quant_config=quant_config,
+                        use_attn_tp_group=get_parallel().enable_dp_lm_head,
+                        prefix=add_prefix("lm_head", prefix),
+                    )
+            else:
+                self.lm_head = PPMissingLayer()
+
+            self.is_mrope_enabled = False
+            self.logits_processor = LogitsProcessor(self.config)
+            self.capture_aux_hidden_states = False
+            self.deepstack_visual_indexes = []
+
+        @torch.no_grad()
+        def forward(
+            self,
+            input_ids: torch.Tensor,
+            positions: torch.Tensor,
+            forward_batch: ForwardBatch,
+            input_embeds: Optional[torch.Tensor] = None,
+            get_embedding: bool = False,
+            pp_proxy_tensors: Optional[PPProxyTensors] = None,
+            **kwargs,
+        ):
+            hidden_states = self.model(
+                input_ids=input_ids,
+                forward_batch=forward_batch,
+                positions=positions,
+                input_embeds=input_embeds,
+                pp_proxy_tensors=pp_proxy_tensors,
+            )
+            if not self.pp_group.is_last_rank:
+                return hidden_states
+
+            aux_hidden_states = None
+            if self.capture_aux_hidden_states:
+                hidden_states, aux_hidden_states = hidden_states
+            if get_embedding:
+                raise RuntimeError("Qwen3.5 text-only embedding mode is unsupported")
+            return self.logits_processor(
+                input_ids,
+                hidden_states,
+                self.lm_head,
+                forward_batch,
+                aux_hidden_states,
+            )
+
+else:
+    from sglang.srt.models.qwen3_vl import Qwen3VLForConditionalGeneration
 from sglang.srt.models.utils import (
     WeightsMapper,
     fused_qk_gemma_rmsnorm,
@@ -144,6 +295,104 @@ _is_amx_available = cpu_has_amx_support()
 _GDN_FUSED_QKVZBA_RATIOS = (1, 2, 4, 8) if _use_aiter else (1, 2, 4)
 
 cached_get_processor = lru_cache(get_processor)
+
+
+def _reorder_grouped_v_heads_to_tiled(
+    tensor: torch.Tensor,
+    dim: int,
+    num_k_heads: int,
+    num_v_heads: int,
+    head_dim: int,
+) -> torch.Tensor:
+    """Match llama.cpp's tiled V-head layout along ``dim``."""
+    shape = list(tensor.shape)
+    if dim < 0:
+        dim += len(shape)
+    num_v_per_k = num_v_heads // num_k_heads
+    expected = num_v_heads * head_dim
+    if shape[dim] != expected:
+        raise ValueError(
+            f"V-head dimension mismatch: expected {expected}, got {shape[dim]}"
+        )
+    grouped_shape = (
+        shape[:dim] + [num_k_heads, num_v_per_k, head_dim] + shape[dim + 1 :]
+    )
+    return (
+        tensor.reshape(*grouped_shape)
+        .transpose(dim, dim + 1)
+        .contiguous()
+        .reshape(*shape)
+    )
+
+
+def _restore_gguf_tiled_v_heads(
+    tensor: torch.Tensor,
+    dim: int,
+    num_k_heads: int,
+    num_v_heads: int,
+    head_dim: int,
+) -> torch.Tensor:
+    """Restore HF's K-grouped V-head layout from converted GGUF tensors."""
+    shape = list(tensor.shape)
+    if dim < 0:
+        dim += len(shape)
+    num_v_per_k = num_v_heads // num_k_heads
+    expected = num_v_heads * head_dim
+    if shape[dim] != expected:
+        raise ValueError(
+            f"V-head dimension mismatch: expected {expected}, got {shape[dim]}"
+        )
+    tiled_shape = shape[:dim] + [num_v_per_k, num_k_heads, head_dim] + shape[dim + 1 :]
+    return (
+        tensor.reshape(*tiled_shape)
+        .transpose(dim, dim + 1)
+        .contiguous()
+        .reshape(*shape)
+    )
+
+
+def _restore_gguf_qwen35_linear_attention_tensor(
+    name: str,
+    tensor: torch.Tensor,
+    config: Qwen3_5TextConfig,
+) -> torch.Tensor:
+    """Undo llama.cpp conversion transforms that are specific to GGML."""
+    if "linear_attn." not in name:
+        return tensor
+
+    num_k_heads = config.linear_num_key_heads
+    num_v_heads = config.linear_num_value_heads
+    if num_k_heads == num_v_heads:
+        return tensor
+
+    head_k_dim = config.linear_key_head_dim
+    head_v_dim = config.linear_value_head_dim
+    is_weight = name.endswith((".weight", ".qweight"))
+
+    if ".in_proj_qkv." in name and is_weight:
+        qk_dim = num_k_heads * head_k_dim
+        q, k, v = tensor.split([qk_dim, qk_dim, num_v_heads * head_v_dim], dim=0)
+        v = _restore_gguf_tiled_v_heads(v, 0, num_k_heads, num_v_heads, head_v_dim)
+        return torch.cat((q, k, v), dim=0)
+
+    if ".in_proj_z." in name and is_weight:
+        return _restore_gguf_tiled_v_heads(
+            tensor, 0, num_k_heads, num_v_heads, head_v_dim
+        )
+
+    if (".in_proj_b." in name or ".in_proj_a." in name) and is_weight:
+        return _restore_gguf_tiled_v_heads(tensor, 0, num_k_heads, num_v_heads, 1)
+
+    if name.endswith((".A_log", ".dt_bias")):
+        return _restore_gguf_tiled_v_heads(tensor, 0, num_k_heads, num_v_heads, 1)
+
+    if ".conv1d." in name and is_weight:
+        qk_channels = 2 * num_k_heads * head_k_dim
+        qk, v = tensor.split([qk_channels, num_v_heads * head_v_dim], dim=0)
+        v = _restore_gguf_tiled_v_heads(v, 0, num_k_heads, num_v_heads, head_v_dim)
+        return torch.cat((qk, v), dim=0)
+
+    return tensor
 
 
 def _disable_shared_experts_fusion() -> bool:
@@ -259,6 +508,14 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.activation = config.hidden_act
         self.output_gate_type = config.output_gate_type
         self.layer_norm_epsilon = config.rms_norm_eps
+        self._gguf_output_projection_uses_tiled_v_heads = (
+            quant_config is not None and quant_config.get_name() == "gguf"
+        )
+        if self._gguf_output_projection_uses_tiled_v_heads and self.attn_tp_size != 1:
+            raise ValueError(
+                "Qwen3.5 GGUF linear attention currently requires tensor parallel "
+                "size 1"
+            )
 
         # Conv1d layer
         self.conv_dim = self.key_dim * 2 + self.value_dim
@@ -406,7 +663,14 @@ class Qwen3_5GatedDeltaNet(nn.Module):
 
     def _bind_packed_weight_loaders(self, module):
         """Bind packed-checkpoint-aware loaders to all relevant params of a merged module."""
-        for attr_name in ("weight", "weight_scale_inv", "weight_scale", "input_scale"):
+        for attr_name in (
+            "weight",
+            "qweight",
+            "qweight_type",
+            "weight_scale_inv",
+            "weight_scale",
+            "input_scale",
+        ):
             param = getattr(module, attr_name, None)
             if param is None:
                 continue
@@ -454,7 +718,12 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                 if loaded_weight.numel() == 1:
                     # Single-element tensor (scalar or [1]):
                     # broadcast to each logical shard.
-                    chunks = [loaded_weight.view(-1)] * len(loaded_shard_id)
+                    scalar = (
+                        loaded_weight.reshape(())
+                        if getattr(param, "is_gguf_weight_type", False)
+                        else loaded_weight.view(-1)
+                    )
+                    chunks = [scalar] * len(loaded_shard_id)
                 else:
                     split_dim = getattr(param, "output_dim", 0)
                     if _is_cpu:
@@ -694,6 +963,18 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         core_attn_out = self.norm(core_attn_out, z)
         core_attn_out = core_attn_out.reshape(z_shape_og)
         core_attn_out = core_attn_out.reshape(*core_attn_out.shape[:-2], -1)
+
+        if self._gguf_output_projection_uses_tiled_v_heads:
+            # llama.cpp converts the quantized output projection's input
+            # columns to tiled V-head order. Reorder its activation the same
+            # way so the dot product retains the original HF semantics.
+            core_attn_out = _reorder_grouped_v_heads_to_tiled(
+                core_attn_out,
+                -1,
+                self.num_k_heads,
+                self.num_v_heads,
+                self.head_v_dim,
+            )
 
         output, _ = self.out_proj(core_attn_out)
         return output
@@ -1342,6 +1623,8 @@ class Qwen3_5ForCausalLM(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         self.pp_group = get_pp_group()
+        self._is_gguf = quant_config is not None and quant_config.get_name() == "gguf"
+        self._gguf_norm_weights_are_effective_scales = self._is_gguf
 
         alt_stream = get_stream("alt") if _is_cuda or _hip_use_alt_stream else None
 
@@ -1351,6 +1634,7 @@ class Qwen3_5ForCausalLM(nn.Module):
                 config.vocab_size,
                 config.hidden_size,
                 org_num_embeddings=config.vocab_size,
+                quant_config=quant_config,
                 enable_tp=not is_dp_attention_enabled(),
             )
         else:
@@ -1505,8 +1789,38 @@ class Qwen3_5ForCausalLM(nn.Module):
                 continue
             if "language_model" in name:
                 name = name.replace(r"model.language_model.", r"model.")
+            if self._is_gguf:
+                loaded_weight = _restore_gguf_qwen35_linear_attention_tensor(
+                    name, loaded_weight, self.config
+                )
+            if self._gguf_norm_weights_are_effective_scales and name.endswith(
+                ".linear_attn.A_log"
+            ):
+                if not torch.all(loaded_weight < 0):
+                    raise ValueError("GGUF Qwen ssm_a must contain negative decays")
+                # GGUF stores the runtime decay -exp(A_log), while SGLang's
+                # GDN kernels accept the original log-space parameter.
+                loaded_weight = loaded_weight.neg().log()
+            if self._gguf_norm_weights_are_effective_scales and (
+                name in ("norm.weight", "model.norm.weight")
+                or name.endswith(
+                    (
+                        ".input_layernorm.weight",
+                        ".post_attention_layernorm.weight",
+                        ".self_attn.q_norm.weight",
+                        ".self_attn.k_norm.weight",
+                    )
+                )
+            ):
+                # GGUF stores Qwen3.5-family RMSNorm's effective (1 + weight)
+                # scale. GemmaRMSNorm applies the +1 at runtime, matching the
+                # original HF parameterization, so restore the offset here.
+                loaded_weight = loaded_weight - 1
             if ".self_attn." in name:
                 name = name.replace(".self_attn", "")
+            if name.endswith(".linear_attn.conv1d.weight") and loaded_weight.ndim == 2:
+                # GGUF omits Conv1d's singleton channel dimension.
+                loaded_weight = loaded_weight.unsqueeze(1)
             layer_id = get_layer_id(name)
             if (
                 layer_id is not None

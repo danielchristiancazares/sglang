@@ -24,6 +24,7 @@ import os
 import pathlib
 import shlex
 import subprocess
+import sys
 from typing import List
 
 from sglang.kernels.jit.utils.compile import toolchain
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 _BUILD_FILE = "build.ninja"
 _NINJA_TIMEOUT_S = 1800
+_IS_WINDOWS = sys.platform == "win32"
 
 
 def _escape(path: str) -> str:
@@ -49,7 +51,8 @@ def _arg(path: str) -> str:
     compiler as several arguments. Quote for the shell first, then escape what
     ninja still reads -- `$` is special everywhere in a build file.
     """
-    return shlex.quote(path).replace("$", "$$")
+    quoted = subprocess.list2cmdline([path]) if _IS_WINDOWS else shlex.quote(path)
+    return quoted.replace("$", "$$")
 
 
 def _quote_path_flags(flags: List[str]) -> List[str]:
@@ -61,7 +64,7 @@ def _quote_path_flags(flags: List[str]) -> List[str]:
     """
     quoted: List[str] = []
     for flag in flags:
-        for prefix in ("-I", "-L"):
+        for prefix in ("-I", "-L", "/LIBPATH:"):
             if flag.startswith(prefix) and len(flag) > len(prefix):
                 quoted.append(prefix + _arg(flag[len(prefix) :]))
                 break
@@ -96,6 +99,32 @@ def generate(spec: BuildSpec) -> str:
         toolchain.base_link_flags(with_device=with_device) + list(spec.ldflags)
     )
 
+    if _IS_WINDOWS:
+        compile_cxx_lines = [
+            "rule compile_cxx",
+            "  deps = msvc",
+            '  command = $cxx /showIncludes $cxxflags /c "$in" /Fo"$out"',
+        ]
+        compile_cuda_lines = [
+            "rule compile_cuda",
+            "  depfile = $out.d",
+            '  command = $nvcc --generate-dependencies-with-compile '
+            '--dependency-output "$out.d" $cudaflags -c "$in" -o "$out"',
+        ]
+        link_command = '  command = $cxx $in /link $ldflags /OUT:"$out"'
+    else:
+        compile_cxx_lines = [
+            "rule compile_cxx",
+            "  depfile = $out.d",
+            '  command = $cxx -MD -MF "$out.d" $cxxflags -c "$in" -o "$out"',
+        ]
+        compile_cuda_lines = [
+            "rule compile_cuda",
+            "  depfile = $out.d",
+            '  command = $nvcc -MD -MF "$out.d" $cudaflags -c "$in" -o "$out"',
+        ]
+        link_command = '  command = $cxx $in $ldflags -o "$out"'
+
     lines = [
         "ninja_required_version = 1.3",
         f"cxx = {_arg(host_cc)}",
@@ -104,16 +133,12 @@ def generate(spec: BuildSpec) -> str:
         f"cudaflags = {' '.join(cudaflags)}",
         f"ldflags = {' '.join(ldflags)}",
         "",
-        "rule compile_cxx",
-        "  depfile = $out.d",
-        '  command = $cxx -MD -MF "$out.d" $cxxflags -c "$in" -o "$out"',
+        *compile_cxx_lines,
         "",
-        "rule compile_cuda",
-        "  depfile = $out.d",
-        '  command = $nvcc -MD -MF "$out.d" $cudaflags -c "$in" -o "$out"',
+        *compile_cuda_lines,
         "",
         "rule link",
-        '  command = $cxx $in $ldflags -o "$out"',
+        link_command,
         "",
     ]
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from typing import Optional, Union
@@ -81,7 +82,21 @@ from sglang.srt.layers.cp.utils import (
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.sampler import create_sampler
 from sglang.srt.layers.utils.cp_utils import is_mla_prefill_cp_enabled
-from sglang.srt.lora.lora_manager import LoRAManager, init_lora_cuda_graph_moe_buffers
+
+if sys.platform == "win32":
+
+    class LoRAManager:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("LoRA serving is not supported by the Windows backend")
+
+    def init_lora_cuda_graph_moe_buffers(*args, **kwargs):
+        raise RuntimeError("LoRA serving is not supported by the Windows backend")
+
+else:
+    from sglang.srt.lora.lora_manager import (
+        LoRAManager,
+        init_lora_cuda_graph_moe_buffers,
+    )
 from sglang.srt.lora.lora_registry import LoRARef
 from sglang.srt.managers.schedule_batch import sanity_check_mm_pad_shift_value
 from sglang.srt.mem_cache import kv_cache_dtype
@@ -800,7 +815,14 @@ class ModelRunner:
 
     def max_decode_logits_rows(self) -> int:
         """Rows the shared logits buffer needs."""
-        num_tokens_per_req = self.decode_num_tokens_per_req()
+        num_draft_tokens = (
+            self.server_args.max_speculative_num_draft_tokens
+            if self.spec_algorithm.is_speculative()
+            else None
+        )
+        num_tokens_per_req = self.decode_num_tokens_per_req(
+            num_draft_tokens=num_draft_tokens
+        )
         capture_bs, _ = get_batch_sizes_to_capture(self, num_tokens_per_req)
         return max(capture_bs) * num_tokens_per_req
 

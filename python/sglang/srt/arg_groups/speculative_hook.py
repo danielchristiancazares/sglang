@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from typing import TYPE_CHECKING, Optional
 
@@ -618,10 +619,21 @@ def _handle_eagle_family(server_args: ServerArgs) -> None:
             server_args.speculative_num_draft_tokens,
         ) = _auto_choose_speculative_params(server_args, model_arch)
 
-    if "trtllm_mha" in attention_backends_of(resolved_view(server_args)):
-        if server_args.speculative_eagle_topk > 1:
+    if server_args.speculative_eagle_topk > 1:
+        view = resolved_view(server_args)
+        prefill_backend, decode_backend = attention_backends_of(view)
+        verify_backend = (
+            decode_backend
+            if server_args.speculative_attention_mode == "decode"
+            else prefill_backend
+        )
+        draft_backend = server_args.speculative_draft_attention_backend
+        if verify_backend == "trtllm_mha" or draft_backend == "trtllm_mha":
             raise ValueError(
-                "trtllm_mha backend only supports topk = 1 for speculative decoding."
+                "trtllm_mha supports only topk=1 on the speculative target-verify "
+                "and draft-decode paths. A wider tree may retain trtllm_mha for "
+                "ordinary target decode when speculative_attention_mode='prefill', "
+                "but its resolved verify and draft backends must support a tree mask."
             )
 
     if server_args.speculative_use_rejection_sampling:
@@ -670,6 +682,62 @@ def _handle_eagle_family(server_args: ServerArgs) -> None:
         logger.info(
             "Rejection sampling is enabled for speculative decoding "
             "(speculative_use_rejection_sampling=True)."
+        )
+
+    if server_args.speculative_tree_sampling_mode == "swor":
+        if server_args.speculative_algorithm not in ("EAGLE", "EAGLE3"):
+            raise NotImplementedError(
+                "--speculative-tree-sampling-mode=swor is only supported for "
+                "EAGLE / EAGLE3 / NEXTN."
+            )
+        if server_args.speculative_eagle_topk <= 1:
+            raise ValueError(
+                "--speculative-tree-sampling-mode=swor requires "
+                "--speculative-eagle-topk > 1."
+            )
+        if server_args.speculative_use_rejection_sampling:
+            raise ValueError(
+                "Tree SWOR and chain rejection sampling are mutually exclusive."
+            )
+        if (
+            server_args.speculative_accept_threshold_single != 1.0
+            or server_args.speculative_accept_threshold_acc != 1.0
+        ):
+            raise ValueError(
+                "Tree SWOR requires exact acceptance thresholds of 1.0."
+            )
+        logger.info("Exact tree sampling without replacement is enabled.")
+
+    if server_args.speculative_draft_sampling_top_k is not None:
+        if server_args.speculative_draft_sampling_top_k < 1:
+            raise ValueError(
+                "--speculative-draft-sampling-top-k must be >= 1, got "
+                f"{server_args.speculative_draft_sampling_top_k}."
+            )
+        if server_args.speculative_use_rejection_sampling:
+            logger.info(
+                "Sparse aligned draft proposal sampling is enabled "
+                "(speculative_draft_sampling_top_k=%d).",
+                server_args.speculative_draft_sampling_top_k,
+            )
+        else:
+            logger.info(
+                "Target-aligned draft tree scoring is enabled "
+                "(speculative_draft_sampling_top_k=%d).",
+                server_args.speculative_draft_sampling_top_k,
+            )
+
+    tree_depth_discount = server_args.speculative_tree_depth_discount
+    if not math.isfinite(tree_depth_discount) or tree_depth_discount <= 0.0:
+        raise ValueError(
+            "--speculative-tree-depth-discount must be finite and > 0, got "
+            f"{tree_depth_discount}."
+        )
+    if tree_depth_discount != 1.0:
+        logger.info(
+            "Speculative tree depth calibration is enabled "
+            "(speculative_tree_depth_discount=%g).",
+            tree_depth_discount,
         )
 
     if (

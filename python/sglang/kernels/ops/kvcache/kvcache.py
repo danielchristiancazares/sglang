@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TYPE_CHECKING
 
 import torch
@@ -32,6 +33,9 @@ def _jit_kvcache_module(k_row_bytes: int, v_row_bytes: int) -> Module:
 def can_use_store_cache(k_row_bytes: int, v_row_bytes: int = 0) -> bool:
     """Whether the JIT store_cache kernel can serve these row widths.
     v_row_bytes=0 means symmetric, i.e. it defaults to k_row_bytes."""
+    if sys.platform == "win32":
+        return False
+
     logger = logging.getLogger(__name__)
     v_row_bytes = v_row_bytes or k_row_bytes
     for name, size in (("k_row_bytes", k_row_bytes), ("v_row_bytes", v_row_bytes)):

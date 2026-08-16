@@ -26,6 +26,7 @@ import math
 import os
 import random
 import socket
+import sys
 import tempfile
 import uuid
 from functools import cached_property
@@ -2146,6 +2147,24 @@ class ServerArgs:
         "Use rejection sampling for speculative decoding (requires topk=1).",
         NS("spec"),
     ] = False
+    speculative_draft_sampling_top_k: A[
+        Optional[int],
+        "Use an aligned sparse top-k draft distribution. Under rejection sampling it is the exact sampled q; for target-only trees it scores candidate allocation. The draft path applies the request's additive penalties, logit bias, temperature, and top-p; disabled by default.",
+        NS("spec"),
+    ] = None
+    speculative_tree_depth_discount: A[
+        float,
+        "Multiply globally ranked tree-node scores by this factor per additional depth. Values below 1 favor root breadth without changing candidate identities or the continuation beam.",
+        NS("spec"),
+    ] = 1.0
+    speculative_tree_sampling_mode: A[
+        str,
+        Arg(
+            help="Tree verification rule. 'target_only' samples directly from p; 'swor' samples ordered draft siblings without replacement and applies exact recursive p/q correction.",
+            choices=["target_only", "swor"],
+        ),
+        NS("spec"),
+    ] = "target_only"
     speculative_token_map: A[
         Optional[str], "The path of the draft model's small vocab table.", NS("spec")
     ] = None
@@ -4220,7 +4239,11 @@ class ServerArgs:
         if self.tokenizer_path is None:
             self.tokenizer_path = self.model_path
         if self.served_model_name is None:
-            self.served_model_name = self.model_path
+            self.served_model_name = (
+                os.path.basename(self.model_path)
+                if sys.platform == "win32"
+                else self.model_path
+            )
         if self.device is None:
             self.device = get_device()
         # strip device index from user if any (e.g. "cuda:0" -> "cuda")
@@ -6336,23 +6359,23 @@ class ServerArgs:
                     f"{self.linear_replayssm_cache_len}."
                 )
 
-        # ReplaySSM spec-verify (Part B of #28511): linear-chain target verify via
-        # fold-every-commit -- the verify stores each draft step's raw inputs into
-        # the per-slot (rawv, rawk, g, beta) window and the commit replays the
-        # accepted prefix into the fp32 checkpoint. The intra-window interaction
-        # uses a strictly-lower causal mask, so it is valid ONLY for a linear
-        # draft chain (speculative_eagle_topk in {None, 1}, i.e. NEXTN / MTP);
-        # EAGLE tree verify (topk > 1) must fall back to the recurrent verify.
+        # ReplaySSM spec-verify (Part B of #28511): fold-every-commit stores each
+        # proposal node's raw inputs in a per-slot (rawv, rawk, g, beta) window
+        # and replays only the accepted path into the fp32 checkpoint. The
+        # original chunk kernel supports a linear chain. Native Windows also has
+        # the selective C++/CUDA low-rank GDN tree kernel, which preserves tree
+        # ancestry without allocating a full recurrent state per proposal node.
         # GDN sizes the window to the draft maximum; KDA (kda_backend) keeps a
         # --linear-replayssm-cache-len window and folds via its own fused
         # verify ring-write + commit_kda_replayssm_after_verify.
         if self.enable_linear_replayssm_spec:
-            if self.speculative_eagle_topk not in (None, 1):
+            if self.speculative_eagle_topk not in (None, 1) and not (
+                sys.platform == "win32" and is_cuda()
+            ):
                 raise ValueError(
                     "--enable-linear-replayssm-spec requires a linear draft chain "
-                    "(--speculative-eagle-topk in {None, 1}); the chunked verify "
-                    "kernel uses a strictly-lower causal mask and is invalid for "
-                    "EAGLE tree verify. Got "
+                    "(--speculative-eagle-topk in {None, 1}) unless the native "
+                    "Windows CUDA GDN tree-replay kernel is available. Got "
                     f"--speculative-eagle-topk={self.speculative_eagle_topk!r}."
                 )
             if decode not in ("triton", "flashinfer"):
@@ -7607,7 +7630,10 @@ class ServerArgs:
         except Exception:
             return False
 
-    LANGUAGE_MODEL_ONLY_ARCHITECTURES = ("MuseGlimmerForConditionalGeneration",)
+    LANGUAGE_MODEL_ONLY_ARCHITECTURES = (
+        "MuseGlimmerForConditionalGeneration",
+        "Qwen3_5ForConditionalGeneration",
+    )
 
     def _handle_language_model_only(self):
         if not self.language_model_only:
@@ -9719,6 +9745,12 @@ ZMQ_TCP_PORT_DELTA = 233
 DP_ATTENTION_HANDSHAKE_PORT_DELTA = 13
 
 
+def _local_zmq_endpoint() -> str:
+    if sys.platform == "win32":
+        return f"tcp://127.0.0.1:{get_free_port()}"
+    return f"ipc://{tempfile.NamedTemporaryFile(delete=False).name}"
+
+
 @dataclasses.dataclass
 class PortArgs:
     # The ipc filename for tokenizer to receive inputs from detokenizer (zmq)
@@ -9765,9 +9797,7 @@ class PortArgs:
         if server_args.tokenizer_worker_num == 1:
             tokenizer_worker_ipc_name = None
         else:
-            tokenizer_worker_ipc_name = (
-                f"ipc://{tempfile.NamedTemporaryFile(delete=False).name}"
-            )
+            tokenizer_worker_ipc_name = _local_zmq_endpoint()
 
         instance_id = uuid.uuid4().hex[:12]
 
@@ -9792,12 +9822,12 @@ class PortArgs:
         if not server_args.enable_dp_attention:
             # Normal case, use IPC within a single node
             return PortArgs(
-                tokenizer_ipc_name=f"ipc://{tempfile.NamedTemporaryFile(delete=False).name}",
-                scheduler_input_ipc_name=f"ipc://{tempfile.NamedTemporaryFile(delete=False).name}",
-                detokenizer_ipc_name=f"ipc://{tempfile.NamedTemporaryFile(delete=False).name}",
+                tokenizer_ipc_name=_local_zmq_endpoint(),
+                scheduler_input_ipc_name=_local_zmq_endpoint(),
+                detokenizer_ipc_name=_local_zmq_endpoint(),
                 nccl_port=nccl_port,
-                rpc_ipc_name=f"ipc://{tempfile.NamedTemporaryFile(delete=False).name}",
-                metrics_ipc_name=f"ipc://{tempfile.NamedTemporaryFile(delete=False).name}",
+                rpc_ipc_name=_local_zmq_endpoint(),
+                metrics_ipc_name=_local_zmq_endpoint(),
                 tokenizer_worker_ipc_name=tokenizer_worker_ipc_name,
                 decoupled_spec_ipc_config=decoupled_spec_ipc_config,
                 instance_id=instance_id,

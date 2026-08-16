@@ -28,6 +28,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from setuptools import setup
@@ -175,6 +176,11 @@ def _selected_rust_extensions(declared):
 
 
 def _declared_rust_extensions():
+    # The native-Windows CUDA path currently uses the Python scheduler and
+    # Triton kernels only.  None of the in-tree PyO3 extensions are required
+    # for that single-GPU path, and several pull Unix-only transitive crates.
+    if sys.platform == "win32" and os.environ.get(_BUILD_RUST_EXTS_ENV) is None:
+        return []
     # "none" short-circuits discovery so builds without a ../rust checkout
     # (e.g. from an sdist) still work.
     if (os.environ.get(_BUILD_RUST_EXTS_ENV) or "").strip().lower() == "none":

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import os
+import sys
 import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable, List, Literal, Optional, Tuple
@@ -81,7 +83,7 @@ if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
 
 
-if _is_cuda:
+if _is_cuda and sys.platform != "win32":
     from sgl_kernel import fast_topk
 elif _is_hip:
     from sgl_kernel import fast_topk
@@ -149,26 +151,197 @@ def renorm_draft_probs(
     next_token_logits: torch.Tensor,
     sampling_info,
     use_rejection_sampling: bool,
+    draft_sampling_top_k: Optional[int] = None,
 ) -> torch.Tensor:
     """Draft-side next-token distribution.
 
-    Plain softmax, except under rejection sampling where logits are
-    temperature-scaled so the draft proposal q tracks the target sampling
-    temperature (higher acceptance; correctness holds for any q).
+    The default retains the legacy behavior: target-only trees use plain
+    softmax, while rejection sampling temperature-scales q.  Supplying
+    ``draft_sampling_top_k`` opts either algorithm into the aligned sparse
+    distribution used by the target sampler.  For a target-only tree this q is
+    only a node-allocation score; verification remains exact for any tree.
     """
-    if not use_rejection_sampling or not next_token_logits.size(0):
+    if not next_token_logits.size(0):
+        return torch.softmax(next_token_logits, dim=-1)
+    if draft_sampling_top_k is not None:
+        return build_aligned_draft_probs(
+            next_token_logits,
+            sampling_info,
+            draft_sampling_top_k,
+        )
+    if not use_rejection_sampling:
         return torch.softmax(next_token_logits, dim=-1)
     return torch.softmax(next_token_logits / sampling_info.temperatures, dim=-1)
 
 
-def sample_draft_proposal(next_token_logits: torch.Tensor, temperatures: torch.Tensor):
-    """Leviathan draft proposal: q = softmax(logits / T), X ~ q.
+@functools.cache
+def _get_windows_flashinfer_renorm():
+    from flashinfer.sampling import top_k_renorm_prob, top_p_renorm_prob
 
-    Returns (q, q(X), X). The verify's accept test coin*q(X) < p(X) is unbiased
-    only if q is exactly the distribution X was drawn from, so callers must hand
-    the returned q (not a recomputed one) to the verify.
+    return top_k_renorm_prob, top_p_renorm_prob
+
+
+def _match_draft_rows(
+    values: torch.Tensor,
+    num_rows: int,
+    *,
+    allow_singleton_broadcast: bool,
+) -> torch.Tensor:
+    """Expand per-request sampling state to the active draft branches."""
+    rows = values.shape[0]
+    if rows == num_rows or (allow_singleton_broadcast and rows == 1):
+        return values
+    if rows <= 0 or num_rows % rows:
+        raise ValueError(
+            f"Cannot expand {rows} sampling rows to {num_rows} draft rows"
+        )
+    return torch.repeat_interleave(values, num_rows // rows, dim=0)
+
+
+def build_aligned_draft_probs(
+    next_token_logits: torch.Tensor,
+    sampling_info_or_temperatures,
+    draft_sampling_top_k: int,
+) -> torch.Tensor:
+    """Build the transformed sparse draft distribution used for q or scoring."""
+    vocab_size = next_token_logits.shape[-1]
+    if not 1 <= draft_sampling_top_k <= vocab_size:
+        raise ValueError(
+            "draft_sampling_top_k must be within the draft vocabulary: "
+            f"got {draft_sampling_top_k} for vocab_size={vocab_size}"
+        )
+
+    sampling_info = (
+        sampling_info_or_temperatures
+        if hasattr(sampling_info_or_temperatures, "temperatures")
+        else None
+    )
+    temperatures = (
+        sampling_info.temperatures
+        if sampling_info is not None
+        else sampling_info_or_temperatures
+    )
+    temperatures = _match_draft_rows(
+        temperatures,
+        next_token_logits.shape[0],
+        allow_singleton_broadcast=True,
+    )
+    proposal_logits = next_token_logits
+    if (
+        sampling_info is not None
+        and sampling_info.acc_additive_penalties is not None
+    ):
+        additive_penalties = _match_draft_rows(
+            sampling_info.acc_additive_penalties,
+            next_token_logits.shape[0],
+            allow_singleton_broadcast=True,
+        )
+        proposal_logits = proposal_logits + additive_penalties
+    if sampling_info is not None and sampling_info.logit_bias is not None:
+        logit_bias = _match_draft_rows(
+            sampling_info.logit_bias,
+            next_token_logits.shape[0],
+            allow_singleton_broadcast=True,
+        )
+        proposal_logits = proposal_logits + logit_bias
+
+    if sys.platform == "win32" and next_token_logits.is_cuda:
+        # FlashInfer's CUDA renorm kernels are materially faster at Qwen's
+        # 248K vocabulary than selecting/scattering a sparse torch.topk on
+        # native Windows.
+        top_k_renorm_prob, top_p_renorm_prob = _get_windows_flashinfer_renorm()
+        probs = torch.softmax(proposal_logits / temperatures, dim=-1)
+        probs = top_k_renorm_prob(probs, draft_sampling_top_k)
+        if sampling_info is not None and sampling_info.need_top_p_sampling:
+            top_ps = _match_draft_rows(
+                sampling_info.top_ps,
+                probs.shape[0],
+                allow_singleton_broadcast=False,
+            )
+            probs = top_p_renorm_prob(probs, top_ps)
+        return probs
+
+    sparse_logits, sparse_indices = torch.topk(
+        proposal_logits / temperatures,
+        k=draft_sampling_top_k,
+        dim=-1,
+        sorted=True,
+    )
+    sparse_probs = torch.softmax(sparse_logits.float(), dim=-1)
+
+    # Match the target fallback's top-p threshold semantics on q's sparse
+    # support: sort ascending, discard the prefix below 1-p, retain every tie at
+    # the boundary, then renormalize. torch.topk returned descending values.
+    top_ps = (
+        sampling_info.top_ps
+        if sampling_info is not None
+        else torch.ones(
+            (next_token_logits.shape[0],),
+            dtype=torch.float32,
+            device=next_token_logits.device,
+        )
+    )
+    top_ps = _match_draft_rows(
+        top_ps,
+        sparse_probs.shape[0],
+        allow_singleton_broadcast=True,
+    ).reshape(-1, 1)
+    ascending_probs = torch.flip(sparse_probs, dims=(-1,))
+    ascending_cdf = torch.cumsum(ascending_probs, dim=-1)
+    cutoff = torch.sum(ascending_cdf < (1.0 - top_ps), dim=-1, keepdim=True)
+    cutoff.clamp_(max=draft_sampling_top_k - 1)
+    pivots = ascending_probs.gather(1, cutoff)
+    sparse_probs = torch.where(
+        sparse_probs >= pivots, sparse_probs, torch.zeros_like(sparse_probs)
+    )
+    sparse_probs = sparse_probs / sparse_probs.sum(dim=-1, keepdim=True)
+
+    return torch.zeros(
+        next_token_logits.shape,
+        dtype=sparse_probs.dtype,
+        device=next_token_logits.device,
+    ).scatter_(1, sparse_indices, sparse_probs)
+
+
+def sample_draft_proposal(
+    next_token_logits: torch.Tensor,
+    sampling_info_or_temperatures,
+    draft_sampling_top_k: Optional[int] = None,
+):
+    """Build and sample the exact Leviathan draft proposal ``q``.
+
+    With ``draft_sampling_top_k=None`` this preserves the original
+    temperature-only full-vocabulary proposal.  The opt-in sparse path applies
+    the request's additive penalties and logit bias, temperature, a fixed draft
+    top-k, and top-p.  Sampling happens directly on the sparse support before q
+    is scattered into the dense tensor consumed by the existing rejection
+    kernel.
+
+    Returns ``(q, q(X), X)``.  The verify's accept test ``coin*q(X) < p(X)`` is
+    unbiased only if q is exactly the distribution X was drawn from, so callers
+    must hand the returned q (not a recomputed one) to the verify.
     """
-    probs = torch.softmax(next_token_logits / temperatures, dim=-1)
+    sampling_info = (
+        sampling_info_or_temperatures
+        if hasattr(sampling_info_or_temperatures, "temperatures")
+        else None
+    )
+    temperatures = (
+        sampling_info.temperatures
+        if sampling_info is not None
+        else sampling_info_or_temperatures
+    )
+
+    if draft_sampling_top_k is None:
+        probs = torch.softmax(next_token_logits / temperatures, dim=-1)
+        topk_p, topk_index = fast_sample(probs, num_samples=1)
+        return probs, topk_p, topk_index
+
+    probs = build_aligned_draft_probs(
+        next_token_logits,
+        sampling_info_or_temperatures,
+        draft_sampling_top_k,
+    )
     topk_p, topk_index = fast_sample(probs, num_samples=1)
     return probs, topk_p, topk_index
 
@@ -250,6 +423,7 @@ def record_stream_for_v2_verify(batch, verify_input, fwd_stream):
                     "retrieve_index",
                     "retrieve_next_token",
                     "retrieve_next_sibling",
+                    "draft_probs",
                 )
             ]
         )
@@ -350,6 +524,17 @@ def select_top_k_tokens(
     return _select_top_k_tokens_later(
         i, topk_p, topk_index, hidden_states, scores, topk
     )
+
+
+def discount_tree_node_scores_(
+    scores: torch.Tensor,
+    draft_step: int,
+    depth_discount: float,
+) -> torch.Tensor:
+    """Calibrate global node allocation in place without an extra graph buffer."""
+    if draft_step <= 0 or depth_discount == 1.0:
+        return scores
+    return scores.mul_(depth_discount**draft_step)
 
 
 def sample_simulated_acc_len(
@@ -881,6 +1066,22 @@ def commit_mamba_states_after_verify(
             accept_lens=accept_lens,
             draft_token_num=draft_token_num,
         )
+        if (get_spec().speculative_eagle_topk or 1) > 1:
+            from sglang.kernels.ops.attention.fla.gdn_tree_replay import (
+                commit_gdn_tree_replay_after_verify,
+            )
+
+            commit_gdn_tree_replay_after_verify(
+                spec_state=spec_state,
+                state_batch_indices=state_batch_indices,
+                accept_index=accept_index,
+                accept_lens=accept_lens,
+                num_tree_nodes=draft_token_num,
+                last_correct_node_indices=last_correct_step_indices,
+                mamba_track_indices=batch.mamba_track_indices,
+                mamba_track_nodes=mamba_steps_to_track,
+            )
+            return
         commit_gdn_replayssm_fold_after_verify(
             spec_state=spec_state,
             state_batch_indices=state_batch_indices,

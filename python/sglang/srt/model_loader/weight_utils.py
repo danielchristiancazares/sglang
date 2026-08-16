@@ -267,6 +267,23 @@ def get_quant_config(
 ) -> QuantizationConfig:
     quant_cls = get_quantization_config(model_config.quantization)
 
+    # An explicitly selected FP8/MXFP8/NVFP4 draft quantizer is an online
+    # conversion of the unpacked draft weights. The shared checkpoint's
+    # quantization_config describes the packed target and must not be parsed as
+    # the draft config (its ignore list is precisely why this conversion is
+    # safe, and would otherwise disable conversion of every mtp.* layer).
+    if (
+        model_config.is_draft_model
+        and model_config.is_draft_quantization_explicit
+        and model_config.quantization in {"fp8", "mxfp8", "nvfp4_online"}
+    ):
+        return quant_cls(
+            is_checkpoint_fp8_serialized=False,
+            activation_scheme="dynamic",
+            packed_modules_mapping=packed_modules_mapping,
+            use_mxfp8=model_config.quantization == "mxfp8",
+        )
+
     # GGUF doesn't have config file
     if model_config.quantization == "gguf":
         return quant_cls.from_config({})

@@ -12,6 +12,7 @@ from sglang.kernels.jit.utils import (
     load_jit,
     make_cpp_args,
 )
+from sglang.srt.utils.custom_op import register_custom_op
 
 if TYPE_CHECKING:
     from tvm_ffi.module import Module
@@ -125,14 +126,14 @@ def fused_inplace_qknorm(
     module.qknorm(q, k, q_weight, k_weight, eps)
 
 
-@debug_kernel_api
-def rmsnorm(
+@register_custom_op(mutates_args=["out"])
+def _rmsnorm_inplace(
     input: torch.Tensor,
     weight: torch.Tensor,
-    out: Optional[torch.Tensor] = None,
-    eps: float = 1e-6,
+    out: torch.Tensor,
+    eps: float,
+    weight_offset: float,
 ) -> None:
-    out = out if out is not None else input
     hidden_size = input.size(-1)
     if not _is_supported_rmsnorm_hidden_size(hidden_size):
         raise RuntimeError(
@@ -141,7 +142,28 @@ def rmsnorm(
             f"(256, {_RMSNORM_MAX_HIDDEN_SIZE}]."
         )
     module = _jit_rmsnorm_module(hidden_size, input.dtype)
-    module.rmsnorm(input, weight, out, eps)
+    module.rmsnorm(input, weight, out, eps, weight_offset)
+
+
+@debug_kernel_api
+def rmsnorm(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    out: Optional[torch.Tensor] = None,
+    eps: float = 1e-6,
+    weight_offset: float = 0.0,
+) -> None:
+    out = out if out is not None else input
+    _rmsnorm_inplace(input, weight, out, eps, weight_offset)
+
+
+def gemma_rmsnorm(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    out: Optional[torch.Tensor] = None,
+    eps: float = 1e-6,
+) -> None:
+    rmsnorm(input, weight, out, eps, weight_offset=1.0)
 
 
 @debug_kernel_api

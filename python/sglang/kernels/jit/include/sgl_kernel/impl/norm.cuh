@@ -65,7 +65,8 @@ SGL_DEVICE AlignedVector<PackedFloat, N> apply_norm_impl(
     const AlignedVector<PackedFloat, N> weight,
     const float eps,
     [[maybe_unused]] float* smem_buffer,
-    [[maybe_unused]] uint32_t num_warps) {
+    [[maybe_unused]] uint32_t num_warps,
+    const float weight_offset) {
   float sum_of_squares = 0.0f;
 
 #pragma unroll
@@ -102,8 +103,8 @@ SGL_DEVICE AlignedVector<PackedFloat, N> apply_norm_impl(
     const auto fp32_input = cast<fp32x2_t>(input[i]);
     const auto fp32_weight = cast<fp32x2_t>(weight[i]);
     output[i] = cast<PackedFloat, fp32x2_t>({
-        fp32_input.x * norm_factor * fp32_weight.x,
-        fp32_input.y * norm_factor * fp32_weight.y,
+        fp32_input.x * norm_factor * (fp32_weight.x + weight_offset),
+        fp32_input.y * norm_factor * (fp32_weight.y + weight_offset),
     });
   }
 
@@ -122,9 +123,11 @@ SGL_DEVICE AlignedVector<PackedFloat, N> apply_norm_impl(
  * \return Normalized output vector
  */
 template <int64_t kDim, typename T>
-SGL_DEVICE T apply_norm_warp(const T& input, const T& weight, float eps) {
+SGL_DEVICE T apply_norm_warp(
+    const T& input, const T& weight, float eps, float weight_offset = 0.0f) {
   static_assert(kDim <= 256, "Warp norm only supports dim <= 256");
-  return details::apply_norm_impl<kDim, false>(input, weight, eps, nullptr, 0);
+  return details::apply_norm_impl<kDim, false>(
+      input, weight, eps, nullptr, 0, weight_offset);
 }
 
 /**
@@ -140,9 +143,15 @@ SGL_DEVICE T apply_norm_warp(const T& input, const T& weight, float eps) {
  */
 template <int64_t kDim, typename T>
 SGL_DEVICE T apply_norm_cta(
-    const T& input, const T& weight, float eps, float* smem, uint32_t num_warps = blockDim.x / kWarpThreads) {
+    const T& input,
+    const T& weight,
+    float eps,
+    float* smem,
+    uint32_t num_warps = blockDim.x / kWarpThreads,
+    float weight_offset = 0.0f) {
   static_assert(kDim > 256, "CTA norm only supports dim > 256");
-  return details::apply_norm_impl<kDim, true>(input, weight, eps, smem, num_warps);
+  return details::apply_norm_impl<kDim, true>(
+      input, weight, eps, smem, num_warps, weight_offset);
 }
 
 /**

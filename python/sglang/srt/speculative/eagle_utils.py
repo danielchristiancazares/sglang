@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
-from enum import IntEnum
+import sys
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
@@ -17,6 +17,7 @@ from sglang.srt.hardware_backend.npu.dsv4.dsv4_common_hooks import (
 from sglang.srt.mem_cache.allocation import alloc_for_spec_decode
 from sglang.srt.mem_cache.allocation_sizing import get_alloc_reserve_per_decode
 from sglang.srt.runtime_context import get_parallel, get_spec
+from sglang.srt.speculative.tree_mask import TreeMaskMode, default_tree_mask_mode
 from sglang.srt.utils import (
     is_cpu,
     is_cuda,
@@ -46,10 +47,35 @@ _is_cpu = is_cpu()
 
 logger = logging.getLogger(__name__)
 
+_use_triton_spec_fallback = False
+_windows_top_k_renorm_prob = None
+_windows_top_p_renorm_prob = None
 if _is_cuda or _is_hip or _is_musa:
-    from sgl_kernel import (
-        build_tree_kernel_efficient as sgl_build_tree_kernel_efficient,
-    )
+    try:
+        from sgl_kernel import (
+            build_tree_kernel_efficient as sgl_build_tree_kernel_efficient,
+        )
+    except ModuleNotFoundError:
+        if not (_is_cuda and sys.platform == "win32"):
+            raise
+        _use_triton_spec_fallback = True
+        try:
+            # FlashInfer's CUDA sampling module is already part of the native
+            # Windows serving stack. Resolve once here so the verify loop pays
+            # no repeated Python import dispatch.
+            from flashinfer.sampling import (
+                top_k_renorm_prob as _windows_top_k_renorm_prob,
+            )
+            from flashinfer.sampling import (
+                top_p_renorm_prob as _windows_top_p_renorm_prob,
+            )
+        except ImportError:
+            from sglang.kernels.ops.sampling.renorm_triton import (
+                top_k_renorm_probs_triton as _windows_top_k_renorm_prob,
+            )
+            from sglang.kernels.ops.sampling.renorm_triton import (
+                top_p_renorm_probs_triton as _windows_top_p_renorm_prob,
+            )
 elif _is_cpu:
     from sgl_kernel import (
         build_tree_kernel_efficient_cpu as sgl_build_tree_kernel_efficient_cpu,
@@ -132,16 +158,27 @@ def organize_draft_results(
     return parent_list, top_scores_index, draft_tokens
 
 
-class TreeMaskMode(IntEnum):
-    FULL_MASK = 0
-    QLEN_ONLY = 1
-    QLEN_ONLY_BITPACKING = 2
+def organize_tree_swor_probs(
+    draft_prob_rows: torch.Tensor,
+    draft_prob_node_ids: torch.Tensor,
+    top_scores_index: torch.Tensor,
+) -> torch.Tensor:
+    """Gather frontier q rows into the final pruned tree-node order.
 
-
-def default_tree_mask_mode() -> TreeMaskMode:
-    # The CPU verify attention kernel (intel_amx) consumes the qlen x qlen
-    # QLEN_ONLY tree mask directly; FULL_MASK is for the GPU kernels.
-    return TreeMaskMode.QLEN_ONLY if _is_cpu else TreeMaskMode.FULL_MASK
+    Candidate-universe ID ``-1`` denotes the bonus/root node. Every retained
+    internal node is guaranteed to appear in ``draft_prob_node_ids`` because
+    EAGLE's cumulative-score pruning preserves ancestors. Retained leaves may
+    not have a q row; they map to row zero and are never read by verification.
+    """
+    bs = top_scores_index.shape[0]
+    root_ids = torch.full(
+        (bs, 1), -1, dtype=top_scores_index.dtype, device=top_scores_index.device
+    )
+    tree_node_ids = torch.cat((root_ids, top_scores_index), dim=1)
+    matches = tree_node_ids.unsqueeze(-1) == draft_prob_node_ids.unsqueeze(1)
+    source_rows = matches.to(torch.int64).argmax(dim=-1)
+    batch_rows = torch.arange(bs, device=top_scores_index.device).unsqueeze(1)
+    return draft_prob_rows[batch_rows, source_rows]
 
 
 def build_tree_kernel_efficient(
@@ -158,6 +195,39 @@ def build_tree_kernel_efficient(
     tree_mask_buf: Optional[torch.Tensor] = None,
     fill_prefix_mask: bool = True,
 ):
+    if (
+        _is_cuda
+        and sys.platform == "win32"
+        and _use_triton_spec_fallback
+        and topk == 1
+        and num_verify_tokens == spec_steps + 1
+        and tree_mask_mode == TreeMaskMode.QLEN_ONLY
+        and tree_mask_buf is not None
+        and bonus_tokens.dtype == torch.long
+        and draft_tokens.dtype == torch.long
+        and seq_lens.dtype == torch.long
+    ):
+        # Native Windows has no sgl_kernel wheel.  For the production top-k1
+        # chain, replace cat + fill + cumsum + general Triton tree construction
+        # with one shape-specialized C++/CUDA JIT launch.  Keep per-cycle output
+        # allocations: the verifier consumes these tensors asynchronously.
+        from sglang.kernels.ops.speculative.chain_metadata import (
+            build_chain_metadata,
+        )
+
+        positions, retrieve_buf, draft_tokens = build_chain_metadata(
+            bonus_tokens, draft_tokens, seq_lens, tree_mask_buf
+        )
+        retrieve_index, retrieve_next_token, retrieve_next_sibling = retrieve_buf
+        return (
+            tree_mask_buf,
+            positions,
+            retrieve_index,
+            retrieve_next_token,
+            retrieve_next_sibling,
+            draft_tokens,
+        )
+
     draft_tokens = torch.cat((bonus_tokens.unsqueeze(1), draft_tokens), dim=1).flatten()
 
     # seq_lens_sum == sum(seq_lens); seq_lens: sequence length without draft tokens
@@ -169,7 +239,8 @@ def build_tree_kernel_efficient(
     if tree_mask_buf is not None:
         tree_mask = tree_mask_buf
         if tree_mask_mode == TreeMaskMode.QLEN_ONLY:
-            tree_mask.fill_(True)
+            if fill_prefix_mask:
+                tree_mask.fill_(True)
         elif tree_mask_mode == TreeMaskMode.QLEN_ONLY_BITPACKING:
             tree_mask.fill_(0)
         elif tree_mask_mode == TreeMaskMode.FULL_MASK:
@@ -234,7 +305,7 @@ def build_tree_kernel_efficient(
             num_verify_tokens,
             tree_mask_mode,
         )
-    elif _is_xpu:
+    elif _is_xpu or _use_triton_spec_fallback:
         sgl_build_tree_kernel_triton(
             parent_list,
             top_scores_index,
@@ -382,7 +453,7 @@ def verify_tree_greedy_func(
     target_predict: torch.Tensor,
     topk: int = -1,
 ):
-    if _is_cuda or _is_hip or _is_musa:
+    if (_is_cuda or _is_hip or _is_musa) and not _use_triton_spec_fallback:
         from sgl_kernel import verify_tree_greedy
 
         verify_tree_greedy(
@@ -425,7 +496,7 @@ def verify_tree_greedy_func(
             retrive_next_sibling=retrieve_next_sibling,
             target_predict=target_predict,
         )
-    elif _is_xpu:
+    elif _is_xpu or _use_triton_spec_fallback:
         verify_tree_greedy_triton(
             predicts=predicts,
             accept_index=accept_index,
@@ -738,17 +809,51 @@ def eagle_sample(
             topk=verify_input.tree_topk,
         )
     else:
-        from sgl_kernel import (
-            top_k_renorm_prob,
-            top_p_renorm_prob,
-            tree_speculative_sampling_target_only,
-        )
-
         from sglang.kernels.ops.speculative.reject_sampling import (
             chain_speculative_sampling_triton,
         )
 
         use_rejection_sampling = get_spec().speculative_use_rejection_sampling
+        use_tree_swor = (
+            getattr(get_spec(), "speculative_tree_sampling_mode", "target_only")
+            == "swor"
+        )
+        if _use_triton_spec_fallback:
+            # Native Windows lacks the monolithic sgl_kernel wheel.  Its
+            # FlashInfer 0.6.17 port already ships the CUDA renorm kernels used
+            # by the ordinary Sampler, so speculative verification uses them as
+            # well.  The old Triton fallback sorted the full 248K vocabulary
+            # once for top-k and again for top-p.  Target-only trees use the
+            # selective native CUDA verifier resolved below.
+            top_k_renorm_prob = _windows_top_k_renorm_prob
+            top_p_renorm_prob = _windows_top_p_renorm_prob
+
+            if use_rejection_sampling:
+                tree_speculative_sampling_target_only = None
+            else:
+                # Native Windows has no monolithic sgl_kernel wheel.  Its
+                # selective CUDA JIT verifier implements the exact target-only
+                # tree rule directly and carries only terminal sibling IDs,
+                # avoiding the old vocabulary-sized zero draft tensor.
+                from sglang.kernels.ops.speculative.tree_sampling import (
+                    exact_tree_speculative_sampling,
+                    exact_tree_swor_sampling,
+                )
+
+                tree_speculative_sampling_target_only = (
+                    exact_tree_swor_sampling
+                    if getattr(
+                        get_spec(), "speculative_tree_sampling_mode", "target_only"
+                    )
+                    == "swor"
+                    else exact_tree_speculative_sampling
+                )
+        else:
+            from sgl_kernel import (
+                top_k_renorm_prob,
+                top_p_renorm_prob,
+                tree_speculative_sampling_target_only,
+            )
 
         # Apply temperature and get target probs
         expanded_temperature = torch.repeat_interleave(
@@ -778,17 +883,21 @@ def eagle_sample(
         target_probs = target_probs.reshape(bs, verify_input.draft_token_num, -1)
         draft_probs = (
             verify_input.draft_probs
-            if use_rejection_sampling
-            else torch.zeros_like(target_probs)
+            if use_rejection_sampling or use_tree_swor
+            else (
+                None
+                if _use_triton_spec_fallback
+                else torch.zeros_like(target_probs)
+            )
         )
         # Defense-in-depth behind the spec_hook startup allowlist: validate the
         # actual kernel inputs (catches draft_probs plumbing regressions or a
         # startup guard bypassed by a worker subclass) before the Triton kernel.
-        if use_rejection_sampling and (
+        if (use_rejection_sampling or use_tree_swor) and (
             draft_probs is None or draft_probs.shape[-1] != target_probs.shape[-1]
         ):
             raise ValueError(
-                "Rejection sampling requires a target-vocab draft proposal "
+                "Exact p/q verification requires a target-vocab draft proposal "
                 "distribution; the current speculative algorithm/draft worker "
                 "does not produce one (draft_probs missing or vocab-mismatched)."
             )

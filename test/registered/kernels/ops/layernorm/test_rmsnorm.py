@@ -153,5 +153,30 @@ def test_rmsnorm_kernel_dispatch(hidden_size: int, expected: str) -> None:
     assert _rmsnorm_kernel_class(hidden_size) == expected
 
 
+@pytest.mark.parametrize("batch_size", [1, 3])
+def test_qwen35_gemma_rmsnorm_weight_offset(batch_size: int) -> None:
+    from sglang.kernels.ops.layernorm.norm import gemma_rmsnorm
+
+    torch.manual_seed(1)
+    hidden_size = 5120
+    input = torch.randn(
+        batch_size, hidden_size, device=DEVICE, dtype=torch.bfloat16
+    )
+    weight = torch.randn(hidden_size, device=DEVICE, dtype=torch.bfloat16)
+    output = torch.empty_like(input)
+
+    gemma_rmsnorm(input, weight, out=output, eps=EPS)
+    normalized = input.float()
+    normalized *= torch.rsqrt(
+        normalized.square().mean(dim=-1, keepdim=True) + EPS
+    )
+    expected = (normalized * (weight.float() + 1.0)).to(input.dtype)
+
+    if sys.platform == "win32" and torch.cuda.get_device_capability()[0] >= 12:
+        torch.testing.assert_close(output, expected, atol=0.0, rtol=0.0)
+    else:
+        torch.testing.assert_close(output, expected, atol=1e-2, rtol=1e-2)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v", "-s"]))

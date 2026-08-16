@@ -4,10 +4,8 @@
 from __future__ import annotations
 
 import builtins
-import inspect
-from typing import TYPE_CHECKING, Dict, Optional, Type
-
-import torch
+import sys
+from typing import Dict, Type
 
 
 # Define empty classes as placeholders when vllm is not available
@@ -18,41 +16,8 @@ class DummyConfig:
 
 CompressedTensorsConfig = DummyConfig
 
-from sglang.srt.layers.quantization.auto_round import AutoRoundConfig
-from sglang.srt.layers.quantization.awq import AWQConfig, AWQCPUConfig, AWQMarlinConfig
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
-from sglang.srt.layers.quantization.bitsandbytes import BitsAndBytesConfig
-from sglang.srt.layers.quantization.blockwise_int8 import BlockInt8Config
-from sglang.srt.layers.quantization.compressed_tensors.compressed_tensors import (
-    CompressedTensorsConfig,
-)
-from sglang.srt.layers.quantization.fp8 import Fp8Config
 from sglang.srt.layers.quantization.gguf import GGUFConfig
-from sglang.srt.layers.quantization.gptq import (
-    CPUGPTQConfig,
-    GPTQAscendConfig,
-    GPTQConfig,
-    GPTQMarlinConfig,
-)
-from sglang.srt.layers.quantization.humming import HummingConfig
-from sglang.srt.layers.quantization.mlx import MlxQuantizationConfig
-from sglang.srt.layers.quantization.modelopt_quant import (
-    ModelOptFp4Config,
-    ModelOptFp8Config,
-    ModelOptMixedPrecisionConfig,
-)
-from sglang.srt.layers.quantization.modelslim.modelslim import ModelSlimConfig
-from sglang.srt.layers.quantization.moe_wna16 import MoeWNA16Config
-from sglang.srt.layers.quantization.mxfp4 import Mxfp4Config
-from sglang.srt.layers.quantization.npu_mxfp4 import Mxfp4W4A8Config
-from sglang.srt.layers.quantization.npu_mxfp4_w4a4 import Mxfp4W4A4Config
-from sglang.srt.layers.quantization.nvfp4_online import NvFp4OnlineConfig
-from sglang.srt.layers.quantization.petit import PetitNvFp4Config
-from sglang.srt.layers.quantization.quark.quark import QuarkConfig
-from sglang.srt.layers.quantization.quark_int4fp8_moe import QuarkInt4Fp8Config
-from sglang.srt.layers.quantization.w4afp8 import W4AFp8Config
-from sglang.srt.layers.quantization.w8a8_fp8 import W8A8Fp8Config
-from sglang.srt.layers.quantization.w8a8_int8 import W8A8Int8Config
 from sglang.srt.platforms import current_platform
 from sglang.srt.utils import (
     cpu_has_amx_support,
@@ -63,45 +28,103 @@ from sglang.srt.utils import (
     is_npu,
 )
 
+if sys.platform == "win32":
+    from sglang.srt.layers.quantization.compressed_tensors.compressed_tensors import (
+        CompressedTensorsConfig,
+    )
+    from sglang.srt.layers.quantization.fp8 import Fp8Config
+    from sglang.srt.layers.quantization.modelopt_quant import (
+        ModelOptFp4Config,
+        ModelOptMixedPrecisionConfig,
+    )
+    from sglang.srt.layers.quantization.nvfp4_online import NvFp4OnlineConfig
+else:
+    from sglang.srt.layers.quantization.auto_round import AutoRoundConfig
+    from sglang.srt.layers.quantization.awq import (
+        AWQConfig,
+        AWQCPUConfig,
+        AWQMarlinConfig,
+    )
+    from sglang.srt.layers.quantization.bitsandbytes import BitsAndBytesConfig
+    from sglang.srt.layers.quantization.blockwise_int8 import BlockInt8Config
+    from sglang.srt.layers.quantization.compressed_tensors.compressed_tensors import (
+        CompressedTensorsConfig,
+    )
+    from sglang.srt.layers.quantization.fp8 import Fp8Config
+    from sglang.srt.layers.quantization.gptq import (
+        CPUGPTQConfig,
+        GPTQAscendConfig,
+        GPTQConfig,
+        GPTQMarlinConfig,
+    )
+    from sglang.srt.layers.quantization.humming import HummingConfig
+    from sglang.srt.layers.quantization.mlx import MlxQuantizationConfig
+    from sglang.srt.layers.quantization.modelopt_quant import (
+        ModelOptFp4Config,
+        ModelOptFp8Config,
+        ModelOptMixedPrecisionConfig,
+    )
+    from sglang.srt.layers.quantization.modelslim.modelslim import ModelSlimConfig
+    from sglang.srt.layers.quantization.moe_wna16 import MoeWNA16Config
+    from sglang.srt.layers.quantization.mxfp4 import Mxfp4Config
+    from sglang.srt.layers.quantization.npu_mxfp4 import Mxfp4W4A8Config
+    from sglang.srt.layers.quantization.npu_mxfp4_w4a4 import Mxfp4W4A4Config
+    from sglang.srt.layers.quantization.nvfp4_online import NvFp4OnlineConfig
+    from sglang.srt.layers.quantization.petit import PetitNvFp4Config
+    from sglang.srt.layers.quantization.quark.quark import QuarkConfig
+    from sglang.srt.layers.quantization.quark_int4fp8_moe import QuarkInt4Fp8Config
+    from sglang.srt.layers.quantization.w4afp8 import W4AFp8Config
+    from sglang.srt.layers.quantization.w8a8_fp8 import W8A8Fp8Config
+    from sglang.srt.layers.quantization.w8a8_int8 import W8A8Int8Config
+
 _is_gfx95_supported = is_gfx95_supported()
 
-if TYPE_CHECKING:
-    from sglang.srt.layers.moe.topk import TopKOutput
-
 # Base quantization methods
-BASE_QUANTIZATION_METHODS: Dict[str, Type[QuantizationConfig]] = {
-    "fp8": Fp8Config,
-    "mxfp8": Fp8Config,
-    "blockwise_int8": BlockInt8Config,
-    "modelopt": ModelOptFp8Config,  # Auto-detect, defaults to FP8
-    "modelopt_fp8": ModelOptFp8Config,
-    "modelopt_fp4": ModelOptFp4Config,
-    "nvfp4_online": NvFp4OnlineConfig,
-    "modelopt_mixed": ModelOptMixedPrecisionConfig,
-    "w8a8_int8": W8A8Int8Config,
-    "w8a8_fp8": W8A8Fp8Config,
-    "awq": AWQConfig,
-    "awq_marlin": AWQMarlinConfig,
-    "bitsandbytes": BitsAndBytesConfig,
-    "gguf": GGUFConfig,
-    "gptq": GPTQConfig,
-    "gptq_marlin": GPTQMarlinConfig,
-    "moe_wna16": MoeWNA16Config,
-    "compressed-tensors": CompressedTensorsConfig,
-    "w4afp8": W4AFp8Config,
-    "petit_nvfp4": PetitNvFp4Config,
-    "quark": QuarkConfig,
-    "quark_mxfp4": QuarkConfig,
-    "auto-round": AutoRoundConfig,
-    "auto-round-int8": W8A8Int8Config,
-    "modelslim": ModelSlimConfig,
-    "quark_int4fp8_moe": QuarkInt4Fp8Config,
-    "humming": HummingConfig,
-    "mxfp_w4a8": Mxfp4W4A8Config,
-}
+BASE_QUANTIZATION_METHODS: Dict[str, Type[QuantizationConfig]] = (
+    {
+        "fp8": Fp8Config,
+        "mxfp8": Fp8Config,
+        "gguf": GGUFConfig,
+        "compressed-tensors": CompressedTensorsConfig,
+        "nvfp4_online": NvFp4OnlineConfig,
+        "modelopt_fp4": ModelOptFp4Config,
+        "modelopt_mixed": ModelOptMixedPrecisionConfig,
+    }
+    if sys.platform == "win32"
+    else {
+        "fp8": Fp8Config,
+        "mxfp8": Fp8Config,
+        "blockwise_int8": BlockInt8Config,
+        "modelopt": ModelOptFp8Config,  # Auto-detect, defaults to FP8
+        "modelopt_fp8": ModelOptFp8Config,
+        "modelopt_fp4": ModelOptFp4Config,
+        "nvfp4_online": NvFp4OnlineConfig,
+        "modelopt_mixed": ModelOptMixedPrecisionConfig,
+        "w8a8_int8": W8A8Int8Config,
+        "w8a8_fp8": W8A8Fp8Config,
+        "awq": AWQConfig,
+        "awq_marlin": AWQMarlinConfig,
+        "bitsandbytes": BitsAndBytesConfig,
+        "gguf": GGUFConfig,
+        "gptq": GPTQConfig,
+        "gptq_marlin": GPTQMarlinConfig,
+        "moe_wna16": MoeWNA16Config,
+        "compressed-tensors": CompressedTensorsConfig,
+        "w4afp8": W4AFp8Config,
+        "petit_nvfp4": PetitNvFp4Config,
+        "quark": QuarkConfig,
+        "quark_mxfp4": QuarkConfig,
+        "auto-round": AutoRoundConfig,
+        "auto-round-int8": W8A8Int8Config,
+        "modelslim": ModelSlimConfig,
+        "quark_int4fp8_moe": QuarkInt4Fp8Config,
+        "humming": HummingConfig,
+        "mxfp_w4a8": Mxfp4W4A8Config,
+    }
+)
 
 
-if is_cpu() or is_cuda() or _is_gfx95_supported:
+if sys.platform != "win32" and (is_cpu() or is_cuda() or _is_gfx95_supported):
     BASE_QUANTIZATION_METHODS.update(
         {
             "mxfp4": Mxfp4Config,
@@ -109,7 +132,7 @@ if is_cpu() or is_cuda() or _is_gfx95_supported:
     )
 
 
-if is_npu():
+if sys.platform != "win32" and is_npu():
     BASE_QUANTIZATION_METHODS.update(
         {
             "gptq": GPTQAscendConfig,
@@ -121,7 +144,7 @@ if is_npu():
     )
 
 
-if is_mps():
+if sys.platform != "win32" and is_mps():
     BASE_QUANTIZATION_METHODS.update(
         {
             "mlx_q4": MlxQuantizationConfig,
@@ -130,15 +153,19 @@ if is_mps():
     )
 
 # subset of above quant methods, supported on CPU
-CPU_QUANTIZATION_METHODS = {
-    "fp8": Fp8Config,
-    "w8a8_int8": W8A8Int8Config,
-    "compressed-tensors": CompressedTensorsConfig,
-    "awq": AWQCPUConfig,
-    "gptq": CPUGPTQConfig,
-    "mxfp4": Mxfp4Config,
-    "auto-round": AutoRoundConfig,
-}
+CPU_QUANTIZATION_METHODS = (
+    {}
+    if sys.platform == "win32"
+    else {
+        "fp8": Fp8Config,
+        "w8a8_int8": W8A8Int8Config,
+        "compressed-tensors": CompressedTensorsConfig,
+        "awq": AWQCPUConfig,
+        "gptq": CPUGPTQConfig,
+        "mxfp4": Mxfp4Config,
+        "auto-round": AutoRoundConfig,
+    }
+)
 
 QUANTIZATION_METHODS = {**BASE_QUANTIZATION_METHODS}
 

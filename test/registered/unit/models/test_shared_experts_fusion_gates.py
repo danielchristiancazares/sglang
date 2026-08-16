@@ -463,6 +463,7 @@ class TestWrapperEntryClassGates(_FusionGateCase):
         from sglang.srt.models.qwen3_5 import Qwen3_5ForCausalLM
         from sglang.srt.models.qwen3_5_mtp import (
             Qwen3_5ForCausalLMMTP,
+            _mtp_fc_uses_parallel_linear,
             _mtp_quant_config,
         )
 
@@ -484,6 +485,12 @@ class TestWrapperEntryClassGates(_FusionGateCase):
         self.assertIsNone(_mtp_quant_config(quark_mtp))
         kept = _quant("fp8")
         self.assertIs(_mtp_quant_config(kept), kept)
+        self.assertTrue(_mtp_fc_uses_parallel_linear(kept))
+        self.assertTrue(_mtp_fc_uses_parallel_linear(_quant("mxfp8")))
+        self.assertTrue(_mtp_fc_uses_parallel_linear(_quant("nvfp4_online")))
+        self.assertTrue(_mtp_fc_uses_parallel_linear(_quant("gguf")))
+        self.assertFalse(_mtp_fc_uses_parallel_linear(None))
+        self.assertFalse(_mtp_fc_uses_parallel_linear(_quant("modelopt_mixed")))
 
         text_config = SimpleNamespace(model_type="qwen3_5_moe_text")
         seen, patcher = self._recording_gate(Qwen3_5ForCausalLM)

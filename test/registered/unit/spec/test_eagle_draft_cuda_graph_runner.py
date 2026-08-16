@@ -80,6 +80,9 @@ class TestEagleDraftCudaGraphRunner(CustomTestCase):
         runner.captured_req_width = 1
         runner.speculative_num_steps = NUM_STEPS
         runner.seq_len_fill_value = SEQ_LEN_FILL_VALUE
+        runner.draft_sampling_top_k = None
+        runner.draft_top_ps = None
+        runner.draft_additive_penalties = None
         runner.require_mlp_tp_gather = False
         runner.require_gathered_buffer = False
         runner.model_runner = SimpleNamespace(
@@ -193,6 +196,47 @@ class TestEagleDraftCudaGraphRunner(CustomTestCase):
         for observation in backend.observations:
             self.assertIsNone(observation.seq_lens_sum, msg=observation.phase)
         self.assertIsNone(forward_batch.seq_lens_sum)
+
+    def test_sparse_q_sampling_state_is_copied_into_graph_buffers(self):
+        backend = _RecordingDraftBackend()
+        runner = self._build_runner(backend)
+        vocab_size = runner.model_runner.model_config.vocab_size
+        runner.model_runner.server_args.speculative_use_rejection_sampling = True
+        runner.draft_sampling_top_k = 4
+        runner.temperatures = torch.ones((CAPTURE_BS, 1), dtype=torch.float32)
+        runner.draft_top_ps = torch.ones(CAPTURE_BS, dtype=torch.float32)
+        runner.draft_additive_penalties = torch.zeros(
+            (CAPTURE_BS, vocab_size), dtype=torch.float32
+        )
+
+        forward_batch = self._build_forward_batch([10, 11], 21)
+        additive = torch.arange(2 * vocab_size, dtype=torch.float32).reshape(
+            2, vocab_size
+        )
+        logit_bias = torch.full_like(additive, 0.5)
+        forward_batch.sampling_info = SimpleNamespace(
+            temperatures=torch.tensor([[0.75], [1.25]], dtype=torch.float32),
+            top_ps=torch.tensor([0.8, 0.95], dtype=torch.float32),
+            acc_additive_penalties=additive,
+            logit_bias=logit_bias,
+        )
+
+        runner.execute(forward_batch)
+
+        torch.testing.assert_close(
+            runner.temperatures[:2], forward_batch.sampling_info.temperatures
+        )
+        torch.testing.assert_close(
+            runner.draft_top_ps[:2], forward_batch.sampling_info.top_ps
+        )
+        torch.testing.assert_close(
+            runner.draft_additive_penalties[:2], additive + logit_bias
+        )
+        torch.testing.assert_close(runner.draft_top_ps[2:], torch.ones(2))
+        torch.testing.assert_close(
+            runner.draft_additive_penalties[2:],
+            torch.zeros((2, vocab_size), dtype=torch.float32),
+        )
 
 
 if __name__ == "__main__":

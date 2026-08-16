@@ -13,6 +13,7 @@ from sglang.srt.layers.attention.attention_registry import (
 )
 from sglang.srt.layers.attention.tbo_backend import TboAttnBackend
 from sglang.srt.utils import init_cublas
+from sglang.srt.utils.common import is_sm120_supported
 
 if TYPE_CHECKING:
     from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
@@ -168,9 +169,18 @@ def resolve_attention_backend_strs(
     draft_attn_backend = model_runner.draft_attention_backend
     if is_draft_worker and draft_attn_backend:
         logger.warning(f"Overriding draft attention backend to {draft_attn_backend}.")
-        # Single backend for all draft modes (no prefill/decode split).
+        prefill_backend = draft_attn_backend
+        if draft_attn_backend == "trtllm_mha" and is_sm120_supported():
+            configured_prefill, _ = attention_backends()
+            if configured_prefill != draft_attn_backend:
+                prefill_backend = configured_prefill
+                logger.warning(
+                    "SM120 draft trtllm_mha uses %s for initial prefill; "
+                    "TRTLLM-Gen context kernels do not support SM120.",
+                    configured_prefill,
+                )
         return ResolvedAttentionBackendStr(
-            prefill=draft_attn_backend,
+            prefill=prefill_backend,
             decode=draft_attn_backend,
             is_draft_override=True,
         )
@@ -184,7 +194,7 @@ def _build_resolved_backend(
     resolved: ResolvedAttentionBackendStr,
     init_new_workspace: bool,
 ) -> AttentionBackend:
-    if resolved.is_draft_override:
+    if resolved.is_draft_override and resolved.prefill == resolved.decode:
         attn_backend = _build_backend_from_str(
             model_runner=model_runner,
             backend_str=resolved.prefill,

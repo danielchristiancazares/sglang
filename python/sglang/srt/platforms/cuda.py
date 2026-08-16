@@ -1,5 +1,6 @@
 """CUDA device operations for the SRT platform layer."""
 
+import sys
 from typing import Optional
 
 import torch
@@ -58,7 +59,10 @@ class CudaDeviceMixin(DeviceMixin):
         return True
 
     def get_torch_distributed_backend_str(self) -> str:
-        return "nccl"
+        # PyTorch does not ship NCCL on native Windows.  The Windows port is
+        # intentionally single-GPU, where Gloo provides the process-group
+        # control plane without CUDA collectives.
+        return "gloo" if sys.platform == "win32" else "nccl"
 
     @classmethod
     def seed_everything(cls, seed: int | None = None) -> None:

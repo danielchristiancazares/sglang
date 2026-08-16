@@ -22,6 +22,7 @@ import dataclasses
 import logging
 import os
 import ssl
+import sys
 import tempfile
 import threading
 import time
@@ -45,7 +46,6 @@ import numpy as np
 import orjson
 import requests
 import uvicorn
-import uvloop
 from fastapi import (
     Body,
     Depends,
@@ -106,9 +106,30 @@ from sglang.srt.entrypoints.openai.serving_tokenize import (
     OpenAIServingDetokenize,
     OpenAIServingTokenize,
 )
-from sglang.srt.entrypoints.openai.serving_transcription import (
-    OpenAIServingTranscription,
-)
+
+if sys.platform == "win32":
+
+    class OpenAIServingTranscription:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def create_transcription(self, *args, **kwargs):
+            raise HTTPException(
+                status_code=HTTPStatus.NOT_IMPLEMENTED,
+                detail="Audio transcription is not supported by the Windows backend",
+            )
+
+        async def handle_websocket(self, websocket):
+            await websocket.close(
+                code=1003,
+                reason="Audio transcription is not supported by the Windows backend",
+            )
+
+else:
+    from sglang.srt.entrypoints.openai.serving_transcription import (
+        OpenAIServingTranscription,
+    )
+
 from sglang.srt.entrypoints.request_headers import apply_header_overrides
 from sglang.srt.entrypoints.warmup import execute_warmups
 from sglang.srt.environ import envs
@@ -175,6 +196,12 @@ from sglang.srt.utils import (
     set_uvicorn_logging_configs,
 )
 from sglang.srt.utils.auth import AuthLevel, app_has_admin_force_endpoints, auth_level
+from sglang.srt.utils.event_loop import (
+    granian_loop_name,
+    install_event_loop_policy,
+    run_event_loop,
+    uvicorn_loop_name,
+)
 from sglang.srt.utils.json_response import (
     SGLangORJSONResponse,
     dumps_json,
@@ -186,7 +213,7 @@ from sglang.utils import get_exception_traceback
 from sglang.version import __version__
 
 logger = logging.getLogger(__name__)
-asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+install_event_loop_policy()
 
 # Global constants
 HEALTH_CHECK_TIMEOUT = int(os.getenv("SGLANG_HEALTH_CHECK_TIMEOUT", 20))
@@ -730,20 +757,33 @@ async def get_model_info():
     return await model_info()
 
 
+def _local_multimodal_capabilities(model_config, server_args):
+    if server_args.language_model_only:
+        return False, False
+    return (
+        model_config.is_image_understandable_model,
+        model_config.is_audio_understandable_model,
+    )
+
+
 @app.get("/model_info")
 async def model_info():
     """Get the model information."""
     model_config = _global_state.tokenizer_manager.model_config
+    server_args = _global_state.tokenizer_manager.server_args
+    has_image_understanding, has_audio_understanding = (
+        _local_multimodal_capabilities(model_config, server_args)
+    )
     result = {
         "model_path": _global_state.tokenizer_manager.model_path,
-        "tokenizer_path": _global_state.tokenizer_manager.server_args.tokenizer_path,
+        "tokenizer_path": server_args.tokenizer_path,
         "is_generation": _global_state.tokenizer_manager.is_generation,
-        "preferred_sampling_params": _global_state.tokenizer_manager.server_args.preferred_sampling_params,
+        "preferred_sampling_params": server_args.preferred_sampling_params,
         "weight_version": _global_state.tokenizer_manager.config_value(
             "weight_version"
         ),
-        "has_image_understanding": model_config.is_image_understandable_model,
-        "has_audio_understanding": model_config.is_audio_understandable_model,
+        "has_image_understanding": has_image_understanding,
+        "has_audio_understanding": has_audio_understanding,
         "model_type": getattr(model_config.hf_config, "model_type", None),
         "architectures": getattr(model_config.hf_config, "architectures", None),
         # "hf_config": model_config.hf_config.to_dict(),
@@ -752,7 +792,7 @@ async def model_info():
     if embedding_model_spec is not None:
         result["embedding"] = resolved_embedding_plan(
             embedding_model_spec,
-            server_args=_global_state.tokenizer_manager.server_args,
+            server_args=server_args,
             model_config=model_config,
         )
     return result
@@ -2444,7 +2484,7 @@ def _run_granian_server(
 
     if tokenizer_worker_num > 1:
         granian_kwargs["workers"] = tokenizer_worker_num
-        granian_kwargs["loop"] = Loops.uvloop
+        granian_kwargs["loop"] = Loops(granian_loop_name())
 
     server = Server(**granian_kwargs)
 
@@ -2461,7 +2501,7 @@ def _run_granian_server(
                     pass
             await server.serve()
 
-        uvloop.run(serve())
+        run_event_loop(serve())
     else:
         server.serve()
 
@@ -2579,7 +2619,7 @@ def _setup_and_run_http_server(
                     root_path=server_args.fastapi_root_path,
                     log_level=server_args.log_level_http or server_args.log_level,
                     timeout_keep_alive=envs.SGLANG_TIMEOUT_KEEP_ALIVE.get(),
-                    loop="uvloop",
+                    loop=uvicorn_loop_name(),
                     ssl_keyfile=server_args.ssl_keyfile,
                     ssl_certfile=server_args.ssl_certfile,
                     ssl_ca_certs=server_args.ssl_ca_certs,
@@ -2616,7 +2656,7 @@ def _setup_and_run_http_server(
                     root_path=server_args.fastapi_root_path,
                     log_level=server_args.log_level_http or server_args.log_level,
                     timeout_keep_alive=envs.SGLANG_TIMEOUT_KEEP_ALIVE.get(),
-                    loop="uvloop",
+                    loop=uvicorn_loop_name(),
                     ssl_keyfile=server_args.ssl_keyfile,
                     ssl_certfile=server_args.ssl_certfile,
                     ssl_ca_certs=server_args.ssl_ca_certs,
@@ -2666,7 +2706,7 @@ def _setup_and_run_http_server(
                     log_level=server_args.log_level_http or server_args.log_level,
                     timeout_keep_alive=envs.SGLANG_TIMEOUT_KEEP_ALIVE.get(),
                     timeout_worker_healthcheck=envs.SGLANG_UVICORN_WORKER_HEALTHCHECK_TIMEOUT.get(),
-                    loop="uvloop",
+                    loop=uvicorn_loop_name(),
                     workers=server_args.tokenizer_worker_num,
                     ssl_keyfile=server_args.ssl_keyfile,
                     ssl_certfile=server_args.ssl_certfile,

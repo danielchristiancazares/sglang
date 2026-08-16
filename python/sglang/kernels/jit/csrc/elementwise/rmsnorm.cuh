@@ -20,6 +20,7 @@ struct RMSNormParams {
   int64_t output_stride;
   uint32_t num_tokens;
   float eps;
+  float weight_offset;
 };
 
 template <int64_t kDim, bool kUsePDL, typename Float>
@@ -30,7 +31,7 @@ __global__ void rmsnorm_cta(const RMSNormParams __grid_constant__ params) {
   constexpr auto kNumThreads = host::norm::get_cta_threads<Float, kDim>();
   constexpr auto kNumWarps = kNumThreads / kWarpThreads;
 
-  const auto& [input, weight_ptr, output, input_stride, output_stride, num_tokens, eps] = params;
+  const auto& [input, weight_ptr, output, input_stride, output_stride, num_tokens, eps, weight_offset] = params;
   const auto gmem = tile::Memory<Storage>::cta(kNumThreads);
   __shared__ float smem[norm::kSmemBufferSize];
 
@@ -41,7 +42,8 @@ __global__ void rmsnorm_cta(const RMSNormParams __grid_constant__ params) {
     const auto output_ptr = pointer::offset<Float>(output, i * output_stride);
     const auto input_vec = gmem.load(input_ptr);
     const auto weight_vec = gmem.load(weight_ptr);
-    const auto output_vec = norm::apply_norm_cta<kDim>(input_vec, weight_vec, eps, smem, kNumWarps);
+    const auto output_vec =
+        norm::apply_norm_cta<kDim>(input_vec, weight_vec, eps, smem, kNumWarps, weight_offset);
     gmem.store(output_ptr, output_vec);
   }
 
@@ -58,7 +60,7 @@ __global__ __launch_bounds__(kDim / 16) void rmsnorm_cta_double(const RMSNormPar
   constexpr auto kNumThreads = kDim / 16;
   constexpr auto kNumWarps = kNumThreads / kWarpThreads;
 
-  const auto& [input, weight_ptr, output, input_stride, output_stride, num_tokens, eps] = params;
+  const auto& [input, weight_ptr, output, input_stride, output_stride, num_tokens, eps, weight_offset] = params;
   const auto gmem = tile::Memory<Storage>::cta(kNumThreads);
   __shared__ float smem[32];
 
@@ -107,13 +109,15 @@ __global__ __launch_bounds__(kDim / 16) void rmsnorm_cta_double(const RMSNormPar
   for (auto j = 0u; j < 4u; ++j) {
     const auto [ix, iy] = cast<fp32x2_t>(input_first[j]);
     const auto [wx, wy] = cast<fp32x2_t>(weight_first[j]);
-    output_first[j] = cast<Float2>(fp32x2_t{ix * norm_factor * wx, iy * norm_factor * wy});
+    output_first[j] =
+        cast<Float2>(fp32x2_t{ix * norm_factor * (wx + weight_offset), iy * norm_factor * (wy + weight_offset)});
   }
 #pragma unroll
   for (auto j = 0u; j < 4u; ++j) {
     const auto [ix, iy] = cast<fp32x2_t>(input_second[j]);
     const auto [wx, wy] = cast<fp32x2_t>(weight_second[j]);
-    output_second[j] = cast<Float2>(fp32x2_t{ix * norm_factor * wx, iy * norm_factor * wy});
+    output_second[j] =
+        cast<Float2>(fp32x2_t{ix * norm_factor * (wx + weight_offset), iy * norm_factor * (wy + weight_offset)});
   }
 
   gmem.store(output_ptr, output_first, 0);
@@ -132,7 +136,7 @@ __global__ __launch_bounds__(kDim / 16) void rmsnorm_cta_wide(const RMSNormParam
   constexpr auto kNumThreads = kDim / 16;
   constexpr auto kNumWarps = kNumThreads / kWarpThreads;
 
-  const auto& [input, weight_ptr, output, input_stride, output_stride, num_tokens, eps] = params;
+  const auto& [input, weight_ptr, output, input_stride, output_stride, num_tokens, eps, weight_offset] = params;
   const auto gmem = tile::Memory<Storage>::cta(kNumThreads);
   __shared__ float smem[32];
 
@@ -174,7 +178,8 @@ __global__ __launch_bounds__(kDim / 16) void rmsnorm_cta_wide(const RMSNormParam
   for (auto j = 0u; j < 8u; ++j) {
     const auto [ix, iy] = cast<fp32x2_t>(input_vec[j]);
     const auto [wx, wy] = cast<fp32x2_t>(weight_vec[j]);
-    output_vec[j] = cast<Float2>(fp32x2_t{ix * norm_factor * wx, iy * norm_factor * wy});
+    output_vec[j] =
+        cast<Float2>(fp32x2_t{ix * norm_factor * (wx + weight_offset), iy * norm_factor * (wy + weight_offset)});
   }
 
   gmem.store(output_ptr, output_vec);
@@ -187,7 +192,7 @@ __global__ void rmsnorm_warp(const RMSNormParams __grid_constant__ params) {
   using namespace device;
   using Storage = norm::StorageType<Float, kDim>;
 
-  const auto& [input, weight_ptr, output, input_stride, output_stride, num_tokens, eps] = params;
+  const auto& [input, weight_ptr, output, input_stride, output_stride, num_tokens, eps, weight_offset] = params;
   const auto gmem = tile::Memory<Storage>::warp();
 
   PDLWaitPrimary<kUsePDL>();  // wait for primary kernel
@@ -197,7 +202,8 @@ __global__ void rmsnorm_warp(const RMSNormParams __grid_constant__ params) {
     const auto output_ptr = pointer::offset<Float>(output, i * output_stride);
     const auto input_vec = gmem.load(input_ptr);
     const auto weight_vec = gmem.load(weight_ptr);
-    const auto output_vec = norm::apply_norm_warp<kDim>(input_vec, weight_vec, eps);
+    const auto output_vec =
+        norm::apply_norm_warp<kDim>(input_vec, weight_vec, eps, weight_offset);
     gmem.store(output_ptr, output_vec);
   }
 
@@ -214,7 +220,8 @@ struct RMSNormWarpKernel {
   run(const tvm::ffi::TensorView input,
       const tvm::ffi::TensorView weight,
       const tvm::ffi::TensorView output,
-      float eps) {
+      float eps,
+      float weight_offset) {
     using namespace host;
     auto N = SymbolicSize{"num_tokens"};
     auto D = SymbolicSize{"hidden_size"};
@@ -248,6 +255,7 @@ struct RMSNormWarpKernel {
         .output_stride = SO.unwrap(),
         .num_tokens = num_tokens,
         .eps = eps,
+        .weight_offset = weight_offset,
     };
 
     static constexpr uint32_t kNumThreads = device::kWarpThreads;
@@ -268,7 +276,8 @@ struct RMSNormKernel {
   run(const tvm::ffi::TensorView input,
       const tvm::ffi::TensorView weight,
       const tvm::ffi::TensorView output,
-      float eps) {
+      float eps,
+      float weight_offset) {
     using namespace host;
     auto N = SymbolicSize{"num_tokens"};
     auto D = SymbolicSize{"hidden_size"};
@@ -302,6 +311,7 @@ struct RMSNormKernel {
         .output_stride = SO.unwrap(),
         .num_tokens = num_tokens,
         .eps = eps,
+        .weight_offset = weight_offset,
     };
 
     static constexpr auto kNumThreads = norm::get_cta_threads<DType, kDim>();
@@ -327,7 +337,8 @@ struct RMSNormHalfKernel {
   run(const tvm::ffi::TensorView input,
       const tvm::ffi::TensorView weight,
       const tvm::ffi::TensorView output,
-      float eps) {
+      float eps,
+      float weight_offset) {
     using namespace host;
     auto N = SymbolicSize{"num_tokens"};
     auto D = SymbolicSize{"hidden_size"};
@@ -361,6 +372,7 @@ struct RMSNormHalfKernel {
         .output_stride = SO.unwrap(),
         .num_tokens = num_tokens,
         .eps = eps,
+        .weight_offset = weight_offset,
     };
 
     LaunchKernel(num_tokens, kBlockSize, device.unwrap())  //

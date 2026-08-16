@@ -36,6 +36,10 @@ class HybridAttnBackend(AttentionBackend):
         self.spec_attn_is_prefill = (
             model_runner.server_args.speculative_attention_mode == "prefill"
         )
+        self.draft_extend_uses_decode = bool(
+            getattr(model_runner, "is_draft_worker", False)
+            and getattr(model_runner, "draft_attention_backend", None)
+        )
         # Gates the FutureMap's per-step seq_lens D2H (decide_needs_cpu_seq_lens
         # ORs it across backends). Count only what runs in the spec decode loop:
         # decode always, prefill only when mode=prefill routes verify to it --
@@ -73,6 +77,8 @@ class HybridAttnBackend(AttentionBackend):
             - prefill: Always uses prefill backend
         """
         if forward_mode.is_decode_or_idle():
+            return self.decode_backend
+        elif forward_mode.is_draft_extend_v2() and self.draft_extend_uses_decode:
             return self.decode_backend
         elif forward_mode.is_target_verify():
             return (

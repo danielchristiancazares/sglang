@@ -28,7 +28,7 @@ from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models import qwen3_5
-from sglang.srt.models.qwen2_moe import Qwen2MoeSparseMoeBlock
+from sglang.srt.models.qwen3_5 import Qwen2MoeSparseMoeBlock
 from sglang.srt.runtime_context import get_parallel
 from sglang.srt.utils import LazyValue, add_prefix
 
@@ -108,13 +108,27 @@ class Qwen3_5ForCausalLM(nn.Module):
         return self.model.embed_tokens
 
     def get_embed_and_head(self):
-        return self.model.embed_tokens.weight, self.lm_head.weight
+        def shareable_weight(module):
+            if hasattr(module, "weight"):
+                return module.weight
+            return module.qweight, module.qweight_type
+
+        return shareable_weight(self.model.embed_tokens), shareable_weight(
+            self.lm_head
+        )
 
     def set_embed_and_head(self, embed, head):
-        del self.model.embed_tokens.weight
-        del self.lm_head.weight
-        self.model.embed_tokens.weight = embed
-        self.lm_head.weight = head
+        def set_shareable_weight(module, shared):
+            if isinstance(shared, tuple):
+                del module.qweight
+                del module.qweight_type
+                module.qweight, module.qweight_type = shared
+            else:
+                del module.weight
+                module.weight = shared
+
+        set_shareable_weight(self.model.embed_tokens, embed)
+        set_shareable_weight(self.lm_head, head)
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
@@ -168,15 +182,15 @@ class Qwen3_5ForCausalLM(nn.Module):
         for name, loaded_weight in weights:
             if name.startswith(_MODEL_PREFIX):
                 body_weights.append((name[len(_MODEL_PREFIX) :], loaded_weight))
-            elif name == "lm_head.weight":
+            elif name.startswith("lm_head."):
                 if self.config.tie_word_embeddings:
                     continue
-                if "lm_head.weight" not in params_dict:
+                if name not in params_dict:
                     continue
-                param = params_dict["lm_head.weight"]
+                param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
-                loaded_params.add("lm_head.weight")
+                loaded_params.add(name)
 
         body_loaded = self.model.load_weights(body_weights)
         loaded_params.update(f"{_MODEL_PREFIX}{n}" for n in body_loaded)

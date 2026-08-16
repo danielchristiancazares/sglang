@@ -27,7 +27,21 @@ __all__ = ["CompressedTensorsW8A8Int8", "NPUCompressedTensorsW8A8Int8"]
 
 _is_cuda = is_cuda()
 if _is_cuda:
-    from sgl_kernel import int8_scaled_mm
+    try:
+        from sgl_kernel import int8_scaled_mm
+    except ImportError:
+
+        def int8_scaled_mm(
+            mat_a, mat_b, scales_a, scales_b, out_dtype, bias=None
+        ):
+            return torch._scaled_mm(
+                mat_a,
+                mat_b,
+                scales_a,
+                scales_b,
+                bias=bias,
+                out_dtype=out_dtype,
+            )
 
 
 class CompressedTensorsW8A8Int8(CompressedTensorsLinearScheme):

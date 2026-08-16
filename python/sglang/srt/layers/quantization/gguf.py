@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import warnings
 from typing import TYPE_CHECKING, Any, List, Optional
 
@@ -41,15 +42,32 @@ _is_musa = is_musa()
 _is_npu = is_npu()
 
 if _is_cuda:
-    from sgl_kernel import moe_align_block_size, moe_sum
-    from sgl_kernel.quantization import (
-        ggml_dequantize,
-        ggml_moe_a8,
-        ggml_moe_a8_vec,
-        ggml_moe_get_block_size,
-        ggml_mul_mat_a8,
-        ggml_mul_mat_vec_a8,
-    )
+    if sys.platform == "win32":
+        from sglang.srt.windows_gguf import (
+            ggml_dequantize,
+            ggml_moe_a8,
+            ggml_moe_a8_vec,
+            ggml_moe_get_block_size,
+            ggml_mul_mat_a8,
+            ggml_mul_mat_vec_a8,
+        )
+
+        def moe_align_block_size(*args, **kwargs):
+            raise RuntimeError("GGUF MoE is not available in the native-Windows port")
+
+        def moe_sum(input: torch.Tensor, output: torch.Tensor) -> None:
+            torch.sum(input, dim=1, out=output)
+
+    else:
+        from sgl_kernel import moe_align_block_size, moe_sum
+        from sgl_kernel.quantization import (
+            ggml_dequantize,
+            ggml_moe_a8,
+            ggml_moe_a8_vec,
+            ggml_moe_get_block_size,
+            ggml_mul_mat_a8,
+            ggml_mul_mat_vec_a8,
+        )
 
     from sglang.kernels.ops.activation.activation import gelu_and_mul, silu_and_mul
 elif _is_musa:
@@ -110,7 +128,10 @@ class GGUFConfig(QuantizationConfig):
     def get_quant_method(
         self, layer: torch.nn.Module, prefix: str
     ) -> Optional[QuantizeMethodBase]:
-        from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
+        if sys.platform == "win32":
+            FusedMoE = ()
+        else:
+            from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
         from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
 
         if isinstance(layer, LinearBase):
@@ -321,7 +342,7 @@ def apply_gguf_embedding(
         assert hidden_size == qweight.shape[1] // type_size * block_size
         quant = torch.index_select(qweight, dim=0, index=x_flat)
         dequant = ggml_dequantize(
-            quant, qweight_type, hidden_size, x_flat.shape[0], dtype
+            quant, qweight_type, x_flat.shape[0], hidden_size, dtype
         )
         return dequant.view(*x.shape, hidden_size)
     else:
@@ -439,8 +460,10 @@ class GGUFLinearMethod(LinearMethodBase):
         shard_id = layer.qweight.shard_id
 
         if shard_id:
-            # dequantize shard weights respectively
-            shard_id = ["q", "k", "v"] if "q" in shard_id else shard_id
+            # Dequantize merged shards in their logical output order. GGUF
+            # tensor order is not guaranteed to match that order (Qwen3.5,
+            # for example, stores z before qkv and a before b).
+            shard_id = ["q", "k", "v"] if "q" in shard_id else sorted(shard_id)
             qweight = layer.qweight
             result = []
             for idx in shard_id:

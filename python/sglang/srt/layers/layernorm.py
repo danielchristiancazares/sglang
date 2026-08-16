@@ -14,6 +14,7 @@
 """Fused operators for normalization layers."""
 
 import logging
+import sys
 from functools import lru_cache
 from typing import Optional, Tuple, Union
 
@@ -98,12 +99,47 @@ if _is_cuda or _is_xpu or _is_musa:
         _flashinfer_layernorm_available = False
         _flashinfer_rmsnorm_quant_available = False
 
-    from sgl_kernel import (
-        fused_add_rmsnorm,
-        gemma_fused_add_rmsnorm,
-        gemma_rmsnorm,
-        rmsnorm,
-    )
+    if sys.platform == "win32":
+
+        from sglang.kernels.ops.layernorm.norm import (
+            gemma_rmsnorm as _jit_gemma_rmsnorm,
+        )
+        from sglang.kernels.ops.layernorm.norm import rmsnorm as _jit_rmsnorm
+
+        def _rmsnorm_native(x, weight, epsilon, weight_offset=0.0):
+            original_dtype = x.dtype
+            normalized = x.float()
+            normalized *= torch.rsqrt(
+                normalized.square().mean(dim=-1, keepdim=True) + epsilon
+            )
+            normalized *= weight.float() + weight_offset
+            return normalized.to(original_dtype)
+
+        def rmsnorm(x, weight, epsilon):
+            out = torch.empty_like(x)
+            _jit_rmsnorm(x, weight, out, epsilon)
+            return out
+
+        def gemma_rmsnorm(x, weight, epsilon):
+            out = torch.empty_like(x)
+            _jit_gemma_rmsnorm(x, weight, out, epsilon)
+            return out
+
+        def fused_add_rmsnorm(x, residual, weight, epsilon):
+            residual.add_(x)
+            x.copy_(rmsnorm(residual, weight, epsilon))
+
+        def gemma_fused_add_rmsnorm(x, residual, weight, epsilon):
+            residual.add_(x)
+            x.copy_(gemma_rmsnorm(residual, weight, epsilon))
+
+    else:
+        from sgl_kernel import (
+            fused_add_rmsnorm,
+            gemma_fused_add_rmsnorm,
+            gemma_rmsnorm,
+            rmsnorm,
+        )
 _has_aiter_layer_norm = False
 _has_vllm_rms_norm = False
 _has_rocm_triton_gemma_rms_norm = False

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING
 
 import torch
@@ -29,6 +30,9 @@ def clamp_position_cuda(seq_lens: torch.Tensor) -> torch.Tensor:
 
     Supported dtypes: torch.int32, torch.int64.
     """
+    if sys.platform == "win32":
+        return torch.clamp(seq_lens - 1, min=0)
+
     dst = torch.empty_like(seq_lens)
     module = _jit_clamp_position_module(seq_lens.dtype)
     module.clamp_position(dst, seq_lens)

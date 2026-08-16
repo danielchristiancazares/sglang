@@ -29,6 +29,22 @@ DEVICE = "cuda"
 PAGE_SIZE = 128
 
 
+@pytest.mark.parametrize("use_fused_qkv", [False, True])
+def test_xqa_keeps_model_dtype_query_with_fp8_kv(use_fused_qkv):
+    assert not trtllm_mha_backend._should_cast_q_to_fp8(
+        torch.float8_e4m3fn, is_xqa_impl=True, use_fused_qkv=use_fused_qkv
+    )
+
+
+def test_trtllm_gen_casts_query_for_unfused_fp8_kv():
+    assert trtllm_mha_backend._should_cast_q_to_fp8(
+        torch.float8_e4m3fn, is_xqa_impl=False, use_fused_qkv=False
+    )
+    assert not trtllm_mha_backend._should_cast_q_to_fp8(
+        torch.float8_e4m3fn, is_xqa_impl=False, use_fused_qkv=True
+    )
+
+
 def _make_backend_for_hook_test(speculative_num_draft_tokens=None):
     backend = TRTLLMHAAttnBackend.__new__(TRTLLMHAAttnBackend)
     backend.device = torch.device("cpu")
@@ -41,6 +57,7 @@ def _make_backend_for_hook_test(speculative_num_draft_tokens=None):
     backend._swa_full_to_swa_mapping = None
     backend.speculative_step_id = 0
     backend.speculative_num_draft_tokens = speculative_num_draft_tokens
+    backend.is_xqa_impl = False
     backend.expand_encoder_only_verify = False
     backend.decode_cuda_graph_metadata = {}
     backend.target_verify_metadata = {}
@@ -118,6 +135,73 @@ def test_draft_extend_in_graph_uses_captured_static_q_stride(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["q_mode"] == Q_MODE_STRIDED
     assert calls[0]["q_stride"] == 4
+    assert backend.forward_metadata.spec_dec_mask.dtype == torch.uint16
+    assert backend.forward_metadata.spec_dec_mask.shape == (2, 4, 2)
+    assert backend.forward_metadata.spec_dec_mask.tolist() == [
+        [[1, 0], [3, 0], [7, 0], [15, 0]],
+        [[1, 0], [3, 0], [7, 0], [15, 0]],
+    ]
+
+
+def test_target_verify_xqa_topk1_uses_static_chain_mask(monkeypatch):
+    monkeypatch.setattr(
+        trtllm_mha_backend,
+        "get_spec",
+        lambda: SimpleNamespace(speculative_eagle_topk=1),
+    )
+    backend = _make_backend_for_hook_test(speculative_num_draft_tokens=4)
+    backend.is_xqa_impl = True
+    # Reinitialize after selecting XQA; the helper constructs via __new__.
+    backend.init_cuda_graph_state(max_bs=2, max_num_tokens=8)
+
+    mask = backend.target_verify_metadata["spec_dec_mask"]
+    assert mask.dtype == torch.uint16
+    assert mask.shape == (2, 4, 2)
+    assert mask.tolist() == [
+        [[1, 0], [3, 0], [7, 0], [15, 0]],
+        [[1, 0], [3, 0], [7, 0], [15, 0]],
+    ]
+
+
+def test_target_verify_xqa_wider_tree_does_not_apply_chain_mask(monkeypatch):
+    monkeypatch.setattr(
+        trtllm_mha_backend,
+        "get_spec",
+        lambda: SimpleNamespace(speculative_eagle_topk=2),
+    )
+    backend = _make_backend_for_hook_test(speculative_num_draft_tokens=4)
+    backend.is_xqa_impl = True
+    backend.init_cuda_graph_state(max_bs=2, max_num_tokens=8)
+
+    assert backend.target_verify_metadata["spec_dec_mask"] is None
+
+
+def test_target_verify_xqa_eager_warmup_uses_static_chain_mask(monkeypatch):
+    monkeypatch.setattr(
+        trtllm_mha_backend,
+        "get_spec",
+        lambda: SimpleNamespace(speculative_eagle_topk=1),
+    )
+    backend = _make_backend_for_hook_test(speculative_num_draft_tokens=4)
+    backend.is_xqa_impl = True
+    backend._fill_page_table_device = lambda *args, **kwargs: None
+    backend._maybe_build_cp_zigzag_page_tables = lambda *args, **kwargs: None
+    fb = SimpleNamespace(
+        batch_size=2,
+        input_ids=torch.arange(8, dtype=torch.int64),
+        req_pool_indices=torch.arange(2, dtype=torch.int64),
+        seq_lens=torch.tensor([16, 24], dtype=torch.int64),
+        forward_mode=ForwardMode.TARGET_VERIFY,
+        spec_info=SimpleNamespace(ragged_verify_layout=None),
+        out_cache_loc=torch.arange(8, dtype=torch.int64),
+    )
+
+    backend.init_forward_metadata(fb)
+
+    assert backend.forward_metadata.spec_dec_mask.tolist() == [
+        [[1, 0], [3, 0], [7, 0], [15, 0]],
+        [[1, 0], [3, 0], [7, 0], [15, 0]],
+    ]
 
 
 def test_hybrid_wrappers_forward_in_graph_hook():

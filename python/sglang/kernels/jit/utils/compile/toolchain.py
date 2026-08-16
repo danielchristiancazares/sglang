@@ -17,6 +17,7 @@ import logging
 import os
 import pathlib
 import shutil
+import sys
 from typing import List, Tuple
 
 import torch
@@ -25,6 +26,7 @@ from sglang.kernels.jit.utils.arch import get_jit_cuda_arch
 from sglang.kernels.jit.utils.common import cache_once, is_hip_runtime
 
 logger = logging.getLogger(__name__)
+_IS_WINDOWS = sys.platform == "win32"
 
 
 @cache_once
@@ -69,7 +71,7 @@ def host_compiler_path() -> str:
     nvcc dispatches all host code to it, so its version decides both which
     system headers are pulled in and how that half is codegen'd.
     """
-    return os.environ.get("CXX", "c++")
+    return os.environ.get("CXX", "cl" if _IS_WINDOWS else "c++")
 
 
 @cache_once
@@ -131,12 +133,16 @@ def base_cxx_flags() -> List[str]:
     `-std=c++20` from both is what used to make nvcc warn about an incompatible
     redefinition on every single build.
     """
+    if _IS_WINDOWS:
+        return ["/MD", "/EHsc", "/Zc:preprocessor"]
     return ["-fPIC"]
 
 
 def base_cuda_flags() -> List[str]:
     if is_hip_runtime():
         return ["-fPIC", "-D__HIP_PLATFORM_AMD__=1", "-fno-gpu-rdc"]
+    if _IS_WINDOWS:
+        return ["-Xcompiler", "/MD", "-Xcompiler", "/Zc:preprocessor"]
     return ["-Xcompiler", "-fPIC"]
 
 
@@ -155,6 +161,12 @@ def base_link_flags(*, with_device: bool) -> List[str]:
     tvm-ffi keyed this off the presence of ``.cu`` sources for the same reason.
     """
     _, lib_dir, lib_name = tvm_ffi_paths()
+    if _IS_WINDOWS:
+        flags = ["/DLL", f"/LIBPATH:{lib_dir}", f"{lib_name}.lib"]
+        if with_device:
+            flags += [f"/LIBPATH:{cuda_home()}/lib/x64", "cudart.lib"]
+        return flags
+
     flags = ["-shared", f"-L{lib_dir}", f"-l{lib_name}"]
     if not with_device:
         return flags

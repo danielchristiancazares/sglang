@@ -23,19 +23,31 @@ Public API:
     runners that were authored against the legacy public surface.
 """
 
+import sys
+
 from sglang.srt.model_executor.runner.base_cuda_graph_runner import (  # noqa: F401
     BaseCudaGraphRunner,
     freeze_gc,
     get_batch_sizes_to_capture,
 )
 from sglang.srt.model_executor.runner.base_runner import BaseRunner  # noqa: F401
-from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
+from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (  # noqa: F401
     DecodeCudaGraphRunner,
 )
 from sglang.srt.model_executor.runner.eager_runner import EagerRunner  # noqa: F401
-from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (  # noqa: F401
-    PrefillCudaGraphRunner,
-)
+
+if sys.platform == "win32":
+
+    class PrefillCudaGraphRunner:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError(
+                "Prefill CUDA graph capture is not supported by the Windows backend"
+            )
+
+else:
+    from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (  # noqa: F401
+        PrefillCudaGraphRunner,
+    )
 from sglang.srt.model_executor.runner.shape_key import ShapeKey  # noqa: F401
 from sglang.srt.model_executor.runner_backend_utils.tc_piecewise_cuda_graph import (  # noqa: F401
     TCPCG_FAILURE_HINT,

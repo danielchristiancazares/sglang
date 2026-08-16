@@ -14,6 +14,7 @@ from flashinfer import fp4_quantize
 from sglang.srt.layers.quantization import fp4_utils
 from sglang.srt.layers.quantization.fp4_utils import Fp4GemmRunnerBackend
 from sglang.srt.layers.quantization.modelopt_quant import ModelOptFp4Config
+from sglang.srt.layers.quantization.nvfp4_online import NvFp4OnlineConfig
 from sglang.srt.utils import get_device_sm
 from sglang.test.ci.ci_register import register_cuda_ci
 from sglang.test.layer_ut_utils import (
@@ -116,6 +117,15 @@ def _make_merged_layer(n_half: int, k: int):
     return layer, torch.cat(dequants, dim=0)
 
 
+def _make_online_layer(n: int, k: int):
+    """Floating-point checkpoint weight through dense online NVFP4 conversion."""
+    quant_config = NvFp4OnlineConfig()
+    layer = make_tp1_column_parallel_linear(quant_config, n, k)
+    weight = torch.randn((n, k), device="cuda", dtype=torch.bfloat16) / 10
+    load_linear_weights(layer, weight=weight)
+    return layer, weight.clone()
+
+
 @unittest.skipIf(get_device_sm() < 100, "NVFP4 dense GEMM backends require SM100+")
 class TestNvFp4LinearBackends(CustomTestCase):
     @classmethod
@@ -169,6 +179,51 @@ class TestNvFp4LinearBackends(CustomTestCase):
 
     def test_flashinfer_trtllm(self):
         self._run_backend("flashinfer_trtllm")
+
+    def test_online_dense_cutlass_numerics_and_cuda_graph(self):
+        torch.manual_seed(7)
+        with mock.patch.object(
+            fp4_utils,
+            "FP4_GEMM_RUNNER_BACKEND",
+            Fp4GemmRunnerBackend("flashinfer_cutlass"),
+        ):
+            layer, source_weight = _make_online_layer(256, 512)
+            layer.quant_method.process_weights_after_loading(layer)
+
+            self.assertEqual(layer.weight.dtype, torch.uint8)
+            self.assertEqual(layer.weight_scale_interleaved.dtype, torch.float8_e4m3fn)
+            self.assertEqual(layer.input_scale_inv.shape, torch.Size([]))
+
+            for rows in (1, 3):
+                x = torch.randn(
+                    (rows, 512), device="cuda", dtype=torch.bfloat16
+                ) / 10
+                out, _ = layer(x)
+                ref = x.float() @ source_weight.float().T
+                relative_mae = (out.float() - ref).abs().mean() / ref.abs().mean()
+                self.assertLess(float(relative_mae), 0.15)
+
+            static_x = torch.randn(
+                (3, 512), device="cuda", dtype=torch.bfloat16
+            ) / 10
+            for _ in range(3):
+                layer(static_x)
+            torch.cuda.synchronize()
+
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                graph_out, _ = layer(static_x)
+            graph.replay()
+            torch.cuda.synchronize()
+            expected = graph_out.clone()
+            graph.replay()
+            torch.cuda.synchronize()
+            torch.testing.assert_close(graph_out, expected, rtol=0, atol=0)
+            graph_ref = static_x.float() @ source_weight.float().T
+            graph_relative_mae = (
+                (graph_out.float() - graph_ref).abs().mean() / graph_ref.abs().mean()
+            )
+            self.assertLess(float(graph_relative_mae), 0.15)
 
 
 if __name__ == "__main__":

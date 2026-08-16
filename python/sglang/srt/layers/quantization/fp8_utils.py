@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from enum import Enum
 from functools import lru_cache, partial
 from typing import TYPE_CHECKING, Callable, List, Optional, Tuple, Union
@@ -172,7 +173,7 @@ if _use_aiter:
     aiter_per1x128_quant = get_hip_quant(aiter.QuantType.per_1x128)
 
 
-if _is_cuda:
+if _is_cuda and sys.platform != "win32":
     from sgl_kernel import fp8_scaled_mm
 
     from sglang.kernels.ops.gemm.fp8_blockwise_gemm import fp8_blockwise_scaled_mm
@@ -214,6 +215,95 @@ if _is_cuda:
             )
         _bmm_fp8_batched_op(A, B, out, A_scale, B_scale)
         return out
+
+elif _is_cuda:
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def _fp8_scaled_mm_epilogue_kernel(
+        accumulator,
+        output,
+        scales_a,
+        scales_b,
+        bias,
+        n_cols: tl.constexpr,
+        n_elements,
+        SCALAR_A: tl.constexpr,
+        SINGLE_ROW: tl.constexpr,
+        HAS_BIAS: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        offsets = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
+        if SINGLE_ROW:
+            rows = tl.zeros_like(offsets)
+            cols = offsets
+        else:
+            rows = offsets // n_cols
+            cols = offsets - rows * n_cols
+        row_scale_offsets = tl.zeros_like(rows) if SCALAR_A else rows
+        values = tl.load(accumulator + offsets, mask=mask).to(tl.float32)
+        values *= tl.load(scales_a + row_scale_offsets, mask=mask)
+        values *= tl.load(scales_b + cols, mask=mask)
+        if HAS_BIAS:
+            values += tl.load(bias + cols, mask=mask).to(tl.float32)
+        tl.store(output + offsets, values, mask=mask)
+
+    def _apply_fp8_scaled_mm_epilogue(
+        accumulator: torch.Tensor,
+        scales_a: torch.Tensor,
+        scales_b: torch.Tensor,
+        out_dtype: torch.dtype,
+        bias: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        output = torch.empty_like(accumulator, dtype=out_dtype)
+        n_elements = accumulator.numel()
+        _fp8_scaled_mm_epilogue_kernel[(triton.cdiv(n_elements, 256),)](
+            accumulator,
+            output,
+            scales_a,
+            scales_b,
+            bias if bias is not None else scales_b,
+            accumulator.shape[1],
+            n_elements,
+            SCALAR_A=scales_a.numel() == 1,
+            SINGLE_ROW=accumulator.shape[0] == 1,
+            HAS_BIAS=bias is not None,
+            BLOCK_SIZE=256,
+        )
+        return output
+
+    def fp8_scaled_mm(
+        mat_a: torch.Tensor,
+        mat_b: torch.Tensor,
+        scales_a: torch.Tensor,
+        scales_b: torch.Tensor,
+        out_dtype: torch.dtype,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Windows fallback for rowwise-A/channelwise-B FP8 GEMM."""
+        global TORCH_DEVICE_IDENTITY
+        if scales_a.ndim == 1 and scales_a.numel() > 1:
+            scales_a = scales_a.view(-1, 1)
+        if scales_b.ndim == 2 and scales_b.shape[1] == 1:
+            scales_b = scales_b.t()
+        elif scales_b.ndim == 1 and scales_b.numel() > 1:
+            scales_b = scales_b.view(1, -1)
+        if TORCH_DEVICE_IDENTITY is None:
+            TORCH_DEVICE_IDENTITY = torch.ones(
+                1, dtype=torch.float32, device=mat_b.device
+            )
+        output = torch._scaled_mm(
+            mat_a,
+            mat_b,
+            scale_a=TORCH_DEVICE_IDENTITY,
+            scale_b=TORCH_DEVICE_IDENTITY,
+            out_dtype=torch.float32,
+        )
+        return _apply_fp8_scaled_mm_epilogue(
+            output, scales_a, scales_b, out_dtype, bias
+        )
 
 
 use_triton_w8a8_fp8_kernel = get_bool_env_var("USE_TRITON_W8A8_FP8_KERNEL")
@@ -450,7 +540,7 @@ if is_blackwell_supported() and is_flashinfer_available():
         input: torch.Tensor,
         _is_sf_swizzled_layout: bool = True,
         alignment: int = 32,
-        backend: str = "cute-dsl",
+        backend: str = "cuda",
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Fake mode only needs dtypes and output rank to propagate compile graph.
         # The scale tensor shape is not consumed before the following fake mm op.
@@ -470,7 +560,7 @@ if is_blackwell_supported() and is_flashinfer_available():
         input: torch.Tensor,
         is_sf_swizzled_layout: bool = True,
         alignment: int = 32,
-        backend: str = "cute-dsl",
+        backend: str = "cuda",
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         return _raw_flashinfer_mxfp8_quantize(
             input,
@@ -1235,8 +1325,27 @@ def mxfp8_group_quantize(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """Quantize a 2D contiguous tensor to MXFP8 with UE8M0 scales per group (32)."""
     assert x.dim() == 2, f"Expected 2D input, got {x.dim()}D"
     assert x.is_contiguous(), "MXFP8 quantization requires a contiguous 2D tensor."
-    _, k = x.shape
+    rows, k = x.shape
     assert k % 32 == 0, f"{k=} must be divisible by 32"
+
+    # Dense MXFP8 on Blackwell already depends on FlashInfer's native CUDA
+    # kernels.  Use the same implementation for online weight conversion so
+    # the Windows path does not additionally require the optional
+    # ``triton_kernels`` package.  Linear scales retain the canonical
+    # [rows, K / 32] representation consumed by the backend-specific
+    # post-load swizzlers below.
+    if x.is_cuda and is_blackwell_supported() and is_flashinfer_available():
+        q_input, scale_u8 = flashinfer_mxfp8_quantize(
+            x,
+            is_sf_swizzled_layout=False,
+            alignment=32,
+            backend="cuda",
+        )
+        return (
+            q_input.contiguous(),
+            scale_u8.view(rows, k // 32).contiguous(),
+        )
+
     downcast_to_mxfp = _get_triton_mxfp8_downcast()
     q_input, scale_u8 = downcast_to_mxfp(x, torch.float8_e4m3fn, axis=1)
     return q_input.contiguous(), scale_u8.contiguous()
@@ -1267,7 +1376,10 @@ def flashinfer_mxfp8_blockscaled_linear(
 
     if input_scale is None:
         q_input, x_scale_u8 = flashinfer_mxfp8_quantize(
-            input_2d, is_sf_swizzled_layout=True, alignment=32
+            input_2d,
+            is_sf_swizzled_layout=True,
+            alignment=32,
+            backend="cute-dsl" if backend == "cute-dsl" else "cuda",
         )
     else:
         q_input = input_2d

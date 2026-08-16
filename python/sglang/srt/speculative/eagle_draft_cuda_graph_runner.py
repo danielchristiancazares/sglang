@@ -125,6 +125,9 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
             else speculative_num_steps
         )
         self.topk = model_runner.server_args.speculative_eagle_topk
+        self.draft_sampling_top_k = getattr(
+            model_runner.server_args, "speculative_draft_sampling_top_k", None
+        )
         self.draft_attn_backend = draft_attn_backend or model_runner.draft_attn_backend
 
         # Patch_model in parent's capture() needs an attn_backend reference.
@@ -195,6 +198,12 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
                     dtype=torch.float32,
                 )
                 if self.model_runner.server_args.speculative_use_rejection_sampling
+                or getattr(
+                    self.model_runner.server_args,
+                    "speculative_tree_sampling_mode",
+                    "target_only",
+                )
+                == "swor"
                 else None
             )
             _hidden_size, _hidden_dtype = get_draft_recurrent_hidden_state_spec(
@@ -210,6 +219,18 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
             )
 
             self.temperatures = torch.ones((self.max_bs, 1), dtype=torch.float)
+            if self.draft_sampling_top_k is not None:
+                self.draft_top_ps = torch.ones((self.max_bs,), dtype=torch.float)
+                # Combined additive penalties + logit bias.  The captured
+                # SamplingBatchInfo points at this stable address; replay fills
+                # the current request values before launching the graph.
+                self.draft_additive_penalties = torch.zeros(
+                    (self.max_bs, self.model_runner.model_config.vocab_size),
+                    dtype=torch.float32,
+                )
+            else:
+                self.draft_top_ps = None
+                self.draft_additive_penalties = None
 
             if self.require_gathered_buffer:
                 if self.require_mlp_tp_gather:
@@ -400,15 +421,24 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
 
         sampling_info = SamplingBatchInfo(
             temperatures=self.temperatures[:num_seqs],
-            top_ps=torch.ones((num_seqs,), dtype=torch.float),
+            top_ps=(
+                self.draft_top_ps[:num_seqs]
+                if self.draft_top_ps is not None
+                else torch.ones((num_seqs,), dtype=torch.float)
+            ),
             top_ks=torch.full((num_seqs,), -1, dtype=torch.int32),
             min_ps=torch.zeros((num_seqs,), dtype=torch.float),
             is_all_greedy=False,
             is_any_greedy=False,
-            need_top_p_sampling=False,
+            need_top_p_sampling=self.draft_top_ps is not None,
             need_top_k_sampling=False,
             need_min_p_sampling=False,
             vocab_size=self.model_runner.model_config.vocab_size,
+            acc_additive_penalties=(
+                self.draft_additive_penalties[:num_seqs]
+                if self.draft_additive_penalties is not None
+                else None
+            ),
         )
 
         forward_batch = ForwardBatch(
@@ -535,6 +565,10 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
             if buffers.dsa_seed_topk is not None:
                 buffers.dsa_seed_topk.zero_()
             buffers.req_pool_indices.zero_()
+            if self.draft_top_ps is not None:
+                self.draft_top_ps.fill_(1.0)
+            if self.draft_additive_penalties is not None:
+                self.draft_additive_penalties.zero_()
 
         num_tokens = bs * self.captured_req_width
 
@@ -599,15 +633,37 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
                 buffers.dsa_seed_topk[:raw_bs].copy_(seed)
             else:
                 buffers.dsa_seed_topk[:raw_bs].zero_()
-        # Only rejection sampling reads temperatures (renorm_draft_probs); skip
-        # the copy otherwise to keep the non-RS path free of extra work.
+        # Rejection proposals and opt-in aligned tree scoring both read these
+        # values from stable graph buffers. Legacy target-only trees keep the
+        # copy-free path when draft_sampling_top_k is unset.
         if (
-            self.model_runner.server_args.speculative_use_rejection_sampling
+            (
+                self.model_runner.server_args.speculative_use_rejection_sampling
+                or self.draft_sampling_top_k is not None
+            )
             and forward_batch.sampling_info is not None
         ):
             self.temperatures[:raw_bs].copy_(
                 forward_batch.sampling_info.temperatures[:raw_bs]
             )
+            if self.draft_top_ps is not None:
+                self.draft_top_ps[:raw_bs].copy_(
+                    forward_batch.sampling_info.top_ps[:raw_bs]
+                )
+
+                additive = forward_batch.sampling_info.acc_additive_penalties
+                logit_bias = forward_batch.sampling_info.logit_bias
+                additive_dst = self.draft_additive_penalties[:raw_bs]
+                if additive is not None and logit_bias is not None:
+                    torch.add(
+                        additive[:raw_bs], logit_bias[:raw_bs], out=additive_dst
+                    )
+                elif additive is not None:
+                    additive_dst.copy_(additive[:raw_bs])
+                elif logit_bias is not None:
+                    additive_dst.copy_(logit_bias[:raw_bs])
+                else:
+                    additive_dst.zero_()
 
         # TODO(ch-wan): support num_token_non_padded
         if self.require_gathered_buffer:

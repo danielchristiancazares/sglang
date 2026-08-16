@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from collections import defaultdict
 from typing import TYPE_CHECKING, Optional
@@ -13,8 +14,16 @@ from sglang.srt.distributed.device_communicators.pynccl_allocator import (
     prealloc_symmetric_memory_pool,
 )
 from sglang.srt.environ import envs
-from sglang.srt.hardware_backend.npu.graph_runner.npu_graph_runner import NPUGraphRunner
-from sglang.srt.hardware_backend.xpu.graph_runner.xpu_graph_runner import XPUGraphRunner
+
+if sys.platform == "win32":
+    NPUGraphRunner = XPUGraphRunner = None
+else:
+    from sglang.srt.hardware_backend.npu.graph_runner.npu_graph_runner import (
+        NPUGraphRunner,
+    )
+    from sglang.srt.hardware_backend.xpu.graph_runner.xpu_graph_runner import (
+        XPUGraphRunner,
+    )
 from sglang.srt.model_executor.cpu_graph_runner import CPUGraphRunner
 from sglang.srt.model_executor.cuda_graph_config import (
     Backend,

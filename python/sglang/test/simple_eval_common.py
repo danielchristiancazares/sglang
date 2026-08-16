@@ -1,12 +1,16 @@
 # Adapted from https://github.com/openai/simple-evals/
 
 import os
-import resource
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from multiprocessing.pool import ThreadPool
 from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    import resource
+except ImportError:  # Windows does not provide POSIX resource limits.
+    resource = None
 
 import httpx
 import jinja2
@@ -655,6 +659,8 @@ def download_dataset(path, url):
 
 
 def set_ulimit(target_soft_limit=65535):
+    if resource is None:
+        return
     resource_type = resource.RLIMIT_NOFILE
     current_soft, current_hard = resource.getrlimit(resource_type)
 

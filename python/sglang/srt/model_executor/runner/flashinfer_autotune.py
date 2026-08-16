@@ -212,6 +212,11 @@ def run_flashinfer_autotune_forward(
     """Run flashinfer autotune forward."""
     with flashinfer_autotune_context(model_runner, run_lm_head=run_lm_head):
         forward_fn()
+    # Tactic profiling creates short-lived workspaces for every candidate.
+    # Return their cached blocks before CUDA graph capture measures headroom;
+    # tight single-GPU serving configurations otherwise retain hundreds of MB
+    # that the selected tactics no longer need.
+    torch.cuda.empty_cache()
 
 
 def maybe_flashinfer_autotune_speculative_draft(

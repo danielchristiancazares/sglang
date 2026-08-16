@@ -19,6 +19,10 @@ limitations under the License.
 #include <cuda_runtime.h>
 #include <torch/all.h>
 
+#if defined(_MSC_VER) && !defined(__PRETTY_FUNCTION__)
+#define __PRETTY_FUNCTION__ __FUNCSIG__
+#endif
+
 #ifdef USE_ROCM
 #include <hip/hip_runtime.h>
 #endif
@@ -372,7 +376,11 @@ __device__ __forceinline__ dstDtype castFromFloat(float val) {
 #ifndef USE_ROCM
 #include <c10/util/Float8_e4m3fn.h>
 using FP8_TYPE = c10::Float8_e4m3fn;
+#if defined(_MSC_VER)
+constexpr auto FP8_E4M3_MAX = std::numeric_limits<FP8_TYPE>::max();
+#else
 C10_HOST_DEVICE constexpr auto FP8_E4M3_MAX = std::numeric_limits<FP8_TYPE>::max();
+#endif
 #else  // USE_ROCM
 #if HIP_FP8_TYPE_FNUZ
 #include <c10/util/Float8_e4m3fnuz.h>
@@ -456,7 +464,13 @@ inline torch::Tensor pad_tensor(const torch::Tensor& tensor, int64_t alignment =
 // Get the next power of 2 of a number
 inline uint32_t next_pow2(uint32_t x) noexcept {
   if (x <= 1) return 1;
-  return 1u << (32 - __builtin_clz(x - 1));
+  --x;
+  x |= x >> 1;
+  x |= x >> 2;
+  x |= x >> 4;
+  x |= x >> 8;
+  x |= x >> 16;
+  return x + 1;
 }
 
 /*

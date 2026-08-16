@@ -7,6 +7,7 @@
 #include <sgl_kernel/utils.cuh>
 #include <sgl_kernel/vec.cuh>
 
+#include <bit>
 #include <cstdint>
 #include <type_traits>
 

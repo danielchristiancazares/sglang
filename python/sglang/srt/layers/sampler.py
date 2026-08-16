@@ -1,4 +1,5 @@
 import logging
+import sys
 from functools import partial
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -32,10 +33,16 @@ if is_cuda():
         min_p_sampling_from_probs,
         top_k_top_p_sampling_from_probs,
     )
-    from sgl_kernel import (
-        top_k_renorm_prob,
-        top_p_renorm_prob,
-    )
+    if sys.platform == "win32":
+        from flashinfer.sampling import (
+            top_k_renorm_prob,
+            top_p_renorm_prob,
+        )
+    else:
+        from sgl_kernel import (
+            top_k_renorm_prob,
+            top_p_renorm_prob,
+        )
 
 if is_musa():
     from sgl_kernel import (

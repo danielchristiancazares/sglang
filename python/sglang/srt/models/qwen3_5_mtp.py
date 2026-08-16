@@ -28,8 +28,8 @@ from sglang.srt.environ import envs
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.eplb.expert_location import ModelConfigForExpertLocation
 from sglang.srt.layers.layernorm import GemmaRMSNorm
+from sglang.srt.layers.linear import ColumnParallelLinear
 from sglang.srt.layers.logits_processor import LogitsProcessor
-from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_loader.weight_utils import default_weight_loader
@@ -78,6 +78,21 @@ def _mtp_quant_config(quant_config):
     return quant_config
 
 
+def _mtp_fc_uses_parallel_linear(quant_config) -> bool:
+    """Route the large MTP fusion projection through its quantized linear.
+
+    Serialized ModelOpt mixed checkpoints normalize to ``None`` above and keep
+    the established BF16 ``nn.Linear``. Explicit online FP8/MXFP8 drafts and
+    GGUF need SGLang's linear wrapper so their quant method can own the weight.
+    """
+    return quant_config is not None and quant_config.get_name() in {
+        "fp8",
+        "gguf",
+        "mxfp8",
+        "nvfp4_online",
+    }
+
+
 class Qwen3_5ForCausalLMMTP(nn.Module):
 
     @staticmethod
@@ -108,8 +123,28 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
         self.tp_size = get_parallel().tp_size
         self.quant_config = quant_config
         self.pp_group = get_pp_group()
+        self._is_gguf = (
+            quant_config is not None and quant_config.get_name() == "gguf"
+        )
 
-        self.fc = nn.Linear(2 * config.hidden_size, config.hidden_size, bias=False)
+        self._fc_uses_parallel_linear = _mtp_fc_uses_parallel_linear(quant_config)
+        if self._fc_uses_parallel_linear:
+            self.fc = ColumnParallelLinear(
+                2 * config.hidden_size,
+                config.hidden_size,
+                bias=False,
+                quant_config=quant_config,
+                prefix=add_prefix("fc", prefix),
+            )
+        else:
+            self.fc = nn.Linear(
+                2 * config.hidden_size, config.hidden_size, bias=False
+            )
+        logger.info(
+            "Qwen3.5 MTP effective quantization=%s, fusion projection=%s",
+            quant_config.get_name() if quant_config is not None else "bf16",
+            type(self.fc).__name__,
+        )
         RMSNorm_cls = GemmaRMSNorm
         self.pre_fc_norm_embedding = RMSNorm_cls(
             config.hidden_size, config.rms_norm_eps
@@ -148,15 +183,33 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
         )
 
     def get_embed_and_head(self):
-        return self.model.embed_tokens.weight, self.lm_head.weight
+        def shareable_weight(module):
+            if hasattr(module, "weight"):
+                return module.weight
+            return module.qweight, module.qweight_type
+
+        return shareable_weight(self.model.embed_tokens), shareable_weight(
+            self.lm_head
+        )
 
     def set_embed_and_head(self, embed, head):
-        del self.model.embed_tokens.weight
-        if not self.config.tie_word_embeddings:
-            del self.lm_head.weight
+        def set_shareable_weight(module, shared):
+            if isinstance(shared, tuple):
+                if not hasattr(module, "qweight"):
+                    return
+                del module.qweight
+                del module.qweight_type
+                module.qweight, module.qweight_type = shared
+            else:
+                if not hasattr(module, "weight"):
+                    return
+                del module.weight
+                module.weight = shared
 
-        self.model.embed_tokens.weight = embed
-        self.lm_head.weight = head
+        if not self.config.tie_word_embeddings:
+            set_shareable_weight(self.lm_head, head)
+
+        set_shareable_weight(self.model.embed_tokens, embed)
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
@@ -214,6 +267,8 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
             hidden_states = torch.cat([input_embeds, hidden_states], dim=-1)
 
             hidden_states = self.fc(hidden_states)
+            if self._fc_uses_parallel_linear:
+                hidden_states = hidden_states[0]
 
             with get_global_expert_distribution_recorder().disable_this_region():
                 hidden_states = self.model(
@@ -243,13 +298,25 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
 
         # Params for MoE experts (non-fused/fused)
         num_experts = getattr(self.config, "num_experts", None)
-        if num_experts is not None:
-            expert_params_mapping = FusedMoE.make_expert_params_mapping(
-                ckpt_gate_proj_name="gate_proj",
-                ckpt_down_proj_name="down_proj",
-                ckpt_up_proj_name="up_proj",
-                num_experts=num_experts,
-            )
+        if num_experts:
+            expert_params_mapping = [
+                (
+                    (
+                        "experts.w13_"
+                        if weight_name in ("gate_proj", "up_proj")
+                        else "experts.w2_"
+                    ),
+                    f"experts.{expert_id}.{weight_name}.",
+                    expert_id,
+                    shard_id,
+                )
+                for expert_id in range(num_experts)
+                for shard_id, weight_name in (
+                    ("w1", "gate_proj"),
+                    ("w2", "down_proj"),
+                    ("w3", "up_proj"),
+                )
+            ]
         else:
             expert_params_mapping = []
 
@@ -305,6 +372,26 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
             # Only process MTP branch weights
             if "mtp" not in name:
                 continue
+
+            if self._is_gguf and (
+                name
+                in (
+                    "mtp.pre_fc_norm_embedding.weight",
+                    "mtp.pre_fc_norm_hidden.weight",
+                    "mtp.norm.weight",
+                )
+                or name.endswith(
+                    (
+                        ".input_layernorm.weight",
+                        ".post_attention_layernorm.weight",
+                        ".self_attn.q_norm.weight",
+                        ".self_attn.k_norm.weight",
+                    )
+                )
+            ):
+                # llama.cpp stores Qwen3.5 RMSNorm's effective (1 + weight)
+                # scale, while GemmaRMSNorm applies the offset at runtime.
+                loaded_weight = loaded_weight - 1
 
             if name.startswith("mtp."):
                 # Remove the mtp. prefix for processing

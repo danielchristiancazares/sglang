@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import sys
 from typing import List
 
 from sglang.kernels.jit.utils.common import cache_once
@@ -28,5 +29,9 @@ def _resolve_kernel_path() -> pathlib.Path:
 
 KERNEL_PATH = _resolve_kernel_path()
 DEFAULT_INCLUDE: List[str] = [str(KERNEL_PATH / "include")]
-DEFAULT_CFLAGS: List[str] = ["-std=c++20", "-O3"]
+DEFAULT_CFLAGS: List[str] = (
+    ["/std:c++20", "/O2"]
+    if sys.platform == "win32"
+    else ["-std=c++20", "-O3"]
+)
 DEFAULT_LDFLAGS: List[str] = []

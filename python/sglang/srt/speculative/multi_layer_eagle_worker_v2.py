@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, List
@@ -137,6 +138,20 @@ class MultiLayerEagleDraftWorker(EagleDraftWorkerBase):
         # Single-CG runner samples in-graph (_sample_draft_proposal); per-step
         # runner samples worker-side between replays.
         self.use_rejection_sampling = server_args.speculative_use_rejection_sampling
+        self.draft_sampling_top_k = getattr(
+            server_args, "speculative_draft_sampling_top_k", None
+        )
+        if (
+            sys.platform == "win32"
+            and self.use_rejection_sampling
+            and self.draft_sampling_top_k is not None
+        ):
+            # Resolve the CUDA sampling image before graph capture and before
+            # the server advertises readiness. Both target p and aligned draft
+            # q call into this module in steady state.
+            from flashinfer.sampling import get_sampling_module
+
+            get_sampling_module()
         assert self.speculative_num_draft_tokens == self.speculative_num_steps + 1, (
             "multi-layer EAGLE requires speculative_num_draft_tokens == "
             "speculative_num_steps + 1, "
@@ -400,17 +415,21 @@ class MultiLayerEagleDraftWorker(EagleDraftWorkerBase):
                 runner.attn_backend.draft_extend_metadata_captured_in_graph()
                 for runner in self.draft_runner_list
             )
-            if envs.SGLANG_ENABLE_SINGLE_CG_DRAFT.get() and backend_supports_single_cg:
+            if (
+                envs.SGLANG_ENABLE_SINGLE_CG_DRAFT.get()
+                and backend_supports_single_cg
+            ):
                 self.cuda_graph_runner_for_draft_extend = (
                     OneGraphMultiLayerEagleMultiStepDraftExtendCudaGraphRunner(self)
                 )
             else:
                 if envs.SGLANG_ENABLE_SINGLE_CG_DRAFT.get():
                     logger.warning(
-                        "SGLANG_ENABLE_SINGLE_CG_DRAFT is on but %s does not fully "
-                        "rebuild its draft-extend metadata in-graph; falling back "
-                        "to per-step draft graphs.",
+                        "SGLANG_ENABLE_SINGLE_CG_DRAFT cannot cover the resolved "
+                        "draft path (backend=%s, draft_sampling_top_k=%s); falling "
+                        "back to per-step draft graphs.",
                         type(draft_backend).__name__,
+                        self.draft_sampling_top_k,
                     )
                 self.cuda_graph_runner_for_draft_extend = (
                     MultiLayerEagleMultiStepDraftExtendCudaGraphRunner(self)
@@ -658,7 +677,8 @@ class MultiLayerEagleDraftWorker(EagleDraftWorkerBase):
                 # Rejection sampling (prefill): sample X ~ q and stash q for the first verify.
                 probs, topk_p, topk_index = sample_draft_proposal(
                     output.logits_output.next_token_logits,
-                    forward_batch.sampling_info.temperatures,
+                    forward_batch.sampling_info,
+                    self.draft_sampling_top_k,
                 )
                 draft_probs_list.append(probs)
             else:
@@ -795,7 +815,8 @@ class MultiLayerEagleDraftWorker(EagleDraftWorkerBase):
                             step_logits = _out.next_token_logits[sel]
                         probs, ret_topk_p, ret_topk_index = sample_draft_proposal(
                             step_logits,
-                            forward_batch.sampling_info.temperatures,
+                            forward_batch.sampling_info,
+                            self.draft_sampling_top_k,
                         )
                         ret_draft_probs_list.append(probs)
                     if rotates_in_graph:
@@ -869,7 +890,9 @@ class MultiLayerEagleDraftWorker(EagleDraftWorkerBase):
                     ]
                 if self.use_rejection_sampling and self.topk == 1:
                     probs, ret_topk_p, ret_topk_index = sample_draft_proposal(
-                        logits_sel, forward_batch.sampling_info.temperatures
+                        logits_sel,
+                        forward_batch.sampling_info,
+                        self.draft_sampling_top_k,
                     )
                     ret_draft_probs_list.append(probs)
                 else:

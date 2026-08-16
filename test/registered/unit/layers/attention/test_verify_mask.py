@@ -106,6 +106,28 @@ class TestVerifyMaskGate(CustomTestCase):
             with self.subTest(label):
                 self.assertIsNone(_create(**overrides))
 
+    def test_trtllm_mha_uses_compact_unread_sink(self):
+        from sglang.srt.layers.attention.trtllm_mha_backend import (
+            TRTLLMHAAttnBackend,
+        )
+
+        backend = object.__new__(TRTLLMHAAttnBackend)
+        backend.max_num_pages = 2
+        backend.max_context_len = _MAX_CONTEXT_LEN
+        backend.device = "cpu"
+        backend.use_sliding_window_kv_pool = False
+        backend.speculative_num_draft_tokens = _DRAFT
+        backend.is_draft_runner = False
+        backend.expand_encoder_only_verify = False
+        backend.is_xqa_impl = False
+        backend._swa_kv_pool = None
+
+        backend.init_cuda_graph_state(max_bs=_MAX_BS, max_num_tokens=_DRAFT)
+
+        self.assertIs(backend.verify_mask.mode, TreeMaskMode.QLEN_ONLY)
+        self.assertFalse(backend.verify_mask.is_read)
+        self.assertEqual(backend.verify_mask.buffer.numel(), _MAX_BS * _DRAFT**2)
+
 
 class _FakeAttnBackend:
     def __init__(self, verify_mask):

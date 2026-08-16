@@ -1507,14 +1507,29 @@ class ModelConfig:
                 "quant_method", "" if not self.quantization else self.quantization
             ).lower()
 
-            # ModelOpt FP4 checkpoints quantize only the target model; an
-            # embedded MTP draft may stay unquantized, so an explicit
-            # nvfp4_online opt-in for the draft wins over checkpoint detection.
-            # The online loader rejects already-packed weights at load time.
+            # ModelOpt FP4/mixed checkpoints can exclude the embedded MTP
+            # draft, leaving those weights in BF16 even though checkpoint
+            # detection describes the target as quantized. In that specific
+            # case, preserve an explicitly requested online linear quantizer
+            # for the draft. The online loaders reject already-packed weights,
+            # so this remains gated on the checkpoint's MTP exclusion.
+            checkpoint_quant_cfg = (
+                getattr(self.hf_config, "quantization_config", None) or {}
+            )
+            ignored_checkpoint_layers = checkpoint_quant_cfg.get(
+                "ignore",
+                checkpoint_quant_cfg.get("exclude_modules", []),
+            ) or []
+            embedded_mtp_is_unquantized = any(
+                isinstance(layer, str) and layer.startswith("mtp")
+                for layer in ignored_checkpoint_layers
+            )
             preserve_online_draft_quantization = (
                 self.is_draft_model
-                and self.quantization == "nvfp4_online"
-                and quant_method == "modelopt_fp4"
+                and getattr(self, "is_draft_quantization_explicit", False)
+                and self.quantization in {"fp8", "mxfp8", "nvfp4_online"}
+                and quant_method in ("modelopt_fp4", "modelopt_mixed")
+                and embedded_mtp_is_unquantized
             )
             # An explicit online-requantization request (e.g. quark_mxfp4 on top
             # of an NVFP4/mixed checkpoint) must not be overridden back to the

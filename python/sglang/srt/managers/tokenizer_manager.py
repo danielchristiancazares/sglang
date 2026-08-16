@@ -40,7 +40,6 @@ import fastapi
 import numpy as np
 import pybase64
 import torch
-import uvloop
 import zmq
 import zmq.asyncio
 from fastapi import BackgroundTasks
@@ -128,6 +127,7 @@ from sglang.srt.server_args import (
     set_global_server_args_for_tokenizer,
 )
 from sglang.srt.utils import (
+    CHILD_FAILURE_SIGNAL,
     configure_gc_warning,
     freeze_gc,
     get_bool_env_var,
@@ -141,6 +141,7 @@ from sglang.srt.utils.cudacore_pyspy_dump_utils import (
     pyspy_dump_schedulers,
     trigger_cuda_user_coredump,
 )
+from sglang.srt.utils.event_loop import install_event_loop_policy
 from sglang.srt.utils.hf_transformers_utils import (
     get_processor,
     get_tokenizer,
@@ -152,7 +153,7 @@ from sglang.srt.utils.request_logger import RequestLogger
 from sglang.srt.utils.watchdog import Watchdog
 from sglang.utils import TypeBasedDispatcher, get_exception_traceback
 
-asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+install_event_loop_policy()
 
 _REQUEST_STATE_WAIT_TIMEOUT = envs.SGLANG_REQUEST_STATE_WAIT_TIMEOUT.get()
 
@@ -809,6 +810,13 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
                 else:
                     async for response in self._handle_batch_request(obj, request):
                         yield response
+        except (asyncio.CancelledError, GeneratorExit):
+            # Closing a streaming response cancels/closes this async generator.
+            # Propagate that cancellation to the scheduler before dropping the
+            # local state; otherwise the GPU keeps decoding an orphan request.
+            self._abort_pending_req_states(obj)
+            self._discard_pending_req_states(obj)
+            raise
         except BaseException:
             # _init_req_state created a rid_to_state entry per (sub-)request up
             # front. The normal remover is the scheduler-response path
@@ -2190,11 +2198,21 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
         # due to the CPython limitation.
         if threading.current_thread() is threading.main_thread():
             signal_handler = self.signal_handler_class(self)
-            loop.add_signal_handler(signal.SIGTERM, signal_handler.sigterm_handler)
-            # Update the signal handler for the process. It overrides the sigquit handler in the launch phase.
-            loop.add_signal_handler(
-                signal.SIGQUIT, signal_handler.running_phase_sigquit_handler
-            )
+            try:
+                loop.add_signal_handler(signal.SIGTERM, signal_handler.sigterm_handler)
+                # Update the child-failure handler installed during launch.
+                loop.add_signal_handler(
+                    CHILD_FAILURE_SIGNAL,
+                    signal_handler.running_phase_sigquit_handler,
+                )
+            except NotImplementedError:
+                # ProactorEventLoop on Windows does not implement
+                # add_signal_handler; Python's main-thread handler does.
+                signal.signal(signal.SIGTERM, signal_handler.sigterm_handler)
+                signal.signal(
+                    CHILD_FAILURE_SIGNAL,
+                    signal_handler.running_phase_sigquit_handler,
+                )
 
         self.asyncio_tasks.add(
             loop.create_task(print_exception_wrapper(self.sigterm_watchdog))
@@ -3432,6 +3450,16 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
         for rid in rids:
             self.rid_to_state.pop(rid, None)
 
+    def _abort_pending_req_states(self, obj):
+        """Tell the scheduler to stop request states still owned locally."""
+        if not hasattr(obj, "is_single") or obj.is_single:
+            rids = [obj.rid]
+        else:
+            rids = obj.rid
+        for rid in rids:
+            if rid in self.rid_to_state:
+                self.abort_request(rid)
+
     def _should_dispatch_to_encoder(
         self, obj: Union[GenerateReqInput, EmbeddingReqInput]
     ) -> bool:
@@ -3614,7 +3642,7 @@ def get_processor_wrapper(server_args):
 def determine_tensor_transport_mode(server_args: ServerArgs) -> TensorTransportMode:
     is_cross_node = server_args.dist_init_addr
 
-    if is_cross_node:
+    if is_cross_node or sys.platform == "win32":
         # Fallback to default CPU transport for multi-node
         return "default"
     else:

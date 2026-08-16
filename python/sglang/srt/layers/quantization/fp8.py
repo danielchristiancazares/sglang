@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import torch
@@ -348,8 +349,17 @@ class Fp8Config(QuantizationConfig):
         self, layer: torch.nn.Module, prefix: str
     ) -> Optional[QuantizeMethodBase]:
         from sglang.srt.layers.linear import LinearBase
-        from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
         from sglang.srt.layers.radix_attention import RadixAttention
+
+        # The native Windows package intentionally has no sgl_kernel MoE
+        # extension. Dense FP8 linears remain fully supported; avoid importing
+        # that unrelated extension while constructing dense draft models.
+        if sys.platform == "win32":
+            fused_moe_type = ()
+        else:
+            from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
+
+            fused_moe_type = FusedMoE
 
         if isinstance(layer, LinearBase):
             if is_layer_skipped(
@@ -363,7 +373,7 @@ class Fp8Config(QuantizationConfig):
 
                 return NPUMXFP8LinearMethod(self)
             return Fp8LinearMethod(self)
-        elif isinstance(layer, FusedMoE):
+        elif isinstance(layer, fused_moe_type):
             if is_layer_skipped(
                 prefix, self.ignored_layers, fused_mapping=self.packed_modules_mapping
             ):

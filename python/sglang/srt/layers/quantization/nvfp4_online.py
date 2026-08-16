@@ -17,14 +17,18 @@ from sglang.srt.layers.quantization.fp8_utils import (
 )
 from sglang.srt.layers.quantization.modelopt_quant import (
     ModelOptFp4Config,
+    ModelOptFp4LinearMethod,
     ModelOptNvFp4FusedMoEMethod,
     ModelOptQuantConfig,
+    _fused_moe_type,
 )
+from sglang.srt.layers.parameter import ModelWeightParameter
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 from sglang.srt.layers.quantization.utils import (
     is_layer_skipped,
     per_tensor_dequantize,
 )
+from sglang.srt.layers.utils import copy_or_rebind_param
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +38,8 @@ class NvFp4OnlineConfig(ModelOptQuantConfig):
 
     `--quantization nvfp4_online` exclusively means online per-token FP32
     activation scaling. Use `modelopt_fp4` for per-tensor FP32 activation scales
-    or serialized NVFP4 checkpoints. This path converts BF16/FP16/FP8 MoE expert
-    weights as they load; dense layers retain their source precision or
-    quantization.
+    or serialized NVFP4 checkpoints. This path converts floating-point dense
+    and MoE weights as they load.
     """
 
     # Marker consumed by the ModelOpt FP4 layout and the model loader. Serialized
@@ -90,6 +93,7 @@ class NvFp4OnlineConfig(ModelOptQuantConfig):
         self.use_per_token_activation = self._use_per_token_activation
         self.is_checkpoint_fp8_serialized = is_checkpoint_fp8_serialized
         self.is_fp4_experts = False
+        self.is_awq = False
         self.dequant_fp4_to_fp8 = False
         self.activation_scheme = activation_scheme
         self.weight_block_size = weight_block_size
@@ -134,8 +138,9 @@ class NvFp4OnlineConfig(ModelOptQuantConfig):
 
     def get_quant_method(self, layer: torch.nn.Module, prefix: str):
         from sglang.srt.layers.linear import LinearBase
-        from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
         from sglang.srt.layers.quantization.fp8 import Fp8LinearMethod, Fp8MoEMethod
+
+        fused_moe_type = _fused_moe_type()
 
         if isinstance(layer, LinearBase):
             if is_layer_skipped(
@@ -144,8 +149,8 @@ class NvFp4OnlineConfig(ModelOptQuantConfig):
                 return UnquantizedLinearMethod()
             if self.is_checkpoint_fp8_serialized:
                 return Fp8LinearMethod(self)
-            return UnquantizedLinearMethod()
-        if isinstance(layer, FusedMoE):
+            return ModelOptNvFp4OnlineLinearMethod(self)
+        if fused_moe_type and isinstance(layer, fused_moe_type):
             source_layer_ignored = is_layer_skipped(
                 prefix, self.exclude_modules, self.packed_modules_mapping
             ) or self.is_layer_excluded(prefix)
@@ -192,6 +197,81 @@ def make_modelopt_fp4_online_config_from_fp8(
     config: Dict[str, Any],
 ) -> ModelOptQuantConfig:
     return _ModelOptFp4OnlineConfig.from_config(config)
+
+
+class ModelOptNvFp4OnlineLinearMethod(ModelOptFp4LinearMethod):
+    """Convert floating-point dense weights to NVFP4 after checkpoint load.
+
+    Source-shaped parameters preserve ordinary sharded weight loaders. After
+    loading, their storage is rebound to packed FP4 and the established
+    ModelOpt/FlashInfer preparation owns padding and scale interleaving. A unit
+    global activation scale lets per-16 E4M3 scales track runtime range without
+    adding a reduction to every small speculative-draft GEMM.
+    """
+
+    def __init__(self, quant_config: NvFp4OnlineConfig):
+        super().__init__(quant_config)
+
+    def create_weights(
+        self,
+        layer: torch.nn.Module,
+        input_size_per_partition: int,
+        output_partition_sizes: List[int],
+        input_size: int,
+        output_size: int,
+        params_dtype: torch.dtype,
+        **extra_weight_attrs,
+    ) -> None:
+        del input_size, output_size
+        if input_size_per_partition % self.quant_config.group_size != 0:
+            raise ValueError(
+                "Online NVFP4 dense weight K must be divisible by "
+                f"{self.quant_config.group_size}, got {input_size_per_partition}."
+            )
+
+        output_size_per_partition = sum(output_partition_sizes)
+        weight = ModelWeightParameter(
+            data=torch.empty(
+                output_size_per_partition,
+                input_size_per_partition,
+                dtype=params_dtype,
+            ),
+            input_dim=1,
+            output_dim=0,
+            weight_loader=extra_weight_attrs.get("weight_loader"),
+        )
+        layer.register_parameter("weight", weight)
+
+        layer.logical_widths = output_partition_sizes
+        layer.input_size_per_partition = input_size_per_partition
+        layer.output_size_per_partition = output_size_per_partition
+        layer.params_dtype = params_dtype
+        layer.quant_config = self.quant_config
+
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        source_weight = layer.weight.data
+        if not source_weight.is_floating_point():
+            raise ValueError(
+                "Online NVFP4 dense conversion requires floating-point source "
+                f"weights, got {source_weight.dtype}."
+            )
+
+        fp4_weight, weight_scale, weight_scale_2 = (
+            ModelOptNvFp4OnlineFusedMoEMethod._quantize_weight_nvfp4(source_weight)
+        )
+        copy_or_rebind_param(layer, "weight", fp4_weight)
+        copy_or_rebind_param(layer, "weight_scale", weight_scale)
+        copy_or_rebind_param(layer, "weight_scale_2", weight_scale_2.reshape(1))
+        copy_or_rebind_param(
+            layer,
+            "input_scale",
+            torch.ones(
+                len(layer.logical_widths),
+                dtype=torch.float32,
+                device=source_weight.device,
+            ),
+        )
+        super().process_weights_after_loading(layer)
 
 
 class ModelOptNvFp4OnlineFusedMoEMethod(ModelOptNvFp4FusedMoEMethod):
@@ -293,7 +373,7 @@ class ModelOptNvFp4OnlineFusedMoEMethod(ModelOptNvFp4FusedMoEMethod):
             weight.contiguous(),
             1.0 / weight_scale_2,
             sfLayout=SfLayout.layout_linear,
-            backend="cute-dsl",
+            backend="cuda",
         )
         rows, cols = weight.shape
         weight_sf = weight_sf.view(torch.float8_e4m3fn).reshape(rows, cols // 16)

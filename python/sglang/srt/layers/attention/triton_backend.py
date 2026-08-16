@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Optional
 
@@ -54,7 +55,7 @@ _is_cuda = is_cuda()
 _is_gfx942 = is_gfx942_supported()
 _is_xpu = is_xpu()
 
-if _is_cuda:
+if _is_cuda and sys.platform != "win32":
     from sgl_kernel.utils import is_arch_support_pdl
 
 if TYPE_CHECKING:
@@ -257,7 +258,7 @@ class TritonAttnBackend(AttentionBackend):
                 # fp32 attn_logits buffer to ~4 GiB on Kimi-K2.6 and faulting in
                 # ROCm graph replay; pin to 256 to match validated gfx950 behavior.
                 self.max_kv_splits = min(self.max_kv_splits, 256)
-        if _is_cuda:
+        if _is_cuda and sys.platform != "win32":
             self.use_pdl = is_arch_support_pdl()
         else:
             self.use_pdl = False

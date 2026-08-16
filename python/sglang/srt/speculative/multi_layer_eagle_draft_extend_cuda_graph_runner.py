@@ -73,6 +73,7 @@ from sglang.srt.speculative.spec_utils import (
     fast_sample,
     fast_topk,
     resolve_num_tokens_per_req,
+    sample_draft_proposal,
 )
 from sglang.srt.utils import (
     get_available_gpu_memory,
@@ -127,6 +128,8 @@ class MultiLayerEagleDraftExtendInputBuffers(ForwardInputBuffers):
     # of draft_probs selects the in-graph proposal branch in _run_step_body).
     temperatures: Optional[torch.Tensor]
     draft_probs: Optional[torch.Tensor]
+    draft_top_ps: Optional[torch.Tensor]
+    draft_additive_penalties: Optional[torch.Tensor]
 
 
 class MultiLayerEagleDraftExtendCudaGraphRunner(DecodeCudaGraphRunner):
@@ -375,17 +378,41 @@ class MultiLayerEagleDraftExtendCudaGraphRunner(DecodeCudaGraphRunner):
 
     def _sample_draft_proposal(self, ret, bs: int):
         """In-graph Leviathan proposal (single-CG runner + rejection sampling):
-        q = softmax(logits / T) written straight into this step's draft_probs
-        slot, then X ~ q. The accept test coin*q(X) < p(X) is unbiased only if
-        q is exactly the distribution X was drawn from -- q here IS the
-        stashed tensor."""
+        build q, sample X ~ q, and persist that exact q for target verification.
+
+        The default path keeps the established temperature-only wide softmax.
+        When draft top-k alignment is enabled, every operation (combined logit
+        adjustment, temperature, CUDA top-k/top-p renormalization, Gumbel
+        sampling, and the q snapshot) is captured inside this multi-step CUDA
+        graph.  This preserves the single-CG topology instead of returning to
+        Python between MTP depths.
+        """
         buffers = self.buffers
-        probs = wide_row_softmax_triton(
-            self._select_step_logits(ret, bs),
-            buffers.temperatures[:bs],
-            buffers.draft_probs[:bs, self.step],
+        if self.eagle_worker.draft_sampling_top_k is None:
+            probs = wide_row_softmax_triton(
+                self._select_step_logits(ret, bs),
+                buffers.temperatures[:bs],
+                buffers.draft_probs[:bs, self.step],
+            )
+            ret.topk_p, ret.topk_index = fast_sample(probs, num_samples=1)
+            return
+
+        sampling_info = SimpleNamespace(
+            temperatures=buffers.temperatures[:bs],
+            acc_additive_penalties=buffers.draft_additive_penalties[:bs],
+            logit_bias=None,
+            need_top_p_sampling=True,
+            top_ps=buffers.draft_top_ps[:bs],
         )
-        ret.topk_p, ret.topk_index = fast_sample(probs, num_samples=1)
+        probs, ret.topk_p, ret.topk_index = sample_draft_proposal(
+            self._select_step_logits(ret, bs),
+            sampling_info,
+            self.eagle_worker.draft_sampling_top_k,
+        )
+        # The FlashInfer renormalizers return their own graph-pool allocation;
+        # snapshot it into the stable buffer consumed after replay.  Sampling
+        # and verification therefore use the identical q.
+        buffers.draft_probs[:bs, self.step].copy_(probs)
 
     def _run_step_body(self, forward_batch: ForwardBatch, num_tokens: int, bs: int):
         """One draft step's body: model forward + chain-hidden write + top-k.
@@ -665,9 +692,21 @@ class MultiLayerEagleMultiStepDraftExtendCudaGraphRunner:
                     (max_bs, self.speculative_num_steps, vocab_size),
                     dtype=torch.float,
                 )
+                if self.eagle_worker.draft_sampling_top_k is not None:
+                    draft_top_ps = torch.ones((max_bs,), dtype=torch.float)
+                    # Stable CUDA-graph input containing the already-combined
+                    # additive penalties and logit bias for each request.
+                    draft_additive_penalties = torch.zeros(
+                        (max_bs, vocab_size), dtype=torch.float
+                    )
+                else:
+                    draft_top_ps = None
+                    draft_additive_penalties = None
             else:
                 temperatures = None
                 draft_probs = None
+                draft_top_ps = None
+                draft_additive_penalties = None
 
             if self.require_gathered_buffer:
                 if self.require_mlp_tp_gather:
@@ -704,6 +743,8 @@ class MultiLayerEagleMultiStepDraftExtendCudaGraphRunner:
             global_num_tokens_for_logprob_gpu=global_num_tokens_for_logprob_gpu,
             temperatures=temperatures,
             draft_probs=draft_probs,
+            draft_top_ps=draft_top_ps,
+            draft_additive_penalties=draft_additive_penalties,
         )
 
     def _prepare_extra(self, forward_batch: ForwardBatch) -> None:
@@ -764,6 +805,22 @@ class MultiLayerEagleMultiStepDraftExtendCudaGraphRunner:
             self.num_front_tokens,
             self.seq_len_fill_value,
         )
+
+        if buffers.draft_top_ps is not None:
+            sampling_info = forward_batch.sampling_info
+            buffers.draft_top_ps[:raw_bs].copy_(sampling_info.top_ps[:raw_bs])
+
+            additive = sampling_info.acc_additive_penalties
+            logit_bias = sampling_info.logit_bias
+            additive_dst = buffers.draft_additive_penalties[:raw_bs]
+            if additive is not None and logit_bias is not None:
+                torch.add(additive[:raw_bs], logit_bias[:raw_bs], out=additive_dst)
+            elif additive is not None:
+                additive_dst.copy_(additive[:raw_bs])
+            elif logit_bias is not None:
+                additive_dst.copy_(logit_bias[:raw_bs])
+            else:
+                additive_dst.zero_()
 
         # Refresh the host mirror only when published; hand replay None
         # otherwise so no consumer reads a stale buffer.

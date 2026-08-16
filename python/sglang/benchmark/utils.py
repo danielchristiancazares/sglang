@@ -1,8 +1,12 @@
 import json
 import os
-import resource
 from json import JSONDecodeError
 from typing import Dict, List, Optional, Union
+
+try:
+    import resource
+except ImportError:  # Windows does not provide POSIX resource limits.
+    resource = None
 
 import requests
 from tqdm.asyncio import tqdm
@@ -146,6 +150,8 @@ def is_file_valid_json(path):
 
 
 def set_ulimit(target_soft_limit=65535):
+    if resource is None:
+        return
     resource_type = resource.RLIMIT_NOFILE
     current_soft, current_hard = resource.getrlimit(resource_type)
 

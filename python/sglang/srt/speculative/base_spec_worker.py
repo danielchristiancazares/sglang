@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -142,6 +143,15 @@ class EagleDraftWorkerBase(ABC):
         self._topk1_score_indices_prealloc = torch.arange(
             num_steps, dtype=torch.long, device=self.device
         ).repeat(max_bs, 1)
+        if sys.platform == "win32" and str(self.device).startswith("cuda"):
+            # The first real request has far less free VRAM than worker setup.
+            # Load the selective native tree module here so serving never needs
+            # to invoke NVCC or load a new CUDA image under that pressure.
+            from sglang.kernels.ops.speculative.chain_metadata import (
+                preload_chain_metadata,
+            )
+
+            preload_chain_metadata()
 
 
 class BaseSpecWorker(ABC):
@@ -266,6 +276,17 @@ class BaseSpecWorker(ABC):
 
     def init_hicache_draft_plan(self) -> None:
         self._hicache_draft_plan = self._build_hicache_draft_plan()
+
+    def prepare_memory_pool_allocation(self) -> None:
+        """Release any shareable draft weights before KV-pool sizing."""
+        draft_worker = self.draft_worker
+        prepare = (
+            getattr(draft_worker, "prepare_memory_pool_allocation", None)
+            if draft_worker is not None
+            else None
+        )
+        if prepare is not None:
+            prepare()
 
     def alloc_memory_pool(
         self,

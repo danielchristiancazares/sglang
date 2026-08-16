@@ -1,5 +1,6 @@
 import contextlib
 import logging
+import sys
 import time
 from dataclasses import replace
 from typing import List, Optional
@@ -39,7 +40,11 @@ from sglang.srt.model_executor.cuda_graph_config import (
     Phase,
     check_cuda_graph_backend,
 )
-from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, ForwardBatch
+from sglang.srt.model_executor.forward_batch_info import (
+    CaptureHiddenMode,
+    ForwardBatch,
+    ForwardMode,
+)
 from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
 from sglang.srt.model_executor.runner import (
     DecodeCudaGraphRunner,
@@ -76,6 +81,7 @@ from sglang.srt.speculative.eagle_utils import (
     default_tree_mask_mode,
     get_draft_recurrent_hidden_state_spec,
     organize_draft_results,
+    organize_tree_swor_probs,
     per_step_draft_out_cache_loc,
 )
 from sglang.srt.speculative.eagle_worker_common import (
@@ -86,6 +92,7 @@ from sglang.srt.speculative.eagle_worker_common import (
 )
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.speculative.spec_utils import (
+    discount_tree_node_scores_,
     draft_tp_context,
     fast_sample,
     get_plan_stream,
@@ -126,6 +133,27 @@ _is_xpu = is_xpu()
 logger = logging.getLogger(__name__)
 
 
+def _resolve_draft_extend_graph_backend(attn_backend):
+    """Return the concrete full-attention child used by DRAFT_EXTEND_V2.
+
+    Hybrid Qwen-family draft runners can stack a linear-attention wrapper around
+    a prefill/decode split. Their one-layer MTP module is forced to full
+    attention, and the split routes DRAFT_EXTEND_V2 to its requested decode
+    child. Capture that concrete child directly so wrapper types do not suppress
+    an otherwise-supported graph or initialize unused linear-attention state.
+    """
+    from sglang.srt.layers.attention.hybrid_attn_backend import HybridAttnBackend
+    from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
+        HybridLinearAttnBackend,
+    )
+
+    while isinstance(attn_backend, HybridLinearAttnBackend):
+        attn_backend = attn_backend.full_attn_backend
+    if isinstance(attn_backend, HybridAttnBackend):
+        attn_backend = attn_backend._select_backend(ForwardMode.DRAFT_EXTEND_V2)
+    return attn_backend
+
+
 class EagleDraftWorker(EagleDraftWorkerBase):
     def __init__(
         self,
@@ -147,8 +175,21 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         # Args for easy access
         self.device = server_args.device
         self.topk = server_args.speculative_eagle_topk
+        self.draft_sampling_top_k = getattr(
+            server_args, "speculative_draft_sampling_top_k", None
+        )
+        self.tree_depth_discount = getattr(
+            server_args, "speculative_tree_depth_discount", 1.0
+        )
+        self.tree_sampling_mode = getattr(
+            server_args, "speculative_tree_sampling_mode", "target_only"
+        )
+        self.use_tree_swor = self.tree_sampling_mode == "swor"
         if get_spec().speculative_use_rejection_sampling:
             assert self.topk == 1, "Chain speculative sampling supports only topk=1"
+        if self.use_tree_swor:
+            assert self.topk > 1, "Tree SWOR sampling requires speculative_eagle_topk > 1"
+            assert not get_spec().speculative_use_rejection_sampling
         self.speculative_num_steps = server_args.speculative_num_steps
         self.speculative_num_draft_tokens = server_args.speculative_num_draft_tokens
         self.speculative_algorithm = SpeculativeAlgorithm.from_string(
@@ -156,6 +197,23 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         )
 
         self._rebuild_topk1_chain_buffers()
+        if (
+            sys.platform == "win32"
+            and str(self.device).startswith("cuda")
+            and self.topk > 1
+            and not get_spec().speculative_use_rejection_sampling
+        ):
+            # Compile the exact tree verifier before target/draft weights and
+            # graph pools consume the remaining display-GPU headroom.
+            from sglang.kernels.ops.speculative.tree_sampling import (
+                preload_exact_tree_sampling,
+            )
+            from sglang.kernels.ops.attention.fla.gdn_tree_replay import (
+                preload_gdn_tree_replay,
+            )
+
+            preload_exact_tree_sampling()
+            preload_gdn_tree_replay()
 
         # Load draft model weights only.
         if server_args.enable_dp_attention and self.speculative_algorithm.is_eagle3():
@@ -187,6 +245,16 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         self.tree_mask_mode = default_tree_mask_mode()
 
         self.plan_stream, self.plan_stream_ctx = get_plan_stream(self.device)
+        self._memory_pool_preparation_done = False
+
+    def prepare_memory_pool_allocation(self) -> None:
+        """Share target weights before KV pools consume the remaining VRAM."""
+        if self._memory_pool_preparation_done:
+            return
+
+        self.init_token_map()
+        self.init_lm_head()
+        self._memory_pool_preparation_done = True
 
     def alloc_memory_pool(
         self,
@@ -202,8 +270,7 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             req_to_token_pool=req_to_token_pool,
             token_to_kv_pool_allocator=token_to_kv_pool_allocator,
         )
-        self.init_token_map()
-        self.init_lm_head()
+        self.prepare_memory_pool_allocation()
 
         if get_spec().speculative_use_rejection_sampling:
             target_vocab_size = self.target_worker.model_config.vocab_size
@@ -331,9 +398,19 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         self.draft_attn_backend = draft_backend_factory.create_decode_backend()
 
         # Initialize draft extend attention backend (respects speculative_attention_mode setting)
-        self.draft_extend_attn_backend = (
-            draft_backend_factory.create_draft_extend_backend()
-        )
+        if (
+            getattr(self.draft_runner, "draft_attention_backend", None)
+            and getattr(self.draft_runner, "prefill_attention_backend_str", None)
+            != getattr(self.draft_runner, "decode_attention_backend_str", None)
+        ):
+            # Reuse the runner's already-wrapped split: plain EXTEND goes to
+            # its supported prefill child while DRAFT_EXTEND_V2 stays on the
+            # requested draft decode child.
+            self.draft_extend_attn_backend = self.draft_runner.attn_backend
+        else:
+            self.draft_extend_attn_backend = (
+                draft_backend_factory.create_draft_extend_backend()
+            )
 
         self.draft_runner.draft_attn_backend = self.draft_attn_backend
         if self.draft_extend_attn_backend is not None:
@@ -420,7 +497,7 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             TokenspeedMLABackend,
             FlashInferAttnBackend,
         ]
-        if _is_cuda or _is_musa:
+        if (_is_cuda and sys.platform != "win32") or _is_musa:
             # DSA is CUDA-only; import lazily so non-CUDA builds don't pull in
             # deep_gemm and the rest of the sparse-attention stack at import time.
             from sglang.srt.layers.attention.dsa_backend import (
@@ -433,15 +510,18 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             )
 
             graph_supported_backend_types.append(DeepseekV4AttnBackend)
-        if _is_cuda:
+        if _is_cuda and sys.platform != "win32":
             # FlashMLA is CUDA-only; import lazily so CPU builds don't pull
             # sgl_kernel.flash_mla at import time.
             from sglang.srt.layers.attention.flashmla_backend import FlashMLABackend
 
             graph_supported_backend_types.append(FlashMLABackend)
 
+        draft_extend_graph_backend = _resolve_draft_extend_graph_backend(
+            self.draft_extend_attn_backend
+        )
         graph_supported_backend = isinstance(
-            self.draft_extend_attn_backend,
+            draft_extend_graph_backend,
             tuple(graph_supported_backend_types),
         )
         supports_cuda_draft_extend_graph = (
@@ -467,9 +547,16 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                 f"num_tokens_per_req={self.speculative_num_draft_tokens}, "
                 f"bs={capture_bs}, avail mem={before_mem:.2f} GB",
             )
-            self.cuda_graph_runner_for_draft_extend = Device2ExtendCudaGraphRunner[
+            extend_graph_runner = Device2ExtendCudaGraphRunner[
                 self.target_worker.device
-            ](self)
+            ]
+            if supports_cuda_draft_extend_graph:
+                self.cuda_graph_runner_for_draft_extend = extend_graph_runner(
+                    self,
+                    draft_extend_attn_backend=draft_extend_graph_backend,
+                )
+            else:
+                self.cuda_graph_runner_for_draft_extend = extend_graph_runner(self)
             # draft_extend is the step's last shared-buffer-reading phase; its
             # read-done event is what the scheduler's WAR barrier waits on.
             after_mem = get_available_gpu_memory(self.device, self.gpu_id)
@@ -582,6 +669,16 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         parents_list: List[torch.Tensor] = []
         if get_spec().speculative_use_rejection_sampling:
             draft_probs_list: List[torch.Tensor] = [spec_info.draft_probs]
+        elif self.use_tree_swor:
+            draft_probs_list = [spec_info.draft_probs.unsqueeze(1)]
+            draft_prob_node_ids = [
+                torch.full(
+                    (topk_index.shape[0], 1),
+                    -1,
+                    dtype=torch.long,
+                    device=topk_index.device,
+                )
+            ]
 
         topk1_chain_fits = (
             self.topk == 1
@@ -618,7 +715,22 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                     input_ids, hidden_states, scores, tree_info = select_top_k_tokens(
                         i, topk_p, topk_index, hidden_states, scores, self.topk
                     )
-                    score_list.append(tree_info[0])
+                    if self.use_tree_swor:
+                        if i == 0:
+                            current_frontier_node_ids = torch.arange(
+                                self.topk,
+                                dtype=torch.long,
+                                device=topk_index.device,
+                            ).expand(topk_index.shape[0], -1)
+                        else:
+                            current_frontier_node_ids = tree_info[2]
+                    # Calibrate only the final global node allocation. The
+                    # undiscounted cumulative scores still choose which
+                    # branches the draft model extends at the next step.
+                    selection_scores = discount_tree_node_scores_(
+                        tree_info[0], i, self.tree_depth_discount
+                    )
+                    score_list.append(selection_scores)
                     token_list.append(tree_info[1])
                     parents_list.append(tree_info[2])
 
@@ -661,7 +773,8 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                 if get_spec().speculative_use_rejection_sampling:
                     probs, topk_p, topk_index = sample_draft_proposal(
                         logits_output.next_token_logits,
-                        forward_batch.sampling_info.temperatures,
+                        forward_batch.sampling_info,
+                        getattr(self, "draft_sampling_top_k", None),
                     )
                     draft_probs_list.append(probs)
                     forward_batch.positions.add_(1)
@@ -684,8 +797,16 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                         logits_output.next_token_logits,
                         forward_batch.sampling_info,
                         get_spec().speculative_use_rejection_sampling,
+                        getattr(self, "draft_sampling_top_k", None),
                     )
-                    topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
+                    if self.use_tree_swor:
+                        topk_p, topk_index = fast_sample(probs, self.topk)
+                        draft_probs_list.append(
+                            probs.view(-1, self.topk, probs.shape[-1])
+                        )
+                        draft_prob_node_ids.append(current_frontier_node_ids)
+                    else:
+                        topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
                     forward_batch.positions.add_(1)
                 maybe_detect_oob(
                     topk_index,
@@ -697,11 +818,9 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                     topk_index = self.hot_token_id[topk_index]
                 hidden_states = logits_output.hidden_states
 
-        draft_probs = (
-            torch.stack(draft_probs_list, dim=1)
-            if get_spec().speculative_use_rejection_sampling
-            else None
-        )
+        draft_probs = None
+        if get_spec().speculative_use_rejection_sampling:
+            draft_probs = torch.stack(draft_probs_list, dim=1)
 
         # Organize the results
         if draft_tokens_topk1 is not None:
@@ -720,6 +839,13 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         parent_list, top_scores_index, draft_tokens = organize_draft_results(
             score_list, token_list, parents_list, self.speculative_num_draft_tokens
         )
+
+        if self.use_tree_swor:
+            draft_probs = organize_tree_swor_probs(
+                torch.cat(draft_probs_list, dim=1),
+                torch.cat(draft_prob_node_ids, dim=1),
+                top_scores_index,
+            )
 
         return parent_list, top_scores_index, draft_tokens, draft_probs
 
@@ -820,19 +946,27 @@ class EagleDraftWorker(EagleDraftWorkerBase):
 
         # Assemble the next-iter draft spec_info from the extend output.
         use_rejection_sampling = get_spec().speculative_use_rejection_sampling
-        probs = renorm_draft_probs(
-            logits_output.next_token_logits,
-            batch.sampling_info,
-            use_rejection_sampling,
-        )
         if use_rejection_sampling:
-            topk_p, topk_index = fast_sample(probs, num_samples=1)
+            probs, topk_p, topk_index = sample_draft_proposal(
+                logits_output.next_token_logits,
+                batch.sampling_info,
+                getattr(self, "draft_sampling_top_k", None),
+            )
         else:
-            topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
+            probs = renorm_draft_probs(
+                logits_output.next_token_logits,
+                batch.sampling_info,
+                use_rejection_sampling,
+                getattr(self, "draft_sampling_top_k", None),
+            )
+            if self.use_tree_swor:
+                topk_p, topk_index = fast_sample(probs, self.topk)
+            else:
+                topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
         return EagleDraftInput(
             topk_p=topk_p,
             topk_index=topk_index,
-            draft_probs=probs if use_rejection_sampling else None,
+            draft_probs=probs if use_rejection_sampling or self.use_tree_swor else None,
             hidden_states=logits_output.hidden_states,
             bonus_tokens=next_token_ids,
             num_tokens_per_req=1,
@@ -968,7 +1102,8 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         if get_spec().speculative_use_rejection_sampling:
             ret_draft_probs, ret_topk_p, ret_topk_index = sample_draft_proposal(
                 draft_logits_output.next_token_logits,
-                batch.sampling_info.temperatures,
+                batch.sampling_info,
+                getattr(self, "draft_sampling_top_k", None),
             )
         elif self.topk == 1 and not _is_hip:
             # Gated to CUDA: see #26358 — ROCm's argmax tie-break corrupts
@@ -983,9 +1118,14 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                 draft_logits_output.next_token_logits,
                 batch.sampling_info,
                 get_spec().speculative_use_rejection_sampling,
+                getattr(self, "draft_sampling_top_k", None),
             )
-            ret_topk_p, ret_topk_index = fast_topk(probs, self.topk, dim=-1)
-            ret_draft_probs = None
+            if self.use_tree_swor:
+                ret_topk_p, ret_topk_index = fast_sample(probs, self.topk)
+                ret_draft_probs = probs
+            else:
+                ret_topk_p, ret_topk_index = fast_topk(probs, self.topk, dim=-1)
+                ret_draft_probs = None
         ret_hidden_states = draft_logits_output.hidden_states
 
         # Construct the return values
@@ -999,7 +1139,7 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             ret_topk_index,
             ret_hidden_states,
         )
-        if get_spec().speculative_use_rejection_sampling:
+        if get_spec().speculative_use_rejection_sampling or self.use_tree_swor:
             next_draft_input.draft_probs = ret_draft_probs
         if self.seed_dsa_topk_from_draft_extend:
             next_draft_input.dsa_topk_indices = dsa_seed_topk_indices

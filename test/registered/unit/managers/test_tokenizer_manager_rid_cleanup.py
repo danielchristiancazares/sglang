@@ -587,6 +587,36 @@ class TestGenerateRequestCleanupOnDispatchFailure(CustomTestCase):
         for r in rids:
             self.assertNotIn(r, tm.rid_to_state)
 
+    def test_cancel_after_dispatch_aborts_scheduler_and_cleans_up(self):
+        tm = _make_tm_for_generate()
+        rid = "cancelled_stream"
+        obj = _make_generate_obj(rid, is_single=True)
+        obj.return_prompt_token_ids = False
+        tm._tokenize_one_request = AsyncMock(return_value=Mock(input_ids=[1]))
+        tm._send_one_request = Mock()
+        tm.abort_request = Mock()
+
+        async def drive():
+            waiting = asyncio.Event()
+
+            async def wait_forever(*args, **kwargs):
+                waiting.set()
+                await asyncio.Event().wait()
+                yield  # pragma: no cover
+
+            tm._wait_one_response = wait_forever
+            task = asyncio.create_task(tm.generate_request(obj).__anext__())
+            await waiting.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(drive())
+
+        tm._send_one_request.assert_called_once()
+        tm.abort_request.assert_called_once_with(rid)
+        self.assertNotIn(rid, tm.rid_to_state)
+
     def test_thinking_budget_rejects_runtime_without_strict_thinking(self):
         tm = _make_tm_for_generate()
         obj = GenerateReqInput(

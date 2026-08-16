@@ -26,6 +26,7 @@ from sglang.srt.layers.attention.flashinfer_backend import (
     FlashInferAttnBackend,
     FlashInferMultiStepDraftBackend,
 )
+from sglang.srt.layers.attention.verify_mask import VerifyMask, maybe_create_verify_mask
 from sglang.srt.layers.attention.trtllm_mla_backend import (
     make_persistent_multi_ctas_kv_counter_buffer,
 )
@@ -62,6 +63,49 @@ if TYPE_CHECKING:
 # Can be configured via SGLANG_FLASHINFER_WORKSPACE_SIZE environment variable
 DEFAULT_WORKSPACE_SIZE_MB = 512
 
+
+def _should_cast_q_to_fp8(
+    data_type: torch.dtype, is_xqa_impl: bool, use_fused_qkv: bool
+) -> bool:
+    """TRTLLM-Gen uses FP8 Q with FP8 KV; XQA keeps model-dtype Q/O."""
+    return (
+        data_type == torch.float8_e4m3fn
+        and not is_xqa_impl
+        and not use_fused_qkv
+    )
+
+
+def _create_xqa_causal_mask(
+    batch_size: int, q_len: int, device: torch.device | str
+) -> torch.Tensor:
+    """Build XQA's packed uint16 causal mask for a uniform draft window."""
+    if batch_size <= 0 or q_len <= 0:
+        raise ValueError("XQA speculative masks require positive batch and query sizes")
+
+    words_per_row = (q_len + 31) // 32
+    packed_rows = []
+    for query_idx in range(q_len):
+        packed_rows.append(
+            [
+                sum(
+                    1 << bit
+                    for bit in range(32)
+                    if word_idx * 32 + bit <= query_idx
+                )
+                for word_idx in range(words_per_row)
+            ]
+        )
+
+    return (
+        torch.tensor(packed_rows, dtype=torch.uint32)
+        .unsqueeze(0)
+        .expand(batch_size, -1, -1)
+        .contiguous()
+        .view(torch.uint16)
+        .to(device)
+    )
+
+
 # Reuse this workspace buffer across all TRTLLM MHA wrappers
 
 
@@ -91,6 +135,8 @@ class TRTLLMMHAMetadata:
     encoder_cache_seqlens: torch.Tensor = None
     encoder_page_table: torch.Tensor = None
     encoder_row_map: torch.Tensor = None
+    # XQA requires an explicit packed draft-block mask whenever q_len > 1.
+    spec_dec_mask: torch.Tensor = None
 
 
 class TRTLLMHAAttnBackend(FlashInferAttnBackend):
@@ -176,6 +222,8 @@ class TRTLLMHAAttnBackend(FlashInferAttnBackend):
         self.target_verify_metadata = {}
 
         self.speculative_num_draft_tokens = get_spec().speculative_num_draft_tokens
+        self.is_draft_runner = model_runner.is_draft_worker
+        self._verify_mask = None
         # True iff the model declares ENCODER_ONLY (bidirectional) layers, which
         # need the expanded TARGET_VERIFY metadata (TRTLLMMHAMetadata.encoder_*).
         self.expand_encoder_only_verify = any(
@@ -511,6 +559,21 @@ class TRTLLMHAAttnBackend(FlashInferAttnBackend):
                     device=self.device,
                 ),
                 "swa_page_table": self._alloc_swa_page_table(max_bs, max_num_pages),
+                # XQA requires an explicit packed in-window mask for q_len > 1.
+                # A top-k1 EAGLE tree is a fixed causal chain, so capture its
+                # mask once. Wider trees need their dynamic ancestry mask and
+                # deliberately retain None (XQA will fail loud instead of
+                # silently applying chain semantics).
+                "spec_dec_mask": (
+                    _create_xqa_causal_mask(
+                        max_bs,
+                        self.speculative_num_draft_tokens,
+                        self.device,
+                    )
+                    if self.is_xqa_impl
+                    and get_spec().speculative_eagle_topk == 1
+                    else None
+                ),
             }
             if self.expand_encoder_only_verify:
                 max_verify_rows = max_bs * self.speculative_num_draft_tokens
@@ -543,7 +606,31 @@ class TRTLLMHAAttnBackend(FlashInferAttnBackend):
                     device=self.device,
                 ),
                 "swa_page_table": self._alloc_swa_page_table(max_bs, max_num_pages),
+                "spec_dec_mask": _create_xqa_causal_mask(
+                    max_bs,
+                    self.speculative_num_draft_tokens,
+                    self.device,
+                ),
             }
+
+        # TRT-LLM MHA builds its verification geometry from the fixed top-k1
+        # chain (XQA owns a prepacked causal mask above), so it never reads the
+        # generic EAGLE custom mask.  Still hand the tree builder a compact,
+        # fixed-capacity sink: without one it allocates and initializes a
+        # context-sized FULL_MASK on every decode cycle.
+        self._verify_mask = maybe_create_verify_mask(
+            is_draft_runner=self.is_draft_runner,
+            skip_prefill=False,
+            max_bs=max_bs,
+            max_context_len=self.max_context_len,
+            num_draft_tokens=self.speculative_num_draft_tokens,
+            device=self.device,
+            is_read=False,
+        )
+
+    @property
+    def verify_mask(self) -> Optional[VerifyMask]:
+        return self._verify_mask
 
     def _build_cuda_graph_metadata(
         self,
@@ -619,6 +706,9 @@ class TRTLLMHAAttnBackend(FlashInferAttnBackend):
                 else num_tokens // bs
             )
             metadata.page_table = self.target_verify_metadata["page_table"][:bs, :]
+            metadata.spec_dec_mask = self.target_verify_metadata[
+                "spec_dec_mask"
+            ]
             self._bind_swa_page_table(
                 metadata,
                 self.target_verify_metadata,
@@ -648,6 +738,7 @@ class TRTLLMHAAttnBackend(FlashInferAttnBackend):
             metadata.cu_seqlens_q = self.draft_extend_metadata["cu_seqlens_q"][: bs + 1]
             metadata.cu_seqlens_k = self.draft_extend_metadata["cu_seqlens_k"][: bs + 1]
             metadata.max_seq_len_q = num_tokens_per_req
+            metadata.spec_dec_mask = self.draft_extend_metadata["spec_dec_mask"][:bs]
             metadata.page_table = self.draft_extend_metadata["page_table"][:bs, :]
             self._bind_swa_page_table(
                 metadata,
@@ -996,6 +1087,10 @@ class TRTLLMHAAttnBackend(FlashInferAttnBackend):
                     ),
                     (1, 0),
                 )
+                if self.is_xqa_impl and get_spec().speculative_eagle_topk == 1:
+                    metadata.spec_dec_mask = _create_xqa_causal_mask(
+                        batch_size, tokens_per_req, device
+                    )
 
         else:
             metadata.cache_seqlens_int32 = seqlens_in_batch.to(torch.int32)
@@ -1015,6 +1110,11 @@ class TRTLLMHAAttnBackend(FlashInferAttnBackend):
                 )
             else:
                 metadata.cu_seqlens_q = metadata.cu_seqlens_k
+
+            if forward_batch.forward_mode.is_draft_extend_v2():
+                metadata.spec_dec_mask = _create_xqa_causal_mask(
+                    batch_size, metadata.max_seq_len_q, device
+                )
 
         has_swa = self._swa_kv_pool is not None
         metadata.page_table = torch.empty(
@@ -1130,10 +1230,8 @@ class TRTLLMHAAttnBackend(FlashInferAttnBackend):
         # For XQA, q_dtype should be bf16. For trtllm-gen,
         # q_dtype should be FP8 when KV is in FP8.
         q_scale = 1.0
-        if (
-            self.data_type == torch.float8_e4m3fn
-            and not self.is_xqa_impl
-            and not use_fused_qkv
+        if _should_cast_q_to_fp8(
+            self.data_type, self.is_xqa_impl, use_fused_qkv
         ):
             q = q.to(torch.float8_e4m3fn)
         if self.is_xqa_impl:
@@ -1237,14 +1335,12 @@ class TRTLLMHAAttnBackend(FlashInferAttnBackend):
                         layer.v_scale,
                     )
 
+        # XQA keeps Q and O in the model dtype even when the KV cache is FP8.
+        # This also applies to DRAFT_EXTEND_V2; casting only that path to FP8
+        # makes FlashInfer allocate a BF16 output for an FP8 query.
         q_scale = 1.0
-        if (
-            self.data_type == torch.float8_e4m3fn
-            and (
-                not self.is_xqa_impl
-                or not forward_batch.forward_mode.is_target_verify()
-            )
-            and not use_fused_qkv
+        if _should_cast_q_to_fp8(
+            self.data_type, self.is_xqa_impl, use_fused_qkv
         ):
             q = q.to(torch.float8_e4m3fn)
         q = q.reshape(-1, layer.tp_q_head_num, layer.head_dim)
@@ -1340,6 +1436,7 @@ class TRTLLMHAAttnBackend(FlashInferAttnBackend):
                     skip_softmax_threshold_scale_factor=envs.SGLANG_SKIP_SOFTMAX_DECODE_THRESHOLD_SCALE_FACTOR.get(),
                     out_dtype=self.q_data_type,
                     q_len_per_req=self.forward_metadata.max_seq_len_q,
+                    mask=self.forward_metadata.spec_dec_mask,
                     multi_ctas_kv_counter_buffer=self._multi_ctas_kv_counter_buffer,
                 )
         else:

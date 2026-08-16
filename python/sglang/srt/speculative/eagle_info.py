@@ -27,8 +27,8 @@ class EagleVerifyInput(SpecInput):
     capture_hidden_mode: CaptureHiddenMode
     seq_lens_sum: int
     seq_lens_cpu: torch.Tensor
-    # Stacked per-step draft proposal distribution q, shape (bs, num_steps,
-    # vocab); only set under rejection sampling. Consumed by the verify kernel.
+    # Draft proposal distribution q. Shape is (bs, num_steps, vocab) for a
+    # rejection chain and (bs, draft_token_num, vocab) for a SWOR tree.
     draft_probs: torch.Tensor = None
 
     # Shape info for padding
@@ -200,6 +200,8 @@ class EagleDraftInput(SpecInput):
             draft_probs=(
                 torch.empty((0, vocab_size), device=device, dtype=torch.float32)
                 if get_spec().speculative_use_rejection_sampling
+                or getattr(get_spec(), "speculative_tree_sampling_mode", "target_only")
+                == "swor"
                 else None
             ),
             capture_hidden_mode=capture_hidden_mode,

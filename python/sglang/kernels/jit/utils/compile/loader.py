@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import logging
 import os
 import pathlib
@@ -12,6 +11,13 @@ import uuid
 from typing import TYPE_CHECKING, List, Tuple
 
 import torch
+
+try:
+    import fcntl
+except ImportError:
+    import msvcrt
+
+    fcntl = None
 
 from sglang.kernels.jit.utils.arch import get_default_target_flags
 from sglang.kernels.jit.utils.common import is_hip_runtime
@@ -188,9 +194,18 @@ def _build_lock(scope: pathlib.Path):
     scope.mkdir(parents=True, exist_ok=True)
     handle = os.open(scope / _LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o644)
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        if fcntl is not None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        else:
+            if os.fstat(handle).st_size == 0:
+                os.write(handle, b"\0")
+            os.lseek(handle, 0, os.SEEK_SET)
+            msvcrt.locking(handle, msvcrt.LK_LOCK, 1)
         yield
     finally:
+        if fcntl is None:
+            os.lseek(handle, 0, os.SEEK_SET)
+            msvcrt.locking(handle, msvcrt.LK_UNLCK, 1)
         os.close(handle)  # releases the lock
 
 

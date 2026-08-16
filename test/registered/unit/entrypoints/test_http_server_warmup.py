@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST
 from sglang.srt.entrypoints.http_server import (
+    _local_multimodal_capabilities,
     _send_disaggregation_warmup_requests,
 )
 from sglang.test.ci.ci_register import register_cpu_ci
@@ -77,6 +78,32 @@ class TestDisaggregationServerWarmup(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(kwargs["json"]["bootstrap_host"], FAKE_BOOTSTRAP_HOST)
             self.assertEqual(kwargs["json"]["bootstrap_room"], dp_rank)
             self.assertFalse(kwargs["ssl"])
+
+
+class TestLocalMultimodalCapabilities(unittest.TestCase):
+    def test_standalone_language_model_only_disables_advertised_modalities(self):
+        model_config = SimpleNamespace(
+            is_image_understandable_model=True,
+            is_audio_understandable_model=True,
+        )
+        server_args = SimpleNamespace(language_model_only=True, language_only=False)
+
+        self.assertEqual(
+            _local_multimodal_capabilities(model_config, server_args),
+            (False, False),
+        )
+
+    def test_disaggregated_language_only_preserves_advertised_modalities(self):
+        model_config = SimpleNamespace(
+            is_image_understandable_model=True,
+            is_audio_understandable_model=False,
+        )
+        server_args = SimpleNamespace(language_model_only=False, language_only=True)
+
+        self.assertEqual(
+            _local_multimodal_capabilities(model_config, server_args),
+            (True, False),
+        )
 
 
 if __name__ == "__main__":

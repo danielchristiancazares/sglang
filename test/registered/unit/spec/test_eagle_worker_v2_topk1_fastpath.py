@@ -16,7 +16,11 @@ from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
 from sglang.srt.speculative.adaptive_runtime_state import SpecRuntimeState
 from sglang.srt.speculative.eagle_utils import organize_draft_results
-from sglang.srt.speculative.eagle_worker_v2 import EagleDraftWorker, EAGLEWorkerV2
+from sglang.srt.speculative.eagle_worker_v2 import (
+    EagleDraftWorker,
+    EAGLEWorkerV2,
+    _resolve_draft_extend_graph_backend,
+)
 from sglang.test.ci.ci_register import register_amd_ci, register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
@@ -263,6 +267,56 @@ class TestEagleWorkerV2BackendFallback(CustomTestCase):
         self.assertIs(worker.draft_runner.draft_attn_backend, decode_backend)
         self.assertIs(worker.draft_runner.attn_backend, draft_extend_backend)
         self.assertTrue(factory_kwargs["seed_dsa_topk_from_draft_extend"])
+
+    def test_reuses_runner_split_for_draft_prefill_and_extend(self):
+        worker = object.__new__(EagleDraftWorker)
+        split_backend = object()
+        decode_backend = object()
+        unused_factory_backend = object()
+        worker.server_args = _fake_server_args()
+        worker.draft_runner = SimpleNamespace(
+            attn_backend=split_backend,
+            draft_attention_backend="trtllm_mha",
+            prefill_attention_backend_str="flashinfer",
+            decode_attention_backend_str="trtllm_mha",
+        )
+        worker.topk = 1
+        worker.speculative_num_steps = 2
+        worker.seed_dsa_topk_from_draft_extend = False
+
+        with patch(
+            "sglang.srt.speculative.eagle_worker_v2.DraftBackendFactory",
+            _make_backend_factory(decode_backend, unused_factory_backend),
+        ):
+            worker.init_attention_backend()
+
+        self.assertIs(worker.draft_attn_backend, decode_backend)
+        self.assertIs(worker.draft_extend_attn_backend, split_backend)
+        self.assertIs(worker.draft_runner.attn_backend, split_backend)
+
+    def test_resolves_hybrid_draft_extend_graph_to_decode_child(self):
+        from sglang.srt.layers.attention.hybrid_attn_backend import HybridAttnBackend
+        from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
+            HybridLinearAttnBackend,
+        )
+
+        prefill_backend = object()
+        decode_backend = object()
+        split_backend = object.__new__(HybridAttnBackend)
+        split_backend.prefill_backend = prefill_backend
+        split_backend.decode_backend = decode_backend
+        split_backend.draft_extend_uses_decode = True
+
+        hybrid_backend = object.__new__(HybridLinearAttnBackend)
+        hybrid_backend.full_attn_backend = split_backend
+
+        self.assertIs(
+            _resolve_draft_extend_graph_backend(hybrid_backend), decode_backend
+        )
+
+    def test_keeps_concrete_draft_extend_graph_backend(self):
+        backend = object()
+        self.assertIs(_resolve_draft_extend_graph_backend(backend), backend)
 
     def _make_adaptive_worker(self, runner_attn_backend):
         """An EAGLEWorkerV2 with a draft worker whose state-machine fields are

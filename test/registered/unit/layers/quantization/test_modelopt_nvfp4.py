@@ -10,6 +10,10 @@ from sglang.srt.layers.quantization.modelopt_quant import (
     ModelOptFp4Config,
     ModelOptFp4LinearMethod,
 )
+from sglang.srt.layers.quantization.nvfp4_online import (
+    ModelOptNvFp4OnlineLinearMethod,
+    NvFp4OnlineConfig,
+)
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
@@ -102,6 +106,28 @@ class TestModelOptNvfp4(CustomTestCase):
         torch.testing.assert_close(layer.input_scale, torch.ones(1))
         default_weight_loader(layer.input_scale, torch.tensor(0.25))
         torch.testing.assert_close(layer.input_scale, torch.tensor([0.25]))
+
+    def test_nvfp4_online_dense_allocates_source_shaped_weight(self):
+        config = NvFp4OnlineConfig()
+        method = config.get_quant_method(self._make_layer(), "mtp.fc")
+        self.assertIsInstance(method, ModelOptNvFp4OnlineLinearMethod)
+
+        layer = nn.Module()
+        method.create_weights(
+            layer,
+            input_size_per_partition=32,
+            output_partition_sizes=[16, 32],
+            input_size=32,
+            output_size=48,
+            params_dtype=torch.bfloat16,
+            weight_loader=default_weight_loader,
+        )
+
+        self.assertEqual(layer.weight.shape, (48, 32))
+        self.assertEqual(layer.weight.dtype, torch.bfloat16)
+        self.assertEqual(layer.logical_widths, [16, 32])
+        self.assertIs(layer.quant_config, config)
+        self.assertFalse(config.is_awq)
 
     @patch(
         "sglang.srt.layers.quantization.modelopt_quant.envs."

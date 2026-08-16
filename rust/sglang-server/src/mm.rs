@@ -23,10 +23,12 @@ use crate::tokenizer_manager::TmEvent;
 /// rank maps it in parallel. Python's `materialize()` unlinks after cloning;
 /// this `Drop` covers the paths where the buffers never reach Python (aborted
 /// while parked, late result purged).
+#[cfg(unix)]
 pub struct ShmSegment {
     name: String,
 }
 
+#[cfg(unix)]
 impl ShmSegment {
     /// Create `/dev/shm/{name}` holding exactly `bytes`. No leading slash —
     /// the name must suit Python's `SharedMemory(name=…)` (shm_open adds one).
@@ -82,6 +84,7 @@ impl ShmSegment {
     }
 }
 
+#[cfg(unix)]
 impl Drop for ShmSegment {
     fn drop(&mut self) {
         if let Ok(c_name) = std::ffi::CString::new(format!("/{}", self.name)) {
@@ -89,6 +92,26 @@ impl Drop for ShmSegment {
             // by Python's materialize) is fine to ignore.
             unsafe { libc::shm_unlink(c_name.as_ptr()) };
         }
+    }
+}
+
+/// Windows' named mappings disappear when the last handle closes, while this
+/// handoff returns the name before Python opens its handle. Keep the safe inline
+/// transport until that ownership transfer has an explicit acknowledgement.
+#[cfg(not(unix))]
+pub struct ShmSegment;
+
+#[cfg(not(unix))]
+impl ShmSegment {
+    pub fn create(_name: String, _bytes: &[u8]) -> Result<Self, String> {
+        Err(format!(
+            "named multimodal shared memory is unavailable on {}",
+            std::env::consts::OS
+        ))
+    }
+
+    pub fn into_name(self) -> String {
+        unreachable!("the non-POSIX shared-memory transport cannot create segments")
     }
 }
 
@@ -350,12 +373,14 @@ mod tests {
         assert_eq!(parse_caller_hash(""), None);
     }
 
+    #[cfg(unix)]
     fn shm_path(name: &str) -> std::path::PathBuf {
         std::path::Path::new("/dev/shm").join(name)
     }
 
     /// The segment holds exactly the written bytes and dropping it unlinks —
     /// the leak guard for results purged before Python takes them.
+    #[cfg(unix)]
     #[test]
     fn segment_roundtrip_and_drop_unlinks() {
         let name = shm_name(0);
@@ -368,6 +393,7 @@ mod tests {
 
     /// `into_name` transfers the unlink duty to the caller (Python's
     /// `materialize()`), so the segment must survive the handoff.
+    #[cfg(unix)]
     #[test]
     fn into_name_disarms_the_unlink() {
         let segment = ShmSegment::create(shm_name(0), &[1, 2, 3]).unwrap();
@@ -380,6 +406,7 @@ mod tests {
 
     /// Per-item slicing follows the grid row counts, so Python's
     /// `(rows, feature_dim)` reshape of a segment sees only its own item.
+    #[cfg(unix)]
     #[test]
     fn park_splits_features_by_grid() {
         // Two items: grids (1,2,2)=4 rows and (1,1,2)=2 rows, dim=3.
@@ -398,6 +425,19 @@ mod tests {
             read(&segments[1]),
             bytemuck::cast_slice::<f32, u8>(&features[12..])
         );
+    }
+
+    /// Platforms without POSIX shm preserve correctness through the inline
+    /// transport instead of rejecting multimodal work.
+    #[cfg(not(unix))]
+    #[test]
+    fn shared_memory_falls_back_inline() {
+        let features: Vec<f32> = (0..12).map(|i| i as f32).collect();
+        let grids = [[1, 2, 2]];
+        assert!(matches!(
+            park_features_in_shm(&features, &grids),
+            FeatureStore::Inline(values) if values == features
+        ));
     }
 
     /// A degenerate shape must degrade to inline, never a shm-side panic.

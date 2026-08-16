@@ -35,7 +35,6 @@ import pickle
 import platform
 import random
 import re
-import resource
 import shutil
 import signal
 import subprocess
@@ -95,6 +94,11 @@ from torch.utils._contextlib import _DecoratorContextManager
 from torchvision.io import decode_jpeg
 from typing_extensions import Literal
 
+try:
+    import resource
+except ImportError:  # Windows has no POSIX resource module.
+    resource = None
+
 from sglang.srt.environ import envs
 from sglang.srt.observability.func_timer import enable_func_timer
 from sglang.srt.platforms import current_platform
@@ -106,6 +110,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 torch_release = pkg_version.parse(torch.__version__).release
+CHILD_FAILURE_SIGNAL = getattr(signal, "SIGQUIT", signal.SIGTERM)
 
 
 # ==============================================================================
@@ -2260,7 +2265,8 @@ def kill_process_tree(
 
             # Sometime processes cannot be killed with SIGKILL (e.g, PID=1 launched by kubernetes),
             # so we send an additional signal to kill them.
-            itself.send_signal(signal.SIGQUIT)
+            if hasattr(signal, "SIGQUIT"):
+                itself.send_signal(signal.SIGQUIT)
             killed.append(itself)
         except psutil.NoSuchProcess:
             pass
@@ -2288,6 +2294,9 @@ def monkey_patch_p2p_access_check():
 
 
 def set_ulimit(target_soft_limit=65535):
+    if resource is None:
+        return
+
     # number of open files
     resource_type = resource.RLIMIT_NOFILE
     current_soft, current_hard = resource.getrlimit(resource_type)
@@ -3128,10 +3137,27 @@ def kill_itself_when_parent_died():
         )
 
         start_parent_death_watcher()
+    elif sys.platform == "win32":
+        parent = psutil.Process(os.getppid())
+        parent_create_time = parent.create_time()
+
+        def watch_parent():
+            while True:
+                try:
+                    if (
+                        not parent.is_running()
+                        or parent.create_time() != parent_create_time
+                    ):
+                        os._exit(1)
+                except psutil.Error:
+                    os._exit(1)
+                time.sleep(1)
+
+        threading.Thread(
+            target=watch_parent, daemon=True, name="sglang-parent-watchdog"
+        ).start()
     else:
-        logger.warning(
-            "kill_itself_when_parent_died is only supported on linux and macOS."
-        )
+        logger.warning("kill_itself_when_parent_died is unsupported on this platform.")
 
 
 class UvicornAccessLogFilter(logging.Filter):

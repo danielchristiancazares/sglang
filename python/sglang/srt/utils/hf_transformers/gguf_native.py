@@ -30,27 +30,146 @@ Reaching for these is a last resort: a config.json next to the .gguf still wins,
 because the checkpoint author's own config outranks anything reconstructed.
 """
 
+from functools import lru_cache
 from typing import Any, Callable, Dict, Optional
 
 from transformers import PretrainedConfig
 
 from sglang.srt.configs.muse_glimmer import MuseGlimmerConfig
+from sglang.srt.configs.qwen3_5 import Qwen3_5TextConfig
+
+
+@lru_cache(maxsize=4)
+def _read_gguf_metadata_snapshot(gguf_path: str):
+    """Read immutable GGUF metadata and tensor descriptors once per process."""
+    from gguf import GGUFReader
+
+    reader = GGUFReader(gguf_path)
+    meta = {key: field.contents() for key, field in reader.fields.items()}
+    tensors = tuple(
+        (tensor.name, tuple(int(dim) for dim in tensor.shape))
+        for tensor in reader.tensors
+    )
+    return meta, tensors
+
+
+def _gguf_model_max_length(meta: Dict[str, Any]) -> Optional[int]:
+    """Return the architecture's finite training context when GGUF records it."""
+    architecture = meta.get("general.architecture")
+    if not isinstance(architecture, str):
+        return None
+    context_length = meta.get(f"{architecture}.context_length")
+    if context_length is None:
+        return None
+    value = int(context_length)
+    return value if 0 < value <= (1 << 63) - 1 else None
+
+
+def _qwen35_config_from_gguf(gguf_path: str) -> Qwen3_5TextConfig:
+    """Reconstruct the text-only Qwen3.5 config emitted by llama.cpp.
+
+    Qwen3.5 GGUFs include the MTP layer in ``block_count``.  SGLang loads the
+    target model separately, so that tail must not become a serving layer.
+    """
+    meta, tensors = _read_gguf_metadata_snapshot(gguf_path)
+    tensor_names = {name for name, _ in tensors}
+
+    def get(suffix: str):
+        return meta[f"qwen35.{suffix}"]
+
+    def token_id(name: str):
+        value = meta.get(f"tokenizer.ggml.{name}_token_id")
+        return None if value is None else int(value)
+
+    block_count = int(get("block_count"))
+    mtp_layers = int(meta.get("qwen35.nextn_predict_layers", 0))
+    num_hidden_layers = block_count - mtp_layers
+    if num_hidden_layers <= 0:
+        raise ValueError(
+            "Invalid Qwen3.5 GGUF layer counts: "
+            f"block_count={block_count}, nextn_predict_layers={mtp_layers}"
+        )
+
+    full_attention_interval = int(get("full_attention_interval"))
+    layer_types = [
+        (
+            "full_attention"
+            if (layer + 1) % full_attention_interval == 0
+            else "linear_attention"
+        )
+        for layer in range(num_hidden_layers)
+    ]
+    head_dim = int(get("attention.key_length"))
+    rope_dim = int(get("rope.dimension_count"))
+    rope_sections = [int(value) for value in get("rope.dimension_sections")]
+    while rope_sections and rope_sections[-1] == 0:
+        rope_sections.pop()
+    model_name = str(meta.get("general.name", "")).lower()
+    output_gate_type = (
+        "swish" if model_name.startswith(("qwen3.6", "qwen3.8")) else None
+    )
+
+    config = Qwen3_5TextConfig(
+        architectures=["Qwen3_5ForCausalLM"],
+        vocab_size=len(meta["tokenizer.ggml.tokens"]),
+        hidden_size=int(get("embedding_length")),
+        intermediate_size=int(get("feed_forward_length")),
+        num_hidden_layers=num_hidden_layers,
+        num_attention_heads=int(get("attention.head_count")),
+        num_key_value_heads=int(get("attention.head_count_kv")),
+        head_dim=head_dim,
+        hidden_act="silu",
+        output_gate_type=output_gate_type,
+        max_position_embeddings=int(get("context_length")),
+        rms_norm_eps=float(get("attention.layer_norm_rms_epsilon")),
+        linear_conv_kernel_dim=int(get("ssm.conv_kernel")),
+        linear_key_head_dim=int(get("ssm.state_size")),
+        linear_value_head_dim=int(get("ssm.state_size")),
+        linear_num_key_heads=int(get("ssm.group_count")),
+        linear_num_value_heads=int(get("ssm.inner_size")) // int(get("ssm.state_size")),
+        layer_types=layer_types,
+        full_attention_interval=full_attention_interval,
+        attn_output_gate=any(
+            name.endswith("attn_q.weight")
+            and shape[1] == 2 * int(get("attention.head_count")) * head_dim
+            for name, shape in tensors
+        ),
+        rope_parameters={
+            "rope_type": "default",
+            "rope_theta": float(get("rope.freq_base")),
+            "partial_rotary_factor": rope_dim / head_dim,
+            "mrope_interleaved": True,
+            "mrope_section": rope_sections,
+        },
+        partial_rotary_factor=rope_dim / head_dim,
+        mtp_num_hidden_layers=mtp_layers,
+        mtp_use_dedicated_embeddings=False,
+        mamba_ssm_dtype="float32",
+        tie_word_embeddings="output.weight" not in tensor_names,
+        dtype="bfloat16",
+        bos_token_id=token_id("bos"),
+        eos_token_id=token_id("eos"),
+        pad_token_id=token_id("padding"),
+    )
+    # Qwen3NextConfig exposes the derived layers through layers_block_type but
+    # does not retain the constructor's layer_types argument.
+    config.layer_types = layer_types
+    return config
+
 
 GGUF_NATIVE_CONFIG_BUILDERS: Dict[str, Callable[[str], PretrainedConfig]] = {
     "muse-glimmer": MuseGlimmerConfig.from_gguf,
+    "qwen35": _qwen35_config_from_gguf,
 }
 
 
 def read_gguf_architecture(gguf_path: str) -> Optional[str]:
     """The ``general.architecture`` string, or None if it cannot be read."""
     try:
-        from gguf import GGUFReader
-
-        reader = GGUFReader(gguf_path)
-        field = reader.fields.get("general.architecture")
-        if field is None:
+        meta, _ = _read_gguf_metadata_snapshot(gguf_path)
+        value = meta.get("general.architecture")
+        if value is None:
             return None
-        value = field.contents()
         return value if isinstance(value, str) else None
     except Exception:
         return None
@@ -82,6 +201,10 @@ _PRE_TOKENIZER_REGEX = {
     ),
     "gpt-4o": _GPT4O_SPLIT_REGEX,
     "llama4": _GPT4O_SPLIT_REGEX,
+    "qwen35": (
+        r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}|"
+        r" ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+    ),
 }
 
 _GGML_TOKEN_TYPE_CONTROL = 3
@@ -96,11 +219,9 @@ def build_gguf_generation_config(gguf_path: str):
     an end-of-*message* id must not -- stopping on that truncates the model
     mid-reasoning, before it answers.
     """
-    from gguf import GGUFReader
     from transformers import GenerationConfig
 
-    reader = GGUFReader(gguf_path)
-    meta = {key: field.contents() for key, field in reader.fields.items()}
+    meta, _ = _read_gguf_metadata_snapshot(gguf_path)
 
     stop_ids = []
     for key in ("tokenizer.ggml.eos_token_id", "tokenizer.ggml.eot_token_id"):
@@ -133,12 +254,10 @@ def build_gguf_tokenizer(gguf_path: str, **kwargs: Any):
     """
     import json
 
-    from gguf import GGUFReader
     from tokenizers import Tokenizer
     from transformers import PreTrainedTokenizerFast
 
-    reader = GGUFReader(gguf_path)
-    meta = {key: field.contents() for key, field in reader.fields.items()}
+    meta, _ = _read_gguf_metadata_snapshot(gguf_path)
 
     tokens = list(meta["tokenizer.ggml.tokens"])
     token_types = [int(t) for t in meta["tokenizer.ggml.token_type"]]
@@ -154,8 +273,11 @@ def build_gguf_tokenizer(gguf_path: str, **kwargs: Any):
     control_ids = [
         i for i, t in enumerate(token_types) if t == _GGML_TOKEN_TYPE_CONTROL
     ]
-    control = set(control_ids)
-    vocab = {tok: i for i, tok in enumerate(tokens) if i not in control}
+    # Keep the full id space in the BPE vocabulary. Tokenizers compacts sparse
+    # vocabularies, which would silently renumber control tokens above the first
+    # hole; registering those same entries as added tokens marks them special
+    # while preserving their checkpoint ids.
+    vocab = {tok: i for i, tok in enumerate(tokens)}
 
     def token_of(key):
         idx = meta.get(f"tokenizer.ggml.{key}")
@@ -237,6 +359,13 @@ def build_gguf_tokenizer(gguf_path: str, **kwargs: Any):
         }
 
     backend = Tokenizer.from_str(json.dumps(spec))
+
+    model_max_length = _gguf_model_max_length(meta)
+    if model_max_length is not None:
+        # PreTrainedTokenizerFast otherwise installs a huge sentinel value.
+        # That sentinel exceeds JSON's signed 64-bit range and makes SGLang's
+        # OpenAI-compatible /tokenize response fail during serialization.
+        kwargs.setdefault("model_max_length", model_max_length)
 
     named = {
         bos,

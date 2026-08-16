@@ -734,14 +734,33 @@ class GDNAttnBackend(MambaAttnBackendBase):
         into ``temporal``. Uses the vendored CuTe DSL MTP kernel when the
         dispatcher selected the FlashInfer bf16-state verify, else the Triton
         recurrent kernel (both store the same raw window)."""
+        if retrieve_parent_token is not None:
+            from sglang.kernels.ops.attention.fla.gdn_tree_replay import (
+                gdn_tree_replay_verify,
+            )
+
+            return gdn_tree_replay_verify(
+                A_log=layer.A_log,
+                a=a,
+                dt_bias=layer.dt_bias,
+                q=query,
+                k=key,
+                v=value,
+                b=b,
+                checkpoint_state=ssm_states,
+                state_indices=cache_indices,
+                parent=retrieve_parent_token,
+                rawv_cache=layer_cache.replayssm_rawv,
+                rawk_cache=layer_cache.replayssm_rawk,
+                g_cache=layer_cache.replayssm_g,
+                beta_cache=layer_cache.replayssm_beta,
+                scale=layer.head_k_dim**-0.5,
+            )
+
         from sglang.kernels.ops.attention.fla.fused_sigmoid_gating_recurrent import (
             fused_sigmoid_gating_delta_rule_update,
         )
 
-        assert retrieve_parent_token is None, (
-            "ReplaySSM fold-every-commit supports a linear draft chain only "
-            "(topk <= 1); EAGLE tree verify must use the recurrent verify."
-        )
         seq_len = query.shape[1]
         batch_size = query_start_loc.shape[0] - 1
         draft_token_num = seq_len // batch_size
