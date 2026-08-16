@@ -177,6 +177,9 @@ class Sampler(nn.Module):
         if _is_hip and logits.shape[0] == 0:
             return torch.empty((0,), dtype=torch.int64, device=logits.device)
 
+        if _is_hip and logits.shape[0] == 0:
+            return torch.empty((0,), dtype=torch.int64, device=logits.device)
+
         # Preprocess logits (custom processors and NaN handling)
         _trace_e2e_sampler("preprocess_enter")
         logits = self._preprocess_logits(logits, sampling_info)
