@@ -1219,7 +1219,7 @@ class Qwen3_5LinearDecoderLayer(nn.Module):
         )
         mark_stage("input_residual_norm")
 
-        if not forward_batch.forward_mode.is_idle():
+        if not forward_batch.forward_mode.is_idle() and hidden_states.shape[0] > 0:
             hidden_states = self.linear_attn(
                 hidden_states,
                 forward_batch,
@@ -1636,7 +1636,7 @@ class Qwen3_5AttentionDecoderLayer(nn.Module):
             )
         )
 
-        if not forward_batch.forward_mode.is_idle():
+        if not forward_batch.forward_mode.is_idle() and hidden_states.shape[0] > 0:
             hidden_states = self.self_attention(
                 positions=positions,
                 hidden_states=hidden_states,
