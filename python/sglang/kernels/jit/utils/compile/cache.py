@@ -241,7 +241,18 @@ def _environment_fingerprint() -> str:
     compilers = []
     for path in (toolchain.device_compiler_path(), toolchain.host_compiler_path()):
         try:
-            compilers.append(subprocess.check_output([path, "--version"], text=True))
+            version_arg = (
+                "/Bv"
+                if os.name == "nt" and pathlib.Path(path).stem.lower() == "cl"
+                else "--version"
+            )
+            completed = subprocess.run(
+                [path, version_arg], capture_output=True, text=True, check=False
+            )
+            version_text = completed.stdout + completed.stderr
+            if not version_text:
+                raise subprocess.SubprocessError("compiler produced no version text")
+            compilers.append(version_text)
         except (OSError, subprocess.SubprocessError) as error:
             logger.warning("Cannot fingerprint compiler %s: %s", path, error)
             compilers.append("unknown")

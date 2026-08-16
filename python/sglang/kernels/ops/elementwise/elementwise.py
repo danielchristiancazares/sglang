@@ -3,6 +3,10 @@ import triton
 import triton.language as tl
 
 from sglang.kernels.jit.utils import is_arch_support_pdl
+from sglang.kernels.ops.elementwise.fused_sigmoid_mul import (
+    covered as native_fused_sigmoid_mul_covered,
+)
+from sglang.kernels.ops.elementwise.fused_sigmoid_mul import fused_sigmoid_mul_native
 from sglang.srt.utils import is_hip
 
 _is_hip = is_hip()
@@ -425,6 +429,13 @@ def fused_sigmoid_mul(
     and attn_output is 2D (num_tokens, hidden_dim), the kernel reads gate
     via explicit strides without requiring a contiguous copy.
     """
+    if native_fused_sigmoid_mul_covered(attn_output, gate):
+        return fused_sigmoid_mul_native(
+            attn_output,
+            gate,
+            output=attn_output if inplace else None,
+        )
+
     if gate.ndim == 3 and attn_output.ndim == 2:
         # Strided gate path: gate is 3D (num_tokens, num_heads, head_dim)
         num_tokens, num_heads, head_dim = gate.shape

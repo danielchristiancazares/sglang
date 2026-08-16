@@ -1,0 +1,133 @@
+from sglang.test.ci.ci_register import register_cuda_ci
+
+register_cuda_ci(est_time=30, stage="base-b", runner_config="1-gpu-small")
+
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import torch
+from flashinfer.sampling import top_k_renorm_prob, top_p_renorm_prob
+
+from sglang.srt.speculative.multi_layer_eagle_draft_extend_cuda_graph_runner import (
+    MultiLayerEagleDraftExtendCudaGraphRunner,
+)
+from sglang.srt.speculative.spec_utils import sample_draft_proposal
+from sglang.test.test_utils import CustomTestCase
+
+
+def _argmax_sample(probs: torch.Tensor, num_samples: int = 1):
+    assert num_samples == 1
+    index = probs.argmax(dim=-1, keepdim=True)
+    return probs.gather(1, index), index
+
+
+@unittest.skipUnless(torch.cuda.is_available(), "CUDA is required for this test.")
+class TestDraftProposalFlashInfer(CustomTestCase):
+    @patch(
+        "sglang.srt.speculative.spec_utils.fast_sample",
+        side_effect=_argmax_sample,
+    )
+    def test_penalty_temperature_topk_topp_q_matches_sparse_reference(self, _sample):
+        generator = torch.Generator(device="cuda").manual_seed(1701)
+        logits = torch.randn(
+            (2, 8192), dtype=torch.float32, device="cuda", generator=generator
+        )
+        penalties = torch.zeros_like(logits)
+        penalties[:, :32] = -4.0
+        bias = torch.zeros_like(logits)
+        bias[:, 4096:4104] = 2.0
+        sampling_info = SimpleNamespace(
+            temperatures=torch.tensor([[0.8], [1.2]], device="cuda"),
+            top_ps=torch.tensor([0.90, 0.95], device="cuda"),
+            acc_additive_penalties=penalties,
+            logit_bias=bias,
+            need_top_p_sampling=True,
+        )
+
+        q, q_x, token = sample_draft_proposal(
+            logits, sampling_info, draft_sampling_top_k=20
+        )
+
+        adjusted = (logits + penalties + bias) / sampling_info.temperatures
+        values, indices = torch.topk(adjusted, 20, dim=-1, sorted=True)
+        sparse = torch.softmax(values, dim=-1)
+        ascending = torch.flip(sparse, dims=(-1,))
+        cutoff = torch.sum(
+            torch.cumsum(ascending, dim=-1)
+            < (1.0 - sampling_info.top_ps[:, None]),
+            dim=-1,
+            keepdim=True,
+        ).clamp_(max=19)
+        pivots = ascending.gather(1, cutoff)
+        sparse = torch.where(sparse >= pivots, sparse, torch.zeros_like(sparse))
+        sparse = sparse / sparse.sum(dim=-1, keepdim=True)
+        expected = torch.zeros_like(q).scatter_(1, indices, sparse)
+
+        torch.testing.assert_close(q, expected, rtol=3e-5, atol=2e-7)
+        torch.testing.assert_close(q.sum(dim=-1), torch.ones(2, device="cuda"))
+        torch.testing.assert_close(q_x, q.gather(1, token), rtol=0, atol=0)
+
+    def test_aligned_q_is_captured_inside_single_graph(self):
+        vocab_size = 8192
+        generator = torch.Generator(device="cuda").manual_seed(2701)
+        logits = torch.randn(
+            (1, vocab_size), dtype=torch.float32, device="cuda", generator=generator
+        )
+        additive = torch.zeros_like(logits)
+        additive[:, :64] = -3.0
+        temperatures = torch.tensor([[1.1]], dtype=torch.float32, device="cuda")
+        top_ps = torch.tensor([0.92], dtype=torch.float32, device="cuda")
+        draft_probs = torch.empty(
+            (1, 2, vocab_size), dtype=torch.float32, device="cuda"
+        )
+
+        runner = object.__new__(MultiLayerEagleDraftExtendCudaGraphRunner)
+        runner.step = 0
+        runner.prune_draft_extend_logits = True
+        runner.eagle_worker = SimpleNamespace(draft_sampling_top_k=20)
+        runner.buffers = SimpleNamespace(
+            temperatures=temperatures,
+            draft_probs=draft_probs,
+            draft_top_ps=top_ps,
+            draft_additive_penalties=additive,
+        )
+        ret = SimpleNamespace(next_token_logits=logits)
+
+        # Warm every lazy FlashInfer image/cache before entering capture.
+        runner._sample_draft_proposal(ret, bs=1)
+        torch.cuda.synchronize()
+
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            runner._sample_draft_proposal(ret, bs=1)
+        graph.replay()
+        torch.cuda.synchronize()
+
+        def expected_q():
+            probs = torch.softmax((logits + additive) / temperatures, dim=-1)
+            probs = top_k_renorm_prob(probs, 20)
+            return top_p_renorm_prob(probs, top_ps)
+
+        expected = expected_q()
+        torch.testing.assert_close(draft_probs[:, 0], expected, rtol=0, atol=0)
+        torch.testing.assert_close(
+            ret.topk_p, draft_probs[:, 0].gather(1, ret.topk_index), rtol=0, atol=0
+        )
+
+        # Replay must consume current stable-buffer values, not capture-time q.
+        logits.mul_(0.7)
+        additive.zero_()
+        additive[:, 400:464] = 2.5
+        top_ps.fill_(0.85)
+        graph.replay()
+        torch.cuda.synchronize()
+        expected = expected_q()
+        torch.testing.assert_close(draft_probs[:, 0], expected, rtol=0, atol=0)
+        torch.testing.assert_close(
+            ret.topk_p, draft_probs[:, 0].gather(1, ret.topk_index), rtol=0, atol=0
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

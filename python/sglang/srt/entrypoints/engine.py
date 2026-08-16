@@ -28,6 +28,7 @@ import multiprocessing as mp
 import os
 import random
 import signal
+import sys
 import tempfile
 import threading
 import time
@@ -46,7 +47,6 @@ from typing import (
 
 import msgspec
 import torch
-import uvloop
 import zmq
 
 from sglang.srt.arg_groups.overrides import (
@@ -118,6 +118,7 @@ from sglang.srt.runtime_context import (
 )
 from sglang.srt.server_args import PortArgs, ServerArgs
 from sglang.srt.utils import (
+    CHILD_FAILURE_SIGNAL,
     MultiprocessingSerializer,
     SerializedTensorPayload,
     assert_pkg_version,
@@ -133,6 +134,7 @@ from sglang.srt.utils import (
     set_prometheus_multiproc_dir,
     set_ulimit,
 )
+from sglang.srt.utils.event_loop import install_event_loop_policy
 from sglang.srt.utils.msgspec_utils import msgspec_to_builtins
 from sglang.srt.utils.network import (
     NetworkAddress,
@@ -151,7 +153,7 @@ from sglang.srt.weight_cache.protocol import (
 from sglang.version import __version__
 
 logger = logging.getLogger(__name__)
-asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+install_event_loop_policy()
 
 _is_cuda = is_cuda()
 
@@ -1729,7 +1731,7 @@ def _set_envs_and_config(server_args: ServerArgs):
                 "reinstall the latest version by following the instructions "
                 "at https://docs.flashinfer.ai/installation.html.",
             )
-        if _is_cuda:
+        if _is_cuda and sys.platform != "win32":
             assert_pkg_version(
                 "sglang-kernel",
                 "0.4.6.post1",
@@ -1750,11 +1752,11 @@ def _set_envs_and_config(server_args: ServerArgs):
                 )
                 kill_process_tree(os.getpid())
 
-            signal.signal(signal.SIGQUIT, launch_phase_sigquit_handler)
+            signal.signal(CHILD_FAILURE_SIGNAL, launch_phase_sigquit_handler)
         else:
             # Allow users to register a custom SIGQUIT handler for things like crash dump
             logger.error(f"Using custom SIGQUIT handler: {cfg.custom_sigquit_handler}")
-            signal.signal(signal.SIGQUIT, cfg.custom_sigquit_handler)
+            signal.signal(CHILD_FAILURE_SIGNAL, cfg.custom_sigquit_handler)
     else:
         logger.warning(
             "Signal handler is not added because the engine is not in the "

@@ -528,5 +528,17 @@ def test_relative_sources_resolve_against_csrc():
     assert resolve_sources(["/usr/include/stdio.h"]) == ("/usr/include/stdio.h",)
 
 
+def test_windows_toolchain_enables_the_conforming_msvc_preprocessor(monkeypatch):
+    from sglang.kernels.jit.utils.compile import toolchain
+
+    monkeypatch.setattr(toolchain, "_IS_WINDOWS", True)
+    monkeypatch.setattr(toolchain, "is_hip_runtime", lambda: False)
+
+    assert "/Zc:preprocessor" in toolchain.base_cxx_flags()
+    cuda_flags = toolchain.base_cuda_flags()
+    flag_index = cuda_flags.index("/Zc:preprocessor")
+    assert cuda_flags[flag_index - 1] == "-Xcompiler"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

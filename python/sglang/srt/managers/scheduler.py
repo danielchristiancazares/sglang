@@ -46,7 +46,10 @@ from sglang.srt.runtime_context import (
     publish,
 )
 
-from sglang.srt.utils.common import suppress_noisy_warnings  # isort: skip
+from sglang.srt.utils.common import (  # isort: skip
+    CHILD_FAILURE_SIGNAL,
+    suppress_noisy_warnings,
+)
 
 suppress_noisy_warnings()
 
@@ -109,8 +112,19 @@ from sglang.srt.layers.moe import initialize_moe_config
 from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
 from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 from sglang.srt.layers.quantization.unquant import initialize_bf16_gemm_config
-from sglang.srt.lora.lora_drainer import LoRADrainer
-from sglang.srt.lora.lora_overlap_loader import LoRAOverlapLoader
+
+if sys.platform == "win32":
+
+    class _WindowsUnsupportedLoRA:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError(
+                "LoRA serving is not supported by the Windows backend"
+            )
+
+    LoRADrainer = LoRAOverlapLoader = _WindowsUnsupportedLoRA
+else:
+    from sglang.srt.lora.lora_drainer import LoRADrainer
+    from sglang.srt.lora.lora_overlap_loader import LoRAOverlapLoader
 from sglang.srt.managers.disagg_service import maybe_create_ascend_config_store
 from sglang.srt.managers.hisparse_coordinator import HiSparseCoordinator
 from sglang.srt.managers.io_struct import (
@@ -312,10 +326,20 @@ from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import PortArgs, ServerArgs, compute_world_size
 from sglang.srt.session.session_controller import SessionController
 from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
-from sglang.srt.speculative.dflash_utils import validate_dflash_request
 from sglang.srt.speculative.eagle_utils import (
     get_draft_recurrent_hidden_state_spec_from_config,
 )
+
+if sys.platform == "win32":
+
+    def _windows_dflash_unsupported(*args, **kwargs):
+        raise RuntimeError(
+            "DFlash speculative decoding is not supported by the Windows backend"
+        )
+
+    validate_dflash_request = _windows_dflash_unsupported
+else:
+    from sglang.srt.speculative.dflash_utils import validate_dflash_request
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.speculative.uno_validation import validate_uno_request
 from sglang.srt.state_capturer.indexer_topk import destroy_global_indexer_capturer
@@ -1066,6 +1090,17 @@ class Scheduler(
 
     def init_memory_pools(self):
         """Allocate KV cache pools for target and draft workers."""
+        if (
+            self.draft_worker is not None
+            and not self.server_args.is_startup_weight_load_overlap
+        ):
+            # EAGLE/MTP checkpoints can load duplicate embedding and lm-head
+            # storage. Release it before target-pool sizing so that storage is
+            # available to both target and draft KV caches. Deferred startup
+            # loading still has sentinel target weights here and retains the
+            # established post-target-allocation preparation path.
+            self.draft_worker.prepare_memory_pool_allocation()
+
         self.init_target_memory_pool()
         # Lands the retraction backend on the disagg bag before the draft
         # worker's HiCache plan reads it.
@@ -5823,7 +5858,7 @@ def run_scheduler_process(
     except Exception:
         traceback = get_exception_traceback()
         logger.error(f"Scheduler hit an exception: {traceback}")
-        parent_process.send_signal(signal.SIGQUIT)
+        parent_process.send_signal(CHILD_FAILURE_SIGNAL)
         # Opt-in: SIGKILL the pgroup so sibling ranks don't spew thousands
         # of NCCL/TCPStore tracebacks before they finally die.
         if envs.SGLANG_KILLPG_ON_SCHEDULER_EXCEPTION.get():

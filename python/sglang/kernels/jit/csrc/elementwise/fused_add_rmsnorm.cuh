@@ -10,6 +10,7 @@
 #include <tvm/ffi/container/tensor.h>
 
 #include <cooperative_groups.h>
+#include <cstdint>
 #include <type_traits>
 
 namespace sglang {
@@ -168,7 +169,7 @@ struct FusedAddRMSNormKernel {
     if (hidden_size <= (device::kMaxVecBytes == 32 ? 12288 : 8192)) {
       int elements_in_vec = device::kMaxVecBytes / sizeof(DType);
       int vec_hidden_size = hidden_size / elements_in_vec;
-      uint threads = (vec_hidden_size + 31) / 32 * 32;
+      uint32_t threads = (vec_hidden_size + 31) / 32 * 32;
 
       // Runtime check
       host::RuntimeCheck(
@@ -180,7 +181,7 @@ struct FusedAddRMSNormKernel {
 
       // Launch kernel
       auto kernel = fused_add_rmsnorm_reg_kernel<kCastXBeforeOutMul, DType, device::kMaxVecBytes>;
-      LaunchKernel(static_cast<uint>(N.unwrap()), threads, device.unwrap())
+      LaunchKernel(static_cast<uint32_t>(N.unwrap()), threads, device.unwrap())
           .enable_pdl(false)(
               kernel,
               reinterpret_cast<DType*>(input.data_ptr()),

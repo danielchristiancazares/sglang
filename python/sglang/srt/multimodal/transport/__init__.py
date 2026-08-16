@@ -1,5 +1,6 @@
 """GPU transports for multimodal feature tensors."""
 
+import sys
 from typing import Literal
 
 from sglang.srt.runtime_context import get_parallel
@@ -14,7 +15,7 @@ def determine_tensor_transport_mode() -> TensorTransportMode:
     inject the address only into scheduler actors for a multi-node deployment,
     and external launchers may use an environment-based rendezvous instead.
     """
-    if get_parallel().nnodes > 1:
+    if get_parallel().nnodes > 1 or sys.platform == "win32":
         # CUDA IPC and POSIX shared memory are local to one node.
         return "default"
     return "cuda_ipc"

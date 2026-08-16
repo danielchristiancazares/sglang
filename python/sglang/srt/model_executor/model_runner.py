@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from typing import Optional, Union
@@ -81,7 +82,20 @@ from sglang.srt.layers.cp.utils import (
 )
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.sampler import create_sampler
-from sglang.srt.lora.lora_manager import LoRAManager, init_lora_cuda_graph_moe_buffers
+if sys.platform == "win32":
+
+    class LoRAManager:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("LoRA serving is not supported by the Windows backend")
+
+    def init_lora_cuda_graph_moe_buffers(*args, **kwargs):
+        raise RuntimeError("LoRA serving is not supported by the Windows backend")
+
+else:
+    from sglang.srt.lora.lora_manager import (
+        LoRAManager,
+        init_lora_cuda_graph_moe_buffers,
+    )
 from sglang.srt.lora.lora_registry import LoRARef
 from sglang.srt.managers.schedule_batch import sanity_check_mm_pad_shift_value
 from sglang.srt.mem_cache import kv_cache_dtype

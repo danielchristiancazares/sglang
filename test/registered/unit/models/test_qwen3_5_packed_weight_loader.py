@@ -19,7 +19,12 @@ from unittest.mock import MagicMock
 import torch
 
 from sglang.srt.layers.parameter import PerTensorScaleParameter
-from sglang.srt.models.qwen3_5 import Qwen3_5GatedDeltaNet
+from sglang.srt.models.qwen3_5 import (
+    Qwen3_5GatedDeltaNet,
+    _reorder_grouped_v_heads_to_tiled,
+    _restore_gguf_qwen35_linear_attention_tensor,
+    _restore_gguf_tiled_v_heads,
+)
 
 
 def _make_mock_module(output_sizes):
@@ -210,6 +215,55 @@ class TestMakePackedWeightLoader(unittest.TestCase):
             # .view(-1) should flatten to [1]
             self.assertEqual(chunk.shape, torch.Size([1]))
             self.assertAlmostEqual(chunk.item(), 0.75, places=5)
+
+
+class TestQwen35GGUFVHeadLayout(unittest.TestCase):
+    def setUp(self):
+        self.config = SimpleNamespace(
+            linear_num_key_heads=2,
+            linear_num_value_heads=6,
+            linear_key_head_dim=2,
+            linear_value_head_dim=2,
+        )
+
+    def test_grouped_and_tiled_layouts_round_trip(self):
+        grouped = torch.arange(2 * 6 * 2).reshape(2, 12)
+        tiled = _reorder_grouped_v_heads_to_tiled(grouped, -1, 2, 6, 2)
+
+        self.assertFalse(torch.equal(tiled, grouped))
+        restored = _restore_gguf_tiled_v_heads(tiled, -1, 2, 6, 2)
+        torch.testing.assert_close(restored, grouped)
+
+    def test_restores_quantized_qkv_value_rows(self):
+        q = torch.full((4, 3), 10, dtype=torch.uint8)
+        k = torch.full((4, 3), 20, dtype=torch.uint8)
+        grouped_v = torch.arange(12 * 3, dtype=torch.uint8).reshape(12, 3)
+        tiled_v = _reorder_grouped_v_heads_to_tiled(grouped_v, 0, 2, 6, 2)
+        converted = torch.cat((q, k, tiled_v), dim=0)
+
+        restored = _restore_gguf_qwen35_linear_attention_tensor(
+            "model.layers.0.linear_attn.in_proj_qkv.qweight",
+            converted,
+            self.config,
+        )
+
+        torch.testing.assert_close(restored[:4], q)
+        torch.testing.assert_close(restored[4:8], k)
+        torch.testing.assert_close(restored[8:], grouped_v)
+
+    def test_restores_conv_value_channels_only(self):
+        qk = torch.full((8, 4), -1.0)
+        grouped_v = torch.arange(12 * 4, dtype=torch.float32).reshape(12, 4)
+        tiled_v = _reorder_grouped_v_heads_to_tiled(grouped_v, 0, 2, 6, 2)
+
+        restored = _restore_gguf_qwen35_linear_attention_tensor(
+            "model.layers.0.linear_attn.conv1d.weight",
+            torch.cat((qk, tiled_v), dim=0),
+            self.config,
+        )
+
+        torch.testing.assert_close(restored[:8], qk)
+        torch.testing.assert_close(restored[8:], grouped_v)
 
 
 if __name__ == "__main__":

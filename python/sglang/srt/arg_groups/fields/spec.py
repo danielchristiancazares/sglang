@@ -119,6 +119,21 @@ class Spec(msgspec.Struct):
     speculative_use_rejection_sampling: A[
         bool, "Use rejection sampling for speculative decoding (requires topk=1)."
     ] = False
+    speculative_draft_sampling_top_k: A[
+        Optional[int],
+        "Use an aligned sparse top-k draft distribution. Under rejection sampling it is the exact sampled q; for target-only trees it scores candidate allocation. The draft path applies the request's additive penalties, logit bias, temperature, and top-p; disabled by default.",
+    ] = None
+    speculative_tree_depth_discount: A[
+        float,
+        "Multiply globally ranked tree-node scores by this factor per additional depth. Values below 1 favor root breadth without changing candidate identities or the continuation beam.",
+    ] = 1.0
+    speculative_tree_sampling_mode: A[
+        str,
+        Arg(
+            help="Tree verification rule. 'target_only' samples directly from p; 'swor' samples ordered draft siblings without replacement and applies exact recursive p/q correction.",
+            choices=["target_only", "swor"],
+        ),
+    ] = "target_only"
     speculative_token_map: A[
         Optional[str],
         "The path of the draft model's small vocab table.",

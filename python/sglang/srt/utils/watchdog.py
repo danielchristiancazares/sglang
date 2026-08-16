@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import signal
 import sys
 import threading
 import time
@@ -12,6 +11,7 @@ from typing import Callable, List, Optional
 
 import psutil
 
+from sglang.srt.utils.common import CHILD_FAILURE_SIGNAL
 from sglang.srt.utils.cudacore_pyspy_dump_utils import pyspy_dump_schedulers
 
 logger = logging.getLogger(__name__)
@@ -160,7 +160,7 @@ class WatchdogRaw:
         if not self.soft:
             # Wait for some time so that the parent process can print the error.
             time.sleep(5)
-            self.parent_process.send_signal(signal.SIGQUIT)
+            self.parent_process.send_signal(CHILD_FAILURE_SIGNAL)
 
 
 class SubprocessWatchdog:
@@ -218,6 +218,6 @@ class SubprocessWatchdog:
                 f"with exit code {proc.exitcode}. "
                 f"Triggering SIGQUIT for cleanup..."
             )
-            os.kill(os.getpid(), signal.SIGQUIT)
+            os.kill(os.getpid(), CHILD_FAILURE_SIGNAL)
             return True
         return False

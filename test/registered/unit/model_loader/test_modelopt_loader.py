@@ -659,7 +659,6 @@ class TestParseQuantHfConfig(CustomTestCase):
         # eligible MoE experts; this test stops at quantization-method routing.
         self.assertEqual(self.model_config.quantization, "modelopt_fp4")
 
-
 class TestModelOptFp4LoaderSelection(CustomTestCase):
     def test_draft_modelopt_fp4_uses_checkpoint_exclusions(self):
         cases = (
@@ -713,7 +712,7 @@ class TestModelOptFp4LoaderSelection(CustomTestCase):
                 loader = get_model_loader(
                     LoadConfig(**{option: "/tmp/modelopt"}), model_config
                 )
-                self.assertIsInstance(loader, ModelOptModelLoader)
+            self.assertIsInstance(loader, ModelOptModelLoader)
 
 
 class TestModelOptMixedPrecisionConfig(CustomTestCase):

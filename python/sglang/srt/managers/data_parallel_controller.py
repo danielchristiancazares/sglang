@@ -16,7 +16,6 @@
 import faulthandler
 import logging
 import multiprocessing as mp
-import signal
 import threading
 import time
 from collections.abc import Callable
@@ -65,6 +64,7 @@ from sglang.srt.server_args import (
 )
 from sglang.srt.utils import numa_utils
 from sglang.srt.utils.common import (
+    CHILD_FAILURE_SIGNAL,
     configure_logger,
     kill_itself_when_parent_died,
     maybe_reindex_device_id,
@@ -876,4 +876,4 @@ def run_data_parallel_controller_process(
     except Exception:
         traceback = get_exception_traceback()
         logger.error(f"DataParallelController hit an exception: {traceback}")
-        parent_process.send_signal(signal.SIGQUIT)
+        parent_process.send_signal(CHILD_FAILURE_SIGNAL)

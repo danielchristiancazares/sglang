@@ -40,7 +40,6 @@ import fastapi
 import numpy as np
 import pybase64
 import torch
-import uvloop
 import zmq
 import zmq.asyncio
 from fastapi import BackgroundTasks
@@ -150,6 +149,7 @@ from sglang.srt.server_args import (
     ServerArgs,
 )
 from sglang.srt.utils import (
+    CHILD_FAILURE_SIGNAL,
     configure_gc_warning,
     freeze_gc,
     get_bool_env_var,
@@ -163,6 +163,7 @@ from sglang.srt.utils.cudacore_pyspy_dump_utils import (
     pyspy_dump_schedulers,
     trigger_cuda_user_coredump,
 )
+from sglang.srt.utils.event_loop import install_event_loop_policy
 from sglang.srt.utils.hf_transformers_utils import (
     get_processor,
     get_tokenizer,
@@ -175,7 +176,7 @@ from sglang.srt.utils.watchdog import Watchdog
 from sglang.srt.utils.weight_versions import add_weight_versions_to_meta_info
 from sglang.utils import TypeBasedDispatcher, get_exception_traceback
 
-asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+install_event_loop_policy()
 
 _REQUEST_STATE_WAIT_TIMEOUT = envs.SGLANG_REQUEST_STATE_WAIT_TIMEOUT.get()
 
@@ -2224,11 +2225,21 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
         # due to the CPython limitation.
         if threading.current_thread() is threading.main_thread():
             signal_handler = self.signal_handler_class(self)
-            loop.add_signal_handler(signal.SIGTERM, signal_handler.sigterm_handler)
-            # Update the signal handler for the process. It overrides the sigquit handler in the launch phase.
-            loop.add_signal_handler(
-                signal.SIGQUIT, signal_handler.running_phase_sigquit_handler
-            )
+            try:
+                loop.add_signal_handler(signal.SIGTERM, signal_handler.sigterm_handler)
+                # Update the child-failure handler installed during launch.
+                loop.add_signal_handler(
+                    CHILD_FAILURE_SIGNAL,
+                    signal_handler.running_phase_sigquit_handler,
+                )
+            except NotImplementedError:
+                # ProactorEventLoop on Windows does not implement
+                # add_signal_handler; Python's main-thread handler does.
+                signal.signal(signal.SIGTERM, signal_handler.sigterm_handler)
+                signal.signal(
+                    CHILD_FAILURE_SIGNAL,
+                    signal_handler.running_phase_sigquit_handler,
+                )
 
         self.asyncio_tasks.add(
             loop.create_task(print_exception_wrapper(self.sigterm_watchdog))

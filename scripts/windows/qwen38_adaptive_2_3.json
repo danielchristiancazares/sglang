@@ -1,0 +1,11 @@
+{
+  "1": {
+    "candidate_steps": [2, 3],
+    "ema_alpha": 0.2,
+    "update_interval": 8,
+    "warmup_batches": 16,
+    "down_hysteresis": 0.0,
+    "up_hysteresis": 0.2,
+    "ceiling_coeff": 0
+  }
+}

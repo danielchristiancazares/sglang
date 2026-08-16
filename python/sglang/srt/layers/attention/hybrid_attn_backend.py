@@ -39,6 +39,10 @@ class HybridAttnBackend(AttentionBackend):
         self.kv_index_translator = model_runner.kv_index_translator
         self.spec_attn_is_decode = get_spec().speculative_attention_mode == "decode"
         self.spec_attn_is_prefill = get_spec().speculative_attention_mode == "prefill"
+        self.draft_extend_uses_decode = bool(
+            getattr(model_runner, "is_draft_worker", False)
+            and getattr(model_runner, "draft_attention_backend", None)
+        )
         # Gates the FutureMap's per-step seq_lens D2H (decide_needs_cpu_seq_lens
         # ORs it across backends). Count only what runs in the spec decode loop:
         # decode always, prefill only when mode=prefill routes verify to it --
@@ -76,6 +80,8 @@ class HybridAttnBackend(AttentionBackend):
             - prefill: Always uses prefill backend
         """
         if forward_mode.is_decode_or_idle():
+            return self.decode_backend
+        elif forward_mode.is_draft_extend_v2() and self.draft_extend_uses_decode:
             return self.decode_backend
         elif forward_mode.is_target_verify():
             return (
@@ -223,25 +229,3 @@ class HybridAttnBackend(AttentionBackend):
         else:
             backend = self.prefill_backend
         return backend.update_mamba_state_after_mtp_verify(*args, **kwargs)
-
-    def forward(
-        self,
-        q: torch.Tensor = None,
-        k: torch.Tensor = None,
-        v: torch.Tensor = None,
-        layer: RadixAttention = None,
-        forward_batch: ForwardBatch = None,
-        save_kv_cache: bool = True,
-        **kwargs,
-    ):
-        """Delegate forward to the appropriate backend based on forward mode."""
-        backend = self._select_backend(forward_batch.forward_mode)
-        return backend.forward(
-            q=q,
-            k=k,
-            v=v,
-            layer=layer,
-            forward_batch=forward_batch,
-            save_kv_cache=save_kv_cache,
-            **kwargs,
-        )

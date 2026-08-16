@@ -15,6 +15,8 @@
 
 import logging
 import math
+import sys
+from functools import partial
 from typing import Optional
 
 import torch
@@ -57,22 +59,47 @@ _is_xpu = is_xpu()
 _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
 
 if _is_cuda:
-    from sgl_kernel import gelu_and_mul as _sgl_gelu_and_mul
-    from sgl_kernel import gelu_tanh_and_mul as _sgl_gelu_tanh_and_mul
-    from sgl_kernel import silu_and_mul as _sgl_silu_and_mul
+    if sys.platform == "win32":
 
-    from sglang.kernels.ops.activation.activation import (
-        gelu_and_mul as _jit_gelu_and_mul,
-    )
-    from sglang.kernels.ops.activation.activation import (
-        gelu_tanh_and_mul as _jit_gelu_tanh_and_mul,
-    )
-    from sglang.kernels.ops.activation.activation import (
-        relu2,
-    )
-    from sglang.kernels.ops.activation.activation import (
-        silu_and_mul as _jit_silu_and_mul,
-    )
+        from sglang.kernels.ops.activation.activation import (
+            silu_and_mul_with_activation_rounding as _jit_silu_and_mul,
+        )
+
+        def _copy_and_mul(activation, input: torch.Tensor, out: torch.Tensor):
+            d = input.shape[-1] // 2
+            out.copy_(activation(input[..., :d]) * input[..., d:])
+
+        _sgl_silu_and_mul = _jit_silu_and_mul
+
+        def _sgl_gelu_and_mul(input: torch.Tensor, out: torch.Tensor):
+            _copy_and_mul(F.gelu, input, out)
+
+        def _sgl_gelu_tanh_and_mul(input: torch.Tensor, out: torch.Tensor):
+            _copy_and_mul(partial(F.gelu, approximate="tanh"), input, out)
+
+        def relu2(input: torch.Tensor) -> torch.Tensor:
+            return torch.relu(input).square()
+
+        _jit_gelu_and_mul = None
+        _jit_gelu_tanh_and_mul = None
+
+    else:
+        from sgl_kernel import gelu_and_mul as _sgl_gelu_and_mul
+        from sgl_kernel import gelu_tanh_and_mul as _sgl_gelu_tanh_and_mul
+        from sgl_kernel import silu_and_mul as _sgl_silu_and_mul
+
+        from sglang.kernels.ops.activation.activation import (
+            gelu_and_mul as _jit_gelu_and_mul,
+        )
+        from sglang.kernels.ops.activation.activation import (
+            gelu_tanh_and_mul as _jit_gelu_tanh_and_mul,
+        )
+        from sglang.kernels.ops.activation.activation import (
+            relu2,
+        )
+        from sglang.kernels.ops.activation.activation import (
+            silu_and_mul as _jit_silu_and_mul,
+        )
 
     # The jit act-and-mul kernel requires the per-rank hidden size to be a
     # multiple of the vector width (kMaxVecBytes/dtype: 32B on SM100+, else 16B --
@@ -92,7 +119,10 @@ if _is_cuda:
     def _act_and_mul(jit_fn, sgl_fn, input: torch.Tensor, out=None) -> torch.Tensor:
         if out is None:
             out = input.new_empty(*input.shape[:-1], input.shape[-1] // 2)
-        (jit_fn if _jit_act_supported(out) else sgl_fn)(input, out)
+        if sys.platform == "win32":
+            sgl_fn(input, out)
+        else:
+            (jit_fn if _jit_act_supported(out) else sgl_fn)(input, out)
         return out
 
     def silu_and_mul(input: torch.Tensor, out=None) -> torch.Tensor:

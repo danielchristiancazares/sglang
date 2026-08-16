@@ -191,7 +191,6 @@ class CompressedTensorsConfig(QuantizationConfig):
                 return UnquantizedLinearMethod()
             layer.scheme = scheme
             return CompressedTensorsLinearMethod(self)
-
         from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 
         if isinstance(layer, ParallelLMHead):
@@ -218,6 +217,10 @@ class CompressedTensorsConfig(QuantizationConfig):
                 )
                 return None
             return CompressedTensorsKVCacheMethod(self)
+        # Importing FusedMoE also imports its optional Triton/sgl_kernel runner.
+        # Keep that dependency out of dense compressed-tensors models.
+        if not any(cls.__name__ == "FusedMoE" for cls in type(layer).__mro__):
+            return None
 
         from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
 

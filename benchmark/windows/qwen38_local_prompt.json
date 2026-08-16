@@ -1,0 +1,14 @@
+[
+  {
+    "conversations": [
+      {
+        "from": "human",
+        "value": "Inspect this local program carefully, preserve its behavior, and explain the next useful change. The service reads a request, validates the input, computes a result, and returns structured output. Focus on concrete code paths, correctness, and measured performance."
+      },
+      {
+        "from": "gpt",
+        "value": "I will trace the request path, identify the measured bottleneck, and propose a focused change with validation."
+      }
+    ]
+  }
+]

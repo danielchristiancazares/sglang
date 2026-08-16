@@ -9,10 +9,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// rank maps it in parallel. Python's `materialize()` unlinks after cloning;
 /// this `Drop` covers the paths where the buffers never reach Python (aborted
 /// while parked, late result purged).
+#[cfg(unix)]
 pub struct ShmSegment {
     pub(super) name: String,
 }
 
+#[cfg(unix)]
 impl ShmSegment {
     /// Create `/dev/shm/{name}` holding exactly `bytes`. No leading slash —
     /// the name must suit Python's `SharedMemory(name=…)` (shm_open adds one).
@@ -68,6 +70,7 @@ impl ShmSegment {
     }
 }
 
+#[cfg(unix)]
 impl Drop for ShmSegment {
     fn drop(&mut self) {
         if let Ok(c_name) = std::ffi::CString::new(format!("/{}", self.name)) {
@@ -75,6 +78,26 @@ impl Drop for ShmSegment {
             // by Python's materialize) is fine to ignore.
             unsafe { libc::shm_unlink(c_name.as_ptr()) };
         }
+    }
+}
+
+/// Windows' named mappings disappear when the last handle closes, while this
+/// handoff returns the name before Python opens its handle. Keep the safe inline
+/// transport until that ownership transfer has an explicit acknowledgement.
+#[cfg(not(unix))]
+pub struct ShmSegment;
+
+#[cfg(not(unix))]
+impl ShmSegment {
+    pub fn create(_name: String, _bytes: &[u8]) -> Result<Self, String> {
+        Err(format!(
+            "named multimodal shared memory is unavailable on {}",
+            std::env::consts::OS
+        ))
+    }
+
+    pub fn into_name(self) -> String {
+        unreachable!("the non-POSIX shared-memory transport cannot create segments")
     }
 }
 
@@ -87,12 +110,12 @@ pub(super) fn shm_name(item: usize) -> String {
 }
 
 /// Test helper shared with the result store's parking tests.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn shm_path(name: &str) -> std::path::PathBuf {
     std::path::Path::new("/dev/shm").join(name)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

@@ -16,7 +16,6 @@
 import dataclasses
 import logging
 import os
-import signal
 from collections import OrderedDict, defaultdict
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -51,7 +50,12 @@ from sglang.srt.runtime_context import (
     publish,
 )
 from sglang.srt.server_args import PortArgs, ServerArgs
-from sglang.srt.utils import configure_logger, freeze_gc, kill_itself_when_parent_died
+from sglang.srt.utils import (
+    CHILD_FAILURE_SIGNAL,
+    configure_logger,
+    freeze_gc,
+    kill_itself_when_parent_died,
+)
 from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 from sglang.srt.utils.network import get_zmq_socket
 from sglang.srt.utils.patch_tokenizer import decode_without_hf_kwargs
@@ -559,4 +563,4 @@ def run_detokenizer_process(
         logger.error(f"DetokenizerManager hit an exception: {traceback}")
         if manager is not None:
             manager.maybe_clear_socket_mapping()
-        parent_process.send_signal(signal.SIGQUIT)
+        parent_process.send_signal(CHILD_FAILURE_SIGNAL)

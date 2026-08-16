@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Any
 
 from sglang.srt.arg_groups.overrides import (
@@ -357,17 +358,19 @@ def handle_linear_attn_backend(server_args: Any):
     # compensated hi/lo accumulation. The intra-window interaction
     # uses a strictly-lower causal mask, so it is valid ONLY for a linear
     # draft chain (speculative_eagle_topk in {None, 1}, i.e. NEXTN / MTP);
-    # EAGLE tree verify (topk > 1) must fall back to the recurrent verify.
+    # Native Windows also has the selective C++/CUDA low-rank GDN tree kernel,
+    # which preserves tree ancestry without a full recurrent state per node.
     # GDN sizes the window to the draft maximum; KDA (kda_backend) keeps a
     # --linear-replayssm-cache-len window and folds via its own fused
     # verify ring-write + commit_kda_replayssm_after_verify.
     if cfg.enable_linear_replayssm_spec:
-        if cfg.speculative_eagle_topk not in (None, 1):
+        if cfg.speculative_eagle_topk not in (None, 1) and not (
+            sys.platform == "win32" and get_platform().is_cuda
+        ):
             raise ValueError(
                 "--enable-linear-replayssm-spec requires a linear draft chain "
-                "(--speculative-eagle-topk in {None, 1}); the chunked verify "
-                "kernel uses a strictly-lower causal mask and is invalid for "
-                "EAGLE tree verify. Got "
+                "(--speculative-eagle-topk in {None, 1}) unless the native "
+                "Windows CUDA GDN tree-replay kernel is available. Got "
                 f"--speculative-eagle-topk={cfg.speculative_eagle_topk!r}."
             )
         if decode not in ("triton", "flashinfer"):

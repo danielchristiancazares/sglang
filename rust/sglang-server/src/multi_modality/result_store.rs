@@ -88,11 +88,13 @@ pub(super) fn park_features_in_shm(features: &[f32], grids: &[[u32; 3]]) -> Feat
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::super::shm::shm_path;
     use super::*;
 
     /// Per-item slicing follows the grid row counts, so Python's
     /// `(rows, feature_dim)` reshape of a segment sees only its own item.
+    #[cfg(unix)]
     #[test]
     fn park_splits_features_by_grid() {
         // Two items: grids (1,2,2)=4 rows and (1,1,2)=2 rows, dim=3.
@@ -111,6 +113,19 @@ mod tests {
             read(&segments[1]),
             bytemuck::cast_slice::<f32, u8>(&features[12..])
         );
+    }
+
+    /// Platforms without POSIX shm preserve correctness through the inline
+    /// transport instead of rejecting multimodal work.
+    #[cfg(not(unix))]
+    #[test]
+    fn shared_memory_falls_back_inline() {
+        let features: Vec<f32> = (0..12).map(|i| i as f32).collect();
+        let grids = [[1, 2, 2]];
+        assert!(matches!(
+            park_features_in_shm(&features, &grids),
+            FeatureStore::Inline(values) if values == features
+        ));
     }
 
     /// A degenerate shape must degrade to inline, never a shm-side panic.

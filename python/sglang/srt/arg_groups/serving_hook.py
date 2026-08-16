@@ -8,6 +8,7 @@ import logging
 import os
 import random
 import socket
+import sys
 from typing import Any
 
 from sglang.srt.arg_groups.overrides import (
@@ -586,7 +587,11 @@ def handle_missing_default_values(server_args: Any):
         declare_resolution(
             server_args,
             "_handle_missing_default_values",
-            served_model_name=cfg.model_path,
+            served_model_name=(
+                os.path.basename(cfg.model_path)
+                if sys.platform == "win32"
+                else cfg.model_path
+            ),
         )
     if cfg.device is None:
         declare_resolution(

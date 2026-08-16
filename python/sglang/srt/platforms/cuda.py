@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sys
 from contextlib import contextmanager
 from typing import Optional
 
@@ -91,7 +92,10 @@ class CudaDeviceMixin(DeviceMixin):
             del os.environ["CUDA_VISIBLE_DEVICES"]
 
     def get_torch_distributed_backend_str(self) -> str:
-        return "nccl"
+        # PyTorch does not ship NCCL on native Windows.  The Windows port is
+        # intentionally single-GPU, where Gloo provides the process-group
+        # control plane without CUDA collectives.
+        return "gloo" if sys.platform == "win32" else "nccl"
 
     @classmethod
     def seed_everything(cls, seed: int | None = None) -> None:

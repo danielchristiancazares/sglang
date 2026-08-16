@@ -1,6 +1,7 @@
 # mapping on device memory, host memory and memory allocator
 
 import logging
+import sys
 from typing import Optional
 
 import torch
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 # sgl_kernel.kvcacheio is only available in CUDA/ROCm sgl-kernel builds (not XPU/MPS/NPU/CPU).
 _is_cuda = is_cuda()
 _is_hip = is_hip()
-if _is_cuda or _is_hip:
+if (_is_cuda or _is_hip) and sys.platform != "win32":
     from sgl_kernel.kvcacheio import transfer_kv_all_layer_mla
 else:
 

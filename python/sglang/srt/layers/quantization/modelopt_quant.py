@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import regex as re
@@ -81,6 +82,14 @@ if TYPE_CHECKING:
         StandardDispatchOutput,
     )
     from sglang.srt.models.utils import WeightsMapper
+
+
+def _fused_moe_type():
+    if sys.platform == "win32":
+        return ()
+    from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
+
+    return FusedMoE
 
 
 def _make_per_tensor_scale_parameter(
@@ -325,8 +334,9 @@ class ModelOptQuantConfig(QuantizationConfig):
         Moe: type[FusedMoEMethodBase],
     ) -> Optional[QuantizeMethodBase]:
         from sglang.srt.layers.linear import LinearBase
-        from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
         from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
+
+        FusedMoE = _fused_moe_type()
 
         if isinstance(layer, (LinearBase, ParallelLMHead)):
             if is_layer_skipped(
@@ -993,11 +1003,12 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfig):
         self, layer: torch.nn.Module, prefix: str
     ) -> Optional[QuantizeMethodBase]:
         from sglang.srt.layers.linear import LinearBase
-        from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
         from sglang.srt.layers.vocab_parallel_embedding import (
             ParallelLMHead,
             VocabParallelEmbedding,
         )
+
+        FusedMoE = _fused_moe_type()
 
         quant_algo = self._resolve_quant_algo(prefix)
 
@@ -1614,8 +1625,9 @@ class ModelOptFp4Config(ModelOptQuantConfig):
 
     def get_quant_method(self, layer: torch.nn.Module, prefix: str):
         from sglang.srt.layers.linear import LinearBase
-        from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
         from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
+
+        FusedMoE = _fused_moe_type()
 
         if not self.is_checkpoint_nvfp4_serialized:
             if isinstance(layer, (LinearBase, ParallelLMHead)):
@@ -1658,7 +1670,7 @@ class HybridFp8NvFp4Config(Fp8Config):
     def get_quant_method(
         self, layer: torch.nn.Module, prefix: str
     ) -> Optional[QuantizeMethodBase]:
-        from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
+        FusedMoE = _fused_moe_type()
 
         if isinstance(layer, FusedMoE):
             if not self.nvfp4_config.is_layer_excluded(prefix):
