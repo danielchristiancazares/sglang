@@ -278,6 +278,7 @@ POSITIONAL_FIELD_ORDER = (
     "speculative_accept_threshold_single",
     "speculative_accept_threshold_acc",
     "speculative_use_rejection_sampling",
+    "speculative_device_resident_cycle",
     "speculative_draft_sampling_top_k",
     "speculative_tree_depth_discount",
     "speculative_tree_sampling_mode",

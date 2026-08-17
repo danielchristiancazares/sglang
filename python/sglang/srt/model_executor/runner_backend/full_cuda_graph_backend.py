@@ -157,7 +157,14 @@ class FullCudaGraphBackend(BaseCudaGraphBackend):
             self._reuse_output_buffer = self._output_buffer is not None
         del warmup_output
 
-        graph = torch.cuda.CUDAGraph()
+        keep_graph = bool(
+            getattr(
+                runner.model_runner.server_args,
+                "speculative_device_resident_cycle",
+                False,
+            )
+        )
+        graph = torch.cuda.CUDAGraph(keep_graph=keep_graph)
 
         graph_ctx: Callable[..., AbstractContextManager]
         if (

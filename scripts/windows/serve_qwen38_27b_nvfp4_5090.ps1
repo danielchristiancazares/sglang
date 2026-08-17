@@ -82,6 +82,7 @@ param(
     [ValidateRange(1, 16)]
     [int] $SpeculativeEagleTopK = 1,
     [switch] $SpeculativeUseRejectionSampling = $true,
+    [switch] $SpeculativeDeviceResidentCycle,
     [ValidateSet(0, 4, 8, 16, 20, 32, 64)]
     [int] $SpeculativeDraftSamplingTopK = 20,
     [switch] $SpeculativeAlignTreeScoring,
@@ -196,6 +197,9 @@ if ($SpeculativeNumSteps -gt 0) {
     )
     if ($SpeculativeUseRejectionSampling) {
         $ServeArgs += '--speculative-use-rejection-sampling'
+    }
+    if ($SpeculativeDeviceResidentCycle) {
+        $ServeArgs += '--speculative-device-resident-cycle'
     }
     if ($SpeculativeDraftModelQuantization) {
         $ServeArgs += @(

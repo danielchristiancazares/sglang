@@ -119,6 +119,13 @@ class Spec(msgspec.Struct):
     speculative_use_rejection_sampling: A[
         bool, "Use rejection sampling for speculative decoding (requires topk=1)."
     ] = False
+    speculative_device_resident_cycle: A[
+        bool,
+        "Experimental batch-one EAGLE schedule that executes the next draft "
+        "decode immediately after draft extend and carries its verify input on "
+        "device into the following target graph. Requires the single-layer "
+        "tree path; disabled by default.",
+    ] = False
     speculative_draft_sampling_top_k: A[
         Optional[int],
         "Use an aligned sparse top-k draft distribution. Under rejection sampling it is the exact sampled q; for target-only trees it scores candidate allocation. The draft path applies the request's additive penalties, logit bias, temperature, and top-p; disabled by default.",

@@ -39,6 +39,7 @@ def gdn_tree_replay_verify(
     g_cache: torch.Tensor,
     beta_cache: torch.Tensor,
     scale: float,
+    max_tree_depth: int | None = None,
 ) -> torch.Tensor:
     """Evaluate a GDN proposal tree from one persistent checkpoint.
 
@@ -48,6 +49,8 @@ def gdn_tree_replay_verify(
     inputs for an exact accepted-path commit after sampling.
     """
     batch_size, num_nodes = parent.shape
+    if max_tree_depth is None:
+        max_tree_depth = num_nodes
     total_tokens = batch_size * num_nodes
     num_value_heads = A_log.numel()
     value_dim = checkpoint_state.shape[-2]
@@ -65,8 +68,13 @@ def gdn_tree_replay_verify(
         dtype=torch.float32,
         device=q.device,
     )
+    replay_params = torch.empty(
+        (batch_size, num_value_heads, num_nodes, 2),
+        dtype=torch.float32,
+        device=q.device,
+    )
     pair_dots = torch.empty(
-        (batch_size, num_key_heads, num_nodes, num_nodes, 2),
+        (batch_size, num_key_heads, num_nodes, max_tree_depth, 2),
         dtype=torch.float32,
         device=q.device,
     )
@@ -86,8 +94,10 @@ def gdn_tree_replay_verify(
         g_cache,
         beta_cache,
         inv_norms,
+        replay_params,
         pair_dots,
         output,
+        max_tree_depth,
         scale,
     )
     return output.reshape(v.shape)

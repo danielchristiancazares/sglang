@@ -183,6 +183,7 @@ class TestGdnTreeReplayJit(CustomTestCase):
             g_cache=gates,
             beta_cache=betas,
             scale=scale,
+            max_tree_depth=4,
         )
         torch.cuda.synchronize()
 
@@ -393,6 +394,7 @@ class TestGdnTreeReplayJit(CustomTestCase):
             g_cache=gates[0],
             beta_cache=betas[0],
             scale=scale,
+            max_tree_depth=4,
         )
         torch.cuda.synchronize()
         graph = torch.cuda.CUDAGraph()
@@ -413,6 +415,7 @@ class TestGdnTreeReplayJit(CustomTestCase):
                 g_cache=gates[0],
                 beta_cache=betas[0],
                 scale=scale,
+                max_tree_depth=4,
             )
 
         # Refresh every dynamic input, including the slot and topology, then

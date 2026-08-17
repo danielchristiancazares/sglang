@@ -94,12 +94,19 @@ def duplicate_prefix_tail_to_draft_branches(
     )
     src_slots = torch.gather(rows, 1, src_pos.reshape(bs, -1)).reshape(
         bs, topk - 1, page_size
-    )[vmask]
+    )
     tgt_slots = torch.gather(rows, 1, tgt_pos.reshape(bs, -1)).reshape(
         bs, topk - 1, page_size
-    )[vmask]
-    if src_slots.numel() > 0:
-        token_to_kv_pool.move_kv_cache(tgt_slots, src_slots)
+    )
+    # Boolean indexing lowers through a data-dependent nonzero and invalidates
+    # CUDA stream capture. Keep the fixed page-width shape instead: invalid
+    # lanes copy their target row to itself, while valid prefix lanes retain the
+    # original source -> target move. Branch targets are disjoint from the
+    # prefix source page, so these self-copies cannot race a useful move.
+    safe_src_slots = torch.where(vmask, src_slots, tgt_slots)
+    token_to_kv_pool.move_kv_cache(
+        tgt_slots.reshape(-1), safe_src_slots.reshape(-1)
+    )
 
 
 def prepare_for_draft_extend(
