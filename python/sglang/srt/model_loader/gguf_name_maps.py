@@ -66,6 +66,9 @@ def build_muse_glimmer_name_map(config: PretrainedConfig) -> Dict[str, str]:
 
 def build_qwen3_5_name_map(config: PretrainedConfig) -> Dict[str, str]:
     """Map llama.cpp's Qwen3.5 names to the canonical HF checkpoint names."""
+    # Multimodal Qwen3.5 checkpoints expose the decoder shape through a nested
+    # text config even when ``--language-model-only`` selects just that decoder.
+    config = getattr(config, "text_config", config)
     name_map = {
         "token_embd.weight": "model.embed_tokens.weight",
         "output_norm.weight": "model.norm.weight",
@@ -98,7 +101,9 @@ def build_qwen3_5_name_map(config: PretrainedConfig) -> Dict[str, str]:
         "attn_k_norm.weight": "self_attn.k_norm.weight",
     }
 
-    layer_types = config.layer_types
+    layer_types = getattr(config, "layer_types", None)
+    if layer_types is None:
+        layer_types = config.layers_block_type
     if len(layer_types) != config.num_hidden_layers:
         raise ValueError(
             "Qwen3.5 layer_types must match num_hidden_layers: "
@@ -152,5 +157,6 @@ def build_qwen3_5_name_map(config: PretrainedConfig) -> Dict[str, str]:
 # llama.cpp spells the arch "muse-glimmer" while the HF config says "muse_glimmer".
 GGUF_HF_NAME_MAP_BUILDERS: Dict[str, Callable[[PretrainedConfig], Dict[str, str]]] = {
     "muse_glimmer": build_muse_glimmer_name_map,
+    "qwen3_5": build_qwen3_5_name_map,
     "qwen3_5_text": build_qwen3_5_name_map,
 }

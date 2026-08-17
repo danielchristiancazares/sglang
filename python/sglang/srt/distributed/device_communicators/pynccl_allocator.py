@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import ctypes
 import logging
 import os
@@ -6,10 +8,12 @@ import traceback
 from contextlib import nullcontext
 
 import torch
-
 # The private _cuda_* pool APIs are absent before torch 2.8; the call sites below
 # reach them via torch._C.<name> so torch 2.7 (Ascend NPU) can still import this.
-from torch.cuda.memory import CUDAPluggableAllocator
+try:
+    from torch.cuda.memory import CUDAPluggableAllocator
+except ImportError:
+    CUDAPluggableAllocator = None
 
 from sglang.srt.distributed.parallel_state import GroupCoordinator
 from sglang.srt.environ import envs

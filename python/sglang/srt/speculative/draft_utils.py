@@ -96,6 +96,7 @@ class DraftBackendFactory:
         backend_map = {
             "flashinfer": self._create_flashinfer_decode_backend,
             "triton": self._create_triton_decode_backend,
+            "torch_native": self._create_torch_native_decode_backend,
             "intel_amx": self._create_intel_amx_decode_backend,
             "intel_xpu": self._create_intel_xpu_decode_backend,
             "aiter": self._create_aiter_decode_backend,
@@ -127,6 +128,7 @@ class DraftBackendFactory:
         backend_map = {
             "flashinfer": self._create_flashinfer_prefill_backend,
             "triton": self._create_triton_prefill_backend,
+            "torch_native": self._create_torch_native_prefill_backend,
             "intel_amx": self._create_intel_amx_prefill_backend,
             "intel_xpu": self._create_intel_xpu_prefill_backend,
             "aiter": self._create_aiter_prefill_backend,
@@ -260,6 +262,25 @@ class DraftBackendFactory:
                 self.draft_model_runner, self.topk, self.speculative_num_steps
             ),
         )
+
+    def _create_torch_native_decode_backend(self):
+        from sglang.srt.layers.attention.torch_native_backend import (
+            TorchNativeMultiStepDraftBackend,
+        )
+
+        return (
+            "torch_native",
+            TorchNativeMultiStepDraftBackend(
+                self.draft_model_runner, self.topk, self.speculative_num_steps
+            ),
+        )
+
+    def _create_torch_native_prefill_backend(self):
+        from sglang.srt.layers.attention.torch_native_backend import (
+            TorchNativeAttnBackend,
+        )
+
+        return "torch_native", TorchNativeAttnBackend(self.draft_model_runner)
 
     def _create_intel_amx_decode_backend(self):
         from sglang.srt.layers.attention.intel_amx_backend import (

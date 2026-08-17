@@ -79,6 +79,7 @@ from sglang.srt.utils import (
     is_cuda,
     is_float4_e2m1fn_x2,
     is_hip,
+    is_mps,
     is_npu,
     is_xpu,
     next_power_of_2,
@@ -108,6 +109,7 @@ _is_npu = is_npu()
 _is_cpu = is_cpu()
 _cpu_has_amx_support = cpu_has_amx_support()
 _is_hip = is_hip()
+_is_mps = is_mps()
 _is_fp8_fnuz = is_fp8_fnuz()
 # `SGLANG_AITER_KV_CACHE_LAYOUT` is only meaningful on the ROCm AITER backend
 # (HIP + --enable-aiter / SGLANG_USE_AITER=1). On any other platform / backend
@@ -395,7 +397,7 @@ class MambaPool:
     @dataclass(frozen=True, kw_only=True)
     class State:
         conv: List[torch.Tensor]
-        temporal: torch.Tensor
+        temporal: Union[torch.Tensor, List[torch.Tensor]]
         # GDN ReplaySSM ring buffers (slice 1a). Only allocated when
         # `--enable-linear-replayssm` is set; otherwise None so the legacy path is
         # byte-identical. Per-layer layout: [num_layers, num_slots, ...].
@@ -421,6 +423,8 @@ class MambaPool:
                     kwargs[name] = None
                 elif name in ("conv", "intermediate_conv_window"):
                     kwargs[name] = [conv[layer] for conv in v]
+                elif name == "temporal" and isinstance(v, list):
+                    kwargs[name] = v[layer]
                 else:
                     kwargs[name] = v[layer]
 
@@ -620,11 +624,24 @@ class MambaPool:
                     # CPU uses a different layout of conv_state for kernel optimization
                     conv_state = _init_amx_conv_state(conv_state)
 
-                temporal_state = torch.zeros(
-                    size=(num_mamba_layers, size + 1) + temporal_state_shape,
-                    dtype=ssm_dtype,
-                    device=device,
-                )
+                if _is_mps:
+                    # Intel Metal rejects large single MTLBuffers well before
+                    # total VRAM is exhausted. Keep the public layer indexing
+                    # contract while backing each recurrent layer separately.
+                    temporal_state = [
+                        torch.zeros(
+                            size=(size + 1,) + temporal_state_shape,
+                            dtype=ssm_dtype,
+                            device=device,
+                        )
+                        for _ in range(num_mamba_layers)
+                    ]
+                else:
+                    temporal_state = torch.zeros(
+                        size=(num_mamba_layers, size + 1) + temporal_state_shape,
+                        dtype=ssm_dtype,
+                        device=device,
+                    )
 
             # GDN ReplaySSM ring buffers (slice 1a). Allocated only when the
             # flag is on; otherwise left as None so the legacy State is
@@ -988,6 +1005,19 @@ class MambaPool:
         """Zero out mamba state at the given pool indices. Must run on forward stream."""
         for sibling in self._slot_siblings:
             sibling.reset_slots(indices)
+        if _is_mps:
+            # Intel MPS index_put_ can synchronize per mask and can crash its
+            # heap allocator for several slots. index_fill_ maps directly to a
+            # stable indexed fill and preserves the layer-major slot layout.
+            for tensor in self.mamba_cache.conv:
+                tensor.index_fill_(1, indices, 0)
+            temporal = self.mamba_cache.temporal
+            if isinstance(temporal, list):
+                for tensor in temporal:
+                    tensor.index_fill_(0, indices, 0)
+            else:
+                temporal.index_fill_(1, indices, 0)
+            return
         if self._should_fuse_slot_ops():
             from sglang.srt.mem_cache.mamba_slot_fused import fused_clear_conv_slots
 
@@ -1053,9 +1083,12 @@ class MambaPool:
                 self.mamba_cache.conv[i][:, dst_indices] = self.mamba_cache.conv[i][
                     :, src_indices
                 ]
-            self.mamba_cache.temporal[:, dst_indices] = self.mamba_cache.temporal[
-                :, src_indices
-            ]
+            temporal = self.mamba_cache.temporal
+            if isinstance(temporal, list):
+                for tensor in temporal:
+                    tensor[dst_indices] = tensor[src_indices]
+            else:
+                temporal[:, dst_indices] = temporal[:, src_indices]
         if self.replayssm_write_pos is not None:
             self.replayssm_write_pos[dst_indices] = 0
         for sibling in self._slot_siblings:
@@ -1067,8 +1100,11 @@ class MambaPool:
             conv[:, indices].to("cpu", non_blocking=True)
             for conv in self.mamba_cache.conv
         ]
-        temporal_cpu = self.mamba_cache.temporal[:, indices].to(
-            "cpu", non_blocking=True
+        temporal = self.mamba_cache.temporal
+        temporal_cpu = (
+            [tensor[indices].to("cpu", non_blocking=True) for tensor in temporal]
+            if isinstance(temporal, list)
+            else temporal[:, indices].to("cpu", non_blocking=True)
         )
         siblings_cpu = [s.get_cpu_slots(indices) for s in self._slot_siblings]
         current_platform.synchronize()
@@ -1092,9 +1128,14 @@ class MambaPool:
         current_platform.synchronize()
         for i, conv in enumerate(self.mamba_cache.conv):
             conv[:, indices] = conv_cpu[i].to(conv.device, non_blocking=True)
-        self.mamba_cache.temporal[:, indices] = temporal_cpu.to(
-            self.mamba_cache.temporal.device, non_blocking=True
-        )
+        temporal = self.mamba_cache.temporal
+        if isinstance(temporal, list):
+            for tensor, tensor_cpu in zip(temporal, temporal_cpu):
+                tensor[indices] = tensor_cpu.to(tensor.device, non_blocking=True)
+        else:
+            temporal[:, indices] = temporal_cpu.to(
+                temporal.device, non_blocking=True
+            )
         if siblings_cpu is not None:
             for sibling, data in zip(self._slot_siblings, siblings_cpu):
                 sibling.load_cpu_slots(data, indices)
@@ -2006,7 +2047,12 @@ class MHATokenToKVPool(KVCache):
         #   X = 16 / dtype_bytes — AITER-only (ignored elsewhere, no consumer kernel).
         # HND and vectorized_5d are mutually exclusive; HND takes precedence.
         self.use_hnd = envs.SGLANG_USE_HND_KVCACHE.get()
-        self.use_native_move_kv_cache = envs.SGLANG_NATIVE_MOVE_KV_CACHE.get()
+        # Triton's pointer-based slot mover is unavailable on MPS.  The native
+        # tensor implementation preserves the same per-layer row-copy contract
+        # and also avoids compiling the Triton warmup kernel during pool init.
+        self.use_native_move_kv_cache = (
+            envs.SGLANG_NATIVE_MOVE_KV_CACHE.get() or _is_mps
+        )
         if kv_cache_layout is not None:
             # Explicit physical-layout selector wins over the platform default.
             # This is a label only; layouts that change buffer identity (e.g. the
@@ -2059,7 +2105,11 @@ class MHATokenToKVPool(KVCache):
             else None
         )
 
-        if enable_kv_cache_copy and not self.use_hnd:
+        if (
+            enable_kv_cache_copy
+            and not self.use_hnd
+            and not self.use_native_move_kv_cache
+        ):
             # The tiled byte copy assumes NHD slot-rows; HND uses a (page, off)
             # gather in move_kv_cache instead, so skip the slot-row copy config.
             self._init_kv_copy_and_warmup()

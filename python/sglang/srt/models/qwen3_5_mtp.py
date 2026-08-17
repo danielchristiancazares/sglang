@@ -40,7 +40,7 @@ from sglang.srt.runtime_context import (
     get_parallel,
     get_spec,
 )
-from sglang.srt.utils import add_prefix, get_bool_env_var, is_hip, is_npu
+from sglang.srt.utils import add_prefix, get_bool_env_var, is_hip, is_mps, is_npu
 
 logger = logging.getLogger(__name__)
 

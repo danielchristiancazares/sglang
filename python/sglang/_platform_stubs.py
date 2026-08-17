@@ -382,7 +382,7 @@ def install_platform_stubs() -> None:
     if _platform_stubs_installed:
         return
 
-    if sys.platform != "darwin" or platform.machine() != "arm64":
+    if sys.platform != "darwin":
         return
 
     try:
@@ -392,6 +392,27 @@ def install_platform_stubs() -> None:
 
     if not torch.backends.mps.is_available():
         return
+
+    if not hasattr(torch, "get_default_device"):
+        def get_default_device():
+            # PyTorch 2.2 has ``set_default_device`` and the device context
+            # machinery, but lacks the matching public getter. A zero-element
+            # factory allocation observes both the global default and an
+            # enclosing ``with torch.device(...)`` context without reserving
+            # backing storage.
+            return torch.empty(0).device
+
+        torch.get_default_device = get_default_device
+
+    if not hasattr(torch, "get_device_module"):
+        def get_device_module(device=None):
+            if device is None or str(device).startswith("mps"):
+                return torch.mps
+            if str(device).startswith("cpu"):
+                return torch.cpu
+            raise RuntimeError(f"Unsupported device module: {device}")
+
+        torch.get_device_module = get_device_module
 
     if "triton" not in sys.modules and importlib.util.find_spec("triton") is None:
         # Register the meta-path finder first so later ``import triton.X``
