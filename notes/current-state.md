@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-16
-19:06 PDT.
+23:11 PDT.
 
 **Qualified source line:** commit `9681850bed660b9079ee1aee906cda819603da7a`
 (`Add exact SWOR tree verification and topology analysis`), with the final
@@ -57,6 +57,26 @@ The real promotion used seed `783025237` to make matched investigations easier,
 while ordinary production semantics retain stochastic rejection sampling. The
 single multi-step aligned-q graph recovered the fixed-work collapse caused by
 Python execution between draft depths and became the measured winner.
+
+## Active tree correctness hold
+
+A deterministic non-front acceptance reproducer found that the unified hybrid
+pool passed virtual target-KV slot ids directly to a physical backing pool. The
+multi-layer EAGLE caller also allowed tree-path front compaction to be skipped
+while draft extend indexed tokens and hidden rows as a compact front block.
+
+The pending repair installs physical full-KV translation for relocation,
+preserves MLA's separate dense kernel address space, and makes accepted-path
+compaction mandatory for every top-k tree worker. Factory-created MHA/MLA tests
+and a captured four-cycle serial-path comparison now cover target K/V,
+token/hidden compaction, terminal next-draft state, rejected-slot reclamation,
+and virtual-id reuse. The combined accepted-path, composite-graph, and GDN CUDA
+suite passes eight tests plus two subtests.
+
+Every earlier tree throughput result remains mechanism-only. The qualified
+linear **122.712 tok/s** result is the production comparison authority until a
+corrected full-model non-front path comparison and all ordinary promotion gates
+pass.
 
 ## Final handoff
 

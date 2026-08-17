@@ -1375,6 +1375,12 @@ def init_unified_mamba_pools(
     # No full-KV translate hook is wired: both MLA doors now receive
     # KERNEL-FACING ids -- writes from the ForwardBatch rebind, reads
     # translated at their production sites.
+    # req_to_token and speculative out_cache_loc contain virtual token ids.
+    # HybridLinearKVPool accepted-path/prefix-tail moves target physical cache
+    # storage, so translate through the full-side allocator before delegating.
+    # This must remain the physical translation even for MLA; dense ids are a
+    # kernel-facing address space and cannot identify whole page envelopes.
+    token_to_kv_pool._full_move_translate = allocator.translate_kv_loc
 
     logger.info(
         "[unified-memory-pool] ============================================================"

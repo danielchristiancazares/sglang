@@ -9,6 +9,13 @@
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
 
+All M8/M12/M16 tree timings below are mechanism-only evidence. A deterministic
+non-front path reproducer found that the unified hybrid pool moved virtual slot
+ids as physical target-KV locations, and the multi-layer worker could skip
+front compaction entirely. The repair passes isolated eager and captured
+multi-cycle parity; a corrected full-model tree run remains required before any
+tree throughput can be ranked for production.
+
 ## Baseline
 
 - Commit: `b270c6521ced7af70c6ff8d4740f89f752a3afd2` plus the existing dirty MPS/Metal port in this worktree.
@@ -32,6 +39,67 @@ Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to
 - Correctness evidence: all eight responses returned 32 output token IDs and successful HTTP status; generated samples were coherent continuations.
 - Decision: baseline accepted. Required success threshold is `>=34.953 TPS` under the same warmed repeated protocol.
 - Commit: pending with the surrounding MPS port.
+- Change: promoted aligned draft q into the single multi-step graph on the two-step linear topology.
+- Benchmark evidence: fresh ten real samples listed above; **122.712 tok/s mean** and **122.371 median**. Five native acceptance probes averaged **2.31817**.
+- Correctness evidence: exact q used for proposal and Leviathan rejection, mutable CUDA-graph replay coverage, preserved reasoning/tools, and full 200K capacity.
+- Decision: qualified baseline and benchmark of record.
+- Commit: retained in the qualified source line documented by `notes/current-state.md` and `notes/decisions.md`.
+
+### 2026-08-16 13:33 PDT - PERF-BASELINE-FIXED all-accepted ceiling
+
+- Change: native BF16 full-attention sigmoid gate active; fixed accepted length 3 on the production geometry.
+- Benchmark evidence: `170.995, 171.291, 171.125, 171.541, 171.363 tok/s`; mean **171.263**.
+- Correctness evidence: deterministic 512-token digest retained; native gate parity passed at production widths.
+- Decision: fixed-work cost baseline. It proves the two-step geometry cannot reach 200 tok/s even with perfect acceptance.
+- Commit: retained in the qualified source line.
+
+### 2026-08-16 14:35 PDT - PERF-THREE-STEP fixed compute feasibility
+
+- Change: three MTP steps, four target rows, forced accepted length 4.
+- Benchmark evidence: fresh `194.466, 197.795, 197.314, 201.251, 183.687 tok/s`; conservative mean **194.903**, uncontended first-four mean **197.707**, externally observed peak **201.251**, and server windows up to 207.60.
+- Correctness evidence: fixed-work digest retained and full 200K graphs captured.
+- Decision: compute feasibility only. Ordinary sampling on this geometry later measured **117.239 tok/s mean** and 2.403756 emitted tokens/cycle, so no promotion occurred.
+- Commit: evidence retained in `notes/experiment-log.md`.
+
+### 2026-08-16 22:06 PDT - PERF-001 two-graph device-resident tree cycle
+
+- Change: retained CUDA child graphs now form one parent containing draft extend, a device bridge, and the next draft decode. Target verification plus this composite parent are the only steady graph launches.
+- Benchmark evidence: pre-change M12 extend -> next-draft gap was **3.228/2.475 ms mean/median**. Trace `target_width_m12-20260816-220558` contains target graph 6 at **18.378/18.357 ms** and composite graph 15 at **5.654/5.600 ms**; the former seam is now inside graph 15. Remaining median host gaps were 1.210 and 2.643 ms.
+- Correctness evidence: generic shared-address child-graph CUDA test passed; fixed-width prefix-tail semantics and device-cycle unit tests passed. A shared-input-buffer lifetime defect found by M16 was repaired by reseeding extend inputs before warm/capture.
+- Decision: retain as opt-in infrastructure. Production throughput has not crossed the baseline.
+- Commit: `d0116b54e5766932a46e06e0a66c3672370eaff8`.
+
+### 2026-08-16 22:06 PDT - PERF-002 sparse-ancestry GDN tree replay
+
+- Change: pair state changed from `[B,H,N,N,2]` to `[B,H,N,max_tree_depth,2]`; parameters are built once per value head/node; pair reductions are warp-parallel.
+- Benchmark evidence: M12 dot reductions fell from 288 to 56. Final pre-lifetime-fix trace measured per-layer main/pair/parameter kernels at `26.162/5.415/1.779 us`, about **1.60 ms per 48-layer target cycle** from the preceding approximately 1.656 ms path.
+- Correctness evidence: reference parity, accepted-path state commit, and CUDA-graph replay passed **3 tests**.
+- Decision: retain exact sparse implementation. The direct cycle saving is small and cannot carry the 200 TPS target alone.
+- Commit: `d0116b54e5766932a46e06e0a66c3672370eaff8`.
+
+### 2026-08-16 22:27 PDT - PERF-003 post-change width sweep
+
+- Change: measured target-only M8, M12, and M16 after seam/GDN work; no shape was promoted.
+- Benchmark evidence: emitted tokens/cycle were **2.737, 2.906, 3.061**. Five-run real means were **97.352, 94.685, 92.831 tok/s** in their respective WDDM windows. Corrected M12 raw values were `87.870, 101.393, 96.121, 98.484, 89.557`; M16 raw values were `98.158, 100.223, 93.694, 89.908, 82.173`.
+- Correctness evidence: every retained request returned exactly 512 tokens with thinking enabled; M16 capture passed after the shared-buffer reseed repair.
+- Decision: width-only tree changes are closed. Added width raises modest yield while increasing target cost.
+- Commit: `d0116b54e5766932a46e06e0a66c3672370eaff8`.
+
+### 2026-08-16 22:36 PDT - PERF-004 SWOR p/q calibration grid
+
+- Change: collected native p/q overlap and path statistics for the 16-node topology `[-1,0,0,0,0,1,1,1,1,2,3,4,5,5,5,5]`; added an offline log analyzer.
+- Benchmark evidence: exact `6213/2048` completed in 669 cycles at **3.061286 emitted/cycle**. Internal-node baseline overlaps were `0.75813, 0.70074, 0.51010, 0.47021, 0.41220, 0.66373`. The complete temperature/support grid improved them by at most **0.000245**.
+- Correctness evidence: native exact SWOR path remained active; accepted-node histogram was `[0,514,57,18,9,364,36,16,9,40,11,6,249,31,15,3]`.
+- Decision: scalar q temperature and retained support are closed. Branch-local proposal state or a stronger proposal model is required.
+- Commit: `d0116b54e5766932a46e06e0a66c3672370eaff8`.
+
+### 2026-08-16 23:11 PDT - PERF-C001 non-front accepted-path correctness
+
+- Change: translated unified-pool accepted-path and prefix-tail moves from virtual token ids to physical full-KV ids, kept MLA dense kernel ids separate, and made tree-path compaction mandatory for both single- and multi-layer EAGLE workers.
+- Benchmark evidence: no throughput number was retained. The earlier M8/M12/M16 values are now mechanism-only until a corrected full-model non-front-path gate passes.
+- Correctness evidence: before the repair, the minimal nonidentity-map test copied four of six sentinel elements from the wrong physical rows. The strengthened factory test covers MHA and MLA page translation; a captured four-cycle `[0,3,7]`-style sequence covers alternating non-front paths, rejected-slot reclamation, virtual-id reuse, target K/V, compacted tokens/hidden rows, and terminal next-draft state. Focused native CUDA finished **4 passed plus 2 subtests**; the combined accepted-path/composite-graph/GDN suite finished **8 passed plus 2 subtests**. Allocator and move-gate CPU suites finished **65 passed** and **5 passed**.
+- Decision: retain the repair and keep every tree topology production-ineligible pending a corrected full-model comparison with the qualified linear baseline.
+- Commit: pending in this correctness unit.
 
 ## Candidate Inventory
 
@@ -51,6 +119,14 @@ Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to
 | PERF-010 | Use the checkpoint's bundled NEXTN block for speculative decoding. | SGLang speculative control plane + MPS GDN state verify | Functional, rejected for throughput | Fully served coherent sampled output; batch-1 measured `4.872 TPS`, with accept length `2.80/4` and draft acceptance rate `0.60`. |
 | PERF-011 | Vectorize exact-batch-24 Q6_K LM-head dequantization. | `gguf_q4_0.mm` Q6_K kernel | Retained | `57.343 -> 21.565 ms`; reference relative error `3.36184e-07`. |
 | PERF-012 | Extend vectorized Q5_K projection to exact batch 24. | `gguf_q4_0.mm` Q5_K kernel | Retained | `2.081 -> 0.891 ms` per GDN projection; reference relative error `3.81316e-07`; final median `62.034 TPS`. |
+| PERF-001 | Remove the cross-iteration speculative seam with a two-graph device-resident cycle. | CUDA graph backend, EAGLE draft/extend runners, worker bridge | Implemented; opt-in | Child graph test passed and steady M12 has two graph IDs. Committed in `d0116b54e5`; production relevance remains blocked by the tree correctness/full-model gate. |
+| PERF-002 | Store and compute only strict GDN ancestry; remove value-tile parameter recomputation. | `gdn_tree_replay.cuh`, Python binding/backend | Implemented; opt-in tree path | Three native CUDA tests passed; measured direct saving is about 0.06 ms/cycle. Committed in `d0116b54e5`. |
+| PERF-003 | Apply exact branch-local presence/frequency state to SWOR p and q. | sampling state, fixed topology metadata, draft graph buffers, target verifier | Paused at correctness gate | q mass outside p is 0.096-0.164 on dominant rows; offline oracle already encodes branch-local semantics. Resume only after corrected full-model non-front path parity and a fresh linear baseline. |
+| PERF-004 | Attribute target/composite graph time by kernel family and exact graph ID before another kernel rewrite. | trace analyzer and Qwen3.5 target/draft hot paths | Ready for survey | Current whole-trace families mix prefill and graph work. The MacPro ledger confirms synchronized microbenchmarks can mis-rank async serving changes. |
+| PERF-005 | Extend the device-resident cycle to exact linear rejection sampling. | proposal sampling, exact-q buffers, verification/extend bridge | Survey | Production baseline still pays graph/scheduler boundaries. Requires exact RNG/q/residual semantics and a measured cycle projection. |
+| PERF-006 | Improve proposal quality with a distinct trained/calibrated proposal mechanism. | MTP adapter/training, standalone draft, or device-side mixture oracle | Survey | RadixArk and Gittensor embedded MTP tensors are byte-identical. Temperature/support calibration is flat. Any training path needs held-out behavior evidence. |
+| PERF-007 | Fuse remaining target FP8/BF16 projection work only after graph-specific attribution. | Qwen3.5 GDN input/BA/output projections and ModelOpt linear kernels | Survey | Existing qkvz and BA projections are already merged separately; prior target/draft quantizers and broad GEMM autotuning lost. |
+| PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q oracle and topology optimizer | Gated | Current-q optimistic 32-node search reached only 4.0921 expected outputs and stayed cost-limited. |
 
 ### 2026-08-16 20:29 PDT - PERF-001
 
@@ -59,6 +135,9 @@ Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to
 - Correctness evidence: Q4_0 batch-eight output matched explicit GGUF dequantization and CPU F32 matmul with maximum absolute error `8.34465e-07` and relative error `4.46011e-07`.
 - Decision: rejected and removed. The reduced weight traversal did not overcome tile-eight register/occupancy pressure on the W6900X.
 - Commit: none; regressing kernel change removed. The new Q4_0 correctness coverage remains.
+- `2f49a60b46c62e728fb7db00a0d042248c27c8f4` — restored the continuing performance and failed-path ledgers.
+- `d0116b54e5766932a46e06e0a66c3672370eaff8` — committed the device-resident cycle, sparse GDN replay, SWOR oracle/tooling, tests, and profiles behind opt-in controls.
+- The accepted-path virtual-to-physical repair, mandatory front compaction, regression tests, and qualification-hold records are the current pending atomic correctness unit.
 
 ### 2026-08-16 22:11 PDT - PERF-005
 

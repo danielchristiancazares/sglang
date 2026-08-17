@@ -3868,6 +3868,11 @@ class HybridLinearKVPool(KVCache):
         # composite allocator implements neither `get_cpu_copy` nor
         # `load_cpu_copy`, the only readers, so those ids never arrive here.
         self._mamba_translate = lambda ids: ids
+        # Accepted-path and prefix-tail relocation always operates on physical
+        # cache storage. Static pools use identity; unified pools install the
+        # allocator's virtual-token -> physical-token translation. Kernel-facing
+        # ids include a layer multiplier and are not page-envelope move locations.
+        self._full_move_translate = lambda ids: ids
         self.use_mla = use_mla
         self.use_dsa = use_dsa
         if full_kv_pool is not None:
@@ -4177,7 +4182,10 @@ class HybridLinearKVPool(KVCache):
                 )
 
     def move_kv_cache(self, tgt_loc: torch.Tensor, src_loc: torch.Tensor):
-        self.full_kv_pool.move_kv_cache(tgt_loc, src_loc)
+        self.full_kv_pool.move_kv_cache(
+            self._full_move_translate(tgt_loc),
+            self._full_move_translate(src_loc),
+        )
 
     def get_cpu_copy(self, indices, mamba_indices=None, req_pool_index=None):
         kv_cpu = self.full_kv_pool.get_cpu_copy(indices, req_pool_index=req_pool_index)

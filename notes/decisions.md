@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-16 19:06 PDT.
+**Reconciled through:** 2026-08-16 23:11 PDT.
 
 ## Selected production choices
 
@@ -30,7 +30,7 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Compile mode | `default`, with established partial fallbacks | Five-run fixed-work win over other compile/fallback arrangements |
 | Scheduling | Receive interval 4; stream interval 4; incremental output | Measured fixed-work wins while retaining client streaming behavior |
 | Implementation language | C++/CUDA hot paths with thin Python integration | Explicit user direction after the display-GPU incident; preserves graph capture and native dispatch |
-| Tree/SWOR implementation | Retained as opt-in experimental infrastructure | Exactness, recurrent commit, graph replay, diagnostics, and analyzers are proven; current economics lose to linear production |
+| Tree/SWOR implementation | Retained as opt-in, production-ineligible infrastructure | A non-front unified-pool KV/compaction defect invalidated prior production-ranking claims; isolated repair tests pass, while corrected full-model parity is still required |
 
 ## Qualified reference results
 
@@ -108,10 +108,14 @@ production performance status stays closed unless the cost topology changes.
 | Initial M12 exact SWOR topology | Rejected | **2.9653** emitted/traversal and **84.713 tok/s** real mean |
 | Topology-only SWOR search at current q | Exhausted | Optimistic 32-node search reached only **4.0921** expected outputs and remained cost-limited |
 
-The exact tree implementation itself is retained. It includes native target-
-only/SWOR sampling, sparse support up to 64 entries with dense fallback,
-low-rank GDN tree replay, accepted-path recurrent/conv commit, path and overlap
-oracles, custom topology parsing, profiling, and offline search tools.
+The tree implementation itself is retained. It includes native target-only/SWOR
+sampling, sparse support up to 64 entries with dense fallback, low-rank GDN
+tree replay, accepted-path recurrent/conv commit, path and overlap oracles,
+custom topology parsing, profiling, and offline search tools. Its earlier
+throughput measurements are mechanism-only because a non-front accepted path
+could address target KV in the wrong unified-pool space or bypass multi-layer
+front compaction. Isolated repair coverage passes; full-model requalification
+has not.
 
 ## Protected boundaries
 
@@ -136,6 +140,8 @@ assumption:
 
 - new kernels or hardware alter per-depth draft/target cost;
 - proposal overlap improves enough to change tree yield;
+- repaired tree acceptance passes deterministic multi-cycle non-front path
+  parity against the serial linear reference before any throughput ranking;
 - a new checkpoint passes the same preserved-thinking/tool/capacity contract;
 - dependency support changes the native-Windows backend boundary;
 - a newly measured production gap survives matched controls and environmental

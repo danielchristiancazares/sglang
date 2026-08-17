@@ -253,6 +253,22 @@ code changes, or process state matter.
   phases with 1.84 GiB reported headroom, and marked the exhaustive NVFP4
   optimization goal complete.
 
+### 21:08–23:11 — remove the tree seam, sparsify GDN, then stop on accepted-path correctness
+
+- Formed an opt-in two-graph steady cycle by capturing draft extend, the device
+  bridge, and next draft decode in one composite graph. Replaced dense N-squared
+  GDN pair state with strict sparse ancestry; M12 reductions fell from 288 to 56.
+- Repeated M8/M12/M16 measurements still reached only 97.352, 94.685, and
+  92.831 tok/s means. The offline p/q grid found scalar temperature/support
+  changes essentially flat, with at most 0.000245 overlap improvement.
+- A deterministic accepted path `[0,3,7]` then exposed a correctness defect:
+  the unified hybrid pool treated virtual target-KV ids as physical ids, and
+  the multi-layer worker could skip the front compaction its consumers assume.
+- Added physical relocation translation distinct from MLA dense kernel ids,
+  removed the compaction opt-out, and proved a captured four-cycle serial-path
+  comparison with rejected-slot reclamation and virtual-id reuse. Prior tree
+  throughput is mechanism-only until a corrected full-model gate passes.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
