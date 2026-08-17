@@ -253,7 +253,7 @@ code changes, or process state matter.
   phases with 1.84 GiB reported headroom, and marked the exhaustive NVFP4
   optimization goal complete.
 
-### 21:08–23:11 — remove the tree seam, sparsify GDN, then stop on accepted-path correctness
+### 21:08–23:24 — remove the tree seam, sparsify GDN, then stop on accepted-path correctness
 
 - Formed an opt-in two-graph steady cycle by capturing draft extend, the device
   bridge, and next draft decode in one composite graph. Replaced dense N-squared
@@ -268,6 +268,10 @@ code changes, or process state matter.
   removed the compaction opt-out, and proved a captured four-cycle serial-path
   comparison with rejected-slot reclamation and virtual-id reuse. Prior tree
   throughput is mechanism-only until a corrected full-model gate passes.
+- A fresh unchanged linear comparison retained every tree switch off. The
+  first five samples averaged 112.253 tok/s during startup recovery; a second
+  independent warmed window averaged 124.775 tok/s, confirming the production
+  comparison path remained in its established range.
 
 ## Supersession map
 

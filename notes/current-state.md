@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-16
-23:11 PDT.
+23:24 PDT.
 
 **Qualified source line:** commit `9681850bed660b9079ee1aee906cda819603da7a`
 (`Add exact SWOR tree verification and topology analysis`), with the final
@@ -77,6 +77,15 @@ Every earlier tree throughput result remains mechanism-only. The qualified
 linear **122.712 tok/s** result is the production comparison authority until a
 corrected full-model non-front path comparison and all ordinary promotion gates
 pass.
+
+A fresh production-linear comparison from correctness commit `3f276e8acda4`
+retained all tree/device-cycle controls off. Its first five-run window averaged
+**112.253 tok/s** while warming through an 84.130 tok/s first request; the
+second independent window averaged **124.775 tok/s**. The ten-run combined mean
+was **118.514 tok/s**, and five native acceptance probes averaged **2.204748**.
+This confirms the top-k-one comparison path remains within the established
+performance range while preserving the startup sample and lower stochastic
+acceptance as real evidence.
 
 ## Final handoff
 
