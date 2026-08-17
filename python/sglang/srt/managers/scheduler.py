@@ -379,11 +379,13 @@ from sglang.srt.utils.weight_versions import (
 )
 from sglang.utils import TypeBasedDispatcher, get_exception_traceback
 
-if is_mps():
+if is_mps() and use_mlx():
     CudaStreamContext = nullcontext
     from sglang.srt.hardware_backend.mlx.scheduler_mixin import SchedulerMlxOverlapMixin
 else:
-    from torch.cuda import StreamContext as CudaStreamContext
+    CudaStreamContext = (
+        nullcontext if is_mps() else torch.cuda.StreamContext
+    )
 
     class SchedulerMlxOverlapMixin:
         pass
@@ -903,11 +905,12 @@ class Scheduler(
     def init_tokenizer(self):
         server_args = self.server_args
         self.is_generation = self.model_config.is_generation
+        self.processor = None
 
         if self.skip_tokenizer_init:
             self.tokenizer = self.processor = None
         else:
-            if self.model_config.is_multimodal:
+            if self.model_config.is_multimodal and not server_args.language_model_only:
                 self.processor = get_processor(
                     get_serving().tokenizer_path,
                     tokenizer_mode=get_serving().tokenizer_mode,

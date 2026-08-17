@@ -44,6 +44,16 @@ def fill_bonus_tokens_func(
             accept_stride,
         )
         return
+    if accept_tokens.device.type == "mps":
+        accept_tokens_flat = accept_tokens.reshape(-1)
+        indices = (
+            torch.arange(batch_size, device=accept_tokens.device, dtype=torch.long)
+            * accept_stride
+            + accept_lens.to(torch.long)
+            - 1
+        )
+        bonus_tokens.copy_(accept_tokens_flat.index_select(0, indices))
+        return
     fill_bonus_tokens[(batch_size,)](
         accept_tokens,
         accept_lens,
@@ -81,6 +91,15 @@ def fill_accept_out_cache_loc_func(
             accept_index,
             out_cache_loc,
             accept_out_cache_loc,
+        )
+        return
+    if accept_index.device.type == "mps":
+        valid_indices = torch.nonzero(
+            accept_index[:size] >= 0, as_tuple=False
+        ).flatten()
+        source_indices = accept_index.index_select(0, valid_indices).to(torch.long)
+        accept_out_cache_loc[: valid_indices.numel()].copy_(
+            out_cache_loc.index_select(0, source_indices)
         )
         return
     fill_accept_out_cache_loc[(size,)](
