@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--presence-penalty", type=float, default=1.5)
+    parser.add_argument("--disable-thinking", action="store_true")
     return parser.parse_args()
 
 
@@ -56,19 +57,21 @@ def generate(
 def main() -> None:
     args = parse_args()
     base_url = args.base_url.rstrip("/")
+    enable_thinking = not args.disable_thinking
     content, calibrated_tokens = calibrate_prompt(
         base_url,
         args.model,
         args.input_tokens,
         args.timeout,
         "sglang",
+        enable_thinking,
     )
     tokenized = request_json(
         f"{base_url}/v1/tokenize",
         {
             "model": args.model,
             "messages": messages_for(content),
-            "chat_template_kwargs": chat_template_kwargs(),
+            "chat_template_kwargs": chat_template_kwargs(enable_thinking),
         },
         args.timeout,
     )
@@ -89,6 +92,7 @@ def main() -> None:
             {
                 "prompt_tokens": meta.get("prompt_tokens"),
                 "completion_tokens": meta.get("completion_tokens"),
+                "enable_thinking": enable_thinking,
                 "e2e_latency": meta.get("e2e_latency"),
                 "spec_accept_rate": meta.get("spec_accept_rate"),
                 "spec_accept_length": meta.get("spec_accept_length"),

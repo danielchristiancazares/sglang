@@ -1,4 +1,9 @@
-# Qwen3.8 27B native-Windows SGLang performance notes
+# Qwen3.8 27B native-Windows SGLang experiment log
+
+> **Location note:** This complete chronological record was migrated from the
+> repository-root `NOTES.md` into `notes/experiment-log.md`. Historical entries
+> retain their original path and state descriptions. Append future recovery
+> checkpoints here.
 
 ## Recovery checkpoint - 2026-08-15 17:14 PDT
 
@@ -199,7 +204,7 @@ mean 13.372305  16.563539 464.645        39.797
 - `date` confirmed `Sat Aug 15 18:02:13 PDT 2026` immediately after context recovery.
 - BF16 experiment remains active under launcher PID 26460. At the last selective log read it had accepted `mamba_ssm_dtype='bfloat16'`, pinned both linear-attention modes to Triton, and reached `Load weight begin` with 30.14 GB available.
 - No BF16 benchmark run has been recorded yet. Resume by checking server readiness, then run three corrected 6213/128 cycles before making any retention decision.
-- Standing procedure requested by the user: after every future context compaction, run `date` and write a new `NOTES.md` recovery checkpoint before continuing.
+- Standing procedure requested by the user: after every future context compaction, run `date` and write a new `notes/experiment-log.md` recovery checkpoint before continuing.
 
 ### 2026-08-15 18:04:27 PDT - BF16 Mamba state rejected
 
@@ -2426,3 +2431,37 @@ mean 13.929045  17.125658 446.051        39.730
 - Target verification, draft decode, and draft extend CUDA graphs captured successfully in `43.95 s`, `51.58 s`, and `1.21 s`. The endpoint is healthy on `127.0.0.1:30000`; model information reports generation enabled with image and audio understanding disabled.
 - A real sampled `256+16` smoke request completed at **120.862 tok/s** decode with temperature `1.0`, top-p `0.95`, top-k `20`, and presence penalty `1.5`. Post-request health remains HTTP 200, the GPU is idle at 29 C with 1186 MiB free, and the server owns the expected seven-process tree rooted at hidden PowerShell PID `22160`.
 - Runtime logs are `C:\Users\Daniel\AppData\Local\Temp\sglang-qwen-linear-b7f4a0b005-seed783025237.stdout.log` and `.stderr.log`. Leave this qualified linear server live for OpenCode2.
+
+### 2026-08-16 18:53:21 PDT — 232K production pool requested
+
+- User requested raising the qualified linear server from a real 200,000-token context and pool to **232,000**.
+- The checkpoint maximum is 262,144. Scaling the measured target and draft FP8 KV pools from 200K to 232K adds approximately 1.04 GiB, projecting roughly 0.88 GiB of graph-end headroom from the latest 1.92 GiB capture result.
+- Change both launcher defaults together, retain every reasoning/tool/vision-disabled and speculative-performance setting, stop only the identified live server tree, then require clean graph capture, a sampled smoke request, and a near-limit capacity request before leaving the replacement server live.
+
+### 2026-08-16 19:04:07 PDT — 232K rejected on operating headroom; restore 200K
+
+- The real 232,000-token target and draft pools allocated and all three CUDA graphs captured, ending with 0.67 GiB reported headroom. A sampled `256+16` smoke request passed at 114.339 tok/s.
+- The decisive `231000+16` request also completed correctly: **1317.527 prompt tok/s**, **82.342 decode tok/s**, and exactly 231,016 total tokens. A standard sampled `6213+512` control remained healthy at **120.653 tok/s**.
+- The near-limit request left only **98 MiB** free VRAM before cache flush. Although `/flush_cache` restored roughly 1.1 GiB, the user correctly rejected that operating margin as too tight.
+- Restore both launcher defaults to the proven **200,000** context and token pool, stop only the identified 232K server tree, and leave a freshly captured 200K production server live.
+
+### 2026-08-16 19:06:12 PDT — 200K production restored; optimization goal complete
+
+- Stopped only the two CUDA-worker leaves of the identified 232K server; its exact seven-process tree cascaded out, port 30000 cleared, and the RTX 5090 returned to display-only residency.
+- Restored the launcher defaults byte-for-byte to `ContextLength=200000` and `MaxTotalTokens=200000`, then relaunched the seeded unsimulated linear winner under hidden PowerShell PID `30688`.
+- Runtime arguments confirm the real 200K context and pool. Target verify, draft decode, and draft extend graphs captured in `43.45 s`, `1.39 s`, and `1.23 s`, ending with **1.84 GiB** reported headroom. The endpoint is ready on port 30000.
+- User accepted the restored 200K operating margin and explicitly marked the exhaustive NVFP4 optimization goal complete.
+
+### 2026-08-16 21:18:33 PDT — real sampling with reasoning disabled
+
+- The existing qualified server remained live throughout: listener PID `30960`, CUDA worker PID `30436`, exact 200K RadixArk linear topology, seed `783025237`, two speculative steps / three draft tokens, aligned draft top-k 20, TRT-LLM MHA/XQA, FlashInfer prefill/sampling, and FP8 draft KV. No restart or server edit occurred.
+- Added a default-preserving `--disable-thinking` benchmark flag. It sets both `enable_thinking=false` and `preserve_thinking=false`, calibrates the prompt through that exact chat template, and records the selected mode. The acceptance harness gained the same opt-in flag. Python compilation and CLI help passed.
+- Mode integrity check at `256/64`: disabled thinking returned `reasoning_chars=0`, `content_chars=295`; enabled thinking returned `reasoning_chars=281`, `content_chars=0`.
+- Workload for all full measurements: exact `6213/512`, temperature `1.0`, top-p `0.95`, top-k `20`, presence penalty `1.5`, ordinary unsimulated rejection sampling, exact-shape warmup, cache flush, SSE client timing.
+- Fresh thinking-enabled control decode TPS: `115.184, 122.593, 120.839, 116.862, 116.393`; mean **118.374**, median **116.862**, mean TTFT `0.698222 s`, mean E2E `5.017495 s`.
+- Reasoning-disabled decode TPS: `128.232, 124.343, 123.311, 121.721, 138.824, 137.832, 136.199, 134.703, 129.760, 122.291`; mean **129.722**, median **128.996**. Window means were **127.286** and **132.157**. Mean TTFT was `0.708832 s`; mean E2E was `4.657528 s`.
+- Matched change: **+9.59% decode TPS** and **-7.17% E2E time**. Prompt tokens and completion tokens were exactly 6213 and 512 in every sample.
+- Benchmark-of-record comparison: reasoning-disabled **129.722 tok/s** versus the qualified reasoning-enabled **122.712 tok/s** is **+7.010 tok/s / +5.71%**. The fresh 118.374 tok/s control above is a same-session diagnostic showing stochastic/WDDM variance; it does not replace the qualified benchmark.
+- Five disabled-thinking acceptance probes measured lengths `2.485437, 2.381395, 2.461538, 2.426540, 2.509804`, mean **2.452943**, with mean `208.8` target verifications. Five matched thinking-enabled probes measured `2.306306, 2.188034, 2.275556, 2.235808, 2.295964`, mean **2.260334**, with mean `226.6` verifications.
+- The throughput gain tracks **+8.52% accepted length** and **-7.86% target verification cycles**. Reasoning-disabled output is a separate behavior profile and does not replace the reasoning-preserved production qualification.
+- WDDM conditions remained visible in the evidence: Chrome and ZCode were active, and the two disabled windows moved materially. The endpoint stayed healthy after the run.

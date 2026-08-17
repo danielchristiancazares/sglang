@@ -39,8 +39,11 @@ def request_json(url: str, payload: dict[str, Any], timeout: float) -> dict[str,
         raise RuntimeError(f"HTTP {exc.code} from {url}: {detail}") from exc
 
 
-def chat_template_kwargs() -> dict[str, bool]:
-    return {"enable_thinking": True, "preserve_thinking": True}
+def chat_template_kwargs(enable_thinking: bool = True) -> dict[str, bool]:
+    return {
+        "enable_thinking": enable_thinking,
+        "preserve_thinking": enable_thinking,
+    }
 
 
 def messages_for(content: str) -> list[dict[str, str]]:
@@ -53,6 +56,7 @@ def token_count(
     content: str,
     timeout: float,
     backend: str,
+    enable_thinking: bool,
 ) -> int:
     if backend == "llama":
         template_response = request_json(
@@ -60,7 +64,7 @@ def token_count(
             {
                 "model": model,
                 "messages": messages_for(content),
-                "chat_template_kwargs": chat_template_kwargs(),
+                "chat_template_kwargs": chat_template_kwargs(enable_thinking),
             },
             timeout,
         )
@@ -89,7 +93,7 @@ def token_count(
         {
             "model": model,
             "messages": messages_for(content),
-            "chat_template_kwargs": chat_template_kwargs(),
+            "chat_template_kwargs": chat_template_kwargs(enable_thinking),
         },
         timeout,
     )
@@ -105,16 +109,26 @@ def calibrate_prompt(
     target_tokens: int,
     timeout: float,
     backend: str,
+    enable_thinking: bool = True,
 ) -> tuple[str, int]:
     """Find a deterministic local prompt at or just below the token target."""
     low = 0
     high = target_tokens
     best_repeats = 0
-    best_count = token_count(base_url, model, "", timeout, backend)
+    best_count = token_count(
+        base_url, model, "", timeout, backend, enable_thinking
+    )
 
     while low <= high:
         middle = (low + high) // 2
-        count = token_count(base_url, model, PROMPT_UNIT * middle, timeout, backend)
+        count = token_count(
+            base_url,
+            model,
+            PROMPT_UNIT * middle,
+            timeout,
+            backend,
+            enable_thinking,
+        )
         if count <= target_tokens:
             best_repeats = middle
             best_count = count
@@ -133,7 +147,9 @@ def calibrate_prompt(
     while low <= high:
         middle = (low + high) // 2
         candidate = content + FILLER_UNIT * middle
-        count = token_count(base_url, model, candidate, timeout, backend)
+        count = token_count(
+            base_url, model, candidate, timeout, backend, enable_thinking
+        )
         if count <= target_tokens:
             best_filler = middle
             best_count = count
@@ -175,6 +191,7 @@ def stream_request(
     min_p: float | None,
     presence_penalty: float | None,
     repetition_penalty: float | None,
+    enable_thinking: bool,
 ) -> dict[str, Any]:
     payload = {
         "model": model,
@@ -184,7 +201,7 @@ def stream_request(
         "stream": True,
         "stream_options": {"include_usage": True},
         "ignore_eos": True,
-        "chat_template_kwargs": chat_template_kwargs(),
+        "chat_template_kwargs": chat_template_kwargs(enable_thinking),
     }
     for key, value in (
         ("top_p", top_p),
@@ -214,6 +231,8 @@ def stream_request(
     usage: dict[str, Any] = {}
     finish_reason: str | None = None
     output_fragments: list[str] = []
+    reasoning_chars = 0
+    content_chars = 0
 
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -234,7 +253,13 @@ def stream_request(
                 if choice.get("finish_reason") is not None:
                     finish_reason = choice["finish_reason"]
                 delta = choice.get("delta") or {}
-                fragment = delta.get("reasoning_content") or delta.get("content")
+                reasoning_fragment = delta.get("reasoning_content")
+                content_fragment = delta.get("content")
+                if reasoning_fragment:
+                    reasoning_chars += len(reasoning_fragment)
+                if content_fragment:
+                    content_chars += len(content_fragment)
+                fragment = reasoning_fragment or content_fragment
                 if fragment:
                     output_fragments.append(fragment)
                     if first_token_at is None:
@@ -276,6 +301,8 @@ def stream_request(
         ),
         "finish_reason": finish_reason,
         "output_chars": len(output_text),
+        "reasoning_chars": reasoning_chars,
+        "content_chars": content_chars,
         "output_sha256": hashlib.sha256(output_text.encode("utf-8")).hexdigest(),
     }
 
@@ -309,6 +336,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--skip-warmup", action="store_true")
+    parser.add_argument(
+        "--disable-thinking",
+        action="store_true",
+        help="Set enable_thinking and preserve_thinking false in the chat template.",
+    )
     return parser.parse_args()
 
 
@@ -318,8 +350,14 @@ def main() -> None:
         raise ValueError("input and output token counts must be positive")
 
     base_url = args.base_url.rstrip("/")
+    enable_thinking = not args.disable_thinking
     content, calibrated_tokens = calibrate_prompt(
-        base_url, args.model, args.input_tokens, args.timeout, args.backend
+        base_url,
+        args.model,
+        args.input_tokens,
+        args.timeout,
+        args.backend,
+        enable_thinking,
     )
 
     # Remove the preceding invocation's measured request before warming this
@@ -339,6 +377,7 @@ def main() -> None:
             args.min_p,
             args.presence_penalty,
             args.repetition_penalty,
+            enable_thinking,
         )
     flush_cache(base_url, args.timeout, args.backend, args.slot_id)
     result = stream_request(
@@ -354,6 +393,7 @@ def main() -> None:
         args.min_p,
         args.presence_penalty,
         args.repetition_penalty,
+        enable_thinking,
     )
     result.update(
         {
@@ -372,6 +412,7 @@ def main() -> None:
             "min_p": args.min_p,
             "presence_penalty": args.presence_penalty,
             "repetition_penalty": args.repetition_penalty,
+            "enable_thinking": enable_thinking,
         }
     )
     print(json.dumps(result, sort_keys=True))
