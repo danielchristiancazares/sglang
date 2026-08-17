@@ -1,6 +1,7 @@
 //! OpenAI Chat Completions endpoint and chat-template preparation.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::convert::Infallible;
 
 use axum::{
@@ -23,11 +24,14 @@ use dynamo_protocols::types::{
     TopLogprobs,
 };
 use futures::StreamExt;
+use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use super::super::guard::AbortGuard;
 use super::completions::completion_usage;
-use super::reasoning::{ReasoningStreamSplitter, split_reasoning_unary};
+use super::reasoning::{
+    ReasoningStreamSplitter, reasoning_starts_in_prompt, split_reasoning_unary,
+};
 use super::tools::{
     apply_tool_constraint, chat_delta, chat_finish_reason, dynamo_parser_name, dynamo_tool_choice,
     parse_chat_tool_calls,
@@ -43,16 +47,36 @@ pub(super) fn routes() -> Router<AppState> {
     Router::new().route("/v1/chat/completions", post(chat_completions))
 }
 
+/// Dynamo owns the standard OpenAI request. This native envelope retains the
+/// SGLang/vLLM Jinja extension that Dynamo's current wire type intentionally
+/// omits, allowing thinking controls to stay entirely in the Rust ingress and
+/// renderer path.
+#[derive(Deserialize)]
+struct ChatCompletionRequestBody {
+    #[serde(flatten)]
+    request: CreateChatCompletionRequest,
+    #[serde(default, alias = "chat_template_args")]
+    chat_template_kwargs: Option<HashMap<String, serde_json::Value>>,
+}
+
 async fn chat_completions(
     State(state): State<AppState>,
-    body: Result<Json<CreateChatCompletionRequest>, JsonRejection>,
+    body: Result<Json<ChatCompletionRequestBody>, JsonRejection>,
 ) -> Response {
-    let request = match body {
-        Ok(Json(request)) => request,
+    let body = match body {
+        Ok(Json(body)) => body,
         Err(rejection) => {
             return openai_error(StatusCode::BAD_REQUEST, rejection.body_text(), false);
         }
     };
+    let request = body.request;
+    let mut chat_template_kwargs = body.chat_template_kwargs;
+    if let Some(defaults) = state.server_args.default_chat_template_kwargs.as_ref() {
+        let args = chat_template_kwargs.get_or_insert_default();
+        for (key, value) in defaults {
+            args.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
     if request.model != state.server_args.served_model_name {
         return openai_error(
             StatusCode::BAD_REQUEST,
@@ -124,6 +148,8 @@ async fn chat_completions(
     // the Dynamo request type has no such field, so it is always on when the
     // server was launched with `--reasoning-parser`.
     let reasoning_parser = state.server_args.reasoning_parser.clone();
+    let reasoning_starts_in_prompt =
+        reasoning_starts_in_prompt(reasoning_parser.as_deref(), chat_template_kwargs.as_ref());
     let tools = request.tools.as_ref().map(|tools| {
         tools
             .iter()
@@ -136,10 +162,11 @@ async fn chat_completions(
     });
     let tools_slice = tools.as_deref().unwrap_or_default();
 
-    let (request, prompt) = match prepare_chat_request(&state, request).await {
-        Ok(prepared) => prepared,
-        Err(response) => return response,
-    };
+    let (request, prompt) =
+        match prepare_chat_request(&state, request, chat_template_kwargs.as_ref()).await {
+            Ok(prepared) => prepared,
+            Err(response) => return response,
+        };
 
     let sampling = match chat_sampling(
         &request,
@@ -216,6 +243,7 @@ async fn chat_completions(
             include_usage,
             parser,
             reasoning_parser,
+            reasoning_starts_in_prompt,
             tools,
             stream_tool_choice,
             uses_tool_call_structural_tag,
@@ -234,6 +262,7 @@ async fn chat_completions(
             want_logprobs,
             parser,
             reasoning_parser,
+            reasoning_starts_in_prompt,
             tools,
             parallel_tool_calls,
             service_tier,
@@ -249,6 +278,7 @@ async fn chat_completions(
 pub(super) async fn prepare_chat_request(
     state: &AppState,
     mut request: CreateChatCompletionRequest,
+    chat_template_args: Option<&HashMap<String, serde_json::Value>>,
 ) -> Result<(CreateChatCompletionRequest, String), Response> {
     let Some(formatter) = state.chat_formatter.clone() else {
         return Err(openai_error(
@@ -262,7 +292,11 @@ pub(super) async fn prepare_chat_request(
     // token-id stop cannot be merged into the string list (Python has no such
     // field), so it is kept alone.
     merge_template_stops(&mut request, &formatter);
-    let prompt = formatter.render(&request).map_err(|error| {
+    let rendered = match chat_template_args {
+        Some(args) => formatter.render_with_args(&request, Some(args)),
+        None => formatter.render(&request),
+    };
+    let prompt = rendered.map_err(|error| {
         openai_error(
             StatusCode::BAD_REQUEST,
             format!("chat template render failed: {error}"),
@@ -429,6 +463,7 @@ pub(super) async fn unary_chat(
     want_logprobs: bool,
     parser: Option<String>,
     reasoning_parser: Option<String>,
+    reasoning_starts_in_prompt: bool,
     tools: Option<Vec<ToolDefinition>>,
     parallel_tool_calls: bool,
     service_tier: Option<ChatServiceTier>,
@@ -454,8 +489,12 @@ pub(super) async fn unary_chat(
         // Split reasoning markers out of the content first (Python splits
         // before tool-call parsing too), then parse tool calls on the clean
         // normal text.
-        let (reasoning_text, text) =
-            split_reasoning_unary(reasoning_parser.as_deref(), &output.text, &output.token_ids);
+        let (reasoning_text, text) = split_reasoning_unary(
+            reasoning_parser.as_deref(),
+            &output.text,
+            &output.token_ids,
+            reasoning_starts_in_prompt,
+        );
         let (content, tool_calls) = parse_chat_tool_calls(
             text,
             parser.as_deref(),
@@ -514,6 +553,7 @@ pub(super) fn chat_event_stream(
     include_usage: bool,
     parser: Option<String>,
     reasoning_parser: Option<String>,
+    reasoning_starts_in_prompt: bool,
     tools: Option<Vec<ToolDefinition>>,
     tool_choice: Option<ChatCompletionToolChoiceOption>,
     uses_tool_call_structural_tag: bool,
@@ -532,7 +572,12 @@ pub(super) fn chat_event_stream(
         let mut reasoning_splitters: Vec<ReasoningStreamSplitter> =
             if reasoning_parser.is_some() {
                 (0..count)
-                    .map(|_| ReasoningStreamSplitter::new(reasoning_parser.as_deref()))
+                    .map(|_| {
+                        ReasoningStreamSplitter::new(
+                            reasoning_parser.as_deref(),
+                            reasoning_starts_in_prompt,
+                        )
+                    })
                     .collect()
             } else {
                 vec![]
@@ -849,8 +894,8 @@ pub(super) fn chat_logprobs(extras: Option<&ChunkExtras>) -> ChatChoiceLogprobs 
 mod tests {
     use super::super::test_utils::{chat_submitted, chunk, senders};
     use super::{
-        SamplingDefaults, chat_event_stream, chat_logprobs, chat_sampling_params,
-        merge_template_stops, unary_chat,
+        ChatCompletionRequestBody, SamplingDefaults, chat_event_stream, chat_logprobs,
+        chat_sampling_params, merge_template_stops, unary_chat,
     };
     use crate::api_server::guard::AbortGuard;
     use crate::message::ChunkExtras;
@@ -865,6 +910,26 @@ mod tests {
             "messages": [{"role": "user", "content": "hi"}]
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn native_wire_retains_chat_template_kwargs() {
+        let body: ChatCompletionRequestBody = serde_json::from_value(serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "chat_template_kwargs": {
+                "enable_thinking": false,
+                "preserve_thinking": true
+            }
+        }))
+        .unwrap();
+        let args = body.chat_template_kwargs.unwrap();
+        assert_eq!(args.get("enable_thinking"), Some(&serde_json::json!(false)));
+        assert_eq!(
+            args.get("preserve_thinking"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(body.request.model, "test");
     }
 
     /// Python `to_sampling_params` priority: user value > model generation
@@ -1040,6 +1105,7 @@ mod tests {
             false,
             None,
             None,
+            false,
             None,
             true,
             None,
@@ -1077,6 +1143,7 @@ mod tests {
             false,
             None,
             Some("deepseek-r1".into()),
+            false,
             None,
             true,
             None,
@@ -1116,6 +1183,7 @@ mod tests {
             true,
             None,
             Some("deepseek-r1".into()),
+            false,
             None,
             None,
             false,
@@ -1162,6 +1230,7 @@ mod tests {
             true,
             None,
             None,
+            false,
             None,
             None,
             false,

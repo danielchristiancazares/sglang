@@ -72,6 +72,14 @@ impl ShmSegment {
                 ));
             }
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr.cast::<u8>(), bytes.len());
+            // munmap does not guarantee writeback. Linux usually does; macOS
+            // POSIX shm stays zeros until MS_SYNC, so Python's later
+            // SharedMemory map would see an empty tensor.
+            if libc::msync(ptr, bytes.len(), libc::MS_SYNC) != 0 {
+                let e = std::io::Error::last_os_error();
+                libc::munmap(ptr, bytes.len());
+                return Err(format!("msync({}): {e}", segment.name));
+            }
             libc::munmap(ptr, bytes.len());
             Ok(segment)
         }
@@ -373,9 +381,48 @@ mod tests {
         assert_eq!(parse_caller_hash(""), None);
     }
 
+    /// Read a POSIX shm object by the same `shm_open` name `ShmSegment` wrote.
+    /// Linux exposes these as `/dev/shm/{name}`; macOS does not, so the test
+    /// must not assume a filesystem path.
     #[cfg(unix)]
-    fn shm_path(name: &str) -> std::path::PathBuf {
-        std::path::Path::new("/dev/shm").join(name)
+    fn shm_bytes(name: &str) -> std::io::Result<Vec<u8>> {
+        let c_name = std::ffi::CString::new(format!("/{name}")).unwrap();
+        unsafe {
+            let fd = libc::shm_open(c_name.as_ptr(), libc::O_RDONLY, 0o600);
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut st: libc::stat = std::mem::zeroed();
+            if libc::fstat(fd, &mut st) != 0 {
+                libc::close(fd);
+                return Err(std::io::Error::last_os_error());
+            }
+            let len = st.st_size as usize;
+            if len == 0 {
+                libc::close(fd);
+                return Ok(Vec::new());
+            }
+            let ptr = libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            );
+            libc::close(fd);
+            if ptr == libc::MAP_FAILED {
+                return Err(std::io::Error::last_os_error());
+            }
+            let out = std::slice::from_raw_parts(ptr.cast::<u8>(), len).to_vec();
+            libc::munmap(ptr, len);
+            Ok(out)
+        }
+    }
+
+    #[cfg(unix)]
+    fn shm_exists(name: &str) -> bool {
+        shm_bytes(name).is_ok()
     }
 
     /// The segment holds exactly the written bytes and dropping it unlinks —
@@ -386,9 +433,12 @@ mod tests {
         let name = shm_name(0);
         let payload: Vec<u8> = (0..255u8).collect();
         let segment = ShmSegment::create(name.clone(), &payload).unwrap();
-        assert_eq!(std::fs::read(shm_path(&name)).unwrap(), payload);
+        let got = shm_bytes(&name).unwrap();
+        // Darwin rounds POSIX shm objects up to a page; the payload is the prefix.
+        assert!(got.len() >= payload.len(), "shm shorter than payload");
+        assert_eq!(&got[..payload.len()], payload.as_slice());
         drop(segment);
-        assert!(!shm_path(&name).exists(), "drop must unlink");
+        assert!(!shm_exists(&name), "drop must unlink");
     }
 
     /// `into_name` transfers the unlink duty to the caller (Python's
@@ -398,7 +448,7 @@ mod tests {
     fn into_name_disarms_the_unlink() {
         let segment = ShmSegment::create(shm_name(0), &[1, 2, 3]).unwrap();
         let name = segment.into_name();
-        assert!(shm_path(&name).exists(), "handoff must not unlink");
+        assert!(shm_exists(&name), "handoff must not unlink");
         // manual cleanup for the test
         let c = std::ffi::CString::new(format!("/{name}")).unwrap();
         unsafe { libc::shm_unlink(c.as_ptr()) };
@@ -416,14 +466,18 @@ mod tests {
             panic!("expected shm store");
         };
         assert_eq!(segments.len(), 2);
-        let read = |seg: &ShmSegment| -> Vec<u8> { std::fs::read(shm_path(&seg.name)).unwrap() };
-        assert_eq!(
-            read(&segments[0]),
-            bytemuck::cast_slice::<f32, u8>(&features[..12])
+        let read = |seg: &ShmSegment, expected: &[u8]| {
+            let got = shm_bytes(&seg.name).unwrap();
+            assert!(got.len() >= expected.len(), "shm shorter than item");
+            assert_eq!(&got[..expected.len()], expected);
+        };
+        read(
+            &segments[0],
+            bytemuck::cast_slice::<f32, u8>(&features[..12]),
         );
-        assert_eq!(
-            read(&segments[1]),
-            bytemuck::cast_slice::<f32, u8>(&features[12..])
+        read(
+            &segments[1],
+            bytemuck::cast_slice::<f32, u8>(&features[12..]),
         );
     }
 

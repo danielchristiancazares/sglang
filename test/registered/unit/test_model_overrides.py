@@ -1604,6 +1604,26 @@ class TestGoldenModelOverrides(_IsolatedPublish):
                 "mamba_radix_cache_strategy": "extra_buffer",
             },
         )
+        # MLX uses its own auxiliary-state pool and async overlap scheduler.
+        # It must select the generic no-buffer marker without disabling that
+        # independent overlap path.
+        with patch.object(overrides_module, "is_mps", return_value=True), patch.object(
+            overrides_module, "use_mlx", return_value=True
+        ):
+            self.assertEqual(
+                _mamba_radix_cache_resolution(_view("Qwen3NextForCausalLM")),
+                {
+                    "uses_mamba_radix_cache": True,
+                    "mamba_radix_cache_strategy": "no_buffer",
+                },
+            )
+            with self.assertRaisesRegex(ValueError, "MLX backend"):
+                _mamba_radix_cache_resolution(
+                    _view(
+                        "Qwen3NextForCausalLM",
+                        mamba_radix_cache_strategy="extra_buffer",
+                    )
+                )
         # auto + no extra-buffer support (Lfm2) -> no_buffer + overlap disable
         self.assertEqual(
             _mamba_radix_cache_resolution(_view("Lfm2ForCausalLM")),

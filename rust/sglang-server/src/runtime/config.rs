@@ -3,6 +3,7 @@
 //! dump ([`ServerArgs`] / [`ModelConfig`]), and the [`RuntimeConfig`] pairing
 //! them for `runtime::start`.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -87,6 +88,11 @@ pub struct ServerArgs {
     /// template file. Without an override, uses the tokenizer config template.
     #[serde(default)]
     pub chat_template: Option<String>,
+    /// Global Jinja arguments merged beneath per-request
+    /// `chat_template_kwargs`, matching Python's serving layer. This keeps
+    /// launch-time thinking defaults in the native renderer path.
+    #[serde(default)]
+    pub default_chat_template_kwargs: Option<HashMap<String, serde_json::Value>>,
     /// Parser selected by `--tool-call-parser`.
     #[serde(default)]
     pub tool_call_parser: Option<String>,
@@ -95,6 +101,14 @@ pub struct ServerArgs {
     /// `content` into `reasoning_content` — both unary and streaming.
     #[serde(default)]
     pub reasoning_parser: Option<String>,
+    /// Serve the text trunk only, even when the source checkpoint also has a
+    /// multimodal processor. This launch flag is authoritative for the
+    /// capabilities reported by `/model_info`.
+    #[serde(default)]
+    pub language_model_only: bool,
+    /// Active checkpoint weight revision, surfaced by `/model_info`.
+    #[serde(default)]
+    pub weight_version: Option<String>,
     /// Python's global default for whether an SSE stream ends with a usage chunk.
     #[serde(default)]
     pub stream_response_default_include_usage: bool,
@@ -163,6 +177,18 @@ pub struct ModelConfig {
     /// `TokenizerManager` does with `mm_processor is None`.
     #[serde(default)]
     pub is_multimodal: bool,
+    /// Fine-grained local media capabilities resolved by Python's one-time
+    /// model-config load. They remain static for the native server lifetime.
+    #[serde(default)]
+    pub is_image_understandable_model: bool,
+    #[serde(default)]
+    pub is_audio_understandable_model: bool,
+    /// Hugging Face identity copied out before the non-serializable config
+    /// object is removed from the startup blob.
+    #[serde(default)]
+    pub model_type: Option<String>,
+    #[serde(default)]
+    pub architectures: Option<Vec<String>>,
     /// Resolved default sampling parameters, stamped by
     /// `RustServer._build_server_args` from Python's
     /// `ModelConfig.get_default_sampling_params()`. Already gated on

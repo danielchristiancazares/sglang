@@ -68,11 +68,11 @@ async fn await_control_result(
     }
 }
 
-/// `GET /get_model_info` (+ `/model_info` alias) — static model metadata from
-/// `server_args` (no scheduler round-trip); `is_generation` always true.
-async fn model_info(State(state): State<AppState>) -> Response {
-    let sa = &state.server_args;
-    let body = serde_json::json!({
+/// Static `/model_info` JSON. `--language-model-only` is authoritative: a
+/// multimodal checkpoint still reports image/audio understanding as false.
+fn model_info_body(sa: &ServerArgs) -> serde_json::Value {
+    let text_only = sa.language_model_only;
+    serde_json::json!({
         "model_path": sa.model_path,
         "tokenizer_path": sa.tokenizer_path,
         "is_generation": true,
@@ -81,8 +81,20 @@ async fn model_info(State(state): State<AppState>) -> Response {
         // `RustServer.launch` REFUSES to start when it is set. It can therefore
         // only be null here — echoing it keeps the field's shape.
         "preferred_sampling_params": sa.preferred_sampling_params,
-        "weight_version": serde_json::Value::Null,
-    });
+        "weight_version": sa.weight_version,
+        "has_image_understanding": !text_only
+            && sa.model_config.is_image_understandable_model,
+        "has_audio_understanding": !text_only
+            && sa.model_config.is_audio_understandable_model,
+        "model_type": sa.model_config.model_type,
+        "architectures": sa.model_config.architectures,
+    })
+}
+
+/// `GET /get_model_info` (+ `/model_info` alias) — static model metadata from
+/// `server_args` (no scheduler round-trip); `is_generation` always true.
+async fn model_info(State(state): State<AppState>) -> Response {
+    let body = model_info_body(&state.server_args);
     (
         StatusCode::OK,
         [("content-type", "application/json")],
@@ -224,5 +236,55 @@ mod tests {
         assert!(state0.get("api_key").is_none());
         // Curated top-level config comes from typed accessors, not the dump.
         assert_eq!(v["model_path"], "/m");
+    }
+
+    /// Language-only launch must advertise both media capabilities as false
+    /// even when the underlying HF config is a multimodal architecture.
+    /// Removing the `language_model_only` gate would report true here.
+    #[test]
+    fn language_only_hides_multimodal_capabilities() {
+        let sa = ServerArgs::from_json(
+            r#"{
+                "model_path": "/m",
+                "language_model_only": true,
+                "model_config": {
+                    "is_image_understandable_model": true,
+                    "is_audio_understandable_model": true,
+                    "model_type": "qwen3_5",
+                    "architectures": ["Qwen3_5ForConditionalGeneration"]
+                }
+            }"#,
+        )
+        .unwrap();
+        let body = model_info_body(&sa);
+        assert_eq!(body["has_image_understanding"], false);
+        assert_eq!(body["has_audio_understanding"], false);
+        assert_eq!(body["is_generation"], true);
+        assert_eq!(body["model_type"], "qwen3_5");
+        assert_eq!(
+            body["architectures"],
+            serde_json::json!(["Qwen3_5ForConditionalGeneration"])
+        );
+    }
+
+    /// Without the language-only flag, `/model_info` reports the resolved
+    /// per-modality bits from the stamped model config.
+    #[test]
+    fn multimodal_capabilities_follow_stamped_model_config() {
+        let sa = ServerArgs::from_json(
+            r#"{
+                "model_path": "/m",
+                "language_model_only": false,
+                "model_config": {
+                    "is_image_understandable_model": true,
+                    "is_audio_understandable_model": false,
+                    "model_type": "qwen3_5"
+                }
+            }"#,
+        )
+        .unwrap();
+        let body = model_info_body(&sa);
+        assert_eq!(body["has_image_understanding"], true);
+        assert_eq!(body["has_audio_understanding"], false);
     }
 }

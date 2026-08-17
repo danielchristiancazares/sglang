@@ -10,7 +10,7 @@ storing model-agnostic native cache snapshots.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 import mlx.core as mx
 import torch
@@ -20,7 +20,6 @@ from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.mem_cache.unified_cache.components.mamba_component import (
     MambaComponent,
 )
-from sglang.srt.mem_cache.unified_cache.components.tree_component import TreeComponent
 
 _CACHE_ATTRS = ("offset", "lengths", "left_padding")
 _MISSING = object()
@@ -95,6 +94,7 @@ class MlxAuxiliaryStatePool:
         self.mamba_cache = None
         self.mem_usage = 0
         self._snapshots: dict[int, dict[int, _CacheSnapshot]] = {}
+        self._alloc_iter: Optional[Iterator[torch.Tensor]] = None
         self.clear()
 
     def _tensor(self, indices: Any) -> torch.Tensor:
@@ -108,7 +108,33 @@ class MlxAuxiliaryStatePool:
     def available_size(self) -> int:
         return int(self.free_slots.numel())
 
+    def schedulable_available_size(self) -> int:
+        return self.available_size()
+
+    def alloc_group_begin(self, num_reqs: int) -> None:
+        """Preallocate scheduler match-prefix slots as one tensor operation."""
+        self._alloc_iter = None
+        if num_reqs > 0:
+            result = self._do_alloc(num_reqs)
+            if result is not None:
+                self._alloc_iter = iter(result.split(1))
+
+    def alloc_group_end(self) -> None:
+        """Return preallocated slots unused by the current scheduler pass."""
+        if self._alloc_iter is not None:
+            remaining = list(self._alloc_iter)
+            if remaining:
+                self.free(torch.cat(remaining))
+        self._alloc_iter = None
+
     def alloc(self, need_size: int) -> Optional[torch.Tensor]:
+        if self._alloc_iter is not None and need_size == 1:
+            slot = next(self._alloc_iter, None)
+            if slot is not None:
+                return slot
+        return self._do_alloc(need_size)
+
+    def _do_alloc(self, need_size: int) -> Optional[torch.Tensor]:
         if need_size > self.available_size():
             return None
         slots = self.free_slots[:need_size].clone()
@@ -128,6 +154,7 @@ class MlxAuxiliaryStatePool:
         self.free_slots = torch.cat([self.free_slots, indices])
 
     def clear(self) -> None:
+        self._alloc_iter = None
         self.free_slots = torch.arange(
             1, self.size + 1, dtype=torch.int64, device=self.device
         )
@@ -165,9 +192,17 @@ class MlxAuxiliaryStatePool:
         cache: list[Any],
         layer_indices: Iterable[int],
     ) -> None:
-        self._snapshots[self._index(index)] = {
-            layer_idx: _snapshot_cache(cache[layer_idx]) for layer_idx in layer_indices
-        }
+        # Prefill/extend snapshot runs after a large Metal graph. With
+        # SGLANG_MLX_CLEAR_CACHE_STEPS=0 those command buffers stay resident,
+        # and cloning 48 DeltaNet states then OOMs eval on 32 GB unified
+        # memory (kIOGPUCommandBufferCallbackErrorOutOfMemory). Drop unused
+        # Metal temporaries before allocating the snapshot copies. This is
+        # not on the decode-step path.
+        mx.clear_cache()
+        snapshots = {}
+        for layer_idx in layer_indices:
+            snapshots[layer_idx] = _snapshot_cache(cache[layer_idx])
+        self._snapshots[self._index(index)] = snapshots
 
     def restore_cache(
         self,
@@ -229,8 +264,10 @@ class MlxAuxiliaryStateReqToTokenPool(ReqToTokenPool):
         )
         # The unified radix base MAMBA component still reads ``mamba_pool``.
         # Keep the MLX-owned name beside it so local code can avoid model-
-        # specific terminology.
+        # specific terminology. ``mamba_allocator`` is the scheduler telemetry
+        # compatibility surface used by SchedulerPoolStatsObserver.
         self.auxiliary_state_pool = self.mamba_pool
+        self.mamba_allocator = self.mamba_pool
         self.enable_mamba_extra_buffer = False
         self.req_index_to_auxiliary_state_index_mapping = torch.zeros(
             self._alloc_size, dtype=torch.int32, device=device
@@ -302,21 +339,27 @@ class MlxAuxiliaryStateReqToTokenPool(ReqToTokenPool):
 class MlxAuxiliaryStateComponent(MambaComponent):
     """Unified radix component for MLX native auxiliary-state snapshots."""
 
+    @staticmethod
+    def _validate_req_to_token_pool(req_to_token_pool) -> None:
+        pool = getattr(req_to_token_pool, "auxiliary_state_pool", None)
+        if not isinstance(pool, MlxAuxiliaryStatePool):
+            raise TypeError(
+                "MlxAuxiliaryStateComponent requires MlxAuxiliaryStatePool, "
+                f"got {type(pool)}"
+            )
+
     def __init__(self, cache, params):
         if params.enable_mamba_extra_buffer:
             raise NotImplementedError(
                 "MLX auxiliary-state radix cache does not support "
                 "enable_mamba_extra_buffer yet."
             )
-        pool = getattr(cache.req_to_token_pool, "auxiliary_state_pool", None)
-        if not isinstance(pool, MlxAuxiliaryStatePool):
-            raise TypeError(
-                "MlxAuxiliaryStateComponent requires MlxAuxiliaryStatePool, "
-                f"got {type(pool)}"
+        if params.req_to_token_pool is not cache.req_to_token_pool:
+            raise ValueError(
+                "MLX auxiliary-state component received mismatched request pools"
             )
-        TreeComponent.__init__(self, cache, params)
+        super().__init__(cache, params)
         self.enable_mamba_extra_buffer = False
-        self._mamba_pool_host = None
 
     @staticmethod
     def _tracked_value(req) -> tuple[object | None, bool]:

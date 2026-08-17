@@ -3712,6 +3712,7 @@ dependencies = [
  "hf-hub",
  "itertools",
  "libc",
+ "minijinja",
  "numpy",
  "pyo3",
  "regex-syntax",

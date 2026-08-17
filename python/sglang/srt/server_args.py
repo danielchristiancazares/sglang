@@ -1223,6 +1223,43 @@ class ServerArgs:
         ),
         NS("device"),
     ] = False
+    mlx_kv_cache_bits: A[
+        Optional[int],
+        (
+            "MLX backend only: store full-attention KV in geometrically "
+            "grown affine 4-bit or 8-bit buffers. This is the memory-maximizing "
+            "single-request long-context mode and requires "
+            "--disable-radix-cache."
+        ),
+        NS("device"),
+    ] = None
+    mlx_kv_cache_group_size: A[
+        int,
+        (
+            "MLX backend only: affine quantization group size for quantized "
+            "KV cache; supported values are 32, 64, and 128."
+        ),
+        NS("device"),
+    ] = 64
+    mlx_mtp_path: A[
+        Optional[str],
+        (
+            "MLX backend only: path to a Qwen3.5-family multi-token-"
+            "prediction head sidecar (mtp.safetensors), enabling speculative "
+            "decode. Drafted tokens are verified against the trunk in one "
+            "batched forward, so output stays a greedy trunk stream; an "
+            "adaptive policy falls back to plain decode when acceptance "
+            "drops below breakeven. Engages only for greedy single-request "
+            "decode without logit edits; requires --disable-radix-cache and "
+            "BF16 attention KV."
+        ),
+        NS("device"),
+    ] = None
+    mlx_mtp_depth: A[
+        int,
+        "MLX backend only: tokens drafted per speculative round (1-8).",
+        NS("device"),
+    ] = 3
     watchdog_timeout: A[
         float,
         "Set watchdog timeout in seconds. If a forward batch takes longer than this, the server will crash to prevent hanging.",
@@ -5863,6 +5900,13 @@ class ServerArgs:
         if not view.uses_mamba_radix_cache:
             return
 
+        # Hybrid MLX caching stores native mlx-lm auxiliary state through the
+        # unified radix component.  Its ``no_buffer`` label does not imply the
+        # FLA no-buffer restrictions below: MLX has a separate async overlap
+        # scheduler and an MLX-owned state pool.
+        if is_mps() and use_mlx():
+            return
+
         if mamba_extra_buffer_of(view):
             self._validate_mamba_extra_buffer(view, model_arch)
         else:
@@ -8509,6 +8553,27 @@ class ServerArgs:
             raise ValueError(
                 "--default-chat-template-kwargs must decode to a JSON object"
             )
+        if self.mlx_kv_cache_bits is not None:
+            if self.mlx_kv_cache_bits not in (4, 8):
+                raise ValueError("--mlx-kv-cache-bits must be 4 or 8")
+            if not self.disable_radix_cache:
+                raise ValueError(
+                    "--mlx-kv-cache-bits requires --disable-radix-cache"
+                )
+        if self.mlx_kv_cache_group_size not in (32, 64, 128):
+            raise ValueError(
+                "--mlx-kv-cache-group-size must be one of 32, 64, 128"
+            )
+        if self.mlx_mtp_path is not None:
+            if not self.disable_radix_cache:
+                raise ValueError("--mlx-mtp-path requires --disable-radix-cache")
+            if self.mlx_kv_cache_bits is not None:
+                raise ValueError(
+                    "--mlx-mtp-path requires BF16 attention KV "
+                    "(no --mlx-kv-cache-bits)"
+                )
+            if not 1 <= self.mlx_mtp_depth <= 8:
+                raise ValueError("--mlx-mtp-depth must be between 1 and 8")
 
         # Handle optimistic prefill validation
         if (

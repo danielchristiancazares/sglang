@@ -802,6 +802,9 @@ class Envs:
     # Apple Silicon and MLX
     # ===================================================================
     SGLANG_USE_MLX = EnvBool(False)
+    SGLANG_USE_MLX_NATIVE_GRAPH = EnvBool(False)
+    # Directory of the Qwen3.8 MTP 4-bit drafter (mlx-community/Qwen3.8-27B-MTP-4bit).
+    SGLANG_MLX_MTP_DIR = EnvStr(None)
     SGLANG_MLX_USE_CUSTOM_ROPE = EnvBool(False)
     SGLANG_MLX_FUSE_SWIGLU = EnvBool(False)
     # Number of decode steps between periodic mx.clear_cache() calls.
