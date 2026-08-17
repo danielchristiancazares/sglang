@@ -758,6 +758,13 @@ class SchedulerBatchResultProcessor:
             length - num_non_draft for length in accept_lens
         ]
         result.num_correct_drafts = sum(result.num_correct_drafts_per_req_cpu)
+        swor_accept_indices_tensor = getattr(result, "swor_accept_indices", None)
+        swor_accept_indices = (
+            swor_accept_indices_tensor.tolist()
+            if swor_accept_indices_tensor is not None
+            else None
+        )
+        swor_overlap_metrics = getattr(result, "swor_overlap_metrics", None)
 
         block_accept_lens = (
             result.block_accept_lens.tolist()
@@ -806,6 +813,20 @@ class SchedulerBatchResultProcessor:
                 num_correct_drafts = result.num_correct_drafts_per_req_cpu[i]
                 req.spec_num_correct_drafts += num_correct_drafts
                 req.update_spec_correct_drafts_histogram(num_correct_drafts)
+
+                if swor_accept_indices is not None:
+                    node_base = i * stride
+                    accepted_nodes = [
+                        node - node_base
+                        for node in swor_accept_indices[i][1 : accept_lens[i]]
+                        if node_base <= node < node_base + stride
+                    ]
+                    req.update_spec_accept_node_histogram(accepted_nodes)
+
+                if swor_overlap_metrics is not None:
+                    req.update_spec_swor_overlap_metrics(
+                        swor_overlap_metrics[i].numpy()
+                    )
 
                 if block_accept_lens is not None:
                     req.spec_num_block_accept_tokens += block_accept_lens[i]

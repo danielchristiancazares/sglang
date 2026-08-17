@@ -30,6 +30,8 @@ class EagleVerifyInput(SpecInput):
     # Draft proposal distribution q. Shape is (bs, num_steps, vocab) for a
     # rejection chain and (bs, draft_token_num, vocab) for a SWOR tree.
     draft_probs: torch.Tensor = None
+    # Oracle-only CUDA overlap grid, populated immediately before SWOR mutates p.
+    swor_overlap_metrics: torch.Tensor = None
 
     # Shape info for padding
     num_tokens_per_req: int = -1  # -1 auto-fills from draft_token_num.

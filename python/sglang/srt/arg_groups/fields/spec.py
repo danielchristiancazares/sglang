@@ -134,6 +134,23 @@ class Spec(msgspec.Struct):
             choices=["target_only", "swor"],
         ),
     ] = "target_only"
+    speculative_swor_collect_path_stats: A[
+        bool,
+        "Collect accepted fixed-tree node paths for SWOR topology tuning. The "
+        "small device-to-host copy is asynchronous but intended only for oracle "
+        "runs, so this is disabled by default.",
+    ] = False
+    speculative_swor_collect_overlap_stats: A[
+        bool,
+        "Collect CUDA proposal-overlap grids for SWOR q calibration. This is "
+        "an oracle-only diagnostic and is disabled by default.",
+    ] = False
+    speculative_swor_topology: A[
+        Optional[str],
+        "JSON array of fixed parent node IDs for an experimental SWOR topology. "
+        "Nodes must be grouped by depth; the root parent is -1. Empty selects "
+        "the qualified default topology.",
+    ] = None
     speculative_token_map: A[
         Optional[str],
         "The path of the draft model's small vocab table.",

@@ -89,11 +89,14 @@ from sglang.srt.speculative.eagle_info import (
 )
 from sglang.srt.speculative.eagle_utils import (
     _eagle_prefill_tail_tokens,
+    default_swor_topology,
     default_tree_mask_mode,
     get_draft_recurrent_hidden_state_spec,
     organize_draft_results,
-    organize_tree_swor_probs,
+    organize_swor_draft_results,
+    parse_swor_topology,
     per_step_draft_out_cache_loc,
+    select_swor_topology_step,
 )
 from sglang.srt.speculative.eagle_worker_common import (
     build_eagle_verify_input,
@@ -210,6 +213,9 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             server_args, "speculative_tree_sampling_mode", "target_only"
         )
         self.use_tree_swor = self.tree_sampling_mode == "swor"
+        self.collect_swor_path_stats = getattr(
+            server_args, "speculative_swor_collect_path_stats", False
+        )
         if get_spec().speculative_use_rejection_sampling:
             assert self.topk == 1, "Chain speculative sampling supports only topk=1"
         if self.use_tree_swor:
@@ -217,6 +223,30 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             assert not get_spec().speculative_use_rejection_sampling
         self.speculative_num_steps = get_spec().speculative_num_steps
         self.speculative_num_draft_tokens = get_spec().speculative_num_draft_tokens
+        self.swor_topology = None
+        if self.use_tree_swor:
+            topology_json = getattr(server_args, "speculative_swor_topology", None)
+            self.swor_topology = (
+                parse_swor_topology(topology_json, self.topk, self.device)
+                if topology_json
+                else default_swor_topology(self.device)
+            )
+            expected = (
+                self.swor_topology.draft_width,
+                self.swor_topology.num_steps,
+                self.swor_topology.num_verify_nodes,
+            )
+            actual = (
+                self.topk,
+                self.speculative_num_steps,
+                self.speculative_num_draft_tokens,
+            )
+            if actual != expected:
+                raise ValueError(
+                    "The selected SWOR topology requires "
+                    "speculative_eagle_topk/speculative_num_steps/"
+                    f"speculative_num_draft_tokens={expected}, got {actual}"
+                )
         self.speculative_algorithm = SpeculativeAlgorithm.from_string(
             get_spec().speculative_algorithm
         )
@@ -772,15 +802,10 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         if get_spec().speculative_use_rejection_sampling:
             draft_probs_list: List[torch.Tensor] = [spec_info.draft_probs]
         elif self.use_tree_swor:
+            if spec_info.draft_probs is None:
+                raise ValueError("SWOR draft input is missing the root proposal q row")
             draft_probs_list = [spec_info.draft_probs.unsqueeze(1)]
-            draft_prob_node_ids = [
-                torch.full(
-                    (topk_index.shape[0], 1),
-                    -1,
-                    dtype=torch.long,
-                    device=topk_index.device,
-                )
-            ]
+            swor_token_blocks = []
 
         topk1_chain_fits = (
             self.topk == 1
@@ -813,19 +838,15 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             for i in range(self.speculative_num_steps):
                 if draft_tokens_topk1 is not None:
                     input_ids = topk_index.flatten()
+                elif self.use_tree_swor:
+                    input_ids, hidden_states, visible_tokens = select_swor_topology_step(
+                        self.swor_topology, i, topk_index, hidden_states
+                    )
+                    swor_token_blocks.append(visible_tokens)
                 else:
                     input_ids, hidden_states, scores, tree_info = select_top_k_tokens(
                         i, topk_p, topk_index, hidden_states, scores, self.topk
                     )
-                    if self.use_tree_swor:
-                        if i == 0:
-                            current_frontier_node_ids = torch.arange(
-                                self.topk,
-                                dtype=torch.long,
-                                device=topk_index.device,
-                            ).expand(topk_index.shape[0], -1)
-                        else:
-                            current_frontier_node_ids = tree_info[2]
                     # Calibrate only the final global node allocation. The
                     # undiscounted cumulative scores still choose which
                     # branches the draft model extends at the next step.
@@ -906,7 +927,6 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                         draft_probs_list.append(
                             probs.view(-1, self.topk, probs.shape[-1])
                         )
-                        draft_prob_node_ids.append(current_frontier_node_ids)
                     else:
                         topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
                     forward_batch.positions.add_(1)
@@ -923,6 +943,11 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         draft_probs = None
         if get_spec().speculative_use_rejection_sampling:
             draft_probs = torch.stack(draft_probs_list, dim=1)
+
+        if self.use_tree_swor:
+            return organize_swor_draft_results(
+                self.swor_topology, swor_token_blocks, draft_probs_list
+            )
 
         # Organize the results
         if draft_tokens_topk1 is not None:
@@ -941,13 +966,6 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         parent_list, top_scores_index, draft_tokens = organize_draft_results(
             score_list, token_list, parents_list, self.speculative_num_draft_tokens
         )
-
-        if self.use_tree_swor:
-            draft_probs = organize_tree_swor_probs(
-                torch.cat(draft_probs_list, dim=1),
-                torch.cat(draft_prob_node_ids, dim=1),
-                top_scores_index,
-            )
 
         return parent_list, top_scores_index, draft_tokens, draft_probs
 
@@ -1813,6 +1831,7 @@ class EAGLEWorkerV2(BaseSpecWorker):
             device=self.device,
             metadata_ready_pre_pad=False,
             finalize_tree_path=True,
+            collect_swor_path_stats=self.draft_worker.collect_swor_path_stats,
             grammar_barrier=grammar_barrier,
         )
 

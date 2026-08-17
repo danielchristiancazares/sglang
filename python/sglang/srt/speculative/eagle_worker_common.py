@@ -471,6 +471,7 @@ def run_eagle_verify(
     device: str,
     metadata_ready_pre_pad: bool,
     finalize_tree_path: bool,
+    collect_swor_path_stats: bool,
     grammar_barrier=None,
     uno_target_max_top_k: Optional[int] = None,
 ) -> GenerationBatchResult:
@@ -664,6 +665,8 @@ def run_eagle_verify(
         speculative_num_draft_tokens=num_draft_tokens,
         next_draft_input=next_draft_input,
         accept_lens=accept_lens,
+        swor_accept_indices=accept_index if collect_swor_path_stats else None,
+        swor_overlap_metrics=verify_input.swor_overlap_metrics,
         new_seq_lens=new_seq_lens,
         routed_experts_output=forward_batch_output.routed_experts_output,
         indexer_topk_output=forward_batch_output.indexer_topk_output,

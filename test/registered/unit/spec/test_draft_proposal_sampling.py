@@ -3,10 +3,17 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
-from sglang.srt.speculative.eagle_utils import organize_tree_swor_probs
+from sglang.srt.speculative.eagle_utils import (
+    build_swor_topology,
+    default_swor_topology,
+    organize_swor_draft_results,
+    parse_swor_topology,
+    select_swor_topology_step,
+)
 
 from sglang.srt.speculative.spec_utils import (
     discount_tree_node_scores_,
+    fast_sample,
     renorm_draft_probs,
     sample_draft_proposal,
 )
@@ -23,20 +30,77 @@ def _argmax_sample(probs: torch.Tensor, num_samples: int = 1):
 
 
 class TestDraftProposalSampling(CustomTestCase):
-    def test_swor_probs_follow_final_pruned_tree_node_order(self):
-        # Source rows are root (-1), first-level candidates 0..3, and two
-        # continuation frontiers. Final leaves 40/41 have no q row and safely
-        # map to root because verification never reads q from a leaf.
-        source_ids = torch.tensor(
-            [[-1, 0, 1, 2, 3, 4, 8, 9, 10, 20, 24, 21, 28]],
-            dtype=torch.long,
+    def test_default_swor_topology_and_q_rows(self):
+        topology = default_swor_topology("cpu")
+        self.assertEqual(topology.parent_by_node, (-1, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 9))
+        self.assertEqual(tuple(map(len, topology.nodes_by_depth[1:])), (4, 4, 2, 1))
+        self.assertEqual(topology.selected_indices.tolist(), [[0, 1, 2, 3, 4, 8, 12, 16, 20, 24, 36]])
+
+        token_blocks = [
+            torch.tensor([[10, 11, 12, 13]]),
+            torch.tensor([[20, 21, 22, 23]]),
+            torch.tensor([[30, 31]]),
+            torch.tensor([[40]]),
+        ]
+        q_blocks = [
+            torch.tensor([[[0.0]]]),
+            torch.arange(1, 5, dtype=torch.float32).view(1, 4, 1),
+            torch.arange(5, 9, dtype=torch.float32).view(1, 4, 1),
+            torch.arange(9, 13, dtype=torch.float32).view(1, 4, 1),
+        ]
+        _, _, tokens, q = organize_swor_draft_results(topology, token_blocks, q_blocks)
+        self.assertEqual(tokens.tolist(), [[10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 40]])
+        self.assertEqual(q[..., 0].tolist(), [[0, 1, 2, 3, 4, 5, 6, 0, 0, 9, 0, 0]])
+
+    def test_swor_organizer_keeps_low_q_early_sibling_prefix(self):
+        topology = default_swor_topology("cpu")
+        # The old global score pruning preferred token 91 and could omit token
+        # 90. The fixed root prefix is drawn-order [90, 91, 92, 93].
+        sampled = torch.tensor([[90, 91, 92, 93]])
+        _, _, visible = select_swor_topology_step(topology, 0, sampled, None)
+        self.assertEqual(visible.tolist(), [[90, 91, 92, 93]])
+
+    def test_custom_swor_topology_json(self):
+        topology = parse_swor_topology(
+            "[-1,0,0,1,2,3,4]", draft_width=2, device="cpu"
         )
-        source_probs = torch.arange(13, dtype=torch.float32).view(1, 13, 1)
-        selected = torch.tensor([[0, 4, 8, 20, 24, 40, 41]], dtype=torch.long)
+        self.assertEqual(topology.parent_by_node, (-1, 0, 0, 1, 2, 3, 4))
+        self.assertEqual(tuple(map(len, topology.nodes_by_depth[1:])), (2, 2, 2))
 
-        result = organize_tree_swor_probs(source_probs, source_ids, selected)
+    def test_custom_swor_topology_json_rejects_non_integer_parent(self):
+        with self.assertRaisesRegex(ValueError, "array of integer parent IDs"):
+            parse_swor_topology("[-1, true]", draft_width=2, device="cpu")
 
-        self.assertEqual(result[:, :, 0].tolist(), [[0, 1, 5, 6, 9, 10, 0, 0]])
+    def test_every_internal_node_requires_q_source(self):
+        topology = default_swor_topology("cpu")
+        internal = set(topology.parent_by_node[1:])
+        for node in internal:
+            self.assertIsNotNone(topology.q_sources[node], f"internal node {node}")
+        self.assertIsNone(topology.q_sources[7])
+
+    def test_topology_rejects_missing_fixed_width_frontier(self):
+        # Eight internal depth-two nodes cannot fit a four-row draft forward.
+        with self.assertRaisesRegex(ValueError, "depth 2 has 8 internal nodes"):
+            build_swor_topology(
+                (-1, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4,
+                 5, 6, 7, 8, 9, 10, 11, 12),
+                4,
+                "cpu",
+            )
+
+    def test_swor_support_exhaustion_orders_zero_mass_uniformly(self):
+        torch.manual_seed(1234)
+        for support_size in (0, 1, 3, 4):
+            probs = torch.zeros((256, 8), dtype=torch.float32)
+            if support_size:
+                probs[:, :support_size] = 1.0 / support_size
+            _, indices = fast_sample(probs, num_samples=4)
+            self.assertTrue(torch.all(indices[:, :support_size] < support_size))
+            ordered = indices.sort(dim=1).values
+            self.assertTrue(torch.all(ordered[:, 1:] != ordered[:, :-1]))
+            if support_size < 4:
+                zero_first = indices[:, support_size]
+                self.assertGreater(torch.unique(zero_first).numel(), 1)
 
     def test_tree_depth_discount_only_changes_global_allocation_scores(self):
         scores = torch.tensor([[0.8, 0.4, 0.2]], dtype=torch.float32)

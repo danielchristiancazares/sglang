@@ -16,6 +16,7 @@ def _jit_exact_tree_sampling_module() -> Module:
         "exact_tree_speculative_sampling",
         cuda_files=["speculative/exact_tree_speculative_sampling.cuh"],
         cuda_wrappers=[
+            ("proposal_overlap", "ProposalOverlapKernel::run"),
             ("sample", "ExactTreeSpeculativeSamplingKernel::run"),
             ("sample_swor", "ExactTreeSworSamplingKernel::run"),
         ],
@@ -25,6 +26,32 @@ def _jit_exact_tree_sampling_module() -> Module:
 def preload_exact_tree_sampling() -> None:
     """Compile/load the verifier while model startup still has VRAM headroom."""
     _jit_exact_tree_sampling_module()
+
+
+def swor_proposal_overlap_metrics(
+    target_probs: torch.Tensor,
+    draft_probs: torch.Tensor,
+    temperature_scales: torch.Tensor,
+    top_ks: torch.Tensor,
+) -> torch.Tensor:
+    """Evaluate calibrated sparse-q overlap with target p entirely on CUDA.
+
+    The final dimension is ``[sum(min(p,q)), q_mass_outside_p, q_support]``.
+    ``target_probs`` must still be pristine; SWOR verification mutates it.
+    """
+    output = torch.empty(
+        (*target_probs.shape[:2], temperature_scales.numel(), top_ks.numel(), 3),
+        dtype=torch.float32,
+        device=target_probs.device,
+    )
+    _jit_exact_tree_sampling_module().proposal_overlap(
+        target_probs,
+        draft_probs,
+        temperature_scales,
+        top_ks,
+        output,
+    )
+    return output
 
 
 def exact_tree_speculative_sampling(
