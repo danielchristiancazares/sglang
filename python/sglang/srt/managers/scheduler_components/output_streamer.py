@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import (
@@ -366,6 +367,26 @@ class _GenerationStreamAccumulator:
             if req.finished_len is None:
                 req.finished_len = len(req.output_ids)
             should_output = True
+            if req.spec_accept_node_histogram:
+                logger.info(
+                    "SWOR_ACCEPT_PATH_STATS rid=%s verify_ct=%d node_histogram=%s",
+                    req.rid,
+                    req.spec_verify_ct,
+                    req.spec_accept_node_histogram,
+                )
+            if req.spec_swor_overlap_count:
+                overlap_means = (
+                    req.spec_swor_overlap_sums / req.spec_swor_overlap_count
+                )
+                logger.info(
+                    "SWOR_OVERLAP_STATS rid=%s count=%d scales=%s top_ks=%s "
+                    "node_grid=%s",
+                    req.rid,
+                    req.spec_swor_overlap_count,
+                    [0.70, 0.85, 1.00, 1.15, 1.30],
+                    [4, 8, 12, 16, 20],
+                    json.dumps(overlap_means.tolist(), separators=(",", ":")),
+                )
         else:
             if req.stream:
                 stream_interval = (

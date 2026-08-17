@@ -708,6 +708,31 @@ def _handle_eagle_family(server_args: ServerArgs) -> None:
             )
         logger.info("Exact tree sampling without replacement is enabled.")
 
+    if (
+        server_args.speculative_swor_collect_path_stats
+        and server_args.speculative_tree_sampling_mode != "swor"
+    ):
+        raise ValueError(
+            "--speculative-swor-collect-path-stats requires "
+            "--speculative-tree-sampling-mode=swor."
+        )
+    if (
+        server_args.speculative_swor_collect_overlap_stats
+        and server_args.speculative_tree_sampling_mode != "swor"
+    ):
+        raise ValueError(
+            "--speculative-swor-collect-overlap-stats requires "
+            "--speculative-tree-sampling-mode=swor."
+        )
+    if (
+        server_args.speculative_swor_topology is not None
+        and server_args.speculative_tree_sampling_mode != "swor"
+    ):
+        raise ValueError(
+            "--speculative-swor-topology requires "
+            "--speculative-tree-sampling-mode=swor."
+        )
+
     if server_args.speculative_draft_sampling_top_k is not None:
         if server_args.speculative_draft_sampling_top_k < 1:
             raise ValueError(

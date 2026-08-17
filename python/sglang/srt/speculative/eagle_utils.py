@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
 import sys
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
 import torch
 
@@ -46,6 +48,256 @@ _is_xpu = is_xpu()
 _is_cpu = is_cpu()
 
 logger = logging.getLogger(__name__)
+
+MAX_SWOR_VERIFY_NODES = 32
+SWOR_OVERLAP_TEMPERATURE_SCALES = (0.70, 0.85, 1.00, 1.15, 1.30)
+SWOR_OVERLAP_TOP_KS = (4, 8, 12, 16, 20)
+_swor_overlap_grid_cache = {}
+
+
+def _get_swor_overlap_grid(device: torch.device):
+    key = str(device)
+    cached = _swor_overlap_grid_cache.get(key)
+    if cached is None:
+        cached = (
+            torch.tensor(
+                SWOR_OVERLAP_TEMPERATURE_SCALES,
+                dtype=torch.float32,
+                device=device,
+            ),
+            torch.tensor(
+                SWOR_OVERLAP_TOP_KS,
+                dtype=torch.int32,
+                device=device,
+            ),
+        )
+        _swor_overlap_grid_cache[key] = cached
+    return cached
+
+
+@dataclass(frozen=True)
+class SworTopology:
+    """Graph-static ordered-SWOR tree plan.
+
+    Nodes are in final target-verify order; node zero is the bonus/root.  Every
+    other node names a fixed child rank of a fixed parent, so each parent's
+    visible children are an ordered prefix of the SWOR sequence drawn from its
+    stored q.  ``q_sources`` maps every internal target node to the exact draft
+    row that generated its children.  ``None`` marks explicit unused leaf
+    storage and is never accepted for an internal node.
+
+    Exactness relies on five facts: topology and child counts are fixed before
+    draws; visible siblings are an ordered SWOR prefix; the stored q is the q
+    used for those draws; generation and verification apply identical R/D
+    rejection updates (including uniform D after support exhaustion); and an
+    accepted child restarts descent from that child's target p and draft q.
+    """
+
+    draft_width: int
+    parent_by_node: Tuple[int, ...]
+    nodes_by_depth: Tuple[Tuple[int, ...], ...]
+    source_ids: Tuple[int, ...]
+    visible_local_indices: Tuple[Tuple[int, ...], ...]
+    frontier_local_indices: Tuple[Tuple[int, ...], ...]
+    q_sources: Tuple[Optional[Tuple[int, int]], ...]
+    visible_indices: Tuple[torch.Tensor, ...]
+    frontier_indices: Tuple[torch.Tensor, ...]
+    frontier_parent_rows: Tuple[torch.Tensor, ...]
+    parent_list: torch.Tensor
+    selected_indices: torch.Tensor
+
+    @property
+    def num_verify_nodes(self) -> int:
+        return len(self.parent_by_node)
+
+    @property
+    def num_steps(self) -> int:
+        return len(self.nodes_by_depth) - 1
+
+
+def build_swor_topology(
+    parent_by_node: Sequence[int], draft_width: int, device: torch.device | str
+) -> SworTopology:
+    """Validate and bind an arbitrary fixed SWOR tree of at most 32 nodes."""
+    parents = tuple(int(parent) for parent in parent_by_node)
+    if not 1 < len(parents) <= MAX_SWOR_VERIFY_NODES:
+        raise ValueError(
+            f"SWOR topology must contain 2..{MAX_SWOR_VERIFY_NODES} verify nodes, "
+            f"got {len(parents)}"
+        )
+    if draft_width < 1 or parents[0] != -1:
+        raise ValueError("SWOR topology requires positive draft width and root parent -1")
+
+    depths = [0]
+    children: List[List[int]] = [[] for _ in parents]
+    for node, parent in enumerate(parents[1:], start=1):
+        if parent < 0 or parent >= node:
+            raise ValueError(
+                f"SWOR topology node {node} has invalid parent {parent}; "
+                "parents must precede children"
+            )
+        children[parent].append(node)
+        if len(children[parent]) > draft_width:
+            raise ValueError(
+                f"SWOR topology node {parent} has {len(children[parent])} children, "
+                f"exceeding draft width {draft_width}"
+            )
+        depths.append(depths[parent] + 1)
+    if depths != sorted(depths):
+        raise ValueError("SWOR topology nodes must be grouped in nondecreasing depth order")
+
+    max_depth = max(depths)
+    nodes_by_depth = tuple(
+        tuple(node for node, depth in enumerate(depths) if depth == level)
+        for level in range(max_depth + 1)
+    )
+    internal_by_depth = tuple(
+        tuple(node for node in level if children[node]) for level in nodes_by_depth
+    )
+    for depth, frontier in enumerate(internal_by_depth[1:], start=1):
+        if len(frontier) > draft_width:
+            raise ValueError(
+                f"SWOR topology depth {depth} has {len(frontier)} internal nodes; "
+                f"fixed draft width {draft_width} can advance at most {draft_width}"
+            )
+
+    source_ids = [-1] * len(parents)
+    visible_local_indices: List[Tuple[int, ...]] = []
+    frontier_local_indices: List[Tuple[int, ...]] = []
+    for depth in range(1, max_depth + 1):
+        parent_frontier = internal_by_depth[depth - 1]
+        parent_slots = {node: slot for slot, node in enumerate(parent_frontier)}
+        local_indices = []
+        for node in nodes_by_depth[depth]:
+            parent = parents[node]
+            sibling_rank = children[parent].index(node)
+            local = sibling_rank if depth == 1 else parent_slots[parent] * draft_width + sibling_rank
+            local_indices.append(local)
+            block_offset = 0 if depth == 1 else draft_width + (depth - 2) * draft_width**2
+            source_ids[node] = block_offset + local
+        visible_local_indices.append(tuple(local_indices))
+
+        frontier = internal_by_depth[depth]
+        if frontier:
+            frontier_locals = [local_indices[nodes_by_depth[depth].index(node)] for node in frontier]
+            frontier_locals.extend([frontier_locals[0]] * (draft_width - len(frontier_locals)))
+        else:
+            frontier_locals = [local_indices[0]] * draft_width
+        frontier_local_indices.append(tuple(frontier_locals))
+
+    q_sources: List[Optional[Tuple[int, int]]] = [None] * len(parents)
+    q_sources[0] = (0, 0)
+    for depth in range(1, max_depth):
+        for row, node in enumerate(internal_by_depth[depth]):
+            q_sources[node] = (depth, row)
+    for node, node_children in enumerate(children):
+        if node_children and q_sources[node] is None:
+            raise ValueError(f"SWOR topology internal node {node} has no draft q row")
+
+    # Legacy build-tree metadata addresses candidate-universe IDs in groups of
+    # draft_width. These tensors are setup-time constants and are only expanded
+    # during replay, so topology does not allocate in the CUDA graph pool.
+    parent_ids = [-1]
+    for depth in range(1, max_depth):
+        frontier_ids = [source_ids[node] for node in internal_by_depth[depth]]
+        frontier_ids.extend([frontier_ids[0]] * (draft_width - len(frontier_ids)))
+        parent_ids.extend(frontier_ids)
+
+    return SworTopology(
+        draft_width=draft_width,
+        parent_by_node=parents,
+        nodes_by_depth=nodes_by_depth,
+        source_ids=tuple(source_ids),
+        visible_local_indices=tuple(visible_local_indices),
+        frontier_local_indices=tuple(frontier_local_indices),
+        q_sources=tuple(q_sources),
+        visible_indices=tuple(
+            torch.tensor(indices, dtype=torch.long, device=device)
+            for indices in visible_local_indices
+        ),
+        frontier_indices=tuple(
+            torch.tensor(indices, dtype=torch.long, device=device)
+            for indices in frontier_local_indices
+        ),
+        frontier_parent_rows=tuple(
+            torch.tensor(
+                [index // draft_width for index in indices],
+                dtype=torch.long,
+                device=device,
+            )
+            for indices in frontier_local_indices
+        ),
+        parent_list=torch.tensor(parent_ids, dtype=torch.long, device=device).unsqueeze(0),
+        selected_indices=torch.tensor(source_ids[1:], dtype=torch.long, device=device).unsqueeze(0),
+    )
+
+
+def default_swor_topology(device: torch.device | str) -> SworTopology:
+    """The initial 12-node 4/4/2/1 production SWOR topology."""
+    return build_swor_topology(
+        (-1, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 9), draft_width=4, device=device
+    )
+
+
+def parse_swor_topology(
+    topology_json: str, draft_width: int, device: torch.device | str
+) -> SworTopology:
+    """Parse the launcher-safe JSON representation of a fixed topology."""
+    try:
+        parents = json.loads(topology_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid SWOR topology JSON: {exc.msg}") from exc
+    if not isinstance(parents, list) or any(
+        isinstance(parent, bool) or not isinstance(parent, int) for parent in parents
+    ):
+        raise ValueError("SWOR topology JSON must be an array of integer parent IDs")
+    return build_swor_topology(parents, draft_width=draft_width, device=device)
+
+
+def select_swor_topology_step(
+    topology: SworTopology,
+    step: int,
+    sampled_tokens: torch.Tensor,
+    hidden_states: Optional[torch.Tensor],
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
+    """Gather one fixed visible level and its padded next-forward frontier."""
+    width = topology.draft_width
+    bs = sampled_tokens.shape[0] if step == 0 else sampled_tokens.shape[0] // width
+    flat = sampled_tokens.reshape(bs, -1)
+    visible = flat.index_select(1, topology.visible_indices[step])
+    input_ids = flat.index_select(1, topology.frontier_indices[step]).flatten()
+    if hidden_states is not None:
+        if step == 0:
+            hidden_states = hidden_states.repeat_interleave(width, dim=0)
+        else:
+            hidden_states = hidden_states.reshape(bs, width, -1).index_select(
+                1, topology.frontier_parent_rows[step]
+            ).reshape(bs * width, -1)
+    return input_ids, hidden_states, visible
+
+
+def organize_swor_draft_results(
+    topology: SworTopology,
+    token_blocks: Sequence[torch.Tensor],
+    q_blocks: Sequence[torch.Tensor],
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Assemble fixed topology outputs without score-dependent selection."""
+    if len(token_blocks) != topology.num_steps or len(q_blocks) != topology.num_steps:
+        raise ValueError(
+            f"SWOR topology expects {topology.num_steps} token/q blocks, got "
+            f"{len(token_blocks)}/{len(q_blocks)}"
+        )
+    bs = token_blocks[0].shape[0]
+    draft_tokens = torch.cat(tuple(token_blocks), dim=1)
+    parent_list = topology.parent_list.expand(bs, -1)
+    selected_indices = topology.selected_indices.expand(bs, -1)
+
+    q_rows = []
+    unused_leaf = q_blocks[0][:, :1]
+    for source in topology.q_sources:
+        q_rows.append(unused_leaf if source is None else q_blocks[source[0]][:, source[1] : source[1] + 1])
+    draft_probs = torch.cat(q_rows, dim=1)
+    return parent_list, selected_indices, draft_tokens, draft_probs
 
 _use_triton_spec_fallback = False
 _windows_top_k_renorm_prob = None
@@ -156,29 +408,6 @@ def organize_draft_results(
         )
 
     return parent_list, top_scores_index, draft_tokens
-
-
-def organize_tree_swor_probs(
-    draft_prob_rows: torch.Tensor,
-    draft_prob_node_ids: torch.Tensor,
-    top_scores_index: torch.Tensor,
-) -> torch.Tensor:
-    """Gather frontier q rows into the final pruned tree-node order.
-
-    Candidate-universe ID ``-1`` denotes the bonus/root node. Every retained
-    internal node is guaranteed to appear in ``draft_prob_node_ids`` because
-    EAGLE's cumulative-score pruning preserves ancestors. Retained leaves may
-    not have a q row; they map to row zero and are never read by verification.
-    """
-    bs = top_scores_index.shape[0]
-    root_ids = torch.full(
-        (bs, 1), -1, dtype=top_scores_index.dtype, device=top_scores_index.device
-    )
-    tree_node_ids = torch.cat((root_ids, top_scores_index), dim=1)
-    matches = tree_node_ids.unsqueeze(-1) == draft_prob_node_ids.unsqueeze(1)
-    source_rows = matches.to(torch.int64).argmax(dim=-1)
-    batch_rows = torch.arange(bs, device=top_scores_index.device).unsqueeze(1)
-    return draft_prob_rows[batch_rows, source_rows]
 
 
 def build_tree_kernel_efficient(
@@ -900,6 +1129,23 @@ def eagle_sample(
                 "Exact p/q verification requires a target-vocab draft proposal "
                 "distribution; the current speculative algorithm/draft worker "
                 "does not produce one (draft_probs missing or vocab-mismatched)."
+            )
+
+        if use_tree_swor and getattr(
+            get_spec(), "speculative_swor_collect_overlap_stats", False
+        ):
+            from sglang.kernels.ops.speculative.tree_sampling import (
+                swor_proposal_overlap_metrics,
+            )
+
+            temperature_scales, overlap_top_ks = _get_swor_overlap_grid(
+                target_probs.device
+            )
+            verify_input.swor_overlap_metrics = swor_proposal_overlap_metrics(
+                target_probs,
+                draft_probs,
+                temperature_scales,
+                overlap_top_ks,
             )
 
         coins, coins_for_final_sampling = _verify_coins(

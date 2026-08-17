@@ -82,6 +82,11 @@ class GenerationBatchResult:
     # sync path: forward stream -> output processor
     accept_lens: Optional[torch.Tensor] = None
 
+    # Opt-in SWOR topology oracle: global accepted tree-row indices. Kept out of
+    # ordinary inference because even a tiny asynchronous D2H is needless there.
+    swor_accept_indices: Optional[torch.Tensor] = None
+    swor_overlap_metrics: Optional[torch.Tensor] = None
+
     block_accept_lens: Optional[torch.Tensor] = None
 
     cap_lens: Optional[torch.Tensor] = None
@@ -152,6 +157,12 @@ class GenerationBatchResult:
 
         if self.accept_lens is not None:
             self.accept_lens = _async_d2h(self.accept_lens)
+
+        if self.swor_accept_indices is not None:
+            self.swor_accept_indices = _async_d2h(self.swor_accept_indices)
+
+        if self.swor_overlap_metrics is not None:
+            self.swor_overlap_metrics = _async_d2h(self.swor_overlap_metrics)
 
         if self.block_accept_lens is not None:
             self.block_accept_lens = _async_d2h(self.block_accept_lens)

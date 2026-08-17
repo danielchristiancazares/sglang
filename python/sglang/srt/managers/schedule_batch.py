@@ -1136,6 +1136,12 @@ class Req(ReqDllmMixin):
         # Example: histogram[0] = 5 means 5 steps with 0 accepted tokens, histogram[3] = 10 means 10 steps with 3 accepted tokens.
         self.spec_correct_drafts_histogram: List[int] = []
 
+        # Accepted fixed-tree node IDs for opt-in SWOR topology-oracle runs.
+        # Index is the request-local node ID; value is its accepted-path count.
+        self.spec_accept_node_histogram: List[int] = []
+        self.spec_swor_overlap_sums: Optional[np.ndarray] = None
+        self.spec_swor_overlap_count = 0
+
         self.spec_cap_lens_histogram: List[int] = []
 
         # The number of times this request has been retracted / preempted.
@@ -1249,6 +1255,23 @@ class Req(ReqDllmMixin):
                 [0] * (num_correct_drafts - len(self.spec_correct_drafts_histogram) + 1)
             )
         self.spec_correct_drafts_histogram[num_correct_drafts] += 1
+
+    def update_spec_accept_node_histogram(self, accepted_nodes: List[int]):
+        if not accepted_nodes:
+            return
+        max_node = max(accepted_nodes)
+        if len(self.spec_accept_node_histogram) <= max_node:
+            self.spec_accept_node_histogram.extend(
+                [0] * (max_node - len(self.spec_accept_node_histogram) + 1)
+            )
+        for node in accepted_nodes:
+            self.spec_accept_node_histogram[node] += 1
+
+    def update_spec_swor_overlap_metrics(self, metrics: np.ndarray):
+        if self.spec_swor_overlap_sums is None:
+            self.spec_swor_overlap_sums = np.zeros_like(metrics, dtype=np.float64)
+        self.spec_swor_overlap_sums += metrics
+        self.spec_swor_overlap_count += 1
 
     def update_spec_cap_lens_histogram(self, cap_len: int):
         cap_len = int(cap_len)

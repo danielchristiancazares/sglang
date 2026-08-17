@@ -133,6 +133,22 @@ class TestSpecV2GrammarTruncation(CustomTestCase):
         self.assertEqual(predict_tokens, [[201, 202, 203]])
         self.assertEqual(req.kv_committed_len, 3)
 
+    def test_swor_path_stats_use_request_local_node_ids(self):
+        req0 = _make_req(terminate_after=99)
+        req1 = _make_req(terminate_after=99)
+        req0.grammar = None
+        req1.grammar = None
+        proc = _make_processor()
+        result = _make_result(12, [3, 2], list(range(24)))
+        result.swor_accept_indices = torch.tensor(
+            [[0, 2, 6, -1, -1], [12, 16, -1, -1, -1]], dtype=torch.long
+        )
+
+        proc._resolve_spec_v2_tokens(result, _FakeBatch([req0, req1]))
+
+        self.assertEqual(req0.spec_accept_node_histogram, [0, 0, 1, 0, 0, 0, 1])
+        self.assertEqual(req1.spec_accept_node_histogram, [0, 0, 0, 0, 1])
+
 
 class TestReasoningTokenAccounting(CustomTestCase):
     def test_multi_token_end_can_span_decode_steps(self):

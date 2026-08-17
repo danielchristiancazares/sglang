@@ -87,6 +87,9 @@ param(
     [switch] $SpeculativeAlignTreeScoring,
     [ValidateSet('target_only', 'swor')]
     [string] $SpeculativeTreeSamplingMode = 'target_only',
+    [switch] $SpeculativeSworCollectPathStats,
+    [switch] $SpeculativeSworCollectOverlapStats,
+    [string] $SpeculativeSworTopology = '',
     [ValidateRange(0.05, 4.0)]
     [double] $SpeculativeTreeDepthDiscount = 1.0,
     [switch] $SpeculativeAdaptive,
@@ -208,6 +211,15 @@ if ($SpeculativeNumSteps -gt 0) {
         $ServeArgs += @(
             '--speculative-tree-depth-discount', $SpeculativeTreeDepthDiscount
         )
+    }
+    if ($SpeculativeSworCollectPathStats) {
+        $ServeArgs += '--speculative-swor-collect-path-stats'
+    }
+    if ($SpeculativeSworCollectOverlapStats) {
+        $ServeArgs += '--speculative-swor-collect-overlap-stats'
+    }
+    if ($SpeculativeSworTopology) {
+        $ServeArgs += @('--speculative-swor-topology', $SpeculativeSworTopology)
     }
     if ($SpeculativeDraftKvCacheDtype) {
         $ServeArgs += @(

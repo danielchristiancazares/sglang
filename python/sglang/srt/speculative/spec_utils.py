@@ -124,21 +124,23 @@ def resolve_num_tokens_per_req(
 
 
 def fast_sample(probs: torch.Tensor, num_samples: int = 1):
-    """Draw from `probs` via the Gumbel-max trick: argmax(probs / Exp(1)).
+    """Draw an ordered sample without replacement from ``probs``.
 
-    Distributionally equivalent to torch.multinomial, but avoids multinomial's
-    device-side distribution-validity assert, which the draft CUDA graph would
-    otherwise capture and replay every step. q is clamped off zero so a zero
-    draw can't yield inf/NaN scores that argmax would wrongly select; fp32
-    avoids bf16 argmax ties biasing the draw. Set SGLANG_OPT_USE_GUMBEL_SAMPLE=0
-    to fall back to torch.multinomial.
+    Positive-support entries use the exponential-race law.  Once that support
+    is exhausted, zero-q entries follow in a uniform random order, matching the
+    Sequoia proposal D = Uniform(unrejected).  The two score bands make every
+    positive entry precede every zero entry without a support-dependent branch,
+    which keeps the operation CUDA-graph safe.
     """
-    if not envs.SGLANG_OPT_USE_GUMBEL_SAMPLE.get():
+    if not envs.SGLANG_OPT_USE_GUMBEL_SAMPLE.get() and num_samples == 1:
         sample_index = torch.multinomial(probs, num_samples=num_samples)
         return probs.gather(1, sample_index), sample_index
-    q = torch.empty_like(probs, dtype=torch.float32).exponential_(1.0)
-    q.clamp_min_(torch.finfo(torch.float32).tiny)
-    scores = probs.float() / q
+    races = torch.empty_like(probs, dtype=torch.float32).exponential_(1.0)
+    races.clamp_min_(torch.finfo(torch.float32).tiny)
+    scores = probs.float() / races
+    scores.add_(1.0).reciprocal_().neg_().add_(2.0)
+    races.neg_().exp_()
+    scores = torch.where(probs > 0, scores, races)
     if num_samples == 1:
         sample_index = scores.argmax(dim=-1, keepdim=True)
     else:
