@@ -6,6 +6,10 @@
 |---|---:|---:|---:|---|---|
 | Qwen3.8-27B Q4_0, 8 concurrent requests, 32 output tokens each | 32.953 TPS | 38.016 TPS | +5.063 TPS | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_sampling.py --concurrency 8 --output-tokens 32` | 2026-08-16 22:26 PDT |
 | Qwen3.8-27B Q4_0, batch 24, 128 output tokens each, real top-k/top-p sampling | 49.500 TPS | **62.034 TPS** | **+12.534 TPS** | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_batched_request.py --url http://127.0.0.1:30001/generate --batch-size 24 --output-tokens 128` | 2026-08-16 22:35 PDT |
+| Qwen3.8-27B RadixArk, real sampled `6213/512`, reasoning preserved | 122.712 tok/s | 122.712 tok/s | 0.000 | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` | 2026-08-16 22:40 PDT |
+| Post-correctness linear comparison, second warmed five-run window | 122.712 tok/s | 124.775 tok/s measured | +2.063 / +1.681% | same exact real-sampling command | 2026-08-16 23:24 PDT |
+| Same production topology, fixed accepted length 3 | 171.263 tok/s | 171.263 tok/s | 0.000 | same client with launcher `-SimulateAcceptedLength 3` | 2026-08-16 22:40 PDT |
+| Exact `199000+16` capacity | 199016 total tokens | 199016 total tokens | preserved | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600` | 2026-08-16 22:40 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
 
@@ -99,7 +103,16 @@ tree throughput can be ranked for production.
 - Benchmark evidence: no throughput number was retained. The earlier M8/M12/M16 values are now mechanism-only until a corrected full-model non-front-path gate passes.
 - Correctness evidence: before the repair, the minimal nonidentity-map test copied four of six sentinel elements from the wrong physical rows. The strengthened factory test covers MHA and MLA page translation; a captured four-cycle `[0,3,7]`-style sequence covers alternating non-front paths, rejected-slot reclamation, virtual-id reuse, target K/V, compacted tokens/hidden rows, and terminal next-draft state. Focused native CUDA finished **4 passed plus 2 subtests**; the combined accepted-path/composite-graph/GDN suite finished **8 passed plus 2 subtests**. Allocator and move-gate CPU suites finished **65 passed** and **5 passed**.
 - Decision: retain the repair and keep every tree topology production-ineligible pending a corrected full-model comparison with the qualified linear baseline.
-- Commit: pending in this correctness unit.
+- Commit: `3f276e8acda4db5911db9a69a689deb10bae8360`.
+
+### 2026-08-16 23:24 PDT - PERF-C002 fresh qualified-linear comparison
+
+- Change: launched the unchanged production-default linear topology from `3f276e8acda4` with the historical server seed `783025237`; every tree, SWOR, simulation, adaptive, and device-resident-cycle control remained inactive.
+- Benchmark evidence: the first consecutive real window was `84.130, 114.807, 118.664, 119.385, 124.278 tok/s`, mean **112.253**, median **118.664**. The second independent warmed window was `123.237, 123.741, 125.001, 128.689, 123.207 tok/s`, mean **124.775**, median **123.741**. All ten combined mean **118.514** and median **123.222**; the low first request remains retained as startup/JIT evidence. Every request was exact `6213+512`, `finish_reason=length`, and thinking remained enabled.
+- Acceptance evidence: five native probes were `2.381395, 2.169492, 2.160338, 2.124481, 2.188034` emitted tokens per verification, mean **2.204748**. This was 4.893% below the historical acceptance mean and explains much of the first-window TPS loss.
+- Correctness/environment evidence: `/health` returned 200; `/model_info` reported image/audio understanding false; target verify, draft decode, and draft extend graphs captured in **42.42**, **1.56**, and **1.09 seconds** with 1.74 GiB initially reported free. The live server remained healthy after both windows. WDDM clients included Chrome, Edge WebView, Docker Desktop, and ordinary shell/display processes; post-request JIT residency left 222 MiB free.
+- Decision: the accepted-path repair does not regress the qualified top-k-one production chain. Use the stable **124.775 tok/s** second window as the immediate matched control while preserving the complete ten-run **118.514 tok/s** evidence. Tree work remains blocked on full-model non-front parity.
+- Commit: record update pending.
 
 ## Candidate Inventory
 
@@ -137,7 +150,7 @@ tree throughput can be ranked for production.
 - Commit: none; regressing kernel change removed. The new Q4_0 correctness coverage remains.
 - `2f49a60b46c62e728fb7db00a0d042248c27c8f4` — restored the continuing performance and failed-path ledgers.
 - `d0116b54e5766932a46e06e0a66c3672370eaff8` — committed the device-resident cycle, sparse GDN replay, SWOR oracle/tooling, tests, and profiles behind opt-in controls.
-- The accepted-path virtual-to-physical repair, mandatory front compaction, regression tests, and qualification-hold records are the current pending atomic correctness unit.
+- `3f276e8acda4db5911db9a69a689deb10bae8360` — fixed accepted-path virtual-to-physical relocation, made front compaction mandatory, and added captured multi-cycle serial parity.
 
 ### 2026-08-16 22:11 PDT - PERF-005
 
