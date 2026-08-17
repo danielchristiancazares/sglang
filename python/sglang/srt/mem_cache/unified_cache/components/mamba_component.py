@@ -58,12 +58,22 @@ if TYPE_CHECKING:
 class MambaComponent(TreeComponent):
     component_type = ComponentType.MAMBA
 
-    def __init__(self, cache: UnifiedRadixCache, params: CacheInitParams):
+    @staticmethod
+    def _validate_req_to_token_pool(req_to_token_pool) -> None:
+        """Validate the state-pool contract used by this component.
+
+        Hardware backends with a native recurrent-state representation can
+        override this hook while still sharing the component initialization
+        and tree behavior below.
+        """
         from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
 
         assert isinstance(
-            params.req_to_token_pool, HybridReqToTokenPool
-        ), f"MambaComponent requires HybridReqToTokenPool, got {type(params.req_to_token_pool)}"
+            req_to_token_pool, HybridReqToTokenPool
+        ), f"MambaComponent requires HybridReqToTokenPool, got {type(req_to_token_pool)}"
+
+    def __init__(self, cache: UnifiedRadixCache, params: CacheInitParams):
+        self._validate_req_to_token_pool(params.req_to_token_pool)
         if not params.enable_mamba_extra_buffer:
             assert (
                 params.page_size == 1

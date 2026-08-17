@@ -319,6 +319,11 @@ class ModelConfig:
         rope_scaling = getattr(self.hf_text_config, "rope_parameters", None) or getattr(
             self.hf_text_config, "rope_scaling", {}
         )
+        # Treat the standalone launch flag exactly like a checkpoint that is
+        # intrinsically text-only. Multimodal classification happens below,
+        # before the flag is copied onto ``hf_config``; deferring this bit until
+        # the end of __init__ makes every early consumer (including the embedded
+        # Rust server) try to construct the vision pipeline we explicitly omit.
         self.is_lm_only = language_model_only or getattr(
             self.hf_config, "language_model_only", False
         )

@@ -25,7 +25,7 @@ from sglang.srt.mem_cache.common import (
     available_and_evictable_str,
     evict_from_tree_cache,
 )
-from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
+from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.runtime_context import attention_backends, get_parallel
 from sglang.srt.utils import (
     is_cpu,
@@ -269,17 +269,23 @@ def alloc_req_slots(
     and should surface rather than be masked.
     """
     num_reqs = len(reqs)
-    if isinstance(req_to_token_pool, HybridReqToTokenPool):
+    # Native hardware backends may expose the Mamba/recurrent-state allocator
+    # through a ReqToTokenPool adapter instead of HybridReqToTokenPool itself.
+    # The scheduler and unified cache already consume this capability by
+    # attribute, so admission must use the same contract or retained radix
+    # states can exhaust the adapter before a new request receives a live slot.
+    mamba_allocator = getattr(req_to_token_pool, "mamba_allocator", None)
+    if mamba_allocator is not None:
         # Byte-coordinated for the shared allocator (accounts for the peer full
         # sub-pool's bytes); plain slot free count for the non-shared one.
-        mamba_available_size = (
-            req_to_token_pool.mamba_allocator.schedulable_available_size()
-        )
+        mamba_available_size = mamba_allocator.schedulable_available_size()
         # Eviction headroom factor: 3x (or lazy variant) for radix COW, 1x for chunk.
         if tree_cache.supports_mamba():
             factor = (
                 MAMBA_STATE_PER_REQ_PREFIX_CACHE_LAZY
-                if req_to_token_pool.enable_mamba_extra_buffer_lazy
+                if getattr(
+                    req_to_token_pool, "enable_mamba_extra_buffer_lazy", False
+                )
                 else MAMBA_STATE_PER_REQ_PREFIX_CACHE
             )
         else:

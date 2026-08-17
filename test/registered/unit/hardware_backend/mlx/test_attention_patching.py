@@ -54,6 +54,7 @@ if _HAS_MLX:
         SchedulerBatchResultProcessor,
     )
     from sglang.srt.managers.utils import GenerationBatchResult
+    from sglang.srt.mem_cache.allocation import alloc_req_slots
     from sglang.srt.mem_cache.base_prefix_cache import InsertParams, InsertResult
     from sglang.srt.server_args import ServerArgs, set_global_server_args_for_scheduler
 
@@ -94,8 +95,28 @@ def _set_dummy_server_args_for_auxiliary_state_tests() -> None:
     set_global_server_args_for_scheduler(server_args)
 
 
+def _make_auxiliary_state_component(pool):
+    _set_dummy_server_args_for_auxiliary_state_tests()
+    return MlxAuxiliaryStateComponent(
+        SimpleNamespace(req_to_token_pool=pool),
+        SimpleNamespace(
+            enable_mamba_extra_buffer=False,
+            page_size=1,
+            req_to_token_pool=pool,
+        ),
+    )
+
+
 @unittest.skipUnless(_HAS_MLX, _SKIP_REASON)
 class TestMlxAttentionPatching(unittest.TestCase):
+    def test_headless_trunk_resolves_conditional_generation_wrapper(self):
+        def trunk(*_args, **_kwargs):
+            return None
+
+        model = SimpleNamespace(language_model=SimpleNamespace(model=trunk))
+
+        self.assertIs(MlxModelRunner._resolve_headless_trunk(model), trunk)
+
     def test_standard_attention_is_patched_once(self):
         model = FakeModel(
             [
@@ -861,6 +882,41 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         self.assertEqual(len(arrays), 2)
         self.assertTrue(all(isinstance(arr, mx.array) for arr in arrays))
 
+    def test_store_cache_clears_metal_pool_before_snapshot_eval(self):
+        """Metal OOM'd mid-snapshot after several 256-token jobs.
+
+        With ``SGLANG_MLX_CLEAR_CACHE_STEPS=0`` the allocator kept prefill
+        command buffers. ``store_cache`` then cloned every DeltaNet state
+        and ``mx.eval`` failed with Insufficient Memory on 32 GB. The
+        shipped path must drop unused Metal buffers *before* that eval.
+        """
+        from unittest.mock import patch
+
+        order: list[str] = []
+        real_clear = mx.clear_cache
+        real_eval = mx.eval
+
+        def tracking_clear(*args, **kwargs):
+            order.append("clear")
+            return real_clear(*args, **kwargs)
+
+        def tracking_eval(*args, **kwargs):
+            order.append("eval")
+            return real_eval(*args, **kwargs)
+
+        pool = MlxAuxiliaryStatePool(size=2, device="cpu")
+        slot = pool.alloc(1)
+        cache = [FakeNativeCache(mx.array([1.0], dtype=mx.float32))]
+        with (
+            patch.object(mx, "clear_cache", tracking_clear),
+            patch.object(mx, "eval", tracking_eval),
+        ):
+            pool.store_cache(slot[0], cache, [0])
+
+        self.assertIn("clear", order)
+        self.assertIn("eval", order)
+        self.assertLess(order.index("clear"), order.index("eval"))
+
     def test_auxiliary_state_pool_tracks_scheduler_slots_and_snapshots(self):
         pool = MlxAuxiliaryStatePool(size=4, device="cpu")
 
@@ -877,6 +933,49 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         self.assertEqual(forked.tolist(), [3])
         self.assertEqual(restored[0].state[0].tolist(), [1.0])
         self.assertEqual(pool.available_size(), 3)
+
+    def test_auxiliary_state_pool_supports_scheduler_group_allocation(self):
+        pool = MlxAuxiliaryStatePool(size=4, device="cpu")
+
+        pool.alloc_group_begin(3)
+        first = pool.alloc(1)
+        pool.alloc_group_end()
+
+        self.assertEqual(first.tolist(), [1])
+        self.assertEqual(pool.available_size(), 3)
+        self.assertEqual(pool.schedulable_available_size(), 3)
+
+    def test_auxiliary_state_req_pool_evicts_radix_slots_for_admission(self):
+        pool = MlxAuxiliaryStateReqToTokenPool(
+            size=1,
+            max_context_len=8,
+            device="cpu",
+            enable_memory_saver=False,
+            auxiliary_state_size=4,
+        )
+        retained = pool.auxiliary_state_pool.alloc(4)
+
+        class FakeTreeCache:
+            def __init__(self):
+                self.evict_params = None
+
+            @staticmethod
+            def supports_mamba():
+                return True
+
+            def evict(self, params):
+                self.evict_params = params
+                pool.auxiliary_state_pool.free(retained[: params.mamba_num])
+
+        tree_cache = FakeTreeCache()
+        req = FakeRequest()
+
+        req_pool_indices = alloc_req_slots(pool, [req], tree_cache)
+
+        self.assertEqual(req_pool_indices, [1])
+        self.assertEqual(tree_cache.evict_params.mamba_num, 3)
+        self.assertIsNotNone(req.mamba_pool_idx)
+        self.assertEqual(pool.auxiliary_state_pool.available_size(), 2)
 
     def test_auxiliary_state_pool_restores_instance_meta_state(self):
         pool = MlxAuxiliaryStatePool(size=2, device="cpu")
@@ -921,6 +1020,7 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         self.assertIsNone(req.mamba_pool_idx)
         self.assertEqual(pool.available_size(), 2)
         self.assertEqual(pool.auxiliary_state_pool.available_size(), 4)
+        self.assertIs(pool.mamba_allocator, pool.auxiliary_state_pool)
 
     def test_auxiliary_state_req_pool_can_keep_tracked_auxiliary_slot(self):
         pool = MlxAuxiliaryStateReqToTokenPool(
@@ -954,10 +1054,7 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         req.mamba_ping_pong_track_buffer = pool.auxiliary_state_pool.alloc(1)
         req.mamba_next_track_idx = 0
         req.mamba_last_track_seqlen = 64
-        component = MlxAuxiliaryStateComponent(
-            SimpleNamespace(req_to_token_pool=pool),
-            SimpleNamespace(enable_mamba_extra_buffer=False),
-        )
+        component = _make_auxiliary_state_component(pool)
         insert_params = InsertParams()
 
         cache_len = component.prepare_for_caching_req(
@@ -974,6 +1071,8 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         )
 
         self.assertEqual(cache_len, 64)
+        self.assertEqual(component.mamba_cache_chunk_size, 64)
+        self.assertEqual(component.mamba_checkpoint_grid, 64)
         self.assertTrue(getattr(insert_params, "mlx_auxiliary_state_uses_track_slot"))
         self.assertEqual(insert_params.mamba_value.tolist(), [2])
         self.assertIsNone(req.mamba_pool_idx)
@@ -994,10 +1093,7 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         req.mamba_ping_pong_track_buffer = pool.auxiliary_state_pool.alloc(1)
         req.mamba_next_track_idx = 0
         req.mamba_last_track_seqlen = 64
-        component = MlxAuxiliaryStateComponent(
-            SimpleNamespace(req_to_token_pool=pool),
-            SimpleNamespace(enable_mamba_extra_buffer=False),
-        )
+        component = _make_auxiliary_state_component(pool)
         insert_params = InsertParams()
 
         cache_len = component.prepare_for_caching_req(
@@ -1034,10 +1130,7 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         pool.alloc([req])
         req.mamba_ping_pong_track_buffer = pool.auxiliary_state_pool.alloc(1)
         req.mamba_next_track_idx = 0
-        component = MlxAuxiliaryStateComponent(
-            SimpleNamespace(req_to_token_pool=pool),
-            SimpleNamespace(enable_mamba_extra_buffer=False),
-        )
+        component = _make_auxiliary_state_component(pool)
         insert_params = InsertParams()
 
         cache_len = component.prepare_for_caching_req(
@@ -1071,10 +1164,7 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         )
         req = FakeRequest()
         pool.alloc([req])
-        component = MlxAuxiliaryStateComponent(
-            SimpleNamespace(req_to_token_pool=pool),
-            SimpleNamespace(enable_mamba_extra_buffer=False),
-        )
+        component = _make_auxiliary_state_component(pool)
         insert_params = InsertParams()
 
         component.prepare_for_caching_req(

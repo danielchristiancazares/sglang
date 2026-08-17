@@ -308,7 +308,9 @@ def shm_path_for(ipc_name: str) -> str:
     name = os.path.basename(ipc_name.rstrip("/")) or "default"
     safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
     digest = hashlib.blake2s(ipc_name.encode(), digest_size=4).hexdigest()
-    root = "/dev/shm" if os.name == "posix" else tempfile.gettempdir()
+    # Linux tmpfs. macOS is posix but has no /dev/shm; using os.name
+    # here logged a snapshot-writer init warning on every Apple Silicon boot.
+    root = "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
     return os.path.join(root, f"sglang_loads_{safe_name}_{digest}.shm")
 
 

@@ -160,8 +160,167 @@ class ContiguousAttentionKVCache:
             self.values[:, :, start : self.offset, :],
         )
 
+    def trim(self, n: int) -> None:
+        """Roll back the last ``n`` tokens (speculative-decode rejection).
+
+        Rows beyond the new offset stay in the buffer; they are masked out
+        by ``offset`` and overwritten by the next append.
+        """
+        if n < 0 or n > self.offset:
+            raise ValueError(f"cannot trim {n} tokens from offset {self.offset}")
+        self.offset -= n
+
     def reset(self) -> None:
         """Reset for reuse, keeping allocated buffers."""
+        self.offset = 0
+
+
+class QuantizedAttentionKVCache:
+    """Geometrically grown affine-quantized attention KV for long contexts.
+
+    MLX's stock ``QuantizedKVCache`` grows in 256-token increments. That is a
+    good interactive default, though repeatedly concatenating the entire
+    quantized history becomes costly at six-figure context lengths. This
+    adapter starts with a 4K block and doubles at each boundary, requiring at
+    most seven growths on the path to 262K while keeping short prompts free of
+    a capacity-sized write target.
+
+    Each of keys and values is the ``(packed, scales, biases)`` tuple returned
+    by :func:`mx.quantize`. The cache protocol is intentionally identical to
+    mlx-lm's quantized cache, including ``bits`` and ``group_size`` attributes,
+    so model-native prefill dispatches to quantized SDPA automatically.
+    """
+
+    __slots__ = (
+        "bits",
+        "capacity",
+        "group_size",
+        "keys",
+        "max_seq_len",
+        "offset",
+        "values",
+    )
+
+    def __init__(
+        self,
+        max_seq_len: int,
+        group_size: int = 64,
+        bits: int = 4,
+    ):
+        if max_seq_len <= 0:
+            raise ValueError(f"max_seq_len must be positive, got {max_seq_len}")
+        if group_size not in (32, 64, 128):
+            raise ValueError(
+                f"MLX affine KV group_size must be one of 32, 64, 128; got {group_size}"
+            )
+        if bits not in (4, 8):
+            raise ValueError(f"MLX long-context KV supports 4 or 8 bits; got {bits}")
+        self.keys = None
+        self.values = None
+        self.offset = 0
+        self.capacity = 0
+        self.max_seq_len = max_seq_len
+        self.group_size = group_size
+        self.bits = bits
+
+    def make_mask(self, N, return_array=False, window_size=None, **kwargs):
+        return make_attention_mask(
+            N, self.offset, return_array=return_array, window_size=window_size
+        )
+
+    def _next_capacity(self, required: int) -> int:
+        capacity = self.capacity or min(4096, self.max_seq_len)
+        while capacity < required:
+            capacity = min(capacity * 2, self.max_seq_len)
+        return capacity
+
+    def _allocate(self, keys: mx.array, values: mx.array, capacity: int) -> None:
+        B, n_kv_heads, _, k_head_dim = keys.shape
+        v_head_dim = values.shape[-1]
+        elements_per_word = 32 // self.bits
+
+        def allocate(dim: int, dtype: mx.Dtype):
+            if dim % self.group_size:
+                raise ValueError(
+                    f"KV head dimension {dim} must be divisible by affine "
+                    f"group_size {self.group_size}"
+                )
+            if dim % elements_per_word:
+                raise ValueError(
+                    f"KV head dimension {dim} cannot be packed at {self.bits} bits"
+                )
+            shape = (B, n_kv_heads, capacity)
+            return (
+                mx.zeros((*shape, dim // elements_per_word), dtype=mx.uint32),
+                mx.zeros((*shape, dim // self.group_size), dtype=dtype),
+                mx.zeros((*shape, dim // self.group_size), dtype=dtype),
+            )
+
+        self.keys = allocate(k_head_dim, keys.dtype)
+        self.values = allocate(v_head_dim, values.dtype)
+        self.capacity = capacity
+
+    def _grow(self, keys: mx.array, values: mx.array, required: int) -> None:
+        old_keys, old_values = self.keys, self.values
+        self._allocate(keys, values, self._next_capacity(required))
+        if self.offset:
+            for target, source in zip(self.keys, old_keys):
+                target[..., : self.offset, :] = source[..., : self.offset, :]
+            for target, source in zip(self.values, old_values):
+                target[..., : self.offset, :] = source[..., : self.offset, :]
+
+    @staticmethod
+    def _slice(quantized, end: int, start: int = 0):
+        return tuple(value[..., start:end, :] for value in quantized)
+
+    def update_and_fetch(self, keys: mx.array, values: mx.array):
+        count = keys.shape[2]
+        start = self.offset
+        end = start + count
+        if end > self.max_seq_len:
+            raise ValueError(
+                f"quantized KV capacity exceeded: need {end}, "
+                f"configured for {self.max_seq_len} tokens"
+            )
+        if self.keys is None:
+            self._allocate(keys, values, self._next_capacity(end))
+        elif end > self.capacity:
+            self._grow(keys, values, end)
+
+        q_keys = mx.quantize(keys, group_size=self.group_size, bits=self.bits)
+        q_values = mx.quantize(values, group_size=self.group_size, bits=self.bits)
+        for target, source in zip(self.keys, q_keys):
+            target[..., start:end, :] = source
+        for target, source in zip(self.values, q_values):
+            target[..., start:end, :] = source
+        self.offset = end
+        return self._slice(self.keys, end), self._slice(self.values, end)
+
+    def write_token(self, keys: mx.array, values: mx.array) -> None:
+        self.update_and_fetch(keys, values)
+
+    def get_kv(self, window: int | None = None):
+        start = 0 if window is None else max(0, self.offset - window)
+        return (
+            self._slice(self.keys, self.offset, start),
+            self._slice(self.values, self.offset, start),
+        )
+
+    @property
+    def state(self):
+        if self.keys is None:
+            return ()
+        return self._slice(self.keys, self.offset), self._slice(
+            self.values, self.offset
+        )
+
+    @property
+    def nbytes(self) -> int:
+        if self.keys is None:
+            return 0
+        return sum(value.nbytes for value in (*self.keys, *self.values))
+
+    def reset(self) -> None:
         self.offset = 0
 
 

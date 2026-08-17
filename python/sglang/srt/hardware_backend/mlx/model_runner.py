@@ -26,6 +26,8 @@ state.
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import mlx.core as mx
@@ -48,6 +50,7 @@ from sglang.srt.hardware_backend.mlx.kv_cache import (
     MLXAttentionWrapper,
     MlxModelCacheLayout,
     PoolBackedAttentionKVCache,
+    QuantizedAttentionKVCache,
     WindowedAttentionKVCache,
     clear_context,
     find_attention_layers,
@@ -161,6 +164,10 @@ class MlxModelRunner:
     _enable_sampling = False
     _sanitize_nan = False
     _deterministic_seeding = False
+    _kv_cache_bits = None
+    _kv_cache_group_size = 64
+    _native_engine = None
+    _mtp_spec = None
 
     def __init__(
         self,
@@ -170,15 +177,20 @@ class MlxModelRunner:
         pool_size: int | None = None,
         mem_fraction_static: float = 0.8,
         quantization: str | None = None,
+        kv_cache_bits: int | None = None,
+        kv_cache_group_size: int = 64,
         revision: str | None = None,
         enable_sampling: bool = False,
         sampling_rng_seed: int = 0,
         deterministic_seeding: bool = False,
+        mtp_path: str | None = None,
+        mtp_depth: int = 3,
     ):
         self.model_path = model_path
         self.trust_remote_code = trust_remote_code
         self.revision = revision
         self.model = None
+        self._native_engine = None
         self.disable_radix_cache = disable_radix_cache
         self._mem_fraction_static = mem_fraction_static
         self._enable_sampling = enable_sampling
@@ -201,6 +213,8 @@ class MlxModelRunner:
         # mlx_lm.load() detects the config and instantiates QuantizedLinear
         # modules directly.
         self._quantization: str | None = quantization
+        self._kv_cache_bits = kv_cache_bits
+        self._kv_cache_group_size = kv_cache_group_size
 
         # Optionally cap the buffer cache (recycled GPU buffers). MLX never
         # returns freed buffers to the OS, so without a cap the process
@@ -224,15 +238,15 @@ class MlxModelRunner:
             mx.set_wired_limit(max_wired)
             logger.info(f"Wired memory limit set to {max_wired / (1024**3):.1f} GB")
 
-        patch_model_attention(self.model)
-
-        layer_list, attn_attrs = find_attention_layers(self.model)
-        self._cache_layout = MlxModelCacheLayout.from_attention_discovery(
-            layer_list,
-            attn_attrs,
-            # Per-layer sliding windows (container convention, e.g. gpt-oss).
-            layer_window_sizes=get_layer_window_sizes(self.model),
-        )
+        if self._native_engine is None:
+            patch_model_attention(self.model)
+            layer_list, attn_attrs = find_attention_layers(self.model)
+            self._cache_layout = MlxModelCacheLayout.from_attention_discovery(
+                layer_list,
+                attn_attrs,
+                # Per-layer sliding windows (container convention, e.g. gpt-oss).
+                layer_window_sizes=get_layer_window_sizes(self.model),
+            )
         if self._cache_layout.num_attention_layers == 0:
             raise RuntimeError("MLX model has no supported attention layers")
         if self._cache_layout.has_auxiliary_state and not hasattr(
@@ -251,10 +265,12 @@ class MlxModelRunner:
                 "MLX runner does not support models with both auxiliary "
                 "cache state and sliding-window attention layers."
             )
-        if self._cache_layout.has_auxiliary_state:
+        if self._cache_layout.has_auxiliary_state and self._native_engine is None:
             self._model_embed, self._model_norm, self._model_lm_head = (
                 self._extract_model_components()
             )
+        self._validate_quantized_kv()
+        self._maybe_init_mtp_spec(mtp_path=mtp_path, mtp_depth=mtp_depth)
         self._max_seq_len = 4096  # doubles on overflow
 
         self._req_caches: dict[str, list[Any]] = {}
@@ -269,7 +285,11 @@ class MlxModelRunner:
         self._req_synced_offset: dict[str, int] = {}
 
         self._pool_size = self._compute_pool_size(pool_size)
-        self._aot_kernels = self._build_aot_kernels()
+        self._aot_kernels = (
+            MlxAOTKernelSet()
+            if self._native_engine is not None
+            else self._build_aot_kernels()
+        )
 
     @staticmethod
     def _extract_logits(model_output):
@@ -299,7 +319,15 @@ class MlxModelRunner:
             cache[layer_idx] = (
                 WindowedAttentionKVCache(window)
                 if window is not None
-                else ContiguousAttentionKVCache(max_seq_len=self._max_seq_len)
+                else (
+                    QuantizedAttentionKVCache(
+                        max_seq_len=self._pool_size,
+                        group_size=self._kv_cache_group_size,
+                        bits=self._kv_cache_bits,
+                    )
+                    if self._kv_cache_bits is not None
+                    else ContiguousAttentionKVCache(max_seq_len=self._max_seq_len)
+                )
             )
         return cache
 
@@ -333,6 +361,8 @@ class MlxModelRunner:
         return getattr(self._req_to_token_pool, "auxiliary_state_pool", None)
 
     def _restore_auxiliary_state(self, req_pool_idx: int, cache: list[Any]) -> bool:
+        if self._native_engine is not None:
+            return False
         pool_index = self._get_auxiliary_state_pool_index(req_pool_idx)
         pool = self._get_auxiliary_state_pool()
         if pool_index is None or not hasattr(pool, "restore_cache"):
@@ -344,6 +374,8 @@ class MlxModelRunner:
         )
 
     def _store_auxiliary_state(self, req_pool_idx: int, cache: list[Any]) -> None:
+        if self._native_engine is not None:
+            return
         pool_index = self._get_auxiliary_state_pool_index(req_pool_idx)
         pool = self._get_auxiliary_state_pool()
         if pool_index is None or not hasattr(pool, "store_cache"):
@@ -492,6 +524,49 @@ class MlxModelRunner:
             for s in MlxModelRunner._cache_arrays(cache)
         ]
 
+    def _load_native_graph(self, model_dir: str) -> None:
+        """Load the compiled C++ Qwen3.8 graph instead of mlx-lm Python modules.
+
+        The Python mlx-lm tree is not instantiated: two copies of the 27B
+        4-bit weights will not fit in 32 GB. Native layers keep their own
+        KV / Gated-DeltaNet state, so radix is forced off.
+        """
+        from sglang.srt.hardware_backend.mlx.native_engine import NativeQwen38Engine
+
+        start_time = time.time()
+        logger.info("Loading compiled MLX Qwen3.8 graph from %s", model_dir)
+        self._native_engine = NativeQwen38Engine.load(model_dir)
+        mtp_dir = envs.SGLANG_MLX_MTP_DIR.get()
+        if mtp_dir:
+            self._native_engine.load_mtp(mtp_dir)
+            logger.info("Loaded Qwen3.8 MTP drafter from %s", mtp_dir)
+        cfg = NativeQwen38Engine.config_from_json(
+            Path(model_dir, "config.json").read_text()
+        )
+        n = int(cfg.num_hidden_layers)
+        interval = int(cfg.full_attention_interval)
+        layers = []
+        attrs: list[str | None] = []
+        for i in range(n):
+            is_linear = ((i + 1) % interval) != 0
+            layers.append(SimpleNamespace(is_linear=is_linear))
+            attrs.append(None if is_linear else "self_attn")
+        self.model = SimpleNamespace(
+            layers=layers,
+            make_cache=lambda: [None] * n,
+        )
+        self._cache_layout = MlxModelCacheLayout.from_attention_discovery(
+            layers, attrs
+        )
+        self.disable_radix_cache = True
+        self._trunk = None
+        logger.info(
+            "Compiled MLX Qwen3.8 graph loaded in %.2fs (%d layers, %d full-attn)",
+            time.time() - start_time,
+            n,
+            self._cache_layout.num_attention_layers,
+        )
+
     def _load_model(self):
         """Load model using mlx_lm. If ``self._quantization`` requests a preset
         (e.g. ``mlx_q4``), quantize fp16 weights in-place via
@@ -507,6 +582,10 @@ class MlxModelRunner:
         # executed snapshots cannot diverge.
         model_dir = resolve_model_directory(self.model_path, revision=self.revision)
         ensure_remote_code_allowed(model_dir, self.trust_remote_code)
+
+        if envs.SGLANG_USE_MLX_NATIVE_GRAPH.get():
+            self._load_native_graph(str(model_dir))
+            return
 
         # We need the config dict to pass into quantize_model so it knows tied/embedding
         # layout. return_config=True is cheap and ignored when no quantization is requested.
@@ -566,10 +645,11 @@ class MlxModelRunner:
         load_time = time.time() - start_time
         logger.info(f"MLX model loaded in {load_time:.2f}s")
 
-        # mlx-lm models expose the headless trunk as ``Model.model``; without
-        # it, non-final chunked-prefill chunks cannot skip the logit head.
-        trunk = getattr(self.model, "model", None)
-        self._trunk = trunk if callable(trunk) else None
+        # mlx-lm text models expose the headless trunk as ``Model.model``.
+        # Conditional-generation wrappers (including Qwen3.5/Qwen3.8) keep
+        # that text model under ``Model.language_model`` even when vision
+        # weights were omitted, so resolve both layouts.
+        self._trunk = self._resolve_headless_trunk(self.model)
         if self._trunk is None:
             logger.info(
                 "Model %s exposes no headless trunk (`.model`); non-final "
@@ -600,6 +680,12 @@ class MlxModelRunner:
         if isinstance(attn, MLXAttentionWrapper):
             return attn._inner
         return attn
+
+    @staticmethod
+    def _resolve_headless_trunk(model) -> Any | None:
+        root = getattr(model, "language_model", model)
+        trunk = getattr(root, "model", None)
+        return trunk if callable(trunk) else None
 
     def _attention_kv_config_for_layer(
         self, layer_idx: int
@@ -665,6 +751,101 @@ class MlxModelRunner:
                 )
         return first_config
 
+    def _validate_quantized_kv(self) -> None:
+        if self._kv_cache_bits is None:
+            return
+        if self._kv_cache_bits not in (4, 8):
+            raise ValueError(
+                "MLX quantized KV supports --mlx-kv-cache-bits 4 or 8; "
+                f"got {self._kv_cache_bits}"
+            )
+        if self._kv_cache_group_size not in (32, 64, 128):
+            raise ValueError(
+                "--mlx-kv-cache-group-size must be one of 32, 64, 128; "
+                f"got {self._kv_cache_group_size}"
+            )
+        if not self.disable_radix_cache:
+            raise ValueError(
+                "MLX quantized KV requires --disable-radix-cache because the "
+                "shared radix pool stores floating-point KV"
+            )
+        _, head_dim, _ = self._get_attn_config()
+        if head_dim % self._kv_cache_group_size:
+            raise ValueError(
+                f"KV head dimension {head_dim} is not divisible by group size "
+                f"{self._kv_cache_group_size}"
+            )
+        if head_dim % (32 // self._kv_cache_bits):
+            raise ValueError(
+                f"KV head dimension {head_dim} cannot be packed at "
+                f"{self._kv_cache_bits} bits"
+            )
+        for layer_idx in self._cache_layout.full_attention_layer_indices:
+            attention = self._attention_module_for_layer(layer_idx)
+            if getattr(attention, "sinks", None) is not None:
+                raise ValueError(
+                    "MLX quantized KV does not support attention sinks; "
+                    f"layer {layer_idx} exposes them"
+                )
+
+    def _maybe_init_mtp_spec(self, *, mtp_path: str | None, mtp_depth: int) -> None:
+        """Construct the MTP speculative-decode engine when configured."""
+        self._mtp_spec = None
+        if mtp_path is None or self._native_engine is not None:
+            return
+        if not self.disable_radix_cache:
+            raise ValueError("MLX MTP speculation requires --disable-radix-cache")
+        if self._kv_cache_bits is not None:
+            raise ValueError(
+                "MLX MTP speculation requires BF16 attention KV "
+                "(no --mlx-kv-cache-bits)"
+            )
+        if self._trunk is None or not self._cache_layout.has_auxiliary_state:
+            raise ValueError(
+                "MLX MTP speculation requires a Qwen3.5-family hybrid model "
+                "with a headless trunk"
+            )
+        from sglang.srt.hardware_backend.mlx.mtp_spec import (
+            MlxMtpSpecEngine,
+            MtpSpecConfig,
+        )
+
+        root = getattr(self.model, "language_model", self.model)
+        self._mtp_spec = MlxMtpSpecEngine(
+            trunk_step=self._mtp_trunk_step,
+            embed=self._model_embed,
+            lm_head=self._mtp_lm_head,
+            trim_attention=self._mtp_trim_attention,
+            model_args=root.args,
+            config=MtpSpecConfig(head_path=mtp_path, depth=mtp_depth),
+        )
+
+    def _mtp_trunk_step(self, req_id: str, input_ids: mx.array) -> mx.array:
+        """Post-norm trunk hiddens for the MTP engine, on the request cache."""
+        return self._trunk(input_ids, cache=self._req_caches[req_id])
+
+    def _mtp_lm_head(self, hidden: mx.array) -> mx.array:
+        return self._extract_logits(self._model_lm_head(hidden))
+
+    def _mtp_trim_attention(self, req_id: str, n: int) -> None:
+        for layer_cache in self._req_caches[req_id]:
+            if isinstance(layer_cache, ContiguousAttentionKVCache):
+                layer_cache.trim(n)
+
+    def _mtp_gates_pass(
+        self,
+        req_id: str,
+        edit_rows: mx.array | None,
+        logprob_spec: Any,
+        logits_hook: Any,
+    ) -> bool:
+        """Speculation preserves greedy trunk output only when nothing edits logits."""
+        if edit_rows is not None or logprob_spec is not None or logits_hook is not None:
+            return False
+        if not self._enable_sampling:
+            return True
+        return all_greedy([self._req_sampling[req_id]])
+
     def _compute_pool_size(self, explicit_size: int | None) -> int:
         """Determine pool slot count (auto-size from available memory if needed)."""
         if explicit_size is not None:
@@ -688,7 +869,18 @@ class MlxModelRunner:
             max(mlx_usable - mlx_used, 0),
             int(sys_available * self._mem_fraction_static),
         )
-        bytes_per_slot = 2 * num_layers * n_kv_heads * head_dim * dtype.size
+        if self._kv_cache_bits is None:
+            bytes_per_slot = 2 * num_layers * n_kv_heads * head_dim * dtype.size
+        else:
+            # Per key or value: packed payload plus affine scale and bias for
+            # each group. The scheduler token pool is allocation-free in
+            # --disable-radix-cache mode, so this figure represents the one
+            # active request's bounded geometric cache.
+            packed_bytes = head_dim * self._kv_cache_bits // 8
+            metadata_bytes = 2 * (head_dim // self._kv_cache_group_size) * dtype.size
+            bytes_per_slot = (
+                2 * num_layers * n_kv_heads * (packed_bytes + metadata_bytes)
+            )
         pool_size = max(kv_budget // bytes_per_slot, 256)
         logger.info(
             f"Auto-sized attention KV pool: "
@@ -904,6 +1096,24 @@ class MlxModelRunner:
         (its next-token output is discarded); see :meth:`extend_start`.
         """
         prefix_len = len(prefix_slot_ids)
+        if self._native_engine is not None:
+            next_tok = self._native_engine.prefill(
+                list(new_token_ids),
+                new_request=prefix_len == 0,
+                schedule_decode=(
+                    needs_logits and not self._native_engine.has_mtp()
+                ),
+            )
+            lazy_token = mx.array(next_tok, dtype=mx.int32)
+            return MlxPendingPrefill(
+                lazy_token=lazy_token,
+                cache=[],
+                req_id=req_id,
+                full_token_ids=list(full_token_ids),
+                req_pool_idx=req_pool_idx,
+                synced_offset=prefix_len + len(new_slot_ids),
+                lazy_logprobs=None,
+            )
         if req is not None:
             req.mamba_last_track_seqlen = None
         if self._enable_sampling:
@@ -916,6 +1126,10 @@ class MlxModelRunner:
             )
 
         if self.disable_radix_cache:
+            if self._mtp_spec is not None and self._mtp_gates_pass(
+                req_id, None, logprob_spec, None
+            ) and logit_edit_row is None:
+                self._mtp_spec.register(req_id)
             cache = self._acquire_cache()
             input_ids = mx.array([new_token_ids], dtype=mx.int32)
             lazy_token, lazy_logprobs = self._forward_lazy_token(
@@ -1151,6 +1365,28 @@ class MlxModelRunner:
 
         Skips the logit head for discarded-output chunks when possible.
         """
+        if self._mtp_spec is not None and self._mtp_spec.has_request(req_id):
+            hidden = self._trunk_forward(input_ids, cache)
+            if hidden is None:
+                self._mtp_spec.release(req_id)
+            else:
+                # Teacher-force the MTP head over this chunk, then take the
+                # last-position logits off the same trunk hiddens (slicing
+                # before the head also avoids the full-chunk vocab logits).
+                self._mtp_spec.observe_prefill_chunk(
+                    req_id, hidden, input_ids[0].tolist()
+                )
+                if not needs_logits:
+                    return self._dummy_next_token(hidden), None
+                last_logits = self._extract_logits(
+                    self._model_lm_head(hidden[:, -1:, :])
+                )[:, -1, :]
+                edits = (
+                    logit_edit_row[None, :] if logit_edit_row is not None else None
+                )
+                return self._select_tokens_with_logprobs(
+                    last_logits, [req_id], [cache], edits, logprob_spec
+                )
         if not needs_logits:
             hidden = self._trunk_forward(input_ids, cache)
             if hidden is not None:
@@ -1567,6 +1803,39 @@ class MlxModelRunner:
         """
         caches = [self._req_caches[rid] for rid in req_ids]
         last_tokens = [self._req_token_ids[rid][-1] for rid in req_ids]
+        if self._native_engine is not None:
+            toks = [self._native_engine.decode(int(t)) for t in last_tokens]
+            lazy_tokens = mx.array(toks, dtype=mx.int32)
+            return MlxPendingDecode(
+                lazy_tokens=lazy_tokens,
+                req_ids=list(req_ids),
+                caches=caches,
+                lazy_logprobs=None,
+                logprob_spec=None,
+                edit_rows=None,
+            )
+        if self._mtp_spec is not None:
+            if (
+                len(req_ids) == 1
+                and self._mtp_spec.has_request(req_ids[0])
+                and self._mtp_gates_pass(
+                    req_ids[0], edit_rows, logprob_spec, logits_hook
+                )
+            ):
+                tok = self._mtp_spec.decode(req_ids[0], last_tokens[0])
+                return MlxPendingDecode(
+                    lazy_tokens=mx.array([tok], dtype=mx.int32),
+                    req_ids=list(req_ids),
+                    caches=caches,
+                    lazy_logprobs=None,
+                    logprob_spec=None,
+                    edit_rows=None,
+                )
+            # Gates failed or the batch grew: the head cache goes stale the
+            # moment a token decodes outside the engine, so stop speculating
+            # for these requests instead of drafting from misaligned state.
+            for rid in req_ids:
+                self._mtp_spec.release(rid)
         batched_input = mx.array(last_tokens, dtype=mx.int32)[:, None]
 
         if self._cache_layout.has_auxiliary_state:
@@ -1620,6 +1889,38 @@ class MlxModelRunner:
           before step N+1's bookkeeping.
         """
         caches = prev.caches
+        if self._native_engine is not None:
+            # req_token_ids is only appended in finalize, so a chained
+            # step must consume this pending's tokens, not the stale last id.
+            raw = prev.lazy_tokens.tolist()
+            if not isinstance(raw, list):
+                raw = [raw]
+            toks = [self._native_engine.decode(int(t)) for t in raw]
+            return MlxPendingDecode(
+                lazy_tokens=mx.array(toks, dtype=mx.int32),
+                req_ids=list(prev.req_ids),
+                caches=caches,
+                lazy_logprobs=None,
+                logprob_spec=prev.logprob_spec,
+                edit_rows=None,
+            )
+
+        if self._mtp_spec is not None and self._mtp_spec.has_request(prev.req_ids[0]):
+            # Spec pendings carry concrete tokens, so consuming them here is
+            # a cheap copy, not a graph sync. Gates were checked at the chain
+            # root and composition changes break chains before reaching this.
+            raw = prev.lazy_tokens.tolist()
+            if not isinstance(raw, list):
+                raw = [raw]
+            tok = self._mtp_spec.decode(prev.req_ids[0], int(raw[0]))
+            return MlxPendingDecode(
+                lazy_tokens=mx.array([tok], dtype=mx.int32),
+                req_ids=list(prev.req_ids),
+                caches=caches,
+                lazy_logprobs=None,
+                logprob_spec=prev.logprob_spec,
+                edit_rows=None,
+            )
 
         # After prev's graph ran, each attention KV cache offset was
         # bumped by one per layer - attention wrapper's `write_token`
@@ -1684,6 +1985,8 @@ class MlxModelRunner:
         if not self.disable_radix_cache:
             self._sync_decode_kv_to_pool(req_id)
 
+        if self._mtp_spec is not None:
+            self._mtp_spec.release(req_id)
         self._req_token_ids.pop(req_id, None)
         self._req_sampling.pop(req_id, None)
         cache = self._req_caches.pop(req_id, None)
@@ -1691,9 +1994,14 @@ class MlxModelRunner:
             self._release_cache(cache)
         self._req_pool_idx.pop(req_id, None)
         self._req_synced_offset.pop(req_id, None)
+        # Per-step cache clear is off for decode throughput; drop request-
+        # scoped Metal debris here so the next prefill snapshot does not OOM.
+        mx.clear_cache()
 
     def clear(self):
         """Clear all request states."""
+        if self._mtp_spec is not None:
+            self._mtp_spec.clear()
         self._req_token_ids.clear()
         self._req_sampling.clear()
         for cache in self._req_caches.values():

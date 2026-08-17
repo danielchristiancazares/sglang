@@ -711,6 +711,9 @@ class RustServer:
 
         server_args = dict(vars(scheduler.server_args))
         model_config = dict(vars(scheduler.model_config))
+        hf_config = scheduler.model_config.hf_config
+        model_config["model_type"] = getattr(hf_config, "model_type", None)
+        model_config["architectures"] = getattr(hf_config, "architectures", None)
         model_config["hf_config"] = None  # HF config is not JSON-serializable
         # Resolved default sampling params (generation_config.json when
         # `--sampling-defaults model`, {} otherwise). The rust server consumes

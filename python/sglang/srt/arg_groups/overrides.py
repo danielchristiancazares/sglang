@@ -1578,6 +1578,21 @@ def _mamba_radix_cache_resolution(view: Any) -> dict:
         return {}
 
     declared: Dict[str, Any] = {"uses_mamba_radix_cache": True}
+    # MLX owns hybrid auxiliary-state snapshots in
+    # MlxAuxiliaryStateComponent.  That component deliberately exposes the
+    # generic scheduler's ``no_buffer`` contract while retaining MLX's own
+    # async overlap path; selecting FLA's extra-buffer strategy would make the
+    # unified radix component reject the configuration at startup.
+    if is_mps() and use_mlx():
+        if view.mamba_radix_cache_strategy not in ("auto", "no_buffer"):
+            raise ValueError(
+                "The MLX backend supports hybrid radix caching with "
+                "--mamba-radix-cache-strategy no_buffer only."
+            )
+        if view.mamba_radix_cache_strategy == "auto":
+            declared["mamba_radix_cache_strategy"] = "no_buffer"
+        return declared
+
     if view.mamba_radix_cache_strategy == "auto":
         wants_overlap = not view.disable_overlap_schedule
         wants_paging = view.page_size is not None and view.page_size > 1

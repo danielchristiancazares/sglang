@@ -6,6 +6,7 @@
 //! `Conversation.get_prompt()` so there is exactly one implementation of the
 //! per-style formatting logic (no Jinja translation to drift).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use dynamo_protocols::types::{
@@ -14,7 +15,10 @@ use dynamo_protocols::types::{
     ChatCompletionRequestSystemMessageContentPart, ChatCompletionRequestUserMessageContent,
     ChatCompletionRequestUserMessageContentPart, CreateChatCompletionRequest,
 };
-use dynamo_renderer::{ChatTemplate, ContextMixins, PromptContextMixin, PromptFormatter};
+use dynamo_renderer::{
+    ChatTemplate, ContextMixins, OAIChatLikeRequest, PromptContextMixin, PromptFormatter,
+    PromptInput, TextInput, TokenInput,
+};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -64,11 +68,27 @@ impl ChatFormatter {
         &self,
         request: &CreateChatCompletionRequest,
     ) -> Result<String, TemplateError> {
+        self.render_with_args(request, None)
+    }
+
+    /// Render with SGLang/vLLM-compatible ``chat_template_kwargs`` merged into
+    /// the Jinja context. Dynamo's wire request currently omits that extension,
+    /// so the native server carries it beside the typed OpenAI request and
+    /// exposes it through this thin trait adapter.
+    pub(super) fn render_with_args(
+        &self,
+        request: &CreateChatCompletionRequest,
+        chat_template_args: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Result<String, TemplateError> {
         match self {
             ChatFormatter::HuggingFace(formatter) => {
                 let PromptFormatter::OAI(formatter) = formatter;
+                let request = TemplateArgsRequest {
+                    inner: request,
+                    chat_template_args,
+                };
                 formatter
-                    .render(request)
+                    .render(&request)
                     .map_err(|error| TemplateError::Renderer {
                         message: error.to_string(),
                     })
@@ -86,6 +106,69 @@ impl ChatFormatter {
             ChatFormatter::HuggingFace(_) => None,
             ChatFormatter::Legacy(formatter) => formatter.spec.stop_str.clone(),
         }
+    }
+}
+
+/// Delegates every OpenAI request field to Dynamo's implementation while
+/// supplying native SGLang chat-template arguments. Keeping this adapter in
+/// Rust lets toggles such as Qwen's ``enable_thinking`` and
+/// ``preserve_thinking`` reach Jinja without round-tripping through Python.
+struct TemplateArgsRequest<'a> {
+    inner: &'a dyn OAIChatLikeRequest,
+    chat_template_args: Option<&'a HashMap<String, serde_json::Value>>,
+}
+
+impl OAIChatLikeRequest for TemplateArgsRequest<'_> {
+    fn model(&self) -> String {
+        self.inner.model()
+    }
+
+    fn messages(&self) -> minijinja::Value {
+        self.inner.messages()
+    }
+
+    fn typed_messages(&self) -> Option<&[dynamo_protocols::types::ChatCompletionRequestMessage]> {
+        self.inner.typed_messages()
+    }
+
+    fn tools(&self) -> Option<minijinja::Value> {
+        self.inner.tools()
+    }
+
+    fn tool_choice(&self) -> Option<minijinja::Value> {
+        self.inner.tool_choice()
+    }
+
+    fn response_format(&self) -> Option<minijinja::Value> {
+        self.inner.response_format()
+    }
+
+    fn reasoning_effort(&self) -> Option<minijinja::Value> {
+        self.inner.reasoning_effort()
+    }
+
+    fn should_add_generation_prompt(&self) -> bool {
+        self.inner.should_add_generation_prompt()
+    }
+
+    fn chat_template_args(&self) -> Option<&HashMap<String, serde_json::Value>> {
+        self.chat_template_args
+    }
+
+    fn prompt_input_type(&self) -> PromptInput {
+        self.inner.prompt_input_type()
+    }
+
+    fn extract_tokens(&self) -> Option<TokenInput> {
+        self.inner.extract_tokens()
+    }
+
+    fn extract_text(&self) -> Option<TextInput> {
+        self.inner.extract_text()
+    }
+
+    fn mm_processor_kwargs(&self) -> Option<&serde_json::Value> {
+        self.inner.mm_processor_kwargs()
     }
 }
 
@@ -788,6 +871,23 @@ pub(super) fn load_chat_formatter(
     let mut config = parse_json(&config_text, config_path, "tokenizer config")?;
 
     let Some(argument) = chat_template_arg else {
+        // Modern Hugging Face snapshots may store the template beside
+        // tokenizer_config.json as chat_template.jinja instead of embedding it
+        // in the JSON. Transformers discovers that sibling automatically;
+        // mirror the same layout so the native Rust HTTP/tokenizer path remains
+        // usable for current Qwen checkpoints.
+        if config.get("chat_template").is_none()
+            && let Some(parent) = config_path.parent()
+        {
+            let sibling = parent.join("chat_template.jinja");
+            if sibling.is_file() {
+                let template = read_to_string(&sibling, "chat template")?;
+                set_chat_template(
+                    &mut config,
+                    Value::String(template.trim_matches('\n').replace("\\n", "\n")),
+                )?;
+            }
+        }
         return formatter_from_config(&config);
     };
 
@@ -1342,12 +1442,15 @@ pub(super) fn builtin_template(name: &str) -> Option<LegacySpec> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use dynamo_protocols::types::{
         ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartText,
         ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent,
         ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
         ChatCompletionRequestUserMessageContentPart, CreateChatCompletionRequest,
     };
+    use serde_json::Value;
 
     use super::{
         ChatFormatter, LegacyFormatter, LegacySpec, OneOrMany, TemplateError, builtin_template,
@@ -1770,6 +1873,43 @@ mod tests {
             panic!("expected a legacy formatter");
         };
         assert_eq!(formatter.spec.name, "chatml");
+    }
+
+    /// Transformers accepts the current Hub layout where the Jinja template
+    /// is a sibling of tokenizer_config.json. Keep chat enabled for that same
+    /// snapshot when ingress and rendering move to Rust.
+    #[test]
+    fn sibling_jinja_template_is_loaded() {
+        let model_dir = std::env::temp_dir().join(format!(
+            "sglang-openai-template-sibling-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let config = model_dir.join("tokenizer_config.json");
+        std::fs::write(&config, r#"{"tokenizer_class":"Qwen2Tokenizer"}"#).unwrap();
+        std::fs::write(
+            model_dir.join("chat_template.jinja"),
+            "{% if enable_thinking is defined and enable_thinking is false %}OFF{% else %}ON{% endif %}",
+        )
+        .unwrap();
+
+        let formatter = load_chat_formatter(
+            Some(config.to_str().unwrap()),
+            Some(model_dir.to_str().unwrap()),
+            None,
+        )
+        .unwrap();
+        let ChatFormatter::HuggingFace(_) = &formatter else {
+            panic!("expected a Hugging Face formatter");
+        };
+        assert_eq!(formatter.render(&request()).unwrap(), "ON");
+        let args = HashMap::from([("enable_thinking".into(), Value::Bool(false))]);
+        assert_eq!(
+            formatter.render_with_args(&request(), Some(&args)).unwrap(),
+            "OFF"
+        );
+
+        let _ = std::fs::remove_dir_all(model_dir);
     }
 
     /// Python `load_chat_template`: without `--chat-template`, the model path
