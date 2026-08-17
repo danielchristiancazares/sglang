@@ -24,6 +24,7 @@ from sglang.srt.utils import (
     is_cpu,
     is_cuda,
     is_hip,
+    is_mps,
     is_musa,
     is_npu,
     is_xpu,
@@ -46,6 +47,7 @@ _is_npu = is_npu()
 _is_musa = is_musa()
 _is_xpu = is_xpu()
 _is_cpu = is_cpu()
+_is_mps = is_mps()
 
 logger = logging.getLogger(__name__)
 
@@ -462,6 +464,64 @@ def build_tree_kernel_efficient(
     # seq_lens_sum == sum(seq_lens); seq_lens: sequence length without draft tokens
     bs = seq_lens.numel()
     device = seq_lens.device
+    if _is_mps:
+        if topk != 1 or num_verify_tokens != spec_steps + 1:
+            raise NotImplementedError(
+                "Native MPS speculative metadata supports linear topk=1 chains"
+            )
+        steps = torch.arange(num_verify_tokens, device=device, dtype=torch.long)
+        positions = (seq_lens[:, None] + steps[None, :]).reshape(-1)
+        retrieve_index = torch.arange(
+            bs * num_verify_tokens, device=device, dtype=torch.long
+        ).reshape(bs, num_verify_tokens)
+        retrieve_next_token = torch.full_like(retrieve_index, -1)
+        retrieve_next_token[:, :-1] = steps[1:]
+        retrieve_next_sibling = torch.full_like(retrieve_index, -1)
+
+        causal_tree = torch.ones(
+            (num_verify_tokens, num_verify_tokens),
+            device=device,
+            dtype=torch.bool,
+        ).tril_()
+        if tree_mask_mode == TreeMaskMode.FULL_MASK:
+            mask_shape = (
+                seq_lens_sum * num_verify_tokens
+                + bs * num_verify_tokens * num_verify_tokens,
+            )
+            tree_mask = (
+                tree_mask_buf
+                if tree_mask_buf is not None
+                else torch.empty(mask_shape, device=device, dtype=torch.bool)
+            )
+            tree_mask[: seq_lens_sum * num_verify_tokens].fill_(True)
+            tree_mask[
+                seq_lens_sum * num_verify_tokens : sum(mask_shape)
+            ].copy_(causal_tree.expand(bs, -1, -1).reshape(-1))
+        elif tree_mask_mode == TreeMaskMode.QLEN_ONLY:
+            tree_mask = (
+                tree_mask_buf
+                if tree_mask_buf is not None
+                else torch.empty(
+                    bs * num_verify_tokens * num_verify_tokens,
+                    device=device,
+                    dtype=torch.bool,
+                )
+            )
+            tree_mask[: bs * num_verify_tokens * num_verify_tokens].copy_(
+                causal_tree.expand(bs, -1, -1).reshape(-1)
+            )
+        else:
+            raise NotImplementedError(
+                "Native MPS does not use bit-packed speculative tree masks"
+            )
+        return (
+            tree_mask,
+            positions,
+            retrieve_index,
+            retrieve_next_token,
+            retrieve_next_sibling,
+            draft_tokens,
+        )
     # e.g. for bs=1, tree_mask: num_draft_token, seq_lens_sum + num_draft_token (flattened)
     # where each row indicates the attending pattern of each draft token
     # if use_partial_packed_tree_mask is True, tree_mask: num_draft_token (flattened, packed)
@@ -725,6 +785,17 @@ def verify_tree_greedy_func(
             retrive_next_sibling=retrieve_next_sibling,
             target_predict=target_predict,
         )
+    elif _is_mps:
+        if topk != 1:
+            raise NotImplementedError("Native MPS greedy verify requires topk=1")
+        _verify_mps_chain(
+            predicts,
+            accept_index,
+            accept_token_num,
+            candidates,
+            retrieve_index,
+            target_predict,
+        )
     elif _is_xpu or _use_triton_spec_fallback:
         verify_tree_greedy_triton(
             predicts=predicts,
@@ -737,6 +808,72 @@ def verify_tree_greedy_func(
             target_predict=target_predict,
         )
     return predicts, accept_index, accept_token_num
+
+
+def _verify_mps_chain(
+    predicts: torch.Tensor,
+    accept_index: torch.Tensor,
+    accept_token_num: torch.Tensor,
+    candidates: torch.Tensor,
+    retrieve_index: torch.Tensor,
+    target_predict: torch.Tensor,
+) -> None:
+    """Vectorized acceptance for the top-k1 linear chain."""
+    if target_predict.shape != candidates.shape:
+        raise ValueError(
+            f"MPS chain samples must match candidates: "
+            f"{target_predict.shape=} {candidates.shape=}"
+        )
+    matches = target_predict[:, :-1] == candidates[:, 1:]
+    leading_matches = torch.cumprod(matches.to(torch.int32), dim=1)
+    num_accepted_drafts = leading_matches.sum(dim=1, dtype=torch.int32)
+
+    predicts.copy_(target_predict.to(torch.int32).reshape(-1))
+    width = accept_index.shape[1]
+    steps = torch.arange(width, device=candidates.device, dtype=torch.int32)
+    valid = steps.unsqueeze(0) <= num_accepted_drafts.unsqueeze(1)
+    accepted = retrieve_index[:, :width].to(torch.int32)
+    accept_index.copy_(
+        torch.where(valid, accepted, torch.full_like(accepted, -1))
+    )
+    accept_token_num.copy_(num_accepted_drafts)
+
+
+def _sample_mps_chain_target_only(
+    target_probs: torch.Tensor,
+    sampling_info: SamplingBatchInfo,
+) -> torch.Tensor:
+    """Apply finite top-k/top-p filtering and real categorical sampling on MPS."""
+    batch_size, draft_token_num, vocab_size = target_probs.shape
+    flat_probs = target_probs.reshape(batch_size * draft_token_num, vocab_size)
+    max_top_k = sampling_info.max_top_k
+    if 0 < max_top_k < vocab_size:
+        probs_sort, probs_idx = torch.topk(
+            flat_probs, max_top_k, dim=-1, largest=True, sorted=True
+        )
+    else:
+        probs_sort, probs_idx = torch.sort(flat_probs, dim=-1, descending=True)
+
+    expanded_top_ks = torch.repeat_interleave(
+        sampling_info.top_ks, draft_token_num, dim=0
+    ).reshape(-1, 1)
+    ranks = torch.arange(probs_sort.shape[1], device=probs_sort.device).reshape(1, -1)
+    probs_sort.masked_fill_(ranks >= expanded_top_ks, 0.0)
+    probs_sort.div_(probs_sort.sum(dim=-1, keepdim=True))
+
+    if sampling_info.need_top_p_sampling:
+        expanded_top_ps = torch.repeat_interleave(
+            sampling_info.top_ps, draft_token_num, dim=0
+        ).reshape(-1, 1)
+        cumulative = torch.cumsum(probs_sort, dim=-1)
+        probs_sort.masked_fill_(
+            (cumulative - probs_sort) > expanded_top_ps, 0.0
+        )
+
+    sampled_rank = torch.multinomial(probs_sort, num_samples=1)
+    return torch.gather(probs_idx, 1, sampled_rank).reshape(
+        batch_size, draft_token_num
+    )
 
 
 def get_draft_input_from_target_hidden_dim(model_runner: ModelRunner) -> int:
@@ -1023,7 +1160,13 @@ def eagle_sample(
 
     # Sample tokens
     target_predict = None
-    if sampling_info.is_all_greedy or _is_cpu or _is_npu or _is_hip or _is_xpu:
+    if (
+        sampling_info.is_all_greedy
+        or _is_cpu
+        or _is_npu
+        or _is_hip
+        or _is_xpu
+    ):
         target_predict = torch.argmax(next_token_logits, dim=-1)
         target_predict = target_predict.reshape(bs, verify_input.draft_token_num)
         predict, accept_index, num_correct_drafts = verify_tree_greedy_func(
@@ -1036,6 +1179,24 @@ def eagle_sample(
             retrieve_next_sibling=verify_input.retrieve_next_sibling,
             target_predict=target_predict,
             topk=verify_input.tree_topk,
+        )
+    elif _is_mps:
+        expanded_temperature = torch.repeat_interleave(
+            sampling_info.temperatures, verify_input.draft_token_num, dim=0
+        )
+        target_probs = F.softmax(
+            next_token_logits / expanded_temperature, dim=-1
+        ).reshape(bs, verify_input.draft_token_num, -1)
+        target_predict = _sample_mps_chain_target_only(
+            target_probs, sampling_info
+        )
+        _verify_mps_chain(
+            predict,
+            accept_index,
+            num_correct_drafts,
+            candidates,
+            verify_input.retrieve_index,
+            target_predict,
         )
     else:
         from sglang.kernels.ops.speculative.reject_sampling import (

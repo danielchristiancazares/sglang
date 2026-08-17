@@ -59,6 +59,7 @@ from sglang.srt.utils import (
     is_cpu,
     is_cuda,
     is_hip,
+    is_mps,
     is_musa,
     is_npu,
     is_xpu,
@@ -73,6 +74,7 @@ _is_npu = is_npu()
 _is_musa = is_musa()
 _is_xpu = is_xpu()
 _is_cpu = is_cpu()
+_is_mps = is_mps()
 
 if TYPE_CHECKING:
     from sglang.srt.constrained.base_grammar_backend import BaseGrammarObject
@@ -442,7 +444,7 @@ def spec_need_hidden_states() -> bool:
     return not spec.enable_multi_layer_eagle
 
 
-@torch.compile(dynamic=True, disable=_is_npu or _is_xpu)
+@torch.compile(dynamic=True, disable=_is_npu or _is_xpu or _is_mps)
 def create_num_accept_tokens_filter(
     num_correct_drafts: torch.Tensor,
     unfinished_index_device: torch.Tensor,
@@ -476,7 +478,7 @@ def _select_top_k_tokens_first(
     return input_ids, hidden_states, topk_p, tree_info
 
 
-@torch.compile(dynamic=True, disable=_is_npu or _is_xpu)
+@torch.compile(dynamic=True, disable=_is_npu or _is_xpu or _is_mps)
 def _select_top_k_tokens_later(
     i: int,
     topk_p: torch.Tensor,
@@ -918,6 +920,22 @@ def move_accept_tokens_to_target_kvcache(
             batch.seq_lens + num_correct_drafts + 1,
             tgt_cache_loc,
             batch.req_to_token_pool.req_to_token.shape[1],
+        )
+    elif _is_mps:
+        rows = batch.req_to_token_pool.req_to_token.index_select(
+            0, batch.req_pool_indices.to(torch.long)
+        )
+        width = accept_index.shape[1]
+        offsets = batch.seq_lens.to(torch.long).unsqueeze(1) + torch.arange(
+            width, device=device, dtype=torch.long
+        ).unsqueeze(0)
+        valid = offsets < (
+            batch.seq_lens + num_correct_drafts + 1
+        ).to(torch.long).unsqueeze(1)
+        valid_indices = torch.nonzero(valid.reshape(-1), as_tuple=False).flatten()
+        gathered = torch.gather(rows, 1, offsets).reshape(-1)
+        tgt_cache_loc[: valid_indices.numel()].copy_(
+            gathered.index_select(0, valid_indices)
         )
     else:
         assign_extend_cache_locs[(bs,)](

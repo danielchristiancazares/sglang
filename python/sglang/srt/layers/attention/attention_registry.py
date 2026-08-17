@@ -345,16 +345,12 @@ def attn_backend_wrapper(runner: "ModelRunner", full_attn_backend: "AttentionBac
                 cfg.full_attention_layer_ids,
             )
 
-        from sglang.kernels.ops.attention.fla.utils import check_environments
-        from sglang.srt.layers.attention.linear.kda_backend import KDAAttnBackend
-        from sglang.srt.layers.attention.linear.lightning_backend import (
-            LightningAttentionBackend,
-        )
         from sglang.srt.layers.attention.linear.utils import (
             resolve_linear_attn_backends,
         )
         from sglang.srt.utils import (
             is_blackwell,
+            is_mps,
             is_npu,
             is_sm120_supported,
         )
@@ -379,7 +375,10 @@ def attn_backend_wrapper(runner: "ModelRunner", full_attn_backend: "AttentionBac
                 AscendMamba2AttnBackend as Mamba2AttnBackend,
             )
 
-        check_environments()
+        if not is_mps():
+            from sglang.kernels.ops.attention.fla.utils import check_environments
+
+            check_environments()
         prefill_default = None
         if hybrid_gdn_config(runner.model_config) is not None and not is_npu():
             prefill_default = flashinfer_gdn_prefill_default(runner)
@@ -457,8 +456,16 @@ def attn_backend_wrapper(runner: "ModelRunner", full_attn_backend: "AttentionBac
                 linear_attn_backend = AscendKDAAttnBackend(runner)
                 hybrid_backend_cls = AscendKDAHybridLinearAttnBackend
             else:
+                from sglang.srt.layers.attention.linear.kda_backend import (
+                    KDAAttnBackend,
+                )
+
                 linear_attn_backend = KDAAttnBackend(runner)
         elif hybrid_lightning_config(runner.model_config) is not None:
+            from sglang.srt.layers.attention.linear.lightning_backend import (
+                LightningAttentionBackend,
+            )
+
             linear_attn_backend = LightningAttentionBackend(runner)
         else:
             spec_result = get_linear_attn_config(runner.model_config.hf_config)

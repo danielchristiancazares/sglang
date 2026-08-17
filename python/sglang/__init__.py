@@ -14,11 +14,44 @@ redirect_third_party_caches()
 import platform as _platform
 import sys as _sys
 
-if _sys.platform == "darwin" and _platform.machine() == "arm64":
+_legacy_intel_mps_torch = False
+if _sys.platform == "darwin":
     try:
         import torch as _torch
 
         if _torch.backends.mps.is_available():
+            _torch_version = tuple(
+                int(part) for part in _torch.__version__.split("+", 1)[0].split(".")[:2]
+            )
+            _legacy_intel_mps_torch = (
+                _platform.machine() == "x86_64" and _torch_version < (2, 4)
+            )
+            if _legacy_intel_mps_torch:
+                # Transformers 5 registers training-only custom operators at
+                # import time. They are unreachable in SGLang inference; a
+                # lightweight decorator shim lets its configuration and
+                # processor modules import under the final Intel-mac wheel.
+                if not hasattr(_torch.library, "custom_op"):
+                    _torch.library.custom_op = lambda *args, **kwargs: (
+                        lambda function: function
+                    )
+                if not hasattr(_torch.library, "register_fake"):
+                    _torch.library.register_fake = lambda *args, **kwargs: (
+                        lambda function: function
+                    )
+                if not hasattr(_torch.library, "register_autograd"):
+                    _torch.library.register_autograd = lambda *args, **kwargs: None
+                if not hasattr(_torch.compiler, "is_compiling"):
+                    _torch.compiler.is_compiling = lambda: False
+                for _unsigned, _signed in (
+                    ("uint16", "int16"),
+                    ("uint32", "int32"),
+                    ("uint64", "int64"),
+                ):
+                    if not hasattr(_torch, _unsigned):
+                        setattr(_torch, _unsigned, getattr(_torch, _signed))
+                del _unsigned
+                del _signed
             from sglang._triton_stub import install as _install_triton_stub
 
             _install_triton_stub()
@@ -34,7 +67,37 @@ if _sys.platform == "darwin" and _platform.machine() == "arm64":
 del _platform
 del _sys
 
-from sglang.srt.utils.hf_transformers_patches import apply_all as _apply_hf_patches
+if _legacy_intel_mps_torch:
+    # PyTorch 2.2.2 is the final upstream x86_64 macOS wheel. Transformers 5
+    # only uses its version floor to gate model imports; SGLang owns the model
+    # implementation on this path. Let Transformers initialize its torch
+    # surface, then restore metadata immediately so later feature probes still
+    # see the real version.
+    import importlib.metadata as _metadata
+
+    _metadata_version = _metadata.version
+
+    def _intel_mps_metadata_version(
+        distribution_name: str, _real_version=_metadata_version
+    ) -> str:
+        if distribution_name.lower().replace("_", "-") == "torch":
+            return "2.4.0"
+        return _real_version(distribution_name)
+
+    _metadata.version = _intel_mps_metadata_version
+    try:
+        from sglang.srt.utils.hf_transformers_patches import (
+            apply_all as _apply_hf_patches,
+        )
+    finally:
+        _metadata.version = _metadata_version
+        del _metadata
+        del _metadata_version
+        del _intel_mps_metadata_version
+else:
+    from sglang.srt.utils.hf_transformers_patches import apply_all as _apply_hf_patches
+
+del _legacy_intel_mps_torch
 
 _apply_hf_patches()
 del _apply_hf_patches

@@ -31,6 +31,7 @@ from sglang.srt.utils import (
     is_cpu,
     is_cuda,
     is_hip,
+    is_mps,
     is_npu,
     next_power_of_2,
     support_triton,
@@ -41,6 +42,7 @@ _is_hip = is_hip()
 _is_npu = is_npu()
 _is_cuda = is_cuda()
 _is_cpu = is_cpu()
+_is_mps = is_mps()
 
 if _is_cpu:
     from sgl_kernel import assign_req_to_token_pool_cpu
@@ -651,6 +653,28 @@ def assign_req_to_token_pool_func(
             out_cache_loc,
             req_to_token.shape[1],
         )
+        return
+    if _is_mps:
+        total = out_cache_loc.numel()
+        if total == 0:
+            return
+        ranks = torch.arange(total, device=out_cache_loc.device, dtype=torch.long)
+        lengths = (end_offset - start_offset).to(torch.long)
+        valid = ranks.unsqueeze(0) < lengths.unsqueeze(1)
+        valid_flat = torch.nonzero(valid.reshape(-1), as_tuple=False).flatten()
+        source_starts = torch.cumsum(lengths, dim=0) - lengths
+        source_offsets = source_starts.unsqueeze(1) + ranks.unsqueeze(0)
+        destination_rows = req_pool_indices.to(torch.long).unsqueeze(1).expand(
+            -1, total
+        )
+        destination_cols = start_offset.to(torch.long).unsqueeze(1) + ranks.unsqueeze(0)
+        destination = (
+            destination_rows * req_to_token.shape[1] + destination_cols
+        ).reshape(-1).index_select(0, valid_flat)
+        source = source_offsets.reshape(-1).index_select(0, valid_flat)
+        req_to_token.view(-1)[destination] = out_cache_loc.index_select(
+            0, source
+        ).to(req_to_token.dtype)
         return
     assign_req_to_token_pool[(batch_size,)](
         req_pool_indices,

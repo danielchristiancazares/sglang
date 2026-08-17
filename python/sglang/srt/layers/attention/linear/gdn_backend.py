@@ -2,14 +2,18 @@ from typing import Optional, Tuple, Union
 
 import torch
 
-from sglang.kernels.ops.attention.fla.fused_gdn_gating import fused_gdn_gating
-from sglang.kernels.ops.mamba.causal_conv1d_triton import (
-    causal_conv1d_fn,
-    causal_conv1d_update,
-)
+from sglang.srt.utils import is_cpu, is_cuda, is_hip, is_mps, is_npu, is_xpu
+
+if not is_mps():
+    from sglang.kernels.ops.attention.fla.fused_gdn_gating import fused_gdn_gating
+    from sglang.kernels.ops.mamba.causal_conv1d_triton import (
+        causal_conv1d_fn,
+        causal_conv1d_update,
+    )
 from sglang.srt.configs.hybrid_arch import hybrid_gdn_config
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import MambaAttnBackendBase
-from sglang.srt.layers.attention.linear.kernels.gdn_triton import TritonGDNKernel
+if not is_mps():
+    from sglang.srt.layers.attention.linear.kernels.gdn_triton import TritonGDNKernel
 from sglang.srt.layers.attention.linear.utils import (
     LinearAttnKernelBackend,
     build_verify_intermediate_state_indices,
@@ -19,10 +23,11 @@ from sglang.srt.mem_cache.memory_pool import MambaPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.runtime_context import get_exec, get_memory, get_schedule
-from sglang.srt.utils import is_cpu, is_cuda, is_hip, is_npu, is_xpu
 from sglang.srt.utils.common import rank0_log
 
-if not is_cpu():
+_is_hip = is_hip()
+
+if not is_cpu() and not is_mps():
     from sglang.kernels.ops.attention.fla.chunk_delta_h import (
         CHUNK_SIZE as FLA_CHUNK_SIZE,
     )
@@ -61,6 +66,92 @@ elif is_cpu():
     causal_conv1d_fn = causal_conv1d_fn_cpu
     causal_conv1d_update = causal_conv1d_update_cpu
     fused_gdn_gating = torch.ops.sgl_kernel.fused_gdn_gating_cpu
+elif is_mps():
+    from sglang.srt.hardware_backend.mps.ops import (
+        causal_conv1d_decode as causal_conv1d_decode_mps,
+        causal_conv1d_prefill as causal_conv1d_prefill_mps,
+    )
+
+    def fused_gdn_gating(A_log, a, b, dt_bias):
+        beta = torch.sigmoid(b)
+        g = torch.exp(
+            -torch.exp(A_log.to(torch.float32))
+            * torch.nn.functional.softplus(a + dt_bias)
+        )
+        return g, beta
+
+    def causal_conv1d_update(
+        x,
+        conv_states,
+        weight,
+        bias,
+        activation,
+        *,
+        conv_state_indices,
+        **kwargs,
+    ):
+        if bias is not None or activation != "silu" or x.ndim not in (2, 3):
+            raise NotImplementedError(
+                "Native MPS GDN causal-conv requires bias=None, "
+                "activation='silu', and a 2-D or 3-D input"
+            )
+        if x.ndim == 2:
+            return causal_conv1d_decode_mps(
+                x, weight, conv_states, conv_state_indices
+            )
+
+        intermediate = kwargs.get("intermediate_conv_window")
+        intermediate_indices = kwargs.get("intermediate_state_indices")
+        retrieve_parent = kwargs.get("retrieve_parent_token")
+        if intermediate is None or intermediate_indices is None:
+            raise NotImplementedError(
+                "3-D native MPS causal-conv requires speculative checkpoints"
+            )
+        if retrieve_parent is not None:
+            raise NotImplementedError(
+                "Native MPS causal-conv verify supports linear draft chains only"
+            )
+
+        batch_size, _, cache_steps = x.shape
+        state_slots = conv_state_indices[:batch_size].to(torch.long)
+        scratch_rows = intermediate_indices[:batch_size].to(torch.long)
+        working_state = conv_states.index_select(0, state_slots).clone()
+        local_slots = torch.arange(batch_size, dtype=torch.int32, device=x.device)
+        outputs = []
+        for step in range(cache_steps):
+            outputs.append(
+                causal_conv1d_decode_mps(
+                    x[:, :, step], weight, working_state, local_slots
+                )
+            )
+            intermediate[scratch_rows, step] = working_state
+        return torch.stack(outputs, dim=-1)
+
+    def causal_conv1d_fn(
+        x,
+        weight,
+        bias,
+        *,
+        activation,
+        conv_states,
+        has_initial_state,
+        cache_indices,
+        query_start_loc,
+        **kwargs,
+    ):
+        if bias is not None or activation != "silu":
+            raise NotImplementedError(
+                "Native MPS GDN causal-conv prefill requires bias=None and "
+                "activation='silu'"
+            )
+        return causal_conv1d_prefill_mps(
+            x,
+            weight,
+            conv_states,
+            cache_indices,
+            query_start_loc,
+            has_initial_state,
+        )
 
 
 def flashinfer_gdn_prefill_default(model_runner: ModelRunner) -> Optional[str]:
@@ -110,6 +201,24 @@ class GDNKernelDispatcher:
         prefill_backend: LinearAttnKernelBackend,
         verify_backend: Optional[LinearAttnKernelBackend] = None,
     ):
+        if is_mps():
+            from sglang.srt.layers.attention.linear.kernels.gdn_mps import (
+                MpsGDNKernel,
+            )
+
+            mps_kernel = MpsGDNKernel()
+            self.tree_verify_kernel = mps_kernel
+            self.decode_kernel = mps_kernel
+            self.extend_kernel = mps_kernel
+            self.verify_kernel = mps_kernel
+            self.verify_kernel_is_flashinfer = False
+            self.supports_packed_decode = False
+            rank0_log(
+                "GDN kernel dispatcher: decode=MpsGDNKernel, "
+                "extend=MpsGDNKernel, verify=MpsGDNKernel packed_decode=False"
+            )
+            return
+
         triton_kernel = TritonGDNKernel()
         self.tree_verify_kernel = triton_kernel
 
@@ -351,7 +460,7 @@ class GDNAttnBackend(MambaAttnBackendBase):
         self.conv_states_shape = (
             model_runner.req_to_token_pool.mamba_pool.mamba_cache.conv[0].shape
         )
-        if not is_cpu() and not is_npu():
+        if not is_cpu() and not is_npu() and not is_mps():
             assert (
                 self.conv_states_shape[-1] < FLA_CHUNK_SIZE
             ), f"{self.conv_states_shape[-1]=} should be less than {FLA_CHUNK_SIZE}"

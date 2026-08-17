@@ -319,7 +319,9 @@ class ModelConfig:
         rope_scaling = getattr(self.hf_text_config, "rope_parameters", None) or getattr(
             self.hf_text_config, "rope_scaling", {}
         )
-        self.is_lm_only = getattr(self.hf_config, "language_model_only", False)
+        self.is_lm_only = language_model_only or getattr(
+            self.hf_config, "language_model_only", False
+        )
         self.model_is_mrope = (
             not self.is_lm_only
             and rope_scaling is not None

@@ -47,6 +47,7 @@ def rms_norm_ref(
     group_size=None,
     norm_before_gate=True,
     upcast=True,
+    activation: str = "swish",
 ):
     dtype = x.dtype
     N = x.shape[-1]
@@ -55,8 +56,15 @@ def rms_norm_ref(
     if upcast:
         x = x.float()
         z = z.float() if z is not None else z
+    def apply_gate(tensor):
+        if activation in ("swish", "silu"):
+            return F.silu(tensor)
+        if activation == "sigmoid":
+            return torch.sigmoid(tensor)
+        raise ValueError(f"Unsupported gated RMSNorm activation: {activation}")
+
     if z is not None and not norm_before_gate:
-        x = x * F.silu(z)
+        x = x * apply_gate(z)
     if group_size is None:
         rstd = 1 / torch.sqrt((x.square()).mean(dim=-1, keepdim=True) + eps)
         out = (x * rstd * weight) + bias if bias is not None else (x * rstd * weight)
@@ -67,7 +75,7 @@ def rms_norm_ref(
         if bias is not None:
             out = out + bias
     if z is not None and norm_before_gate:
-        out *= F.silu(z)
+        out *= apply_gate(z)
     return out.to(dtype)
 
 
@@ -460,6 +468,17 @@ class RMSNorm(torch.nn.Module):
 
     def forward(self, x, z=None):
         """If z is not None, we do norm(x) * silu(z) if norm_before_gate, else norm(x * silu(z))"""
+        if x.device.type == "mps":
+            return rms_norm_ref(
+                x,
+                self.weight,
+                self.bias,
+                z=z,
+                eps=self.eps,
+                group_size=self.group_size,
+                norm_before_gate=self.norm_before_gate,
+                activation=self.activation,
+            )
         if _use_cpu:
             assert (
                 self.norm_before_gate

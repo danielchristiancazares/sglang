@@ -39,7 +39,7 @@ from sglang.srt.runtime_context import (
     get_parallel,
     get_spec,
 )
-from sglang.srt.utils import add_prefix, is_npu
+from sglang.srt.utils import add_prefix, is_mps, is_npu
 
 logger = logging.getLogger(__name__)
 
@@ -210,8 +210,12 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
             set_shareable_weight(self.lm_head, head)
 
         set_shareable_weight(self.model.embed_tokens, embed)
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+        if is_mps():
+            torch.mps.empty_cache()
+            torch.mps.synchronize()
+        else:
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
     def set_lm_head_from_target(self, target_lm_head):
         if self.config.tie_word_embeddings:

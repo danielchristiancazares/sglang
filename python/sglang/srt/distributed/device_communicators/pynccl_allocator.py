@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import ctypes
 import logging
 import os
@@ -6,12 +8,22 @@ import traceback
 from contextlib import nullcontext
 
 import torch
-from torch.cuda.memory import (
-    CUDAPluggableAllocator,
-    _cuda_beginAllocateCurrentThreadToPool,
-    _cuda_endAllocateToPool,
-    _cuda_releasePool,
-)
+try:
+    from torch.cuda.memory import (
+        CUDAPluggableAllocator,
+        _cuda_beginAllocateCurrentThreadToPool,
+        _cuda_endAllocateToPool,
+        _cuda_releasePool,
+    )
+except ImportError:
+    CUDAPluggableAllocator = None
+
+    def _cuda_unavailable(*args, **kwargs):
+        raise RuntimeError("CUDA memory pools are unavailable on this platform")
+
+    _cuda_beginAllocateCurrentThreadToPool = _cuda_unavailable
+    _cuda_endAllocateToPool = _cuda_unavailable
+    _cuda_releasePool = _cuda_unavailable
 
 from sglang.srt.distributed.parallel_state import GroupCoordinator
 from sglang.srt.environ import envs

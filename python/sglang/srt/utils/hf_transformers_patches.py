@@ -23,6 +23,8 @@ all patches.  It is safe to import multiple times -- patches are idempotent.
 """
 
 import inspect
+import platform
+import sys
 
 from sglang.srt.utils import logger
 
@@ -53,13 +55,28 @@ def apply_all():
         return
     _applied = True
 
+    legacy_intel_mps_torch = False
+    if sys.platform == "darwin" and platform.machine() == "x86_64":
+        try:
+            import torch
+
+            torch_version = tuple(
+                int(part) for part in torch.__version__.split("+", 1)[0].split(".")[:2]
+            )
+            legacy_intel_mps_torch = (
+                torch.backends.mps.is_available() and torch_version < (2, 4)
+            )
+        except (ImportError, ValueError):
+            pass
+
     # v5.4 patches
     _patch_flash_attn_availability()
     _patch_rope_parameters_validation()
-    _patch_removed_symbols()
-    _patch_image_processor_kwargs()
-    _patch_image_process_cuda_tensor()
-    _patch_nemotron_h_pattern()
+    if not legacy_intel_mps_torch:
+        _patch_removed_symbols()
+        _patch_image_processor_kwargs()
+        _patch_image_process_cuda_tensor()
+        _patch_nemotron_h_pattern()
 
     # v5 general patches
     _ensure_clean_up_tokenization_compat()

@@ -27,7 +27,15 @@ from sglang.srt.layers.quantization.base_config import (
     QuantizeMethodBase,
 )
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
-from sglang.srt.utils import is_cuda, is_hip, is_musa, is_npu, is_xpu, set_weight_attrs
+from sglang.srt.utils import (
+    is_cuda,
+    is_hip,
+    is_mps,
+    is_musa,
+    is_npu,
+    is_xpu,
+    set_weight_attrs,
+)
 
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.token_dispatcher import (
@@ -40,6 +48,7 @@ _is_hip = is_hip()
 _is_xpu = is_xpu()
 _is_musa = is_musa()
 _is_npu = is_npu()
+_is_mps = is_mps()
 
 if _is_cuda:
     if sys.platform == "win32":
@@ -82,6 +91,14 @@ elif _is_musa:
     )
 elif _is_npu:
     from gguf import dequantize as gguf_dequantize
+elif _is_mps:
+    from gguf import dequantize as gguf_dequantize
+    from sglang.srt.hardware_backend.mps.ops import (
+        dense_matmul,
+        q4_0_embedding,
+        q4_0_matmul,
+        quant_matmul,
+    )
 else:
     if not _is_hip:
         warnings.warn(f"Only CUDA, MUSA and NPU support GGUF quantization currently.")
@@ -203,7 +220,37 @@ def fused_mul_mat_gguf(
         return torch.empty(x.shape[0], qweight.shape[0], dtype=x.dtype, device=x.device)
     # there is no need to call any kernel for fp16/bf16
     if qweight_type in UNQUANTIZED_TYPES:
-        return x @ qweight.T
+        if (
+            _is_mps
+            and qweight_type == WeightType.F32
+            and x.dtype == torch.float32
+            and qweight.dtype == torch.float32
+        ):
+            return dense_matmul(qweight, x)
+        return (x.to(qweight.dtype) @ qweight.T).to(x.dtype)
+    if _is_mps:
+        if qweight_type == WeightType.Q4_0:
+            output = q4_0_matmul(
+                qweight.reshape(-1).view(torch.uint8),
+                x.to(torch.float32),
+                qweight.shape[0],
+                x.shape[-1],
+            )
+        elif qweight_type in (WeightType.Q4_1, WeightType.Q5_K, WeightType.Q6_K):
+            output = quant_matmul(
+                qweight.reshape(-1).view(torch.uint8),
+                x,
+                qweight.shape[0],
+                x.shape[-1],
+                qweight_type,
+            )
+        else:
+            raise NotImplementedError(
+                "The native Metal GGUF path supports Q4_0, Q4_1, Q5_K, and "
+                "Q6_K matrix weights; "
+                f"got {WeightType(qweight_type).name}."
+            )
+        return output.to(x.dtype)
     # enable MMVQ in contiguous batching with batch_size=1
     if x.shape[0] <= mmvq_safe and qweight_type in MMVQ_QUANT_TYPES:
         y = ggml_mul_mat_vec_a8(qweight, x, qweight_type, qweight.shape[0])
@@ -334,6 +381,19 @@ def apply_gguf_embedding(
     hidden_size: int,
     dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
+    if _is_mps:
+        if qweight_type != WeightType.Q4_0:
+            raise NotImplementedError(
+                "The native Metal GGUF embedding path currently supports Q4_0; "
+                f"got {WeightType(qweight_type).name}."
+            )
+        output = q4_0_embedding(
+            qweight.reshape(-1).view(torch.uint8),
+            x.to(torch.int64),
+            qweight.shape[0],
+            hidden_size,
+        )
+        return output.to(dtype or torch.float32)
     if qweight_type in UNQUANTIZED_TYPES:
         return torch.embedding(qweight, x)
     elif qweight_type in DEQUANT_TYPES:
@@ -416,6 +476,30 @@ class GGUFLinearMethod(LinearMethodBase):
         # For MergedColumnParallelLinear and QKVParallelLinear, we need to
         # materialize the padded weight parameter for CUDA Graph compatibility.
         self._create_padded_weight_param(layer)
+        if _is_mps and qweight_type not in (
+            WeightType.Q4_0,
+            WeightType.Q4_1,
+            WeightType.Q5_K,
+            WeightType.Q6_K,
+            *UNQUANTIZED_TYPES,
+        ):
+            if layer.qweight.shard_id:
+                raise NotImplementedError(
+                    "Mixed non-Q4_0 merged GGUF weights are not supported by the "
+                    "native Metal fallback."
+                )
+            rows, cols = layer.qweight.tensor_shape
+            dense = ggml_dequantize_ascend(
+                layer.qweight,
+                qweight_type,
+                rows,
+                cols,
+                torch.float16,
+            )
+            dense_param = Parameter(dense, requires_grad=False)
+            set_weight_attrs(dense_param, vars(layer.qweight))
+            layer.register_parameter("qweight", dense_param)
+            layer.qweight_type.weight_type = WeightType.F16
 
     def _create_padded_weight_param(self, layer: torch.nn.Module):
         """Create padded weight parameter for GGUF MergedLinear layer."""
@@ -438,13 +522,18 @@ class GGUFLinearMethod(LinearMethodBase):
             )
             # (dim0_start, dim0_end, dim1_size)
             shard_offset_map = dict[str, tuple[int, int, int]]()
-            for idx in shard_id:
+            logical_shard_ids = (
+                ["q", "k", "v"] if "q" in shard_id else sorted(shard_id)
+            )
+            row_cursor = 0
+            for idx in logical_shard_ids:
                 id_in_container = shard_id_map[idx]
-                start = sum(x.size(0) for x in data_container[:id_in_container])
+                start = row_cursor
                 end = start + data_container[id_in_container].size(0)
                 size = data_container[id_in_container].size(1)
                 padded_data[start:end, :size] = data_container[id_in_container]
                 shard_offset_map[idx] = (start, end, size)
+                row_cursor = end
             qweight.data_container.clear()
             padded_param = Parameter(padded_data, requires_grad=False)
             set_weight_attrs(padded_param, vars(qweight))
@@ -465,16 +554,29 @@ class GGUFLinearMethod(LinearMethodBase):
             # for example, stores z before qkv and a before b).
             shard_id = ["q", "k", "v"] if "q" in shard_id else sorted(shard_id)
             qweight = layer.qweight
-            result = []
-            for idx in shard_id:
-                start, end, offset = layer.qweight.shard_offset_map[idx]
-                qweight_type = layer.qweight_type.shard_weight_type[idx]
-                result.append(
-                    fused_mul_mat_gguf(
-                        x, qweight[start:end, :offset].contiguous(), qweight_type
+            shard_types = [
+                layer.qweight_type.shard_weight_type[idx] for idx in shard_id
+            ]
+            shard_offsets = [layer.qweight.shard_offset_map[idx] for idx in shard_id]
+            if len(set(shard_types)) == 1 and all(
+                offset == qweight.shape[1] for _, _, offset in shard_offsets
+            ):
+                # Padded materialization is stored in logical shard order, so
+                # equal-type/equal-width shards form one valid matrix. This
+                # removes two launches for QKV and one for gate/up or GDN a/b.
+                out = fused_mul_mat_gguf(x, qweight, shard_types[0])
+            else:
+                result = []
+                for idx, qweight_type in zip(shard_id, shard_types):
+                    start, end, offset = layer.qweight.shard_offset_map[idx]
+                    result.append(
+                        fused_mul_mat_gguf(
+                            x,
+                            qweight[start:end, :offset].contiguous(),
+                            qweight_type,
+                        )
                     )
-                )
-            out = torch.cat(result, axis=1)
+                out = torch.cat(result, axis=1)
         else:
             qweight = layer.qweight
             qweight_type = layer.qweight_type.weight_type

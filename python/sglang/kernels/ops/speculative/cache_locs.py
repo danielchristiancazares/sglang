@@ -8,6 +8,7 @@ from sglang.srt.utils import (
     is_cpu,
     is_cuda,
     is_hip,
+    is_mps,
     is_musa,
     is_npu,
     is_xpu,
@@ -17,6 +18,7 @@ from sglang.srt.utils import (
 _is_cpu = is_cpu()
 _is_cuda = is_cuda()
 _is_hip = is_hip()
+_is_mps = is_mps()
 _is_npu = is_npu()
 _is_musa = is_musa()
 _is_xpu = is_xpu()
@@ -417,6 +419,13 @@ def assign_extend_cache_locs_uniform_func(
         )
         return out_cache_loc
 
+    if _is_mps:
+        rows = req_to_token.index_select(0, req_pool_indices.to(torch.long))
+        offsets = start_offset.to(torch.long).unsqueeze(1) + torch.arange(
+            draft_token_num, device=device, dtype=torch.long
+        ).unsqueeze(0)
+        return torch.gather(rows, 1, offsets).reshape(-1)
+
     # NPU / CPU platforms: fall back to the end_offset-tensor path.
     return assign_extend_cache_locs_func(
         req_pool_indices=req_pool_indices,
@@ -487,4 +496,20 @@ def assign_extend_cache_locs_func(
             req_to_token.shape[1],
         )
 
+        return out_cache_loc
+
+    elif _is_mps:
+        rows = req_to_token.index_select(0, req_pool_indices.to(torch.long))
+        offsets = start_offset.to(torch.long).unsqueeze(1) + torch.arange(
+            draft_token_num, device=device, dtype=torch.long
+        ).unsqueeze(0)
+        values = torch.gather(rows, 1, offsets)
+        valid = offsets < end_offset.to(torch.long).unsqueeze(1)
+        valid_indices = torch.nonzero(valid.reshape(-1), as_tuple=False).flatten()
+        out_cache_loc = torch.zeros(
+            (batch_size * draft_token_num,), dtype=torch.int64, device=device
+        )
+        out_cache_loc[: valid_indices.numel()].copy_(
+            values.reshape(-1).index_select(0, valid_indices)
+        )
         return out_cache_loc

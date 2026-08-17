@@ -51,7 +51,7 @@ def _grouped_foreach_copy_(dsts: List[torch.Tensor], srcs: List[torch.Tensor]) -
     def _foreach_copy(
         group_dsts: List[torch.Tensor], group_srcs: List[torch.Tensor]
     ) -> None:
-        if _has_foreach_copy:
+        if _has_foreach_copy and group_dsts[0].device.type != "mps":
             torch._foreach_copy_(group_dsts, group_srcs)
         else:
             for dst, src in zip(group_dsts, group_srcs):

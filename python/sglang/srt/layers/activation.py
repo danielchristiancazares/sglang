@@ -169,6 +169,13 @@ class SiluAndMul(BaseFusedOp):
         d = x.shape[-1] // 2
         return F.silu(x[..., :d]) * x[..., d:]
 
+    def forward_mps(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dtype != torch.float32:
+            return self.forward_native(x)
+        from sglang.srt.hardware_backend.mps.ops import silu_and_mul
+
+        return silu_and_mul(x)
+
     def forward_cuda(self, x: torch.Tensor) -> torch.Tensor:
         d = x.shape[-1] // 2
         output_shape = x.shape[:-1] + (d,)

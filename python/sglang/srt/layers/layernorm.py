@@ -41,6 +41,7 @@ from sglang.srt.utils import (
     is_cuda,
     is_flashinfer_available,
     is_hip,
+    is_mps,
     is_musa,
     is_npu,
     is_xpu,
@@ -50,6 +51,7 @@ _is_cuda = is_cuda()
 _is_flashinfer_available = is_flashinfer_available()
 _is_hip = is_hip()
 _is_musa = is_musa()
+_is_mps = is_mps()
 _is_npu = is_npu()
 _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
 _is_cpu_amx_available = cpu_has_amx_support()
@@ -1101,6 +1103,29 @@ class GemmaRMSNorm(BaseFusedOp):
         x = x * (1.0 + self.weight.float())
         x = x.to(orig_dtype)
         return x if residual is None else (x, residual)
+
+    def forward_mps(
+        self,
+        x: torch.Tensor,
+        residual: Optional[torch.Tensor] = None,
+        post_residual_addition: Optional[torch.Tensor] = None,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        if (
+            x.dtype != torch.float32
+            or self.weight.dtype != torch.float32
+            or post_residual_addition is not None
+        ):
+            return self.forward_native(x, residual, post_residual_addition)
+        from sglang.srt.hardware_backend.mps.ops import (
+            gemma_fused_add_rmsnorm,
+            gemma_rmsnorm,
+        )
+
+        if residual is None:
+            return gemma_rmsnorm(x, self.weight, self.variance_epsilon)
+        return gemma_fused_add_rmsnorm(
+            x, residual, self.weight, self.variance_epsilon
+        )
 
     def forward_cuda(
         self,

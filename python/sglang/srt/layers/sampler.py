@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from functools import partial
 from typing import Callable, Dict, List, Optional, Tuple
@@ -297,6 +298,7 @@ class Sampler(nn.Module):
                     sampling_info.need_min_p_sampling,
                     sampling_info.sampling_seed,
                     positions,
+                    sampling_info.max_top_k,
                 )
             else:
                 raise ValueError(f"Invalid sampling backend: {backend}")
@@ -575,19 +577,27 @@ def top_k_top_p_min_p_sampling_from_probs_torch(
     need_min_p_sampling: bool,
     sampling_seed: Optional[torch.Tensor],
     positions: torch.Tensor,
+    max_top_k: int = 0,
 ):
     """
     A top-k, top-p and min-p sampling implementation with native pytorch operations.
     When sampling_seed is not None, deterministic inference will be enabled, it will sample
     with the sampling_seed of each request.
     """
-    probs_sort, probs_idx = probs.sort(dim=-1, descending=True)
+    if 0 < max_top_k < probs.shape[-1]:
+        probs_sort, probs_idx = torch.topk(
+            probs, k=max_top_k, dim=-1, largest=True, sorted=True
+        )
+    else:
+        probs_sort, probs_idx = probs.sort(dim=-1, descending=True)
     probs_sum = torch.cumsum(probs_sort, dim=-1)
-    probs_sort[
-        torch.arange(0, probs.shape[-1], device=probs.device).view(1, -1)
+    top_k_mask = (
+        torch.arange(0, probs_sort.shape[-1], device=probs.device).view(1, -1)
         >= top_ks.view(-1, 1)
-    ] = 0.0
-    probs_sort[(probs_sum - probs_sort) > top_ps.view(-1, 1)] = 0.0
+    )
+    probs_sort.masked_fill_(top_k_mask, 0.0)
+    top_p_mask = (probs_sum - probs_sort) > top_ps.view(-1, 1)
+    probs_sort.masked_fill_(top_p_mask, 0.0)
 
     if need_min_p_sampling:
         # TODO: probs_sort should be re-normalized for the use of multinomial_with_seed
@@ -595,7 +605,25 @@ def top_k_top_p_min_p_sampling_from_probs_torch(
             sampling_seed is None
         ), "With sampling seed, multinomial_with_seed will provide wrong results"
         min_p_thresholds = probs_sort[:, 0] * min_ps
-        probs_sort[probs_sort < min_p_thresholds.view(-1, 1)] = 0.0
+        min_p_mask = probs_sort < min_p_thresholds.view(-1, 1)
+        probs_sort.masked_fill_(min_p_mask, 0.0)
+
+    if os.environ.get("SGLANG_MPS_VALIDATE_SAMPLER") == "1":
+        filtered_mass = probs_sort.sum(dim=-1)
+        valid_rows = torch.isfinite(filtered_mass) & (filtered_mass > 0)
+        if not bool(valid_rows.all().item()):
+            input_mass = probs.sum(dim=-1)
+            input_finite = torch.isfinite(probs).all(dim=-1)
+            raise RuntimeError(
+                "Invalid probability rows before multinomial: "
+                f"valid={valid_rows.cpu().tolist()}, "
+                f"input_finite={input_finite.cpu().tolist()}, "
+                f"input_mass={input_mass.cpu().tolist()}, "
+                f"filtered_mass={filtered_mass.cpu().tolist()}, "
+                f"top_ks={top_ks.cpu().tolist()}, "
+                f"top_ps={top_ps.cpu().tolist()}, "
+                f"min_ps={min_ps.cpu().tolist()}"
+            )
 
     if sampling_seed is None:
         sampled_index = torch.multinomial(probs_sort, num_samples=1)
@@ -760,7 +788,8 @@ def top_p_normalize_probs_torch(
     # See also top_k_top_p_min_p_sampling_from_probs_torch
     probs_sort, probs_idx = probs.sort(dim=-1, descending=True)
     probs_sum = torch.cumsum(probs_sort, dim=-1)
-    probs_sort[(probs_sum - probs_sort) > top_ps.view(-1, 1)] = 0.0
+    top_p_mask = (probs_sum - probs_sort) > top_ps.view(-1, 1)
+    probs_sort.masked_fill_(top_p_mask, 0.0)
     probs_sort.div_(probs_sort.sum(dim=-1, keepdim=True))
     return torch.zeros_like(probs_sort).scatter_(-1, probs_idx, probs_sort)
 
