@@ -527,7 +527,7 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
     # -----------------------------------------------------------------
     # Replay
     # -----------------------------------------------------------------
-    def execute(self, forward_batch: ForwardBatch):
+    def execute(self, forward_batch: ForwardBatch, *, prepare_only: bool = False):
         assert forward_batch.out_cache_loc is not None
         self.deepep_adapter.replay()
         buffers = self.buffers
@@ -709,6 +709,13 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
 
         # Replay via backend
         shape_key = self._make_graph_key(bs)
+        if prepare_only:
+            if bs != raw_bs:
+                raise ValueError(
+                    "Device-resident draft-cycle preparation requires an exact "
+                    "captured batch without padding"
+                )
+            return None
         with device_timer_ctx(self.model_runner.device_timer, "eagle_draft"):
             out = self._replay_graph(shape_key, forward_batch)
         if self.buffers.dsa_seed_topk is not None:
@@ -734,3 +741,13 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
             forward_batch.seq_lens_sum = raw_seq_lens_sum
 
         return out
+
+    def captured_graph(self, bs: int):
+        """Return the retained raw graph wrapper for an exact captured batch."""
+        return self.backend._graphs[self._make_graph_key(bs)]
+
+    def captured_output(self, bs: int):
+        """Return the static output tensors written by the captured graph."""
+        return self._postprocess_output_to_raw_bs(
+            self.backend._outputs[self._make_graph_key(bs)], bs
+        )

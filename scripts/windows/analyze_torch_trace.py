@@ -135,6 +135,7 @@ def main() -> None:
     # the captured stream. Grouping them exposes target/draft graph wall spans,
     # including gaps between kernels, instead of only summed kernel time.
     graph_replays: dict[int, list[tuple[float, float, int]]] = defaultdict(list)
+    graph_runs: list[tuple[int, float, float, float, int]] = []
     current_graph_id: int | None = None
     current_start_us = 0.0
     current_end_us = 0.0
@@ -153,6 +154,15 @@ def main() -> None:
                         current_kernel_count,
                     )
                 )
+                graph_runs.append(
+                    (
+                        current_graph_id,
+                        current_start_us,
+                        current_end_us,
+                        current_kernel_us,
+                        current_kernel_count,
+                    )
+                )
             current_graph_id = graph_id
             current_start_us = start_us
             current_end_us = end_us
@@ -165,6 +175,15 @@ def main() -> None:
         graph_replays[current_graph_id].append(
             (
                 current_end_us - current_start_us,
+                current_kernel_us,
+                current_kernel_count,
+            )
+        )
+        graph_runs.append(
+            (
+                current_graph_id,
+                current_start_us,
+                current_end_us,
                 current_kernel_us,
                 current_kernel_count,
             )
@@ -189,6 +208,25 @@ def main() -> None:
             ),
         }
         for graph_id, replays in sorted(graph_replays.items())
+    }
+    graph_transitions: dict[tuple[int, int], list[float]] = defaultdict(list)
+    for previous, current in zip(graph_runs, graph_runs[1:]):
+        previous_graph_id, _, previous_end_us, _, _ = previous
+        current_graph_id, current_start_us, _, _, _ = current
+        graph_transitions[(previous_graph_id, current_graph_id)].append(
+            current_start_us - previous_end_us
+        )
+    report["cuda_graph_transitions"] = {
+        f"{previous_graph_id}->{current_graph_id}": {
+            "count": len(gaps),
+            "mean_gap_ms": round(statistics.mean(gaps) / 1000.0, 3),
+            "median_gap_ms": round(statistics.median(gaps) / 1000.0, 3),
+            "min_gap_ms": round(min(gaps) / 1000.0, 3),
+            "max_gap_ms": round(max(gaps) / 1000.0, 3),
+        }
+        for (previous_graph_id, current_graph_id), gaps in sorted(
+            graph_transitions.items()
+        )
     }
     if match_terms:
         report["matched_events"] = [

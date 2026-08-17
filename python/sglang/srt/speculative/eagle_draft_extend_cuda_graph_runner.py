@@ -465,7 +465,7 @@ class EAGLEDraftExtendCudaGraphRunner(DecodeCudaGraphRunner):
                     post_warmup_hook=post_warmup_hook,
                 )
 
-    def execute(self, forward_batch: ForwardBatch):
+    def execute(self, forward_batch: ForwardBatch, *, prepare_only: bool = False):
         assert forward_batch.out_cache_loc is not None
         self.deepep_adapter.replay()
         buffers = self.buffers
@@ -599,6 +599,13 @@ class EAGLEDraftExtendCudaGraphRunner(DecodeCudaGraphRunner):
         self.raw_bs = raw_bs
         self.bs = bs
         shape_key = self._make_graph_key(bs)
+        if prepare_only:
+            if bs != raw_bs or num_tokens != bs * self.captured_req_width:
+                raise ValueError(
+                    "Device-resident draft-cycle preparation requires an exact "
+                    "captured batch without padding"
+                )
+            return None
         with device_timer_ctx(self.model_runner.device_timer, "eagle_draft_extend"):
             out = self._replay_graph(shape_key, forward_batch)
 
@@ -607,3 +614,16 @@ class EAGLEDraftExtendCudaGraphRunner(DecodeCudaGraphRunner):
             hidden_states=out.hidden_states[:num_tokens],
         )
         return out
+
+    def captured_graph(self, bs: int):
+        """Return the retained raw graph wrapper for an exact captured batch."""
+        return self.backend._graphs[self._make_graph_key(bs)]
+
+    def captured_output(self, bs: int) -> LogitsProcessorOutput:
+        """Return the static full-width output written by the captured graph."""
+        out = self.backend._outputs[self._make_graph_key(bs)]
+        num_tokens = bs * self.captured_req_width
+        return LogitsProcessorOutput(
+            next_token_logits=out.next_token_logits[:num_tokens],
+            hidden_states=out.hidden_states[:num_tokens],
+        )

@@ -635,6 +635,7 @@ class GDNAttnBackend(MambaAttnBackendBase):
                     cache_indices=cache_indices,
                     query_start_loc=query_start_loc,
                     retrieve_parent_token=retrieve_parent_token,
+                    max_tree_depth=forward_batch.spec_info.max_tree_depth,
                 )
             elif use_replayssm_spec:
                 core_attn_out = self._replayssm_target_verify(
@@ -729,6 +730,7 @@ class GDNAttnBackend(MambaAttnBackendBase):
         cache_indices: torch.Tensor,
         query_start_loc: torch.Tensor,
         retrieve_parent_token: Optional[torch.Tensor],
+        max_tree_depth: int,
     ) -> torch.Tensor:
         """Ring-writing verify; the commit fold replays the accepted prefix
         into ``temporal``. Uses the vendored CuTe DSL MTP kernel when the
@@ -754,6 +756,7 @@ class GDNAttnBackend(MambaAttnBackendBase):
                 rawk_cache=layer_cache.replayssm_rawk,
                 g_cache=layer_cache.replayssm_g,
                 beta_cache=layer_cache.replayssm_beta,
+                max_tree_depth=max_tree_depth,
                 scale=layer.head_k_dim**-0.5,
             )
 

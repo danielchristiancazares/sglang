@@ -708,6 +708,46 @@ def _handle_eagle_family(server_args: ServerArgs) -> None:
             )
         logger.info("Exact tree sampling without replacement is enabled.")
 
+    if server_args.speculative_device_resident_cycle:
+        if server_args.speculative_algorithm not in ("EAGLE", "EAGLE3"):
+            raise ValueError(
+                "--speculative-device-resident-cycle requires EAGLE / EAGLE3 / NEXTN."
+            )
+        if server_args.enable_multi_layer_eagle:
+            raise ValueError(
+                "--speculative-device-resident-cycle currently requires the "
+                "single-layer EAGLE worker."
+            )
+        if server_args.speculative_eagle_topk <= 1:
+            raise ValueError(
+                "--speculative-device-resident-cycle currently requires a tree "
+                "with --speculative-eagle-topk > 1."
+            )
+        if server_args.speculative_tree_sampling_mode != "target_only":
+            raise ValueError(
+                "--speculative-device-resident-cycle currently requires "
+                "--speculative-tree-sampling-mode=target_only."
+            )
+        if server_args.speculative_draft_sampling_top_k is not None:
+            raise ValueError(
+                "--speculative-device-resident-cycle currently requires plain "
+                "draft tree scoring without --speculative-draft-sampling-top-k."
+            )
+        if server_args.max_running_requests != 1:
+            raise ValueError(
+                "--speculative-device-resident-cycle currently requires "
+                "--max-running-requests 1."
+            )
+        if server_args.speculative_adaptive:
+            raise ValueError(
+                "--speculative-device-resident-cycle is incompatible with "
+                "--speculative-adaptive."
+            )
+        logger.info(
+            "Batch-one device-resident EAGLE cycle is enabled; draft decode is "
+            "precomputed immediately after draft extend."
+        )
+
     if (
         server_args.speculative_swor_collect_path_stats
         and server_args.speculative_tree_sampling_mode != "swor"

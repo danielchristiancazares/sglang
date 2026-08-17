@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import logging
 import sys
 import time
@@ -46,6 +47,7 @@ from sglang.srt.model_executor.forward_batch_info import (
     ForwardMode,
 )
 from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
+from sglang.srt.model_executor.cuda_graph_composite import CudaGraphChildSequence
 from sglang.srt.model_executor.runner import (
     DecodeCudaGraphRunner,
     get_batch_sizes_to_capture,
@@ -184,6 +186,14 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         self.tree_depth_discount = getattr(
             server_args, "speculative_tree_depth_discount", 1.0
         )
+        self.device_resident_cycle = getattr(
+            server_args, "speculative_device_resident_cycle", False
+        )
+        self._precomputed_verify_input = None
+        self._precomputed_verify_req_ids = None
+        self._draft_cycle_graph = None
+        self._draft_cycle_bridge_graph = None
+        self._draft_cycle_bridge_refs = None
         self.tree_sampling_mode = getattr(
             server_args, "speculative_tree_sampling_mode", "target_only"
         )
@@ -608,7 +618,21 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                 f"avail mem={after_mem:.2f} GB.",
             )
 
-    def draft(self, batch: ScheduleBatch):
+    def draft(self, batch: ScheduleBatch, *, prepare_graph_only: bool = False):
+        if (
+            not prepare_graph_only
+            and self.device_resident_cycle
+            and self._precomputed_verify_input is not None
+        ):
+            req_ids = tuple(id(req) for req in batch.reqs)
+            if req_ids == self._precomputed_verify_req_ids:
+                verify_input = self._precomputed_verify_input
+                self._precomputed_verify_input = None
+                self._precomputed_verify_req_ids = None
+                return verify_input
+            self._precomputed_verify_input = None
+            self._precomputed_verify_req_ids = None
+
         draft_input: EagleDraftInput = batch.spec_info
         forward_batch, can_run_decode_cuda_graph = prepare_for_draft(
             draft_input,
@@ -640,10 +664,18 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         with canary_outside_ctx:
             # Run draft
             if can_run_decode_cuda_graph:
+                if prepare_graph_only:
+                    self.cuda_graph_runner.execute(forward_batch, prepare_only=True)
+                    return None
                 parent_list, top_scores_index, draft_tokens, draft_probs = (
                     self.cuda_graph_runner.execute(forward_batch)
                 )
             else:
+                if prepare_graph_only:
+                    raise RuntimeError(
+                        "Device-resident draft-cycle bridge requires the draft "
+                        "decode CUDA graph"
+                    )
                 if (
                     not forward_batch.forward_mode.is_idle()
                     and self.speculative_num_steps > 1
@@ -1057,6 +1089,14 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             and self.cuda_graph_runner_for_draft_extend.can_run_graph(forward_batch)
         )
 
+        if (
+            self.device_resident_cycle
+            and self._draft_cycle_graph is not None
+            and can_run_decode_cuda_graph
+        ):
+            self._run_device_cycle_graph(batch, batch_result, forward_batch)
+            return
+
         # Eager path publishes the indexer top-k into a worker buffer (the graph
         # path uses the runner's static buffer). Gathered at select_index below.
         if self.seed_dsa_topk_from_draft_extend and not can_run_decode_cuda_graph:
@@ -1161,6 +1201,163 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             next_draft_input.draft_probs = ret_draft_probs
         if self.seed_dsa_topk_from_draft_extend:
             next_draft_input.dsa_topk_indices = dsa_seed_topk_indices
+
+        if self.device_resident_cycle and not batch.forward_mode.is_idle():
+            self._precompute_device_cycle_verify_input(
+                batch, batch_result, next_draft_input
+            )
+            if self._draft_cycle_graph is None:
+                self._capture_device_cycle_graph(batch, forward_batch)
+
+    def _precompute_device_cycle_verify_input(
+        self,
+        batch: ScheduleBatch,
+        batch_result: GenerationBatchResult,
+        next_draft_input: EagleDraftInput,
+    ) -> None:
+        """Run next-cycle draft decode directly behind this draft extend.
+
+        The clone is structural only: all tensor and pool fields stay shared,
+        while the speculative forward is free to rebind its batch-local view.
+        ``new_seq_lens`` is already a device tensor produced by verification,
+        keeping this cross-iteration handoff free of a D2H synchronization.
+        """
+        cycle_batch = copy.copy(batch)
+        cycle_batch.forward_mode = ForwardMode.DECODE
+        cycle_batch.seq_lens = batch_result.new_seq_lens
+        cycle_batch.seq_lens_cpu = None
+        cycle_batch.seq_lens_sum = None
+        cycle_batch.spec_info = next_draft_input
+        self._precomputed_verify_input = self.draft(cycle_batch)
+        self._precomputed_verify_req_ids = tuple(id(req) for req in batch.reqs)
+
+    def _capture_device_cycle_graph(
+        self,
+        batch: ScheduleBatch,
+        draft_extend_forward_batch: ForwardBatch,
+    ) -> None:
+        """Compose draft-extend, its device bridge, and next draft-decode.
+
+        The bridge reads only static graph outputs and runner-owned input
+        buffers.  CUDA clones all three children into one executable parent,
+        turning the former cross-iteration ``extend -> scheduler -> draft``
+        sequence into one launch.
+        """
+        if self.seed_dsa_topk_from_draft_extend:
+            raise RuntimeError(
+                "Device-resident draft-cycle capture does not yet support DSA seeds"
+            )
+        extend_runner = self.cuda_graph_runner_for_draft_extend
+        draft_runner = self.cuda_graph_runner
+        if extend_runner is None or draft_runner is None:
+            raise RuntimeError(
+                "Device-resident draft-cycle capture requires both draft CUDA graphs"
+            )
+        bs = 1
+        extend_output = extend_runner.captured_output(bs)
+        extend_buffers = extend_runner.buffers
+
+        def prepare_bridge():
+            accept_lens = extend_buffers.num_accept_tokens[:bs].to(torch.int64)
+            select_index = accept_lens - 1
+            selected_logits = extend_output.next_token_logits[select_index]
+            selected_hidden = (
+                extend_output.hidden_states[select_index]
+                if extend_output.hidden_states is not None
+                else None
+            )
+            probs = torch.softmax(selected_logits, dim=-1)
+            topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
+            next_seq_lens = (
+                extend_buffers.seq_lens[:bs]
+                - self.speculative_num_draft_tokens
+                + accept_lens
+            )
+            draft_input = EagleDraftInput(
+                topk_p=topk_p,
+                topk_index=topk_index,
+                hidden_states=selected_hidden,
+                bonus_tokens=torch.zeros(
+                    (bs,), dtype=torch.int32, device=topk_index.device
+                ),
+            )
+            cycle_batch = copy.copy(batch)
+            cycle_batch.forward_mode = ForwardMode.DECODE
+            cycle_batch.seq_lens = next_seq_lens
+            cycle_batch.seq_lens_cpu = None
+            cycle_batch.seq_lens_sum = None
+            cycle_batch.req_pool_indices = extend_buffers.req_pool_indices[:bs]
+            cycle_batch.spec_info = draft_input
+            self.draft(cycle_batch, prepare_graph_only=True)
+            return cycle_batch, draft_input
+
+        # The draft and draft-extend runners intentionally coalesce equal-sized
+        # input fields through ForwardInputBuffers.share_buffers().  The eager
+        # next-draft precompute above therefore leaves shared fields such as
+        # seq_lens holding draft-decode values.  Restore the extend inputs before
+        # each bridge construction so its first kernels observe the post-extend
+        # sequence lengths that will precede it in the parent graph at replay.
+        extend_runner.execute(draft_extend_forward_batch, prepare_only=True)
+
+        # Warm allocations and metadata builders before capture. The warm
+        # bridge only prepares the already-captured draft graph; it never
+        # replays model work.
+        prepare_bridge()
+        torch.cuda.synchronize()
+        extend_runner.execute(draft_extend_forward_batch, prepare_only=True)
+        bridge_graph = torch.cuda.CUDAGraph(keep_graph=True)
+        with torch.cuda.graph(bridge_graph):
+            bridge_refs = prepare_bridge()
+        torch.cuda.synchronize()
+
+        self._draft_cycle_bridge_graph = bridge_graph
+        self._draft_cycle_bridge_refs = bridge_refs
+        self._draft_cycle_graph = CudaGraphChildSequence(
+            (
+                extend_runner.captured_graph(bs),
+                bridge_graph,
+                draft_runner.captured_graph(bs),
+            )
+        )
+
+    def _run_device_cycle_graph(
+        self,
+        batch: ScheduleBatch,
+        batch_result: GenerationBatchResult,
+        draft_extend_forward_batch: ForwardBatch,
+    ) -> None:
+        """Prepare one parent launch and cache its next target-verify input."""
+        self.cuda_graph_runner_for_draft_extend.execute(
+            draft_extend_forward_batch, prepare_only=True
+        )
+        self._draft_cycle_graph.replay()
+
+        cycle_batch, captured_draft_input = self._draft_cycle_bridge_refs
+        next_draft_input = batch_result.next_draft_input
+        next_draft_input.topk_p = captured_draft_input.topk_p
+        next_draft_input.topk_index = captured_draft_input.topk_index
+        next_draft_input.hidden_states = captured_draft_input.hidden_states
+        next_draft_input.draft_probs = captured_draft_input.draft_probs
+
+        parent_list, top_scores_index, draft_tokens, draft_probs = (
+            self.cuda_graph_runner.captured_output(1)
+        )
+        verify_input = build_eagle_verify_input(
+            cycle_batch,
+            next_draft_input,
+            parent_list,
+            top_scores_index,
+            draft_tokens,
+            draft_probs,
+            target_worker=self.target_worker,
+            topk=self.topk,
+            num_steps=self.speculative_num_steps,
+            num_draft_tokens=self.speculative_num_draft_tokens,
+            tree_mask_mode=self.tree_mask_mode,
+            device=self.device,
+        )
+        self._precomputed_verify_input = verify_input
+        self._precomputed_verify_req_ids = tuple(id(req) for req in batch.reqs)
 
 
 class EAGLEWorkerV2(BaseSpecWorker):

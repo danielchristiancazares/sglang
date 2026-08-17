@@ -40,6 +40,7 @@ __global__ void BuildPairDotsAndRawK(
     const __nv_bfloat16* __restrict__ q,
     const __nv_bfloat16* __restrict__ k,
     const int32_t* __restrict__ state_indices,
+    const int32_t* __restrict__ parent,
     __nv_bfloat16* __restrict__ rawk_cache,
     float* __restrict__ inv_norms,
     float* __restrict__ pair_dots,
@@ -50,44 +51,71 @@ __global__ void BuildPairDotsAndRawK(
     int64_t rawk_node_stride,
     int32_t batch_size,
     int32_t num_heads,
-    int32_t num_nodes) {
+    int32_t num_nodes,
+    int32_t max_tree_depth) {
   const int32_t block = static_cast<int32_t>(blockIdx.x);
   const int32_t batch = block / num_heads;
   const int32_t head = block % num_heads;
   const int32_t tid = static_cast<int32_t>(threadIdx.x);
+  const int32_t warp = tid >> 5;
+  const int32_t lane = tid & 31;
+  constexpr int32_t kWarps = kPairThreads / 32;
   const int32_t slot = state_indices[batch];
 
   __shared__ float inv_q[kMaxNodes];
   __shared__ float inv_k[kMaxNodes];
 
-  if (tid < num_nodes) {
-    const int64_t token = static_cast<int64_t>(batch) * num_nodes + tid;
+  for (int32_t node = warp; node < num_nodes; node += kWarps) {
+    const int64_t token = static_cast<int64_t>(batch) * num_nodes + node;
     const int64_t q_base = token * q_token_stride + head * kDim;
     const int64_t k_base = token * k_token_stride + head * kDim;
     float q_norm2 = 0.0f;
     float k_norm2 = 0.0f;
-#pragma unroll
-    for (int32_t dim = 0; dim < kDim; ++dim) {
+#pragma unroll 4
+    for (int32_t dim = lane; dim < kDim; dim += 32) {
       const float qv = __bfloat162float(q[q_base + dim]);
       const float kv = __bfloat162float(k[k_base + dim]);
       q_norm2 += qv * qv;
       k_norm2 += kv * kv;
     }
-    const float iq = rsqrtf(q_norm2 + 1.0e-6f);
-    const float ik = rsqrtf(k_norm2 + 1.0e-6f);
-    inv_q[tid] = iq;
-    inv_k[tid] = ik;
-    const int64_t norm_offset =
-        ((static_cast<int64_t>(batch) * num_heads + head) * num_nodes + tid) * 2;
-    inv_norms[norm_offset] = iq;
-    inv_norms[norm_offset + 1] = ik;
+    q_norm2 = WarpSum(q_norm2);
+    k_norm2 = WarpSum(k_norm2);
+    if (lane == 0) {
+      const float iq = rsqrtf(q_norm2 + 1.0e-6f);
+      const float ik = rsqrtf(k_norm2 + 1.0e-6f);
+      inv_q[node] = iq;
+      inv_k[node] = ik;
+      const int64_t norm_offset =
+          ((static_cast<int64_t>(batch) * num_heads + head) * num_nodes + node) * 2;
+      inv_norms[norm_offset] = iq;
+      inv_norms[norm_offset + 1] = ik;
+    }
   }
   __syncthreads();
 
-  const int32_t pair_count = num_nodes * num_nodes;
-  for (int32_t pair = tid; pair < pair_count; pair += kPairThreads) {
-    const int32_t node = pair / num_nodes;
-    const int32_t ancestor = pair - node * num_nodes;
+  // Slot zero is the node itself (k_node dot q_node). Later slots walk only
+  // the node's strict ancestry. The dense implementation evaluated every
+  // node/node pair even though the recurrence never reads non-ancestors.
+  const int32_t pair_count = num_nodes * max_tree_depth;
+  for (int32_t pair = warp; pair < pair_count; pair += kWarps) {
+    const int32_t node = pair / max_tree_depth;
+    const int32_t depth_slot = pair - node * max_tree_depth;
+    int32_t ancestor = node;
+    for (int32_t depth = 0; depth < depth_slot && ancestor >= 0; ++depth) {
+      ancestor = parent[static_cast<int64_t>(batch) * num_nodes + ancestor];
+    }
+    const int64_t pair_offset =
+        (((static_cast<int64_t>(batch) * num_heads + head) * num_nodes + node) *
+             max_tree_depth +
+         depth_slot) *
+        2;
+    if (ancestor < 0) {
+      if (lane == 0) {
+        pair_dots[pair_offset] = 0.0f;
+        pair_dots[pair_offset + 1] = 0.0f;
+      }
+      continue;
+    }
     const int64_t node_token =
         static_cast<int64_t>(batch) * num_nodes + node;
     const int64_t ancestor_token =
@@ -98,19 +126,21 @@ __global__ void BuildPairDotsAndRawK(
         ancestor_token * k_token_stride + head * kDim;
     float kk = 0.0f;
     float kq = 0.0f;
-#pragma unroll
-    for (int32_t dim = 0; dim < kDim; ++dim) {
+#pragma unroll 4
+    for (int32_t dim = lane; dim < kDim; dim += 32) {
       const float ka = __bfloat162float(k[ancestor_k_base + dim]);
-      kk += ka * __bfloat162float(k[node_k_base + dim]);
+      if (depth_slot > 0) {
+        kk += ka * __bfloat162float(k[node_k_base + dim]);
+      }
       kq += ka * __bfloat162float(q[node_q_base + dim]);
     }
-    const int64_t pair_offset =
-        (((static_cast<int64_t>(batch) * num_heads + head) * num_nodes + node) *
-             num_nodes +
-         ancestor) *
-        2;
-    pair_dots[pair_offset] = kk * inv_k[ancestor] * inv_k[node];
-    pair_dots[pair_offset + 1] = kq * inv_k[ancestor] * inv_q[node];
+    kk = WarpSum(kk);
+    kq = WarpSum(kq);
+    if (lane == 0) {
+      pair_dots[pair_offset] =
+          depth_slot > 0 ? kk * inv_k[ancestor] * inv_k[node] : 0.0f;
+      pair_dots[pair_offset + 1] = kq * inv_k[ancestor] * inv_q[node];
+    }
   }
 
   if (slot >= 0) {
@@ -129,28 +159,71 @@ __global__ void BuildPairDotsAndRawK(
   }
 }
 
+// Gate and beta depend on (request, value head, node), not on the 16 value
+// tiles used by the main recurrence. Compute their transcendental path once,
+// retain alpha/beta in a compact workspace, and write commit records once.
+__global__ void BuildReplayParams(
+    const float* __restrict__ A_log,
+    const __nv_bfloat16* __restrict__ a,
+    const __nv_bfloat16* __restrict__ dt_bias,
+    const __nv_bfloat16* __restrict__ b,
+    const int32_t* __restrict__ state_indices,
+    float* __restrict__ g_cache,
+    float* __restrict__ beta_cache,
+    float* __restrict__ replay_params,
+    int64_t a_token_stride,
+    int64_t b_token_stride,
+    int64_t g_slot_stride,
+    int64_t g_head_stride,
+    int64_t beta_slot_stride,
+    int64_t beta_head_stride,
+    int32_t batch_size,
+    int32_t num_value_heads,
+    int32_t num_nodes) {
+  const int32_t linear =
+      static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  const int32_t total = batch_size * num_value_heads * num_nodes;
+  if (linear >= total) return;
+
+  const int32_t node = linear % num_nodes;
+  const int32_t head_batch = linear / num_nodes;
+  const int32_t value_head = head_batch % num_value_heads;
+  const int32_t batch = head_batch / num_value_heads;
+  const int64_t token = static_cast<int64_t>(batch) * num_nodes + node;
+  const float x = __bfloat162float(a[token * a_token_stride + value_head]) +
+                  __bfloat162float(dt_bias[value_head]);
+  const float gate = -expf(A_log[value_head]) * Softplus(x);
+  const float beta_logit =
+      __bfloat162float(b[token * b_token_stride + value_head]);
+  const float beta_value = 1.0f / (1.0f + expf(-beta_logit));
+  replay_params[static_cast<int64_t>(linear) * 2] = expf(gate);
+  replay_params[static_cast<int64_t>(linear) * 2 + 1] = beta_value;
+
+  const int32_t slot = state_indices[batch];
+  if (slot >= 0) {
+    g_cache[static_cast<int64_t>(slot) * g_slot_stride +
+            static_cast<int64_t>(value_head) * g_head_stride + node] = gate;
+    beta_cache[static_cast<int64_t>(slot) * beta_slot_stride +
+               static_cast<int64_t>(value_head) * beta_head_stride + node] =
+        beta_value;
+  }
+}
+
 // One block owns (request, value-head, eight V columns).  Each warp retains
 // one checkpoint column in registers, projects every node against that one
 // root state, then evaluates the branch recurrence as ancestor rank updates.
 __global__ void GdnTreeReplayMain(
-    const float* __restrict__ A_log,
-    const __nv_bfloat16* __restrict__ a,
-    const __nv_bfloat16* __restrict__ dt_bias,
     const __nv_bfloat16* __restrict__ q,
     const __nv_bfloat16* __restrict__ k,
     const __nv_bfloat16* __restrict__ v,
-    const __nv_bfloat16* __restrict__ b,
     const float* __restrict__ checkpoint_state,
     const int32_t* __restrict__ state_indices,
     const int32_t* __restrict__ parent,
     __nv_bfloat16* __restrict__ rawv_cache,
-    float* __restrict__ g_cache,
-    float* __restrict__ beta_cache,
     const float* __restrict__ inv_norms,
+    const float* __restrict__ replay_params,
     const float* __restrict__ pair_dots,
     __nv_bfloat16* __restrict__ output,
-    int64_t a_token_stride,
-    int64_t b_token_stride,
     int64_t q_token_stride,
     int64_t k_token_stride,
     int64_t v_token_stride,
@@ -159,14 +232,11 @@ __global__ void GdnTreeReplayMain(
     int64_t rawv_slot_stride,
     int64_t rawv_head_stride,
     int64_t rawv_node_stride,
-    int64_t g_slot_stride,
-    int64_t g_head_stride,
-    int64_t beta_slot_stride,
-    int64_t beta_head_stride,
     int32_t batch_size,
     int32_t num_key_heads,
     int32_t num_value_heads,
     int32_t num_nodes,
+    int32_t max_tree_depth,
     float q_scale) {
   const int32_t batch = static_cast<int32_t>(blockIdx.x);
   const int32_t value_head = static_cast<int32_t>(blockIdx.y);
@@ -189,23 +259,14 @@ __global__ void GdnTreeReplayMain(
   if (tid < num_nodes) {
     const int32_t node = tid;
     const int64_t token = static_cast<int64_t>(batch) * num_nodes + node;
-    const float x = __bfloat162float(a[token * a_token_stride + value_head]) +
-                    __bfloat162float(dt_bias[value_head]);
-    const float gate = -expf(A_log[value_head]) * Softplus(x);
-    const float beta_logit =
-        __bfloat162float(b[token * b_token_stride + value_head]);
-    const float beta_value = 1.0f / (1.0f + expf(-beta_logit));
-    alpha[node] = expf(gate);
-    beta[node] = beta_value;
+    const int64_t param_offset =
+        ((static_cast<int64_t>(batch) * num_value_heads + value_head) *
+             num_nodes +
+         node) *
+        2;
+    alpha[node] = replay_params[param_offset];
+    beta[node] = replay_params[param_offset + 1];
     parents[node] = node == 0 ? -1 : parent[token];
-
-    if (value_tile == 0 && slot >= 0) {
-      g_cache[static_cast<int64_t>(slot) * g_slot_stride +
-              static_cast<int64_t>(value_head) * g_head_stride + node] = gate;
-      beta_cache[static_cast<int64_t>(slot) * beta_slot_stride +
-                 static_cast<int64_t>(value_head) * beta_head_stride + node] =
-          beta_value;
-    }
   }
   __syncthreads();
 
@@ -266,16 +327,18 @@ __global__ void GdnTreeReplayMain(
       const int64_t pair_row =
           ((static_cast<int64_t>(batch) * num_key_heads + key_head) * num_nodes +
            node) *
-          num_nodes * 2;
+          max_tree_depth * 2;
       float predicted =
           state_scale[node] * base_k[node * kValueTile + warp];
       int32_t ancestor = parents[node];
+      int32_t ancestor_slot = 1;
       float coefficient = alpha[node];
-      while (ancestor >= 0) {
-        predicted += coefficient * pair_dots[pair_row + ancestor * 2] *
+      while (ancestor >= 0 && ancestor_slot < max_tree_depth) {
+        predicted += coefficient * pair_dots[pair_row + ancestor_slot * 2] *
                      delta[ancestor * kValueTile + warp];
         coefficient *= alpha[ancestor];
         ancestor = parents[ancestor];
+        ++ancestor_slot;
       }
 
       const float raw_value = __bfloat162float(
@@ -284,14 +347,16 @@ __global__ void GdnTreeReplayMain(
       delta[node * kValueTile + warp] = node_delta;
 
       float out = state_scale[node] * base_q[node * kValueTile + warp] +
-                  pair_dots[pair_row + (node * 2) + 1] * q_scale * node_delta;
+                  pair_dots[pair_row + 1] * q_scale * node_delta;
       ancestor = parents[node];
+      ancestor_slot = 1;
       coefficient = alpha[node];
-      while (ancestor >= 0) {
-        out += coefficient * pair_dots[pair_row + (ancestor * 2) + 1] *
+      while (ancestor >= 0 && ancestor_slot < max_tree_depth) {
+        out += coefficient * pair_dots[pair_row + ancestor_slot * 2 + 1] *
                q_scale * delta[ancestor * kValueTile + warp];
         coefficient *= alpha[ancestor];
         ancestor = parents[ancestor];
+        ++ancestor_slot;
       }
       output[token * output_token_stride + value_head * kDim + value_index] =
           __float2bfloat16(out);
@@ -463,8 +528,10 @@ struct GdnTreeReplayVerifyKernel {
       const tvm::ffi::TensorView g_cache,
       const tvm::ffi::TensorView beta_cache,
       const tvm::ffi::TensorView inv_norms,
+      const tvm::ffi::TensorView replay_params,
       const tvm::ffi::TensorView pair_dots,
       const tvm::ffi::TensorView output,
+      int64_t max_tree_depth,
       double scale) {
     using namespace host;
 
@@ -557,7 +624,12 @@ struct GdnTreeReplayVerifyKernel {
         .with_dtype<fp32_t>()
         .with_device(device_)
         .verify(inv_norms);
-    TensorMatcher({batch, heads, nodes, nodes, 2})
+    auto tree_depth = SymbolicSize{"tree_depth"};
+    TensorMatcher({batch, value_heads, nodes, 2})
+        .with_dtype<fp32_t>()
+        .with_device(device_)
+        .verify(replay_params);
+    TensorMatcher({batch, heads, nodes, tree_depth, 2})
         .with_dtype<fp32_t>()
         .with_device(device_)
         .verify(pair_dots);
@@ -577,6 +649,11 @@ struct GdnTreeReplayVerifyKernel {
                  "GDN tree replay ring is narrower than the proposal tree");
     RuntimeCheck(H > 0 && HV % H == 0,
                  "value heads must be divisible by key heads");
+    RuntimeCheck(max_tree_depth > 0 && max_tree_depth <= N,
+                 "invalid GDN tree maximum depth ", max_tree_depth,
+                 " for ", N, " nodes");
+    RuntimeCheck(tree_depth.unwrap() == max_tree_depth,
+                 "pair-dot tree depth does not match max_tree_depth");
 
     const auto device = device_.unwrap();
     LaunchKernel(
@@ -587,6 +664,7 @@ struct GdnTreeReplayVerifyKernel {
         static_cast<const __nv_bfloat16*>(q.data_ptr()),
         static_cast<const __nv_bfloat16*>(k.data_ptr()),
         static_cast<const int32_t*>(state_indices.data_ptr()),
+        static_cast<const int32_t*>(parent.data_ptr()),
         static_cast<__nv_bfloat16*>(rawk_cache.data_ptr()),
         static_cast<float*>(inv_norms.data_ptr()),
         static_cast<float*>(pair_dots.data_ptr()),
@@ -597,6 +675,32 @@ struct GdnTreeReplayVerifyKernel {
         rawk_cache.stride(2),
         static_cast<int32_t>(B),
         static_cast<int32_t>(H),
+        static_cast<int32_t>(N),
+        static_cast<int32_t>(max_tree_depth));
+
+    const int64_t replay_param_items = B * HV * N;
+    LaunchKernel(
+        static_cast<uint32_t>(div_ceil(replay_param_items,
+                                      device::gdn_tree_replay::kPairThreads)),
+        device::gdn_tree_replay::kPairThreads,
+        device)(
+        device::gdn_tree_replay::BuildReplayParams,
+        static_cast<const float*>(A_log.data_ptr()),
+        static_cast<const __nv_bfloat16*>(a.data_ptr()),
+        static_cast<const __nv_bfloat16*>(dt_bias.data_ptr()),
+        static_cast<const __nv_bfloat16*>(b.data_ptr()),
+        static_cast<const int32_t*>(state_indices.data_ptr()),
+        static_cast<float*>(g_cache.data_ptr()),
+        static_cast<float*>(beta_cache.data_ptr()),
+        static_cast<float*>(replay_params.data_ptr()),
+        a.stride(0),
+        b.stride(0),
+        g_cache.stride(0),
+        g_cache.stride(1),
+        beta_cache.stride(0),
+        beta_cache.stride(1),
+        static_cast<int32_t>(B),
+        static_cast<int32_t>(HV),
         static_cast<int32_t>(N));
 
     LaunchKernel(
@@ -606,24 +710,17 @@ struct GdnTreeReplayVerifyKernel {
         dim3(device::gdn_tree_replay::kMainThreads),
         device)(
         device::gdn_tree_replay::GdnTreeReplayMain,
-        static_cast<const float*>(A_log.data_ptr()),
-        static_cast<const __nv_bfloat16*>(a.data_ptr()),
-        static_cast<const __nv_bfloat16*>(dt_bias.data_ptr()),
         static_cast<const __nv_bfloat16*>(q.data_ptr()),
         static_cast<const __nv_bfloat16*>(k.data_ptr()),
         static_cast<const __nv_bfloat16*>(v.data_ptr()),
-        static_cast<const __nv_bfloat16*>(b.data_ptr()),
         static_cast<const float*>(checkpoint_state.data_ptr()),
         static_cast<const int32_t*>(state_indices.data_ptr()),
         static_cast<const int32_t*>(parent.data_ptr()),
         static_cast<__nv_bfloat16*>(rawv_cache.data_ptr()),
-        static_cast<float*>(g_cache.data_ptr()),
-        static_cast<float*>(beta_cache.data_ptr()),
         static_cast<const float*>(inv_norms.data_ptr()),
+        static_cast<const float*>(replay_params.data_ptr()),
         static_cast<const float*>(pair_dots.data_ptr()),
         static_cast<__nv_bfloat16*>(output.data_ptr()),
-        a.stride(0),
-        b.stride(0),
         q.stride(0),
         k.stride(0),
         v.stride(0),
@@ -632,14 +729,11 @@ struct GdnTreeReplayVerifyKernel {
         rawv_cache.stride(0),
         rawv_cache.stride(1),
         rawv_cache.stride(2),
-        g_cache.stride(0),
-        g_cache.stride(1),
-        beta_cache.stride(0),
-        beta_cache.stride(1),
         static_cast<int32_t>(B),
         static_cast<int32_t>(H),
         static_cast<int32_t>(HV),
         static_cast<int32_t>(N),
+        static_cast<int32_t>(max_tree_depth),
         static_cast<float>(scale));
   }
 };

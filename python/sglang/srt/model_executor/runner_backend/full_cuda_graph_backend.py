@@ -111,7 +111,14 @@ class FullCudaGraphBackend(BaseCudaGraphBackend):
             if post_warmup_hook is not None:
                 post_warmup_hook()
 
-        graph = torch.cuda.CUDAGraph()
+        keep_graph = bool(
+            getattr(
+                runner.model_runner.server_args,
+                "speculative_device_resident_cycle",
+                False,
+            )
+        )
+        graph = torch.cuda.CUDAGraph(keep_graph=keep_graph)
 
         graph_ctx: Callable[..., AbstractContextManager]
         if (
