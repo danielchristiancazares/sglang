@@ -5,7 +5,7 @@ Qwen3.8 production line. A comparable result records the request shape, server
 mode, cache treatment, sampling profile, graph state, GPU environment, and
 resolved launcher arguments.
 
-**Reconciled through:** 2026-08-16 19:06 PDT.
+**Reconciled through:** 2026-08-16 23:11 PDT.
 
 ## Qualified reference
 
@@ -168,6 +168,15 @@ measurement contract adds these requirements:
 - use `scripts/windows/optimize_swor_topology.py` for cost/yield projections;
 - qualify exact distribution, support-exhaustion fallback, tree ancestry,
   recurrent-state commit, and CUDA-graph replay before a model launch.
+- before retaining any tree throughput rank, run at least three deterministic
+  cycles that include a non-front accepted branch and compare against a serial
+  linear path reference: request virtual-slot mapping and physical target KV,
+  compacted accepted tokens and hidden rows, rejected-slot reclamation,
+  recurrent/GDN state, terminal next-draft token/hidden state, and next-cycle
+  proposal or logits;
+- run that accepted-path comparison on both eager and captured/device-cycle
+  execution. A plausible response or matching token count does not substitute
+  for state parity.
 
 Linear `SimulateAcceptedLength` produces contiguous accepted indices and does
 not represent tree ancestry. Tree fixed-work and recurrent-state validation

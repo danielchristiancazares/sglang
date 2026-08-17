@@ -1247,6 +1247,12 @@ def init_unified_mamba_pools(
     # `_mamba_translate` feeds the HiCache offload path, GATED OFF here — wired but inert.
     req_to_token_pool.mamba_allocator = mamba_slot_allocator
     token_to_kv_pool._mamba_translate = mamba_slot_allocator.translate
+    # req_to_token and speculative out_cache_loc contain virtual token ids.
+    # HybridLinearKVPool accepted-path/prefix-tail moves target physical cache
+    # storage, so translate through the full-side allocator before delegating.
+    # This must remain the physical translation even for MLA; dense ids are a
+    # kernel-facing address space and cannot identify whole page envelopes.
+    token_to_kv_pool._full_move_translate = allocator.translate_kv_loc
     if use_mla_backend:
         # Model-level MLA entry points (`set_mla_kv_buffer` / `get_mla_kv_buffer`)
         # receive VIRTUAL locs and translate to the dense space internally

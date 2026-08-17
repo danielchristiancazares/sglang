@@ -1064,7 +1064,6 @@ class MultiLayerEagleWorkerV2(BaseSpecWorker):
             num_draft_tokens=self.speculative_num_draft_tokens,
             device=self.device,
             metadata_ready_pre_pad=False,
-            finalize_tree_path=False,
             collect_swor_path_stats=False,
             grammar_barrier=grammar_barrier,
         )

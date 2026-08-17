@@ -488,7 +488,6 @@ def run_eagle_verify(
     num_draft_tokens: int,
     device: str,
     metadata_ready_pre_pad: bool,
-    finalize_tree_path: bool,
     collect_swor_path_stats: bool,
     grammar_barrier=None,
 ) -> GenerationBatchResult:
@@ -500,9 +499,8 @@ def run_eagle_verify(
     - ``metadata_ready_pre_pad``: multi-layer marks forward metadata ready
       pre-pad unconditionally; single-layer relies on eagle_prepare_for_verify
       marking it only when the cuda-graph path ran.
-    - ``finalize_tree_path``: single-layer compacts the accepted tree path to
-      the front of each per-req block for topk > 1; multi-layer has never run
-      this compaction.
+    Every top-k tree path is compacted before returning because draft extend
+    consumes the accepted token and hidden-state rows from the front block.
     """
     fwd_stream = torch.get_device_module(device).current_stream()
     verify_input: EagleVerifyInput = batch.spec_info
@@ -645,7 +643,7 @@ def run_eagle_verify(
     if batch.return_logprob and not batch.forward_mode.is_idle():
         compute_spec_logprobs(batch, logits_output, predict, accept_index=accept_index)
 
-    if finalize_tree_path and not batch.forward_mode.is_idle() and topk > 1:
+    if not batch.forward_mode.is_idle() and topk > 1:
         # topk == 1 needs nothing here: the accepted path is already the front
         # chain, so the whole compaction is an identity transform.
         predict = _finalize_accept_tree_path(

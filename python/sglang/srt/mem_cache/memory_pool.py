@@ -3668,6 +3668,12 @@ class HybridLinearKVPool(KVCache):
         # (`set_mla_kv_buffer` / `get_mla_kv_buffer` receive VIRTUAL locs);
         # identity for a static pool, `translate_kv_loc_dense` for the unified pool.
         self._full_translate = lambda ids: ids
+        # Accepted-path and prefix-tail relocation always operates on physical
+        # cache storage. Static pools use identity; unified pools install the
+        # allocator's virtual-token -> physical-token translation. Keep this
+        # separate from `_full_translate`: MLA kernel-facing dense ids include a
+        # layer multiplier and are not valid page-envelope move locations.
+        self._full_move_translate = lambda ids: ids
         self.use_mla = use_mla
         if full_kv_pool is not None:
             # Shared-KV-pool path: the caller built a UnifiedMHATokenToKVPool
@@ -3920,7 +3926,10 @@ class HybridLinearKVPool(KVCache):
                 )
 
     def move_kv_cache(self, tgt_loc: torch.Tensor, src_loc: torch.Tensor):
-        self.full_kv_pool.move_kv_cache(tgt_loc, src_loc)
+        self.full_kv_pool.move_kv_cache(
+            self._full_move_translate(tgt_loc),
+            self._full_move_translate(src_loc),
+        )
 
     def get_cpu_copy(self, indices, mamba_indices=None):
         kv_cpu = self.full_kv_pool.get_cpu_copy(indices)
