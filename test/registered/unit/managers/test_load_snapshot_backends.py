@@ -277,6 +277,18 @@ class TestFactoryFunctions(CustomTestCase):
         if os.path.exists(path):
             os.unlink(path)
 
+    def test_shm_path_parent_exists_when_dev_shm_is_absent(self):
+        """macOS is posix but has no /dev/shm. Selecting the root by os.name
+        made every Apple Silicon launch fail to create the snapshot file.
+        The parent of shm_path_for must be a real directory; when /dev/shm
+        is missing the path must not start there."""
+        from sglang.srt.managers.load_snapshot import shm_path_for
+
+        path = shm_path_for("test_shm_factory")
+        self.assertTrue(os.path.isdir(os.path.dirname(path)), path)
+        if not os.path.isdir("/dev/shm"):
+            self.assertFalse(path.startswith("/dev/shm" + os.sep), path)
+
     def test_zmq_mode_via_env(self):
         self._publish(enable_dp_attention=False, nnodes=1, dp_size=1)
         port_args = SimpleNamespace(instance_id="test_zmq_factory")

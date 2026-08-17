@@ -15,7 +15,7 @@
 //! [`PreferredSamplingParams`] — are the only Python-facing code in this file;
 //! the rest is pure Rust.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -105,12 +105,16 @@ pub struct ServerArgs {
     /// Optional built-in chat-template name or path to a Jinja/legacy JSON
     /// template file. Without an override, uses the tokenizer config template.
     pub chat_template: Option<String>,
+    /// Global Jinja arguments merged beneath per-request chat-template kwargs.
+    pub default_chat_template_kwargs: Option<HashMap<String, serde_json::Value>>,
     /// Parser selected by `--tool-call-parser`.
     pub tool_call_parser: Option<String>,
     /// Reasoning splitter selected by `--reasoning-parser` (e.g. deepseek-r1).
     /// When set, chat completions strip the model's reasoning markers out of
     /// `content` into `reasoning_content` — both unary and streaming.
     pub reasoning_parser: Option<String>,
+    /// Serve the text trunk only, including the advertised media capabilities.
+    pub language_model_only: bool,
     /// Python's global default for whether an SSE stream ends with a usage chunk.
     pub stream_response_default_include_usage: bool,
     /// Pinned tokenizer threads / detok shards (Python asserts both ≥ 1).
@@ -168,8 +172,10 @@ impl ServerArgs {
         log_level,
         log_level_http,
         chat_template,
+        default_chat_template_kwargs,
         tool_call_parser,
         reasoning_parser,
+        language_model_only,
         stream_response_default_include_usage,
         tokenizer_worker_num,
         detokenizer_worker_num,
@@ -200,8 +206,10 @@ impl ServerArgs {
         log_level: String,
         log_level_http: Option<String>,
         chat_template: Option<String>,
+        default_chat_template_kwargs: Option<String>,
         tool_call_parser: Option<String>,
         reasoning_parser: Option<String>,
+        language_model_only: bool,
         stream_response_default_include_usage: bool,
         tokenizer_worker_num: usize,
         detokenizer_worker_num: usize,
@@ -217,8 +225,14 @@ impl ServerArgs {
         num_reserved_tokens: u64,
         version: String,
         max_total_num_tokens: u64,
-    ) -> Self {
-        Self {
+    ) -> pyo3::PyResult<Self> {
+        let default_chat_template_kwargs = default_chat_template_kwargs
+            .map(|text| serde_json::from_str(&text))
+            .transpose()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!(
+                "default_chat_template_kwargs is not a valid JSON object: {e}"
+            )))?;
+        Ok(Self {
             model_path,
             served_model_name,
             tokenizer_path,
@@ -230,8 +244,10 @@ impl ServerArgs {
             log_level,
             log_level_http,
             chat_template,
+            default_chat_template_kwargs,
             tool_call_parser,
             reasoning_parser,
+            language_model_only,
             stream_response_default_include_usage,
             tokenizer_worker_num,
             detokenizer_worker_num,
@@ -247,7 +263,7 @@ impl ServerArgs {
             num_reserved_tokens,
             version,
             max_total_num_tokens,
-        }
+        })
     }
 }
 
@@ -268,8 +284,10 @@ impl Default for ServerArgs {
             log_level: "info".into(),
             log_level_http: None,
             chat_template: None,
+            default_chat_template_kwargs: None,
             tool_call_parser: None,
             reasoning_parser: None,
+            language_model_only: false,
             stream_response_default_include_usage: false,
             tokenizer_worker_num: 1,
             detokenizer_worker_num: 1,
@@ -339,6 +357,11 @@ pub struct ModelConfig {
     /// in to-scheduler; `false` silently ignores mm fields, as the Python
     /// `TokenizerManager` does with `mm_processor is None`.
     pub is_multimodal: bool,
+    /// Fine-grained capabilities and Hugging Face identity resolved by Python.
+    pub is_image_understandable_model: bool,
+    pub is_audio_understandable_model: bool,
+    pub model_type: Option<String>,
+    pub architectures: Option<Vec<String>>,
     /// Resolved default sampling parameters, from Python's
     /// `ModelConfig.get_default_sampling_params()`. Already gated on
     /// `--sampling-defaults`: holds the model's generation_config.json values
@@ -351,17 +374,27 @@ pub struct ModelConfig {
 #[pyo3::pymethods]
 impl ModelConfig {
     #[new]
-    #[pyo3(signature = (*, context_len, vocab_size, is_multimodal, default_sampling_params))]
+    #[pyo3(signature = (*, context_len, vocab_size, is_multimodal,
+        is_image_understandable_model, is_audio_understandable_model,
+        model_type, architectures, default_sampling_params))]
     fn py_new(
         context_len: u64,
         vocab_size: u64,
         is_multimodal: bool,
+        is_image_understandable_model: bool,
+        is_audio_understandable_model: bool,
+        model_type: Option<String>,
+        architectures: Option<Vec<String>>,
         default_sampling_params: DefaultSamplingParams,
     ) -> Self {
         Self {
             context_len,
             vocab_size,
             is_multimodal,
+            is_image_understandable_model,
+            is_audio_understandable_model,
+            model_type,
+            architectures,
             default_sampling_params,
         }
     }
@@ -374,6 +407,10 @@ impl Default for ModelConfig {
             context_len: 2048,
             vocab_size: 1000,
             is_multimodal: false,
+            is_image_understandable_model: false,
+            is_audio_understandable_model: false,
+            model_type: None,
+            architectures: None,
             default_sampling_params: DefaultSamplingParams::default(),
         }
     }

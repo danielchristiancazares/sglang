@@ -59,6 +59,39 @@ class Device(msgspec.Struct):
             "only). Penalties are not applied."
         ),
     ] = False
+    mlx_kv_cache_bits: A[
+        Optional[int],
+        (
+            "MLX backend only: store full-attention KV in geometrically "
+            "grown affine 4-bit or 8-bit buffers. This is the memory-maximizing "
+            "single-request long-context mode and requires "
+            "--disable-radix-cache."
+        ),
+    ] = None
+    mlx_kv_cache_group_size: A[
+        int,
+        (
+            "MLX backend only: affine quantization group size for quantized "
+            "KV cache; supported values are 32, 64, and 128."
+        ),
+    ] = 64
+    mlx_mtp_path: A[
+        Optional[str],
+        (
+            "MLX backend only: path to a Qwen3.5-family multi-token-"
+            "prediction head sidecar (mtp.safetensors), enabling speculative "
+            "decode. Drafted tokens are verified against the trunk in one "
+            "batched forward, so output stays a greedy trunk stream; an "
+            "adaptive policy falls back to plain decode when acceptance "
+            "drops below breakeven. Engages only for greedy single-request "
+            "decode without logit edits; requires --disable-radix-cache and "
+            "BF16 attention KV."
+        ),
+    ] = None
+    mlx_mtp_depth: A[
+        int,
+        "MLX backend only: tokens drafted per speculative round (1-8).",
+    ] = 3
     watchdog_timeout: A[
         float,
         "Set watchdog timeout in seconds. If a forward batch takes longer than this, the server will crash to prevent hanging.",

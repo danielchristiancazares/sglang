@@ -72,11 +72,11 @@ async fn await_control_result(
     }
 }
 
-/// `GET /get_model_info` (+ `/model_info` alias) — static model metadata from
-/// `server_args` (no scheduler round-trip); `is_generation` always true.
-async fn model_info(State(state): State<Arc<AppState>>) -> Response {
-    let sa = &state.server_args;
-    let body = serde_json::json!({
+/// Static `/model_info` JSON. `--language-model-only` is authoritative: a
+/// multimodal checkpoint still reports image/audio understanding as false.
+fn model_info_body(sa: &ServerArgs) -> serde_json::Value {
+    let text_only = sa.language_model_only;
+    serde_json::json!({
         "model_path": sa.model_path,
         "served_model_name": sa.served_model_name,
         "tokenizer_path": sa.tokenizer_path,
@@ -94,7 +94,19 @@ async fn model_info(State(state): State<Arc<AppState>>) -> Response {
         // selected parser into `server_args` before the scheduler forks.
         "reasoning_parser": sa.reasoning_parser,
         "tool_call_parser": sa.tool_call_parser,
-    });
+        "has_image_understanding": !text_only
+            && sa.model_config.is_image_understandable_model,
+        "has_audio_understanding": !text_only
+            && sa.model_config.is_audio_understandable_model,
+        "model_type": sa.model_config.model_type,
+        "architectures": sa.model_config.architectures,
+    })
+}
+
+/// `GET /get_model_info` (+ `/model_info` alias) — static model metadata from
+/// `server_args` (no scheduler round-trip); `is_generation` always true.
+async fn model_info(State(state): State<Arc<AppState>>) -> Response {
+    let body = model_info_body(&state.server_args);
     (
         StatusCode::OK,
         [("content-type", "application/json")],
@@ -180,6 +192,7 @@ fn shape_server_info(msgpack: &[u8], server_args: &ServerArgs) -> Result<Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::config::ModelConfig;
 
     /// The scheduler's `internal_state` embeds the full server-args dump (incl.
     /// `api_key`/`admin_api_key`). `/server_info` must surface only the allowlisted
@@ -239,5 +252,53 @@ mod tests {
         assert!(state0.get("api_key").is_none());
         // Curated top-level config comes from typed accessors, not the dump.
         assert_eq!(v["model_path"], "/m");
+    }
+
+    /// Language-only launch must advertise both media capabilities as false
+    /// even when the underlying HF config is a multimodal architecture.
+    /// Removing the `language_model_only` gate would report true here.
+    #[test]
+    fn language_only_hides_multimodal_capabilities() {
+        let sa = ServerArgs {
+            model_path: "/m".into(),
+            language_model_only: true,
+            model_config: ModelConfig {
+                is_image_understandable_model: true,
+                is_audio_understandable_model: true,
+                model_type: Some("qwen3_5".into()),
+                architectures: Some(vec!["Qwen3_5ForConditionalGeneration".into()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let body = model_info_body(&sa);
+        assert_eq!(body["has_image_understanding"], false);
+        assert_eq!(body["has_audio_understanding"], false);
+        assert_eq!(body["is_generation"], true);
+        assert_eq!(body["model_type"], "qwen3_5");
+        assert_eq!(
+            body["architectures"],
+            serde_json::json!(["Qwen3_5ForConditionalGeneration"])
+        );
+    }
+
+    /// Without the language-only flag, `/model_info` reports the resolved
+    /// per-modality bits from the stamped model config.
+    #[test]
+    fn multimodal_capabilities_follow_stamped_model_config() {
+        let sa = ServerArgs {
+            model_path: "/m".into(),
+            language_model_only: false,
+            model_config: ModelConfig {
+                is_image_understandable_model: true,
+                is_audio_understandable_model: false,
+                model_type: Some("qwen3_5".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let body = model_info_body(&sa);
+        assert_eq!(body["has_image_understanding"], true);
+        assert_eq!(body["has_audio_understanding"], false);
     }
 }

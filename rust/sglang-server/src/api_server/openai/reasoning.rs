@@ -14,6 +14,8 @@
 use dynamo_parsers::reasoning::{
     ReasoningParser as _, ReasoningParserType, ReasoningParserWrapper,
 };
+use serde_json::Value;
+use std::collections::HashMap;
 
 /// Build the parser the Python `--reasoning-parser` name selects.
 ///
@@ -40,6 +42,34 @@ pub(super) fn build_reasoning_parser(server_name: &str) -> ReasoningParserWrappe
     ReasoningParserType::get_reasoning_parser_from_name(name)
 }
 
+/// Whether the rendered prompt already opened the model's reasoning channel.
+///
+/// Qwen's template consumes the opening `<think>` marker when thinking is
+/// enabled, so the completion begins inside the block and only emits its
+/// closing marker. This is request-specific because `enable_thinking=false`
+/// renders a direct-answer prompt. Keep the decision next to parser-name
+/// normalization so unary and streaming paths share one source of truth.
+pub(super) fn reasoning_starts_in_prompt(
+    name: Option<&str>,
+    chat_template_args: Option<&HashMap<String, Value>>,
+) -> bool {
+    let args = chat_template_args;
+    match name {
+        Some("qwen3" | "interns1") => {
+            args.and_then(|args| args.get("enable_thinking"))
+                .and_then(Value::as_bool)
+                != Some(false)
+        }
+        Some("qwen3-thinking" | "minimax") => true,
+        Some("minimax-m3") => {
+            args.and_then(|args| args.get("thinking_mode"))
+                .and_then(Value::as_str)
+                == Some("enabled")
+        }
+        _ => false,
+    }
+}
+
 /// Split a completed generation's text into `(reasoning_text, normal_text)`
 /// when `--reasoning-parser` selects a parser; otherwise the text passes
 /// through untouched as normal text. Chat splits before tool-call parsing.
@@ -47,11 +77,15 @@ pub(super) fn split_reasoning_unary(
     name: Option<&str>,
     text: &str,
     token_ids: &[i32],
+    starts_in_reasoning: bool,
 ) -> (String, String) {
     let Some(name) = name else {
         return (String::new(), text.to_owned());
     };
     let mut parser = build_reasoning_parser(name);
+    if starts_in_reasoning {
+        parser.set_in_reasoning(true);
+    }
     let token_ids = token_ids
         .iter()
         .filter_map(|&id| u32::try_from(id).ok())
@@ -72,13 +106,15 @@ pub(super) fn split_reasoning_unary(
 pub(super) struct ReasoningStreamSplitter {
     name: Option<String>,
     parser: Option<ReasoningParserWrapper>,
+    starts_in_reasoning: bool,
 }
 
 impl ReasoningStreamSplitter {
-    pub(super) fn new(name: Option<&str>) -> Self {
+    pub(super) fn new(name: Option<&str>, starts_in_reasoning: bool) -> Self {
         Self {
             name: name.map(str::to_owned),
             parser: None,
+            starts_in_reasoning,
         }
     }
 
@@ -87,9 +123,14 @@ impl ReasoningStreamSplitter {
         let Some(name) = self.name.as_deref() else {
             return (String::new(), text.to_owned());
         };
-        let parser = self
-            .parser
-            .get_or_insert_with(|| build_reasoning_parser(name));
+        let starts_in_reasoning = self.starts_in_reasoning;
+        let parser = self.parser.get_or_insert_with(|| {
+            let mut parser = build_reasoning_parser(name);
+            if starts_in_reasoning {
+                parser.set_in_reasoning(true);
+            }
+            parser
+        });
         let token_ids = token_ids
             .iter()
             .filter_map(|&id| u32::try_from(id).ok())
@@ -110,8 +151,13 @@ impl ReasoningStreamSplitter {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReasoningStreamSplitter, build_reasoning_parser, split_reasoning_unary};
+    use super::{
+        ReasoningStreamSplitter, build_reasoning_parser, reasoning_starts_in_prompt,
+        split_reasoning_unary,
+    };
     use dynamo_parsers::reasoning::ReasoningParser;
+    use serde_json::Value;
+    use std::collections::HashMap;
 
     #[test]
     fn python_deepseek_r1_name_splits_forced_reasoning() {
@@ -166,7 +212,8 @@ mod tests {
 
     #[test]
     fn unary_split_passes_text_through_without_a_parser() {
-        let (reasoning, normal) = split_reasoning_unary(None, "<think>kept as text</think>", &[1]);
+        let (reasoning, normal) =
+            split_reasoning_unary(None, "<think>kept as text</think>", &[1], false);
         assert_eq!(reasoning, "");
         assert_eq!(normal, "<think>kept as text</think>");
     }
@@ -177,7 +224,7 @@ mod tests {
     /// terminal flush must emit the normal half of the tail.
     #[test]
     fn streaming_tail_releases_normal_text_only_at_finish() {
-        let mut splitter = ReasoningStreamSplitter::new(Some("minimax_m3"));
+        let mut splitter = ReasoningStreamSplitter::new(Some("minimax_m3"), false);
         let (reasoning, normal) = splitter.split("The answer is", &[]);
         assert_eq!(reasoning, "");
         assert_eq!(normal, "", "M3 holds the ambiguous prefix until a boundary");
@@ -191,7 +238,7 @@ mod tests {
 
     #[test]
     fn streaming_tail_releases_reasoning_after_marker_boundary() {
-        let mut splitter = ReasoningStreamSplitter::new(Some("minimax_m3"));
+        let mut splitter = ReasoningStreamSplitter::new(Some("minimax_m3"), false);
         let (reasoning, normal) = splitter.split("<mm:think>think", &[]);
         assert_eq!(reasoning, "think");
         assert_eq!(normal, "");
@@ -205,12 +252,41 @@ mod tests {
 
     #[test]
     fn finish_without_a_parser_is_empty() {
-        let mut splitter = ReasoningStreamSplitter::new(None);
+        let mut splitter = ReasoningStreamSplitter::new(None, false);
         let (reasoning, normal) = splitter.split("plain", &[]);
         assert_eq!(reasoning, "");
         assert_eq!(normal, "plain");
         let (reasoning, normal) = splitter.finish();
         assert_eq!(reasoning, "");
         assert_eq!(normal, "");
+    }
+
+    #[test]
+    fn qwen_stream_starts_inside_template_injected_reasoning() {
+        let mut splitter = ReasoningStreamSplitter::new(Some("qwen3"), true);
+        let (reasoning, normal) = splitter.split("work through it", &[]);
+        assert_eq!(reasoning, "work through it");
+        assert_eq!(normal, "");
+        let (reasoning, normal) = splitter.split("</think>READY", &[]);
+        assert_eq!(reasoning, "");
+        assert_eq!(normal, "READY");
+    }
+
+    #[test]
+    fn qwen_direct_answer_stays_in_content_when_thinking_is_disabled() {
+        let args = HashMap::from([("enable_thinking".into(), Value::Bool(false))]);
+        assert!(!reasoning_starts_in_prompt(Some("qwen3"), Some(&args)));
+
+        let mut splitter = ReasoningStreamSplitter::new(Some("qwen3"), false);
+        let (reasoning, normal) = splitter.split("READY", &[]);
+        assert_eq!(reasoning, "");
+        assert_eq!(normal, "READY");
+    }
+
+    #[test]
+    fn qwen_thinking_defaults_to_template_injected_reasoning() {
+        assert!(reasoning_starts_in_prompt(Some("qwen3"), None));
+        let args = HashMap::from([("enable_thinking".into(), Value::Bool(true))]);
+        assert!(reasoning_starts_in_prompt(Some("qwen3"), Some(&args)));
     }
 }

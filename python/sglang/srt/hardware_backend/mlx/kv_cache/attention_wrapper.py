@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-
+from mlx_lm.models.base import quantized_scaled_dot_product_attention
 from sglang.srt.hardware_backend.mlx.aot import (
     MlxAOTKernelContext,
     MlxAOTKernelSet,
@@ -22,6 +22,7 @@ from sglang.srt.hardware_backend.mlx.kv_cache.attention_contract import (
 )
 from sglang.srt.hardware_backend.mlx.kv_cache.attention_kv_cache import (
     ContiguousAttentionKVCache,
+    QuantizedAttentionKVCache,
     WindowedAttentionKVCache,
 )
 
@@ -39,7 +40,11 @@ class BatchedDecodeContext:
     # Windowed caches hold only trailing-window KV, so read them through
     # write_token/get_kv, never by slicing .keys at an absolute offset.
     attention_layer_caches: list[
-        list[ContiguousAttentionKVCache | WindowedAttentionKVCache]
+        list[
+            ContiguousAttentionKVCache
+            | QuantizedAttentionKVCache
+            | WindowedAttentionKVCache
+        ]
     ]
     attention_pool_index_by_layer: dict[int, int] = field(default_factory=dict)
     # Dense index into the shared pool's buffers; full-attention layers only.
@@ -311,33 +316,79 @@ class MLXAttentionWrapper(nn.Module):
         # variable-length sequences.
         all_k = []
         all_v = []
+        quantized_cache = isinstance(layer_caches[0], QuantizedAttentionKVCache)
 
         for i in range(B):
+            if (
+                isinstance(layer_caches[i], QuantizedAttentionKVCache)
+                != quantized_cache
+            ):
+                raise RuntimeError("A decode batch cannot mix float and quantized KV")
             layer_caches[i].write_token(keys[i : i + 1], values[i : i + 1])
 
             k_all, v_all = layer_caches[i].get_kv(window)
 
             pad = pad_sizes[i]
             if pad > 0:
-                k_pad = mx.zeros((1, n_kv_heads, pad, head_dim), dtype=k_all.dtype)
-                v_pad = mx.zeros((1, n_kv_heads, pad, head_dim), dtype=v_all.dtype)
-                k_all = mx.concatenate([k_all, k_pad], axis=2)
-                v_all = mx.concatenate([v_all, v_pad], axis=2)
+                if quantized_cache:
+                    group_size = layer_caches[i].group_size
+                    bits = layer_caches[i].bits
+                    k_pad = mx.quantize(
+                        mx.zeros((1, n_kv_heads, pad, head_dim), dtype=keys.dtype),
+                        group_size=group_size,
+                        bits=bits,
+                    )
+                    v_pad = mx.quantize(
+                        mx.zeros((1, n_kv_heads, pad, head_dim), dtype=values.dtype),
+                        group_size=group_size,
+                        bits=bits,
+                    )
+                    k_all = tuple(
+                        mx.concatenate([value, k_pad[j]], axis=2)
+                        for j, value in enumerate(k_all)
+                    )
+                    v_all = tuple(
+                        mx.concatenate([value, v_pad[j]], axis=2)
+                        for j, value in enumerate(v_all)
+                    )
+                else:
+                    k_pad = mx.zeros((1, n_kv_heads, pad, head_dim), dtype=k_all.dtype)
+                    v_pad = mx.zeros((1, n_kv_heads, pad, head_dim), dtype=v_all.dtype)
+                    k_all = mx.concatenate([k_all, k_pad], axis=2)
+                    v_all = mx.concatenate([v_all, v_pad], axis=2)
 
             all_k.append(k_all)
             all_v.append(v_all)
 
-        keys_b = mx.concatenate(all_k, axis=0)
-        values_b = mx.concatenate(all_v, axis=0)
-
-        output = mx.fast.scaled_dot_product_attention(
-            queries,
-            keys_b,
-            values_b,
-            scale=self._scale,
-            mask=attn_mask,
-            **self._sink_kwargs,
-        )
+        if quantized_cache:
+            keys_b = tuple(
+                mx.concatenate([value[j] for value in all_k], axis=0) for j in range(3)
+            )
+            values_b = tuple(
+                mx.concatenate([value[j] for value in all_v], axis=0) for j in range(3)
+            )
+            if self._sinks is not None:
+                raise ValueError("Quantized KV attention does not support sinks")
+            output = quantized_scaled_dot_product_attention(
+                queries,
+                keys_b,
+                values_b,
+                scale=self._scale,
+                mask=attn_mask,
+                group_size=layer_caches[0].group_size,
+                bits=layer_caches[0].bits,
+            )
+        else:
+            keys_b = mx.concatenate(all_k, axis=0)
+            values_b = mx.concatenate(all_v, axis=0)
+            output = mx.fast.scaled_dot_product_attention(
+                queries,
+                keys_b,
+                values_b,
+                scale=self._scale,
+                mask=attn_mask,
+                **self._sink_kwargs,
+            )
 
         output = output.transpose(0, 2, 1, 3).reshape(B, 1, -1)
         if gate is not None:

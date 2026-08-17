@@ -882,6 +882,13 @@ def handle_mamba_radix_cache(server_args: Any, model_arch: str):
     if not view.uses_mamba_radix_cache:
         return
 
+    # Hybrid MLX caching stores native mlx-lm auxiliary state through the
+    # unified radix component. Its ``no_buffer`` label does not imply the
+    # FLA no-buffer restrictions below: MLX has a separate async overlap
+    # scheduler and an MLX-owned state pool.
+    if is_mps() and use_mlx():
+        return
+
     if mamba_extra_buffer_of(view):
         validate_mamba_extra_buffer(
             view,

@@ -89,7 +89,7 @@ pub(super) fn park_features_in_shm(features: &[f32], grids: &[[u32; 3]]) -> Feat
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use super::super::shm::shm_path;
+    use super::super::shm::shm_bytes;
     use super::*;
 
     /// Per-item slicing follows the grid row counts, so Python's
@@ -104,14 +104,18 @@ mod tests {
             panic!("expected shm store");
         };
         assert_eq!(segments.len(), 2);
-        let read = |seg: &ShmSegment| -> Vec<u8> { std::fs::read(shm_path(&seg.name)).unwrap() };
-        assert_eq!(
-            read(&segments[0]),
-            bytemuck::cast_slice::<f32, u8>(&features[..12])
+        let read = |seg: &ShmSegment, expected: &[u8]| {
+            let got = shm_bytes(&seg.name).unwrap();
+            assert!(got.len() >= expected.len(), "shm shorter than item");
+            assert_eq!(&got[..expected.len()], expected);
+        };
+        read(
+            &segments[0],
+            bytemuck::cast_slice::<f32, u8>(&features[..12]),
         );
-        assert_eq!(
-            read(&segments[1]),
-            bytemuck::cast_slice::<f32, u8>(&features[12..])
+        read(
+            &segments[1],
+            bytemuck::cast_slice::<f32, u8>(&features[12..]),
         );
     }
 

@@ -458,6 +458,24 @@ def handle_other_validations(server_args: Any):
     ):
         raise ValueError("--default-chat-template-kwargs must decode to a JSON object")
 
+    if cfg.mlx_kv_cache_bits is not None:
+        if cfg.mlx_kv_cache_bits not in (4, 8):
+            raise ValueError("--mlx-kv-cache-bits must be 4 or 8")
+        if not cfg.disable_radix_cache:
+            raise ValueError("--mlx-kv-cache-bits requires --disable-radix-cache")
+    if cfg.mlx_kv_cache_group_size not in (32, 64, 128):
+        raise ValueError("--mlx-kv-cache-group-size must be one of 32, 64, 128")
+    if cfg.mlx_mtp_path is not None:
+        if not cfg.disable_radix_cache:
+            raise ValueError("--mlx-mtp-path requires --disable-radix-cache")
+        if cfg.mlx_kv_cache_bits is not None:
+            raise ValueError(
+                "--mlx-mtp-path requires BF16 attention KV "
+                "(no --mlx-kv-cache-bits)"
+            )
+        if not 1 <= cfg.mlx_mtp_depth <= 8:
+            raise ValueError("--mlx-mtp-depth must be between 1 and 8")
+
     # Handle optimistic prefill validation
     if cfg.optimistic_prefill_attempts > 0 and cfg.disaggregation_mode == "prefill":
         if cfg.pp_size > 1:

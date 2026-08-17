@@ -56,8 +56,14 @@ def _build_server_args(scheduler: Scheduler) -> ServerArgs:
         log_level=get_observability().log_level,
         log_level_http=get_observability().log_level_http,
         chat_template=get_serving().chat_template,
+        default_chat_template_kwargs=(
+            json.dumps(get_serving().default_chat_template_kwargs)
+            if get_serving().default_chat_template_kwargs is not None
+            else None
+        ),
         tool_call_parser=get_serving().tool_call_parser,
         reasoning_parser=get_serving().reasoning_parser,
+        language_model_only=get_disagg().language_model_only,
         stream_response_default_include_usage=get_serving().stream_response_default_include_usage,
         tokenizer_worker_num=get_serving().tokenizer_worker_num,
         detokenizer_worker_num=get_serving().detokenizer_worker_num,
@@ -69,6 +75,10 @@ def _build_server_args(scheduler: Scheduler) -> ServerArgs:
             context_len=mc.context_len,
             vocab_size=mc.vocab_size,
             is_multimodal=mc.is_multimodal,
+            is_image_understandable_model=mc.is_image_understandable_model,
+            is_audio_understandable_model=mc.is_audio_understandable_model,
+            model_type=getattr(mc.hf_config, "model_type", None),
+            architectures=getattr(mc.hf_config, "architectures", None),
             # Resolved default sampling params (generation_config.json when
             # `--sampling-defaults model`, {} otherwise). The rust server
             # consumes these for omitted temperature/top_p in chat
