@@ -240,6 +240,9 @@ crate-type = ["cdylib"]
             workspace = self._workspace(root)
             crate = rust_extension._discover_crate(workspace, "demo._core")
             target_dir = root / "target"
+            artifact_filename = rust_extension._cargo_library_filename(
+                "demo_extension"
+            )
 
             def run(command, *, cwd, env, check):
                 self.assertTrue(check)
@@ -247,7 +250,7 @@ crate-type = ["cdylib"]
                 self.assertEqual(env["PYO3_PYTHON"], sys.executable)
                 artifact = Path(env["CARGO_TARGET_DIR"]) / "release"
                 artifact.mkdir(parents=True)
-                (artifact / "libdemo_extension.so").write_bytes(b"extension")
+                (artifact / artifact_filename).write_bytes(b"extension")
                 return subprocess.CompletedProcess(command, 0)
 
             with mock.patch.object(
@@ -255,7 +258,7 @@ crate-type = ["cdylib"]
             ) as cargo:
                 artifact = rust_extension._cargo_build(crate, target_dir)
 
-            self.assertEqual(artifact, target_dir / "release/libdemo_extension.so")
+            self.assertEqual(artifact, target_dir / "release" / artifact_filename)
             self.assertEqual(
                 cargo.call_args.args[0],
                 [
@@ -273,7 +276,9 @@ crate-type = ["cdylib"]
     def test_filesystem_lock_serializes_processes(self):
         with TemporaryDirectory() as directory:
             lock_path = Path(directory) / "build.lock"
-            context = multiprocessing.get_context("fork")
+            context = multiprocessing.get_context(
+                "spawn" if sys.platform == "win32" else "fork"
+            )
             ready = context.Event()
             release = context.Event()
             process = context.Process(
@@ -300,6 +305,25 @@ crate-type = ["cdylib"]
                 thread.join(timeout=5)
             self.assertEqual(process.exitcode, 0)
             self.assertTrue(acquired.is_set())
+
+    def test_platform_library_filenames(self):
+        for platform, expected in (
+            ("darwin", "libdemo.dylib"),
+            ("linux", "libdemo.so"),
+            ("win32", "demo.dll"),
+        ):
+            with mock.patch.object(rust_extension.sys, "platform", platform):
+                self.assertEqual(
+                    rust_extension._cargo_library_filename("demo"), expected
+                )
+
+    def test_windows_skips_directory_fsync(self):
+        with (
+            mock.patch.object(rust_extension.sys, "platform", "win32"),
+            mock.patch.object(rust_extension.os, "open") as open_directory,
+        ):
+            rust_extension._sync_directory(Path("C:/cache/artifacts"))
+        open_directory.assert_not_called()
 
     def test_failed_import_does_not_poison_sys_modules(self):
         module_name = "demo._broken_core"

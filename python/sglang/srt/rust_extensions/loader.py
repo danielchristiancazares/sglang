@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import fcntl
+import errno
 import hashlib
 import importlib
 import importlib.util
@@ -15,11 +15,17 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Iterator, Literal
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 try:
     import tomllib
@@ -320,6 +326,27 @@ def _cached_extension_path(
 def _filesystem_lock(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as lock_file:
+        if sys.platform == "win32":
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            return
+
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -384,13 +411,19 @@ def _stage_atomically(source: Path, destination: Path) -> None:
             os.fsync(destination_file.fileno())
         temporary_path.chmod(0o755)
         os.replace(temporary_path, destination)
-        directory_descriptor = os.open(destination.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
+        _sync_directory(destination.parent)
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+def _sync_directory(path: Path) -> None:
+    if sys.platform == "win32":
+        return
+    directory_descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
 
 
 def _load_extension_from_path(module_name: str, path: Path) -> ModuleType:
