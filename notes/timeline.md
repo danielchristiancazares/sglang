@@ -1,8 +1,8 @@
 # Condensed experiment timeline
 
 This is an orientation map, not the evidence ledger. Read the matching region
-of [`NOTES.md`](../NOTES.md) when exact samples, logs, code changes, or process
-state matter.
+of [`experiment-log.md`](experiment-log.md) when exact samples, commands, logs,
+code changes, or process state matter.
 
 ## 2026-08-15
 
@@ -155,16 +155,116 @@ state matter.
   language-only surface, exact `199016`, tests, and launcher-default relaunch
   all passed; the default server was healthy with all intended graphs captured.
 
+### 11:00–11:12 — close adaptive depth
+
+- Added graph-resident adaptive two/three-step controls and repaired shared-
+  logits sizing for the maximum adaptive width.
+- Aggressive switching oscillated and reached only `100.739 tok/s`; a sparse
+  controller reduced switching yet averaged `110.276 tok/s` over ten samples.
+- Both policies lost to restored static two-step controls. Adaptive depth was
+  closed for the measured proposal and cost topology.
+
+### 11:21–11:52 — remove redundant chain work and establish GPU safety
+
+- A compact unread XQA mask removed a context-sized generic mask path and
+  raised deterministic fixed work to `162.726 tok/s`.
+- Reusable fused chain-metadata buffers reached `169.767 tok/s` simulated, then
+  exact-seed comparison exposed a real rejection-path scheduling/lifetime loss.
+  The unsafe experiment was removed.
+- Repeated server reset/capture saturated the display GPU and froze the
+  desktop. The exact server tree was cleaned up, unrelated processes were
+  preserved, and future work adopted one deliberate server/compile/CUDA job at
+  a time with exact process-tree ownership.
+
+### 11:59–13:29 — move hot paths to native code and promote captured alignment
+
+- User direction narrowed new performance hot paths to C++/CUDA with Python as
+  the binding and dispatch surface.
+- Native-Windows SiLU, RMSNorm, Gemma RMSNorm, fixed-chain metadata, and CUDA
+  toolchain support qualified in isolation. FlashInfer CUDA renormalization
+  replaced an accidental full-vocabulary Windows sorting fallback.
+- Aligned draft top-k 20 first improved real sampling while an eager per-depth
+  topology collapsed fixed work. Moving proposal transforms and exact-q capture
+  into the single multi-step CUDA graph restored fixed work to `167.776 tok/s`.
+- The resulting unsimulated production line reached **122.712 tok/s** over ten
+  real samples, median `122.371`, peak `137.074`, with acceptance mean `2.318174`.
+
+### 13:27–14:51 — qualify native gates and close draft quantization
+
+- A bit-exact native BF16 attention sigmoid gate contributed to a new safe
+  fixed control of **171.263 tok/s**.
+- Windows online FP8, MXFP8, and dense NVFP4 mechanisms were repaired through
+  registry, loader, quantizer, backend, and graph-capture boundaries.
+- Full MTP FP8 reached `167.023`, MXFP8 `163.457`, and dense NVFP4 `164.094
+  tok/s` fixed. All remain opt-in compatibility/capacity mechanisms; BF16 MTP
+  stayed selected for throughput.
+- Three-step full acceptance produced one external `201.251 tok/s` sample,
+  proving compute feasibility. Honest sampled three-step averaged `117.239`,
+  and proposal top-k 8 also lost. Useful work per verification remained the
+  binding problem.
+
+### 14:56–15:18 — evaluate and close the Gittensor checkpoint branch
+
+- Downloaded and verified the 25-file Gittensor RTX 5090 ModelOpt FP4
+  checkpoint without mutating the source artifact.
+- Windows `modelopt_fp4` registration enabled exact 200K serving. The checkpoint
+  reduced target residency and improved acceptance/prefill, yet reached only
+  `154.883 tok/s` fixed and `119.092 tok/s` real.
+- The user closed the hybrid-lm-head branch and restored RadixArk as the
+  production reference.
+
+### 15:22–16:44 — build and measure an exact recurrent tree verifier
+
+- Added an exact GPU target-only tree sampler, low-rank GDN tree replay, and
+  accepted-path recurrent/conv state commit for native Windows. Distribution,
+  production-stride, CUDA-graph replay, and commit tests passed.
+- Root-heavy M12 served correctly and reasoned `37 * 19 = 703`, but produced
+  about three tokens per traversal. Depth-only M16, aligned scoring, M8 width,
+  and scalar depth discount all lost on yield or cycle cost.
+- Trace analysis measured roughly `24.431 ms` of captured work per M12 cycle;
+  the topology needed more useful output than its five-token maximum could
+  deliver at the historical 200 tok/s target.
+
+### 16:44–18:31 — qualify exact SWOR and exhaust current-q topology search
+
+- Implemented exact sampling without replacement, fixed irregular topologies,
+  uniform proposal fallback, and native distribution/graph-replay coverage.
+- Replaced repeated dense residual scans with a shared-memory path for supports
+  up to 64 entries, reducing verifier cost from `1.350 ms` to `0.359 ms` per
+  cycle while retaining a dense fallback.
+- The first M12 SWOR topology emitted `2.9653` tokens/traversal and averaged
+  only `84.713 tok/s`. Path oracles measured a dominant rank-zero spine and
+  declining deeper sibling value.
+- Offline cost/yield search reached only `3.9800` expected outputs with measured
+  decay and `4.0921` under an optimistic no-decay model. Topology rearrangement
+  at the current q distribution was closed; overlap and per-depth cost became
+  the conditions for a future reopening.
+
+### 18:31–19:06 — preserve experiments, reject 232K, and complete the goal
+
+- Committed the exact tree/SWOR verifier, recurrent commit, sparse CUDA path,
+  path/overlap oracles, topology tools, tests, and trace evidence behind opt-in
+  controls. Production defaults remained linear.
+- Restored the qualified RadixArk linear server and passed a sampled smoke with
+  reasoning/tools and language-only surface intact.
+- A requested 232K pool captured and completed exact `231000+16`, yet left only
+  98 MiB free before cache flush. The user rejected that operating margin.
+- Restored both launcher defaults to 200K, captured all three speculative graph
+  phases with 1.84 GiB reported headroom, and marked the exhaustive NVFP4
+  optimization goal complete.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
 
 | Topic | Current value | Supersedes |
 |---|---|---|
-| Fixed `6213/512` | `159.973 tok/s` | `156.968`, `135.167`, `133.232`, `126.615`, `86.016` |
-| Real sampled `6213/512` | `117.794 tok/s` ten-run mean | `110.750`, `98.126`, `96.110`, `94.319` |
+| Fixed `6213/512` | `171.263 tok/s` safe five-run mean | `167.776`, `162.726`, `159.973`, `156.968`, `135.167`, `86.016` |
+| Real sampled `6213/512` | `122.712 tok/s` ten-run mean | `121.075`, `117.794`, `110.750`, `98.126`, `96.110` |
 | Near-limit `199000/16` | `2608.263` prompt, `102.358` generation tok/s | `2570.356`, `2429.153`, `2423.812`, `2200.563` prompt results |
+| Production capacity | `200000` context and token pools | rejected `232000` operating-margin experiment |
 | Speculation geometry | 2 steps / 3 draft tokens | 3 steps / 4 draft tokens |
 | Target verification | TRT-LLM MHA/XQA | FlashInfer-prefill verify route |
 | Draft extension | CUDA graph captured | eager draft extension |
-| Draft-q top-k alignment | disabled by default | rejected opt-in top-k 20 candidate |
+| Draft-q alignment | top-k 20 inside the single multi-step CUDA graph | eager/per-depth aligned proposal path |
+| Tree mode | opt-in exact target-only/SWOR infrastructure; linear production default | current-q M8/M12/depth/topology-only candidates |
