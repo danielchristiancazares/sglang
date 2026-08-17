@@ -21,6 +21,7 @@ from sglang.srt.environ import envs
 from sglang.srt.platforms.cpu import CpuSRTPlatform
 from sglang.srt.platforms.cuda import CudaSRTPlatform
 from sglang.srt.platforms.interface import SRTPlatform
+from sglang.srt.platforms.mps import MpsSRTPlatform
 from sglang.srt.platforms.rocm import RocmSRTPlatform
 from sglang.srt.platforms.xpu import XpuSRTPlatform
 from sglang.srt.plugins import PLATFORM_PLUGINS_GROUP, load_plugins_by_group
@@ -43,7 +44,11 @@ def _is_cpu_available() -> bool:
 
 
 def _is_xpu_available() -> bool:
-    return torch.xpu.is_available()
+    return hasattr(torch, "xpu") and torch.xpu.is_available()
+
+
+def _is_mps_available() -> bool:
+    return bool(torch.backends.mps.is_available())
 
 
 def _resolve_platform() -> SRTPlatform:
@@ -135,6 +140,9 @@ def _resolve_platform() -> SRTPlatform:
         if _is_xpu_available():
             logger.debug("No platform plugin detected. Using XPU SRTPlatform defaults.")
             return XpuSRTPlatform()
+        if _is_mps_available():
+            logger.debug("No platform plugin detected. Using MPS SRTPlatform defaults.")
+            return MpsSRTPlatform()
         logger.debug("No platform detected. Using base SRTPlatform.")
         return SRTPlatform()
 

@@ -30,7 +30,7 @@ from sglang.srt.speculative.spec_utils import (
     record_stream_each,
     record_stream_for_v2_verify,
 )
-from sglang.srt.utils import is_cpu
+from sglang.srt.utils import is_cpu, is_mps
 from sglang.srt.utils.async_probe import (
     maybe_detect_inf,
     maybe_detect_nan,
@@ -39,6 +39,7 @@ from sglang.srt.utils.async_probe import (
 from sglang.srt.utils.common import is_npu
 
 _is_cpu = is_cpu()
+_is_mps = is_mps()
 _is_npu = is_npu()
 
 if _is_cpu:
@@ -246,6 +247,16 @@ def prepare_for_draft(
                     req_to_token_pool.req_to_token.shape[1],
                     topk,
                     num_steps,
+                )
+            elif _is_mps:
+                rows = req_to_token_pool.req_to_token.index_select(
+                    0, batch.req_pool_indices.to(torch.long)
+                )
+                offsets = batch.seq_lens.to(torch.long).unsqueeze(1) + torch.arange(
+                    topk * num_steps, device=batch.device, dtype=torch.long
+                ).unsqueeze(0)
+                batch.out_cache_loc.copy_(
+                    torch.gather(rows, 1, offsets).reshape(-1)
                 )
             else:
                 # FIXME(lsyin): align with the default code path

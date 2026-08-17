@@ -7,6 +7,7 @@ import torch
 import torch.library
 
 from sglang.kernel_api_logging import debug_torch_op
+from sglang.srt.utils.common import is_mps
 
 F = TypeVar("F", bound=Callable)
 
@@ -117,6 +118,11 @@ def register_custom_op(
         extra_kwargs["out_shape"] = None
 
     def decorator(op_func: Callable) -> Callable:
+        if is_mps():
+            # MPS runs eagerly in this backend. PyTorch's pre-2.4 custom-op
+            # schema API cannot express the mutated-argument contracts used
+            # throughout SGLang, so preserve the Python implementation.
+            return op_func
         wrapper = CustomOpWrapper(
             op_name=op_name or op_func.__name__,
             op_func=op_func,

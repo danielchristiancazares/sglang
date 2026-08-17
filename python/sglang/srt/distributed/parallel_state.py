@@ -26,6 +26,7 @@ If you only need to use the distributed environment without model/pipeline
 
 import contextlib
 import gc
+import inspect
 import logging
 import os
 import pickle
@@ -84,6 +85,20 @@ REDUCE_OP_SUM = int(torch.distributed.ReduceOp.SUM)
 # Reuse the user-provided distributed timeout for model-parallel subgroup
 # creation so runtime collectives do not silently fall back to backend defaults.
 _MODEL_PARALLEL_GROUP_TIMEOUT: Optional[timedelta] = None
+
+_NEW_GROUP_SUPPORTS_GROUP_DESC = (
+    "group_desc" in inspect.signature(torch.distributed.new_group).parameters
+)
+
+
+def _new_group(*args, group_desc: str, **kwargs):
+    """Create a process group across PyTorch versions.
+
+    ``group_desc`` was added after the final Intel macOS PyTorch release.
+    """
+    if _NEW_GROUP_SUPPORTS_GROUP_DESC:
+        kwargs["group_desc"] = group_desc
+    return torch.distributed.new_group(*args, **kwargs)
 
 
 def get_torch_distributed_pg_options(group_name=None):
@@ -363,14 +378,14 @@ class GroupCoordinator:
 
                 active_ranks = pg_active_ranks[: len(ranks)]
                 active_ranks_cpu = pg_active_ranks_cpu[: len(ranks)]
-                device_group = torch.distributed.new_group(
+                device_group = _new_group(
                     ranks,
                     backend="mooncake",
                     pg_options=dev_opts,
                     timeout=subgroup_timeout,
                     group_desc=f"{group_name}:device",
                 )
-                cpu_group = torch.distributed.new_group(
+                cpu_group = _new_group(
                     ranks,
                     backend="mooncake-cpu",
                     pg_options=cpu_opts,
@@ -383,7 +398,7 @@ class GroupCoordinator:
                 )
                 active_ranks_cpu = torch.ones(len(ranks), dtype=torch.int32)
                 pg_options = get_torch_distributed_pg_options(group_name)
-                device_group = torch.distributed.new_group(
+                device_group = _new_group(
                     ranks,
                     backend=torch_distributed_backend,
                     pg_options=pg_options,
@@ -392,7 +407,7 @@ class GroupCoordinator:
                 )
                 # a group with `gloo` backend, to allow direct coordination
                 # between processes through the CPU.
-                cpu_group = torch.distributed.new_group(
+                cpu_group = _new_group(
                     ranks,
                     backend="gloo",
                     timeout=gloo_timeout,

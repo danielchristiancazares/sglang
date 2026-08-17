@@ -525,7 +525,7 @@ def get_available_gpu_memory(
             free_gpu_memory = psutil.virtual_memory().available
         free_gpu_memory, total_gpu_memory = torch.musa.mem_get_info()
     elif device == "mps":
-        free_gpu_memory = psutil.virtual_memory().available
+        free_gpu_memory, _ = current_platform.get_available_memory(gpu_id)
     else:
         if not current_platform.is_out_of_tree():
             raise ValueError(
@@ -836,6 +836,8 @@ def get_device_memory_capacity(device: str = None):
         gpu_mem = get_xpu_memory_capacity()
     elif device == "musa":
         gpu_mem = get_mtgpu_memory_capacity()
+    elif device == "mps":
+        gpu_mem = current_platform.get_device_total_memory() / (1 << 20)
     else:
         # GPU memory is not known yet or no GPU is available.
         gpu_mem = None
@@ -1510,7 +1512,7 @@ def set_random_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    if torch.xpu.is_available():
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
         torch.xpu.manual_seed_all(seed)
 
 
@@ -2804,7 +2806,7 @@ def direct_register_custom_op(
         # for pytorch 2.4
         import torch._custom_op.impl
 
-        schema_str = torch._custom_op.impl.infer_schema(op_func, mutates_args)
+        schema_str = torch._custom_op.impl.infer_schema(op_func)
 
     try:
         my_lib.define(op_name + schema_str)
@@ -2815,6 +2817,8 @@ def direct_register_custom_op(
             my_lib.impl(op_name, op_func, "XPU")
         elif is_musa():
             my_lib.impl(op_name, op_func, "MUSA")
+        elif is_mps():
+            my_lib.impl(op_name, op_func, "MPS")
         else:
             my_lib.impl(op_name, op_func, "CUDA")
         if fake_impl is not None:

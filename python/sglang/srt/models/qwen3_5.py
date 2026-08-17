@@ -15,7 +15,9 @@
 """Inference-only Qwen3.5 model and Qwen3.5 MoE model compatible with HuggingFace weights."""
 
 import logging
+import os
 import sys
+import time
 from functools import lru_cache
 from typing import Iterable, Optional, Set, Tuple, Union
 
@@ -262,6 +264,7 @@ from sglang.srt.utils import (
     is_cuda,
     is_gfx95_supported,
     is_hip,
+    is_mps,
     is_npu,
     is_xpu,
     make_layers,
@@ -276,6 +279,7 @@ _is_npu = is_npu()
 _is_cpu = is_cpu()
 _is_gfx95 = is_gfx95_supported()
 _is_hip = is_hip()
+_is_mps = is_mps()
 _is_xpu = is_xpu()
 _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
 _hip_use_alt_stream = get_bool_env_var("SGLANG_ALT_STREAM") and _is_hip
@@ -393,6 +397,40 @@ def _restore_gguf_qwen35_linear_attention_tensor(
         return torch.cat((qk, v), dim=0)
 
     return tensor
+
+
+def _remap_gguf_f32_linear_param(
+    params_dict: dict[str, nn.Parameter],
+    name: str,
+    loaded_weight: torch.Tensor,
+    shard_id=None,
+) -> str:
+    """Route an unquantized GGUF matrix through GGUF parameter storage.
+
+    GGUF's iterator normally names F32 tensors ``weight`` and omits a type
+    record.  A fused linear constructed under GGUF owns ``qweight`` even when
+    one of its source shards happens to be F32 (Qwen3.5's GDN a/b projections
+    are the important case).  Synthesize the F32 type record and return the
+    actual parameter name when that layout is present.
+    """
+    if loaded_weight.dtype != torch.float32 or not name.endswith(".weight"):
+        return name
+
+    qweight_name = f"{name[:-len('weight')]}qweight"
+    qtype_name = f"{name[:-len('weight')]}qweight_type"
+    if qweight_name not in params_dict or qtype_name not in params_dict:
+        return name
+
+    from gguf import GGMLQuantizationType as WeightType
+
+    qtype = params_dict[qtype_name]
+    qtype_value = torch.tensor(int(WeightType.F32), dtype=qtype.dtype)
+    qtype_loader = getattr(qtype, "weight_loader", default_weight_loader)
+    if shard_id is None:
+        qtype_loader(qtype, qtype_value)
+    else:
+        qtype_loader(qtype, qtype_value, shard_id)
+    return qweight_name
 
 
 def _disable_shared_experts_fusion() -> bool:
@@ -618,7 +656,11 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             eps=self.layer_norm_epsilon,
             group_size=None,
             norm_before_gate=True,
-            device=torch.get_device_module().current_device(),
+            device=(
+                torch.device("mps")
+                if _is_mps
+                else torch.get_device_module().current_device()
+            ),
             dtype=torch.get_default_dtype(),
             **(
                 {"activation": self.output_gate_type}
@@ -638,6 +680,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             tp_size=self.attn_tp_size,
             prefix=add_prefix("out_proj", prefix),
         )
+        self._mps_profiled_stages = False
 
     @staticmethod
     def _override_weight_loader(param, loader):
@@ -908,11 +951,50 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         2. Core attention (custom op)
         3. Output projection
         """
+        profile_stages = (
+            _is_mps
+            and os.environ.get("SGLANG_MPS_PROFILE_STAGES") == "1"
+            and not self._mps_profiled_stages
+            and hidden_states.shape[0]
+            == int(os.environ.get("SGLANG_MPS_PROFILE_BATCH_SIZE", "8"))
+            and self.layer_id
+            == int(os.environ.get("SGLANG_MPS_PROFILE_STAGE_LAYER", "8"))
+            and forward_batch.forward_mode.is_decode()
+        )
+        if profile_stages:
+            torch.mps.synchronize()
+            stage_start = time.perf_counter()
+
+        def mark_stage(name: str) -> None:
+            nonlocal stage_start
+            if not profile_stages:
+                return
+            torch.mps.synchronize()
+            now = time.perf_counter()
+            logger.warning(
+                "MPS GDN layer %d stage %s: %.3f ms",
+                self.layer_id,
+                name,
+                (now - stage_start) * 1000,
+            )
+            stage_start = now
+
         projected_states_qkvz, projected_states_ba = self._forward_input_proj(
             hidden_states
         )
+        mark_stage("input_proj")
 
-        if (
+        if _is_mps:
+            from sglang.srt.hardware_backend.mps.ops import pack_gdn_inputs
+
+            mixed_qkv, z, b, a = pack_gdn_inputs(
+                projected_states_qkvz,
+                projected_states_ba,
+                self.key_dim // self.attn_tp_size,
+                self.value_dim // self.attn_tp_size,
+                self.num_v_heads // self.attn_tp_size,
+            )
+        elif (
             self.num_v_heads // self.num_k_heads in _GDN_FUSED_QKVZBA_RATIOS
             and not _is_npu
         ):
@@ -941,6 +1023,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                 lambda x: x.reshape(x.shape[0], -1), (query, key, value)
             )
             mixed_qkv = torch.cat((query, key, value), dim=-1)
+        mark_stage("pack_qkvzba")
 
         core_attn_out = self.attn(
             forward_batch,
@@ -948,23 +1031,45 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             a=a,
             b=b,
         )
+        mark_stage("gdn_core_and_conv")
 
-        z_shape_og = z.shape
-        # reshape input data into 2D tensor
-        core_attn_out = core_attn_out.reshape(-1, core_attn_out.shape[-1])
-        z = z.reshape(-1, z.shape[-1])
+        if _is_mps and self._gguf_output_projection_uses_tiled_v_heads:
+            from sglang.srt.hardware_backend.mps.ops import (
+                gdn_gated_rmsnorm_reorder,
+            )
 
-        # Add padding for DP-Attn
-        if core_attn_out.shape != z.shape:
-            core_attn_out_pad = torch.zeros_like(z)
-            core_attn_out_pad[: core_attn_out.shape[0], :] = core_attn_out
-            core_attn_out = core_attn_out_pad
+            batch_size = z.shape[0]
+            core_attn_out = gdn_gated_rmsnorm_reorder(
+                core_attn_out.reshape(
+                    batch_size, self.num_v_heads, self.head_v_dim
+                ),
+                z.reshape(batch_size, self.num_v_heads, self.head_v_dim),
+                self.norm.weight,
+                self.num_k_heads,
+                self.num_v_heads,
+                self.head_v_dim,
+                self.norm.eps,
+            ).reshape(batch_size, self.value_dim)
+        else:
+            z_shape_og = z.shape
+            # reshape input data into 2D tensor
+            core_attn_out = core_attn_out.reshape(-1, core_attn_out.shape[-1])
+            z = z.reshape(-1, z.shape[-1])
 
-        core_attn_out = self.norm(core_attn_out, z)
-        core_attn_out = core_attn_out.reshape(z_shape_og)
-        core_attn_out = core_attn_out.reshape(*core_attn_out.shape[:-2], -1)
+            # Add padding for DP-Attn
+            if core_attn_out.shape != z.shape:
+                core_attn_out_pad = torch.zeros_like(z)
+                core_attn_out_pad[: core_attn_out.shape[0], :] = core_attn_out
+                core_attn_out = core_attn_out_pad
 
-        if self._gguf_output_projection_uses_tiled_v_heads:
+            core_attn_out = self.norm(core_attn_out, z)
+            core_attn_out = core_attn_out.reshape(z_shape_og)
+            core_attn_out = core_attn_out.reshape(
+                *core_attn_out.shape[:-2],
+                core_attn_out.shape[-2] * core_attn_out.shape[-1],
+            )
+
+        if self._gguf_output_projection_uses_tiled_v_heads and not _is_mps:
             # llama.cpp converts the quantized output projection's input
             # columns to tiled V-head order. Reorder its activation the same
             # way so the dot product retains the original HF semantics.
@@ -975,8 +1080,12 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                 self.num_v_heads,
                 self.head_v_dim,
             )
+        mark_stage("gated_norm_and_reorder")
 
         output, _ = self.out_proj(core_attn_out)
+        mark_stage("out_proj")
+        if profile_stages:
+            self._mps_profiled_stages = True
         return output
 
 
@@ -1061,6 +1170,7 @@ class Qwen3_5LinearDecoderLayer(nn.Module):
             enable_fused_ar_quant=enable_fused_ar_quant,
             fused_ar_quant_keep_bf16=enable_fused_ar_quant,
         )
+        self._mps_profiled_decoder_stages = False
 
     def forward(
         self,
@@ -1069,6 +1179,33 @@ class Qwen3_5LinearDecoderLayer(nn.Module):
         **kwargs,
     ):
         forward_batch = kwargs.get("forward_batch", None)
+        profile_stages = (
+            _is_mps
+            and os.environ.get("SGLANG_MPS_PROFILE_STAGES") == "1"
+            and not self._mps_profiled_decoder_stages
+            and hidden_states.shape[0]
+            == int(os.environ.get("SGLANG_MPS_PROFILE_BATCH_SIZE", "8"))
+            and self.layer_id
+            == int(os.environ.get("SGLANG_MPS_PROFILE_STAGE_LAYER", "8"))
+            and forward_batch.forward_mode.is_decode()
+        )
+        if profile_stages:
+            torch.mps.synchronize()
+            stage_start = time.perf_counter()
+
+        def mark_stage(name: str) -> None:
+            nonlocal stage_start
+            if not profile_stages:
+                return
+            torch.mps.synchronize()
+            now = time.perf_counter()
+            logger.warning(
+                "MPS decoder layer %d stage %s: %.3f ms",
+                self.layer_id,
+                name,
+                (now - stage_start) * 1000,
+            )
+            stage_start = now
 
         hidden_states, residual = (
             self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
@@ -1080,17 +1217,20 @@ class Qwen3_5LinearDecoderLayer(nn.Module):
                 ),
             )
         )
+        mark_stage("input_residual_norm")
 
         if not forward_batch.forward_mode.is_idle():
             hidden_states = self.linear_attn(
                 hidden_states,
                 forward_batch,
             )
+        mark_stage("linear_attention_total")
 
         # Fully Connected
         hidden_states, residual = self.layer_communicator.prepare_mlp(
             hidden_states, residual, forward_batch
         )
+        mark_stage("post_attention_residual_norm")
 
         mlp_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
             forward_batch
@@ -1112,12 +1252,16 @@ class Qwen3_5LinearDecoderLayer(nn.Module):
                 )
             else:
                 hidden_states = self.mlp(hidden_states)
+        mark_stage("mlp_total")
         if fuse_mlp_allreduce:
             hidden_states._sglang_needs_allreduce_fusion = True
         else:
             hidden_states, residual = self.layer_communicator.postprocess_layer(
                 hidden_states, residual, forward_batch
             )
+        mark_stage("postprocess")
+        if profile_stages:
+            self._mps_profiled_decoder_stages = True
 
         return hidden_states, residual
 
@@ -1458,7 +1602,14 @@ class Qwen3_5AttentionDecoderLayer(nn.Module):
         attn_output = self.attn(q, k, v, forward_batch)
 
         if self.attn_output_gate:
-            if not _is_npu:
+            if _is_mps:
+                from sglang.srt.hardware_backend.mps.ops import sigmoid_mul_inplace
+
+                gate_value = (
+                    gate.reshape(gate.shape[0], -1) if gate.ndim == 3 else gate
+                )
+                attn_output = sigmoid_mul_inplace(attn_output, gate_value)
+            elif not _is_npu:
                 attn_output = fused_sigmoid_mul(attn_output, gate, inplace=True)
             else:
                 gate_val = gate.reshape(gate.shape[0], -1) if gate.ndim == 3 else gate
@@ -1672,6 +1823,7 @@ class Qwen3_5ForCausalLM(nn.Module):
             self.norm = PPMissingLayer()
 
         self.layers_to_capture = []
+        self._mps_profiled_decode = False
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -1712,6 +1864,37 @@ class Qwen3_5ForCausalLM(nn.Module):
             residual = pp_proxy_tensors["residual"]
 
         aux_hidden_states = []
+        validate_mps_layers = (
+            _is_mps and os.environ.get("SGLANG_MPS_VALIDATE_LAYERS") == "1"
+        )
+
+        def validate_mps_tensor(name: str, tensor: Optional[torch.Tensor]) -> None:
+            if not validate_mps_layers or tensor is None or tensor.numel() == 0:
+                return
+            finite_rows = torch.isfinite(tensor.reshape(tensor.shape[0], -1)).all(
+                dim=1
+            )
+            if bool(finite_rows.all().item()):
+                return
+            bad_rows = (~finite_rows).nonzero().flatten().cpu().tolist()
+            raise RuntimeError(
+                f"Non-finite MPS activations after {name}; "
+                f"mode={forward_batch.forward_mode}, shape={tuple(tensor.shape)}, "
+                f"bad_rows={bad_rows[:32]}"
+            )
+
+        validate_mps_tensor("embedding", hidden_states)
+        profile_mps_decode = (
+            _is_mps
+            and os.environ.get("SGLANG_MPS_PROFILE_LAYERS") == "1"
+            and not self._mps_profiled_decode
+            and forward_batch.forward_mode.is_decode()
+            and hidden_states.shape[0]
+            == int(os.environ.get("SGLANG_MPS_PROFILE_BATCH_SIZE", "1"))
+        )
+        if profile_mps_decode:
+            torch.mps.synchronize()
+            profile_start = time.perf_counter()
         # Pass through decoder layers
         for layer_idx in range(self.start_layer, self.end_layer):
             layer = self.layers[layer_idx]
@@ -1729,6 +1912,18 @@ class Qwen3_5ForCausalLM(nn.Module):
                         else None
                     ),
                 )
+            validate_mps_tensor(f"layer {layer_idx} hidden", hidden_states)
+            validate_mps_tensor(f"layer {layer_idx} residual", residual)
+            if profile_mps_decode:
+                torch.mps.synchronize()
+                now = time.perf_counter()
+                logger.warning(
+                    "MPS decode layer %d (%s): %.3f ms",
+                    layer_idx,
+                    layer.__class__.__name__,
+                    (now - profile_start) * 1000,
+                )
+                profile_start = now
 
             # Process deepstack embeddings if provided
             if (
@@ -1756,8 +1951,11 @@ class Qwen3_5ForCausalLM(nn.Module):
                 hidden_states = self.norm(hidden_states)
             else:
                 hidden_states, _ = self.norm(hidden_states, residual)
+        validate_mps_tensor("final norm", hidden_states)
 
         if len(aux_hidden_states) == 0:
+            if profile_mps_decode:
+                self._mps_profiled_decode = True
             return hidden_states
 
         return hidden_states, aux_hidden_states
@@ -1843,6 +2041,10 @@ class Qwen3_5ForCausalLM(nn.Module):
                 # Skip layers on other devices.
                 # if is_pp_missing_parameter(name, self):
                 #     continue
+                if self._is_gguf:
+                    name = _remap_gguf_f32_linear_param(
+                        params_dict, name, loaded_weight, shard_id
+                    )
                 if name not in params_dict:
                     continue
                 param = params_dict[name]
@@ -1853,6 +2055,10 @@ class Qwen3_5ForCausalLM(nn.Module):
                 # Skip loading extra bias for GPTQ models.
                 if name.endswith(".bias") and name not in params_dict:
                     continue
+                if self._is_gguf:
+                    name = _remap_gguf_f32_linear_param(
+                        params_dict, name, loaded_weight
+                    )
                 if name not in params_dict:
                     logger.warning(f"Parameter {name} not found in params_dict")
                     continue
@@ -2129,20 +2335,39 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration):
         return int(getattr(cfg, "num_hidden_layers", 0))
 
     def get_embed_and_head(self):
-        embed = self.model.embed_tokens.weight if self.pp_group.is_first_rank else None
-        head = self.lm_head.weight if self.pp_group.is_last_rank else None
+        def shareable_weight(module):
+            if hasattr(module, "weight"):
+                return module.weight
+            return module.qweight, module.qweight_type
+
+        embed = (
+            shareable_weight(self.model.embed_tokens)
+            if self.pp_group.is_first_rank
+            else None
+        )
+        head = shareable_weight(self.lm_head) if self.pp_group.is_last_rank else None
         return embed, head
 
     def set_embed_and_head(self, embed, head):
+        def set_shareable_weight(module, shared):
+            if isinstance(shared, tuple):
+                del module.qweight
+                del module.qweight_type
+                module.qweight, module.qweight_type = shared
+            else:
+                del module.weight
+                module.weight = shared
+
         if self.pp_group.is_first_rank and embed is not None:
-            del self.model.embed_tokens.weight
-            self.model.embed_tokens.weight = embed
+            set_shareable_weight(self.model.embed_tokens, embed)
         if self.pp_group.is_last_rank and head is not None:
-            del self.lm_head.weight
-            self.lm_head.weight = head
+            set_shareable_weight(self.lm_head, head)
         if _is_xpu:
             torch.xpu.empty_cache()
             torch.xpu.synchronize()
+        elif _is_mps:
+            torch.mps.empty_cache()
+            torch.mps.synchronize()
         else:
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
@@ -2172,8 +2397,30 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration):
                 continue
             if "language_model" in name:
                 name = name.replace(r"model.language_model.", r"model.")
+            if getattr(self.model, "_is_gguf", False):
+                loaded_weight = _restore_gguf_qwen35_linear_attention_tensor(
+                    name, loaded_weight, self.config
+                )
+                if name.endswith(".linear_attn.A_log"):
+                    if not torch.all(loaded_weight < 0):
+                        raise ValueError("GGUF Qwen ssm_a must contain negative decays")
+                    loaded_weight = loaded_weight.neg().log()
+                if (
+                    name in ("norm.weight", "model.norm.weight")
+                    or name.endswith(
+                        (
+                            ".input_layernorm.weight",
+                            ".post_attention_layernorm.weight",
+                            ".self_attn.q_norm.weight",
+                            ".self_attn.k_norm.weight",
+                        )
+                    )
+                ):
+                    loaded_weight = loaded_weight - 1
             if ".self_attn." in name:
                 name = name.replace(".self_attn", "")
+            if name.endswith(".linear_attn.conv1d.weight") and loaded_weight.ndim == 2:
+                loaded_weight = loaded_weight.unsqueeze(1)
             if (
                 self.config.tie_word_embeddings
                 and self.pp_group.is_last_rank
@@ -2207,6 +2454,10 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration):
                 # Skip layers on other devices.
                 # if is_pp_missing_parameter(name, self):
                 #     continue
+                if getattr(self.model, "_is_gguf", False):
+                    name = _remap_gguf_f32_linear_param(
+                        params_dict, name, loaded_weight, shard_id
+                    )
                 if name not in params_dict:
                     continue
                 param = params_dict[name]
@@ -2223,6 +2474,10 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration):
                 # Skip loading extra bias for GPTQ models.
                 if name.endswith(".bias") and name not in params_dict:
                     continue
+                if getattr(self.model, "_is_gguf", False):
+                    name = _remap_gguf_f32_linear_param(
+                        params_dict, name, loaded_weight
+                    )
                 if name not in params_dict:
                     logger.warning(f"Parameter {name} not found in params_dict")
                     continue

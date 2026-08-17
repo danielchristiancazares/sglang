@@ -16,6 +16,25 @@ if TYPE_CHECKING:
     from sglang.srt.model_executor.model_runner import ModelRunner
 
 
+_SDPA_HAS_ENABLE_GQA = "enable_gqa" in (
+    scaled_dot_product_attention.__doc__ or ""
+)
+
+
+def _sdpa(query, key, value, *, enable_gqa: bool, **kwargs):
+    if enable_gqa and not _SDPA_HAS_ENABLE_GQA:
+        if query.size(-3) % key.size(-3) != 0:
+            raise ValueError(
+                "Query heads must be divisible by KV heads for grouped-query attention"
+            )
+        repeats = query.size(-3) // key.size(-3)
+        key = key.repeat_interleave(repeats, dim=-3)
+        value = value.repeat_interleave(repeats, dim=-3)
+    if _SDPA_HAS_ENABLE_GQA:
+        kwargs["enable_gqa"] = enable_gqa
+    return scaled_dot_product_attention(query, key, value, **kwargs)
+
+
 class TorchNativeAttnBackend(AttentionBackend):
     def __init__(self, model_runner: ModelRunner):
         super().__init__()
@@ -31,6 +50,7 @@ class TorchNativeAttnBackend(AttentionBackend):
         )
         # full->SWA translated out_cache_loc, computed once per forward
         self.swa_out_cache_loc = None
+        self.seq_lens_override = None
 
     @staticmethod
     def _make_sliding_window_mask(
@@ -157,7 +177,7 @@ class TorchNativeAttnBackend(AttentionBackend):
                 is_causal = False
 
             per_req_out_redudant = (
-                scaled_dot_product_attention(
+                _sdpa(
                     per_req_query_redudant.unsqueeze(0),
                     per_req_key.unsqueeze(0),
                     per_req_value.unsqueeze(0),
@@ -259,7 +279,7 @@ class TorchNativeAttnBackend(AttentionBackend):
                 is_causal = False
 
             per_req_out = (
-                scaled_dot_product_attention(
+                _sdpa(
                     per_req_query.unsqueeze(0),
                     per_req_key.unsqueeze(0),
                     per_req_value.unsqueeze(0),
@@ -309,6 +329,23 @@ class TorchNativeAttnBackend(AttentionBackend):
         if layer.is_cross_attention or layer.attn_type == AttentionType.ENCODER_ONLY:
             causal = False
 
+        seq_lens = forward_batch.seq_lens
+        extend_prefix_lens = forward_batch.extend_prefix_lens
+        extend_seq_lens = forward_batch.extend_seq_lens
+        if (
+            forward_batch.forward_mode.is_target_verify()
+            and extend_prefix_lens is None
+        ):
+            tokens_per_req = forward_batch.spec_info.num_tokens_per_req
+            extend_prefix_lens = forward_batch.seq_lens.to(torch.int32)
+            extend_seq_lens = torch.full(
+                (forward_batch.batch_size,),
+                tokens_per_req,
+                dtype=torch.int32,
+                device=forward_batch.seq_lens.device,
+            )
+            seq_lens = forward_batch.seq_lens + tokens_per_req
+
         self._run_sdpa_forward_extend(
             q_,
             o_,
@@ -316,9 +353,9 @@ class TorchNativeAttnBackend(AttentionBackend):
             self.token_to_kv_pool.get_value_buffer(layer.layer_id),
             self.req_to_token_pool.req_to_token,
             forward_batch.req_pool_indices,
-            forward_batch.seq_lens,
-            forward_batch.extend_prefix_lens,
-            forward_batch.extend_seq_lens,
+            seq_lens,
+            extend_prefix_lens,
+            extend_seq_lens,
             forward_batch.encoder_lens,
             scaling=layer.scaling,
             enable_gqa=use_gqa,
@@ -363,6 +400,49 @@ class TorchNativeAttnBackend(AttentionBackend):
         else:
             cache_loc = forward_batch.out_cache_loc
 
+        seq_lens = (
+            self.seq_lens_override
+            if self.seq_lens_override is not None
+            else forward_batch.seq_lens
+        )
+
+        if (
+            q.device.type == "mps"
+            and save_kv_cache
+            and k is not None
+            and v is not None
+            and not layer.is_cross_attention
+            and layer.qk_head_dim == layer.v_head_dim
+            and getattr(
+                getattr(
+                    self.token_to_kv_pool,
+                    "full_kv_pool",
+                    self.token_to_kv_pool,
+                ),
+                "kv_cache_layout",
+                None,
+            )
+            == "nhd"
+            and (
+                layer.sliding_window_size is None
+                or layer.sliding_window_size <= -1
+            )
+        ):
+            from sglang.srt.hardware_backend.mps.ops import decode_gqa
+
+            return decode_gqa(
+                q,
+                k,
+                v,
+                self.token_to_kv_pool.get_key_buffer(layer.layer_id),
+                self.token_to_kv_pool.get_value_buffer(layer.layer_id),
+                cache_loc,
+                self.req_to_token_pool.req_to_token,
+                forward_batch.req_pool_indices,
+                seq_lens,
+                layer.scaling,
+            )
+
         if save_kv_cache and k is not None and v is not None:
             self.token_to_kv_pool.set_kv_buffer(
                 layer, KVWriteLoc(cache_loc, self.swa_out_cache_loc), k, v
@@ -380,7 +460,7 @@ class TorchNativeAttnBackend(AttentionBackend):
             self.token_to_kv_pool.get_value_buffer(layer.layer_id),
             self.req_to_token_pool.req_to_token,
             forward_batch.req_pool_indices,
-            forward_batch.seq_lens,
+            seq_lens,
             forward_batch.encoder_lens,
             scaling=layer.scaling,
             enable_gqa=use_gqa,
@@ -399,3 +479,38 @@ class TorchNativeAttnBackend(AttentionBackend):
 
     def support_triton(self):
         return False
+
+
+class TorchNativeMultiStepDraftBackend:
+    """Per-step native-attention views for a linear EAGLE/NEXTN chain."""
+
+    needs_cpu_seq_lens: bool = False
+
+    def __init__(self, model_runner: ModelRunner, topk: int, speculative_num_steps: int):
+        if topk != 1:
+            raise NotImplementedError(
+                "Torch-native speculative decode currently supports topk=1"
+            )
+        self.attn_backends = [
+            TorchNativeAttnBackend(model_runner)
+            for _ in range(speculative_num_steps - 1)
+        ]
+
+    def init_forward_metadata(self, forward_batch: ForwardBatch):
+        # The ordinary decode batch carries the committed prefix length.  Draft
+        # step i writes the token at prefix+i, then attends through prefix+i.
+        for step, backend in enumerate(self.attn_backends, start=1):
+            backend.seq_lens_override = forward_batch.seq_lens + step
+            backend.init_forward_metadata(forward_batch)
+
+    def init_cuda_graph_state(self, max_bs: int, max_num_tokens: int):
+        del max_bs, max_num_tokens
+
+    def init_forward_metadata_out_graph(
+        self, forward_batch: ForwardBatch, in_capture: bool = False
+    ):
+        del in_capture
+        self.init_forward_metadata(forward_batch)
+
+    def init_forward_metadata_in_graph(self, forward_batch: ForwardBatch):
+        del forward_batch

@@ -80,6 +80,10 @@ class SamplingBatchInfo:
     # Device
     device: str = "cuda"
 
+    # Largest finite top-k in this batch. Zero means at least one row uses the
+    # whole vocabulary, so the generic sampler must retain the full sort.
+    max_top_k: int = 0
+
     # Handle logit bias
     logit_bias: Optional[torch.Tensor] = None
 
@@ -212,6 +216,11 @@ class SamplingBatchInfo:
             custom_params=custom_params,
             custom_logit_processor=merged_custom_logit_processor,
             device=device,
+            max_top_k=(
+                0
+                if any(r.sampling_params.top_k == TOP_K_ALL for r in reqs)
+                else max((r.sampling_params.top_k for r in reqs), default=0)
+            ),
             logit_bias=logit_bias,
             return_sampling_masks=return_sampling_masks,
             sampling_mask_max_top_k=sampling_mask_max_top_k,
@@ -447,6 +456,11 @@ class SamplingBatchInfo:
         self.need_top_p_sampling |= other.need_top_p_sampling
         self.need_top_k_sampling |= other.need_top_k_sampling
         self.need_min_p_sampling |= other.need_min_p_sampling
+        self.max_top_k = (
+            max(self.max_top_k, other.max_top_k)
+            if self.max_top_k > 0 and other.max_top_k > 0
+            else 0
+        )
 
         self.adjusted_merge_batch(other)
 

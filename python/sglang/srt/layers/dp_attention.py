@@ -24,9 +24,13 @@ from sglang.srt.distributed import (
     get_tp_group,
     tensor_model_parallel_all_reduce,
 )
-from sglang.srt.distributed.device_communicators.pynccl_allocator import (
-    use_symmetric_memory,
-)
+try:
+    from sglang.srt.distributed.device_communicators.pynccl_allocator import (
+        use_symmetric_memory,
+    )
+except ImportError:
+    def use_symmetric_memory():
+        return False
 from sglang.srt.runtime_context import (
     configured_attn_cp_size,
     configured_moe_dp_size,

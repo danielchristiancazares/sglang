@@ -148,6 +148,7 @@ _PLATFORM_METHODS: Dict[str, Tuple[str, ...]] = {
     "cuda": ("forward_cuda",),
     "hip": ("forward_hip", "forward_cuda"),
     "musa": ("forward_musa",),
+    "mps": ("forward_mps",),
     "npu": ("forward_npu",),
     "xpu": ("forward_xpu",),
     "cpu": ("forward_cpu",),
@@ -173,6 +174,7 @@ def _platform_key() -> str:
         is_cuda,
         is_hip,
         is_musa,
+        is_mps,
         is_npu,
         is_xpu,
     )
@@ -189,6 +191,8 @@ def _platform_key() -> str:
         return "xpu"
     if is_musa():
         return "musa"
+    if is_mps():
+        return "mps"
     return ""
 
 

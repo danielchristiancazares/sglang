@@ -346,7 +346,10 @@ class TpModelWorker(BaseTpWorker):
             # tokenizer_path always points at the target model.
             self.tokenizer = self.processor = None
         else:
-            if self.model_config.is_multimodal:
+            if (
+                self.model_config.is_multimodal
+                and not server_args.language_model_only
+            ):
                 self.processor = get_processor(
                     server_args.tokenizer_path,
                     tokenizer_mode=server_args.tokenizer_mode,

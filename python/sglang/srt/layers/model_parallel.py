@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 try:
     import torch.distributed.tensor as dt
+    if not hasattr(dt, "Shard"):
+        import torch.distributed._tensor as dt
 except ImportError:
     # torch 2.4 or older
     import torch.distributed._tensor as dt

@@ -685,6 +685,34 @@ def scatter_mamba_states_after_mtp_verify(
     ssm_states = mamba_caches.temporal
     intermediate_state_cache = mamba_caches.intermediate_ssm
 
+    if isinstance(ssm_states, list):
+        # Intel MPS backs every recurrent layer with a separate buffer to stay
+        # below Metal's single-allocation limit.  Commit the accepted snapshots
+        # with direct tensor copies; the CUDA implementation below requires one
+        # layer-major allocation and a Triton kernel.
+        def scatter_mps(dst_indices, step_indices):
+            dst_cpu = dst_indices.detach().to("cpu", torch.int64)
+            step_cpu = step_indices.detach().to("cpu", torch.int64)
+            for request_idx, (dst_idx, step_idx) in enumerate(
+                zip(dst_cpu.tolist(), step_cpu.tolist())
+            ):
+                if step_idx < 0 or dst_idx < 0:
+                    continue
+                for layer_idx, dst_state in enumerate(ssm_states):
+                    dst_state[dst_idx].copy_(
+                        intermediate_state_cache[layer_idx, request_idx, step_idx]
+                    )
+                for dst_conv, src_conv in zip(
+                    mamba_caches.conv, mamba_caches.intermediate_conv_window
+                ):
+                    dst_conv[:, dst_idx].copy_(src_conv[:, request_idx, step_idx])
+
+        scatter_mps(state_indices_tensor, last_correct_step_indices)
+        if mamba_track_indices is not None:
+            assert mamba_steps_to_track is not None
+            scatter_mps(mamba_track_indices, mamba_steps_to_track)
+        return
+
     if ssm_states.numel() > 0:
         fused_mamba_state_scatter_with_mask(
             ssm_states,

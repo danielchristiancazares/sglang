@@ -24,7 +24,10 @@ from torch import nn
 from sglang.kernels.ops.activation.softcap import (
     softcap_inplace_logits as fused_softcap,
 )
-from sglang.srt.distributed.device_communicators import triton_symm_mem_ag
+try:
+    from sglang.srt.distributed.device_communicators import triton_symm_mem_ag
+except (ImportError, ModuleNotFoundError):
+    triton_symm_mem_ag = None
 from sglang.srt.layers.aux_hidden_states import (
     AuxHiddenStates,
     pack_aux_hidden_states,
@@ -319,13 +322,20 @@ class LogitsProcessor(nn.Module):
         self.enable_mis = get_exec().features.enable_mis
         self.rl_on_policy_target = get_exec().deterministic.rl_on_policy_target
 
-        self._logits_gatherer = triton_symm_mem_ag.MultimemAllGatherer(
-            max_tokens=triton_symm_mem_ag.recommended_max_tokens(
-                include_prefill=False, floor=128
-            ),
-            enabled=self.do_tensor_parallel_all_gather and not self.use_attn_tp_group,
-            skip_entry_sync=True,
-        )
+        if triton_symm_mem_ag is None:
+            assert not self.do_tensor_parallel_all_gather
+            self._logits_gatherer = lambda logits: logits
+        else:
+            self._logits_gatherer = triton_symm_mem_ag.MultimemAllGatherer(
+                max_tokens=triton_symm_mem_ag.recommended_max_tokens(
+                    include_prefill=False, floor=128
+                ),
+                enabled=(
+                    self.do_tensor_parallel_all_gather
+                    and not self.use_attn_tp_group
+                ),
+                skip_entry_sync=True,
+            )
 
         self.input_logprob_processor = InputLogprobProcessor()
 
