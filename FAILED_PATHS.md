@@ -383,8 +383,32 @@
 - Scope: top-k-greater-than-one EAGLE verification with the unified hybrid target pool, accepted target KV, compacted token/hidden rows, and the next draft cycle.
 - Attempted change: exercised a deterministic non-front accepted path `[0,3,7]` under a nonidentity virtual-to-physical map, then repeated alternating non-front paths through one captured graph while reclaiming rejected slots.
 - Benchmark evidence: the recorded M8/M12/M16 means of **97.352**, **94.685**, and **92.831 tok/s** remain useful execution-mechanism measurements only. They cannot support production promotion.
-- Correctness evidence: before repair, `HybridLinearKVPool.move_kv_cache` forwarded virtual ids directly into a physical unified backing pool and the minimal test mismatched four of six sentinel values. The multi-layer caller also explicitly disabled accepted-path front compaction while its downstream draft-extend indexing assumed it. The repair now passes MHA/MLA factory translation and a four-cycle captured serial-path comparison, but no corrected full-model tree qualification has run yet.
+- Correctness evidence: before repair, `HybridLinearKVPool.move_kv_cache` forwarded virtual ids directly into a physical unified backing pool and the minimal test mismatched four of six sentinel values. The multi-layer caller also explicitly disabled accepted-path front compaction while its downstream draft-extend indexing assumed it. Later reachability inspection confirmed the recorded M8/M12/M16 launches used `enable_unified_memory=False` and the single-layer worker's existing finalizer, so that low-level failure is not proof those exact runs were corrupted. Their full cross-cycle state parity remains unproven.
 - Failure mode: a non-front branch could copy sibling KV into the committed prefix or leave token/hidden state in tree order; a plausible completion and throughput number could therefore describe a state-corrupted trajectory.
 - Why not to retry unchanged: width, topology, branch-local penalties, and target-kernel work cannot make a correctness-invalid tree benchmark promotable.
 - Reopen only if: the repaired full model passes deterministic eager and captured multi-cycle non-front path parity, including target KV, request mapping, rejected-slot reclamation, recurrent state, terminal token/hidden state, and next-cycle proposal/logit comparison against a serial linear reference; then its ordinary sampled projection and two measured windows must exceed 200 tok/s with margin.
 - Related commit or revert: repair pending in the accepted-path correctness commit; prior tree infrastructure is `d0116b54e5766932a46e06e0a66c3672370eaff8`.
+
+## PERF-F034 - SWOR inside the raw child-graph composite
+
+- Hypothesis: cloning the existing draft graph into the extend/bridge/draft parent preserves SWOR proposal randomness automatically.
+- Scope: `CudaGraphChildSequence`, `torch.cuda.CUDAGraph` random kernels, and device-resident SWOR tree proposals.
+- Attempted change: audited how the composed parent launches retained child graphs and added an external-race replay test.
+- Benchmark evidence: prior device-cycle SWOR yield/TPS remains mechanism-only and cannot be used for a proposal-distribution claim.
+- Correctness evidence: `CudaGraphChildSequence.replay` calls `cudaGraphLaunch` directly. It bypasses `torch.cuda.CUDAGraph.replay`, which owns PyTorch generator-offset advancement. A raw child containing captured random sampling can therefore reuse its captured RNG offset. External caller-refreshed races change samples correctly through the same raw parent; the new CUDA regression test passes.
+- Failure mode: repeated or capture-stale SWOR random draws change the proposal law and can make acceptance/yield measurements look stable while sampling the wrong process.
+- Why not to retry unchanged: graph composition alone cannot advance PyTorch's child-graph RNG bookkeeping.
+- Reopen only if: every stochastic child consumes explicit caller-updated seed/offset or externally refreshed random inputs, and replay mutation/distribution tests pass before a server measurement.
+- Related commit or revert: device-resident SWOR is now rejected at worker initialization in the active uncommitted experiment.
+
+## PERF-F035 - Exact linear device-resident composite
+
+- Hypothesis: composing draft extend, the exact-q bridge, and next draft decode into one raw parent would remove enough host seam cost to beat the production linear cycle.
+- Scope: batch-one top-k-one EAGLE rejection sampling with the 200K production configuration.
+- Attempted change: implemented stable live sampling inputs and exact q; first used caller-refreshed full-vocabulary exponential races, then replaced them with FlashInfer categorical sampling driven by explicit graph-stable seed/offset tensors.
+- Benchmark evidence: dense-race form measured **122.576 tok/s** mean. Categorical form measured `115.058, 116.444, 120.530, 123.907, 124.434`, mean **120.075 tok/s**, versus the matched warmed control **124.775 tok/s**.
+- Correctness evidence: all requests returned exactly 512 sampled tokens with thinking enabled; short exact acceptance smoke passed; q(X), offset replay, proposal transforms, and raw child graph tests passed. Five categorical acceptance probes averaged **2.277991**, above control.
+- Failure mode: normalized execution cost remained higher. The categorical composite used **21.132 ms per verification cycle** over 1,124 cycles, while the ordinary linear path used **20.771 ms/cycle** over 1,163 cycles. Removing vocab-wide RNG recovered only part of the composite overhead.
+- Why not to retry unchanged: both RNG strategies lost with higher acceptance, isolating the composition/bridge path rather than proposal yield.
+- Reopen only if: graph-specific profiling identifies a removable parent/bridge cost of at least 0.4 ms/cycle or CUDA/PyTorch gains a composition API that preserves runner bookkeeping without the current bridge work.
+- Related commit or revert: retained opt-in in the pending exact linear device-cycle commit; launcher default remains off.

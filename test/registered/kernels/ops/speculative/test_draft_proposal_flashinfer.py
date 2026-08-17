@@ -9,6 +9,7 @@ from unittest.mock import patch
 import torch
 from flashinfer.sampling import top_k_renorm_prob, top_p_renorm_prob
 
+from sglang.srt.model_executor.cuda_graph_composite import CudaGraphChildSequence
 from sglang.srt.speculative.multi_layer_eagle_draft_extend_cuda_graph_runner import (
     MultiLayerEagleDraftExtendCudaGraphRunner,
 )
@@ -24,6 +25,60 @@ def _argmax_sample(probs: torch.Tensor, num_samples: int = 1):
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required for this test.")
 class TestDraftProposalFlashInfer(CustomTestCase):
+    def test_explicit_offset_refreshes_raw_composite_sampling(self):
+        batch_size = 32
+        vocab_size = 8192
+        logits = torch.zeros(
+            (batch_size, vocab_size), dtype=torch.float32, device="cuda"
+        )
+        sampling_info = SimpleNamespace(
+            temperatures=torch.ones((batch_size, 1), device="cuda"),
+            top_ps=torch.full((batch_size,), 0.95, device="cuda"),
+            acc_additive_penalties=None,
+            logit_bias=None,
+            need_top_p_sampling=True,
+        )
+        seed = torch.tensor([1701], dtype=torch.int64, device="cuda")
+        offset = torch.tensor([0], dtype=torch.int64, device="cuda")
+
+        # Warm the lazy FlashInfer sampling image before graph capture.
+        sample_draft_proposal(
+            logits,
+            sampling_info,
+            draft_sampling_top_k=20,
+            sampling_seed=seed,
+            sampling_offset=offset,
+        )
+        torch.cuda.synchronize()
+
+        graph = torch.cuda.CUDAGraph(keep_graph=True)
+        with torch.cuda.graph(graph):
+            q, q_x, token = sample_draft_proposal(
+                logits,
+                sampling_info,
+                draft_sampling_top_k=20,
+                sampling_seed=seed,
+                sampling_offset=offset,
+            )
+
+        with CudaGraphChildSequence((graph,)) as sequence:
+            offset.zero_()
+            sequence.replay()
+            torch.cuda.synchronize()
+            first = token.clone()
+            torch.testing.assert_close(q_x, q.gather(1, token), rtol=0, atol=0)
+
+            offset.zero_()
+            sequence.replay()
+            torch.cuda.synchronize()
+            torch.testing.assert_close(token, first, rtol=0, atol=0)
+
+            offset.fill_(batch_size * vocab_size)
+            sequence.replay()
+            torch.cuda.synchronize()
+            self.assertFalse(torch.equal(token, first))
+            torch.testing.assert_close(q_x, q.gather(1, token), rtol=0, atol=0)
+
     @patch(
         "sglang.srt.speculative.spec_utils.fast_sample",
         side_effect=_argmax_sample,

@@ -232,6 +232,33 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
                 self.draft_top_ps = None
                 self.draft_additive_penalties = None
 
+            # CudaGraphChildSequence launches the raw composed graph directly,
+            # bypassing torch.cuda.CUDAGraph.replay() and its generator-offset
+            # update. FlashInfer categorical sampling therefore reads explicit
+            # stable seed/offset tensors; replay advances the tiny offset vector
+            # before launching the parent instead of refreshing vocab-wide RNG.
+            self.device_cycle_sampling_seed = (
+                torch.tensor(
+                    [int(self.model_runner.server_args.random_seed)],
+                    dtype=torch.int64,
+                )
+                if eagle_worker.device_resident_cycle
+                and self.model_runner.server_args.speculative_use_rejection_sampling
+                else None
+            )
+            self.device_cycle_sampling_offsets = (
+                torch.arange(self.speculative_num_steps, dtype=torch.int64)
+                if self.device_cycle_sampling_seed is not None
+                else None
+            )
+            if self.device_cycle_sampling_seed is not None:
+                eagle_worker._device_cycle_sampling_seed = (
+                    self.device_cycle_sampling_seed
+                )
+                eagle_worker._device_cycle_sampling_offsets = (
+                    self.device_cycle_sampling_offsets
+                )
+
             if self.require_gathered_buffer:
                 if self.require_mlp_tp_gather:
                     global_num_tokens_gpu = torch.zeros(
@@ -308,6 +335,70 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
     def _make_graph_key(self, bs, stream_idx=None, variant_label=None):
         # EAGLE doesn't use stream_idx / lora variants.
         return ShapeKey(size=bs)
+
+    def sampling_info_for_graph(self, num_seqs: int) -> SamplingBatchInfo:
+        """Return a request-shaped view over stable draft sampling buffers."""
+        return SamplingBatchInfo(
+            temperatures=self.temperatures[:num_seqs],
+            top_ps=(
+                self.draft_top_ps[:num_seqs]
+                if self.draft_top_ps is not None
+                else torch.ones(
+                    (num_seqs,),
+                    dtype=torch.float,
+                    device=self.temperatures.device,
+                )
+            ),
+            top_ks=torch.full(
+                (num_seqs,),
+                -1,
+                dtype=torch.int32,
+                device=self.temperatures.device,
+            ),
+            min_ps=torch.zeros(
+                (num_seqs,),
+                dtype=torch.float,
+                device=self.temperatures.device,
+            ),
+            is_all_greedy=False,
+            is_any_greedy=False,
+            need_top_p_sampling=self.draft_top_ps is not None,
+            need_top_k_sampling=False,
+            need_min_p_sampling=False,
+            vocab_size=self.model_runner.model_config.vocab_size,
+            acc_additive_penalties=(
+                self.draft_additive_penalties[:num_seqs]
+                if self.draft_additive_penalties is not None
+                else None
+            ),
+        )
+
+    def copy_sampling_info_to_graph(self, sampling_info, raw_bs: int) -> None:
+        """Refresh graph-stable q-transform inputs from the active request."""
+        if sampling_info is None:
+            raise ValueError("Draft rejection sampling requires sampling_info")
+        self.temperatures[:raw_bs].copy_(sampling_info.temperatures[:raw_bs])
+        if self.draft_top_ps is None:
+            return
+
+        self.draft_top_ps[:raw_bs].copy_(sampling_info.top_ps[:raw_bs])
+        additive = sampling_info.acc_additive_penalties
+        logit_bias = sampling_info.logit_bias
+        additive_dst = self.draft_additive_penalties[:raw_bs]
+        if additive is not None and logit_bias is not None:
+            torch.add(additive[:raw_bs], logit_bias[:raw_bs], out=additive_dst)
+        elif additive is not None:
+            additive_dst.copy_(additive[:raw_bs])
+        elif logit_bias is not None:
+            additive_dst.copy_(logit_bias[:raw_bs])
+        else:
+            additive_dst.zero_()
+
+    def advance_device_cycle_sampling_offsets(self) -> None:
+        """Advance explicit FlashInfer RNG offsets before one parent replay."""
+        offsets = getattr(self, "device_cycle_sampling_offsets", None)
+        if offsets is not None:
+            offsets.add_(self.speculative_num_steps)
 
     # -----------------------------------------------------------------
     # can_run_graph
@@ -419,27 +510,7 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
         if self.buffers.dsa_seed_topk is not None:
             spec_info.dsa_topk_indices = self.buffers.dsa_seed_topk[:num_seqs]
 
-        sampling_info = SamplingBatchInfo(
-            temperatures=self.temperatures[:num_seqs],
-            top_ps=(
-                self.draft_top_ps[:num_seqs]
-                if self.draft_top_ps is not None
-                else torch.ones((num_seqs,), dtype=torch.float)
-            ),
-            top_ks=torch.full((num_seqs,), -1, dtype=torch.int32),
-            min_ps=torch.zeros((num_seqs,), dtype=torch.float),
-            is_all_greedy=False,
-            is_any_greedy=False,
-            need_top_p_sampling=self.draft_top_ps is not None,
-            need_top_k_sampling=False,
-            need_min_p_sampling=False,
-            vocab_size=self.model_runner.model_config.vocab_size,
-            acc_additive_penalties=(
-                self.draft_additive_penalties[:num_seqs]
-                if self.draft_additive_penalties is not None
-                else None
-            ),
-        )
+        sampling_info = self.sampling_info_for_graph(num_seqs)
 
         forward_batch = ForwardBatch(
             forward_mode=ForwardMode.DECODE,
@@ -643,27 +714,7 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
             )
             and forward_batch.sampling_info is not None
         ):
-            self.temperatures[:raw_bs].copy_(
-                forward_batch.sampling_info.temperatures[:raw_bs]
-            )
-            if self.draft_top_ps is not None:
-                self.draft_top_ps[:raw_bs].copy_(
-                    forward_batch.sampling_info.top_ps[:raw_bs]
-                )
-
-                additive = forward_batch.sampling_info.acc_additive_penalties
-                logit_bias = forward_batch.sampling_info.logit_bias
-                additive_dst = self.draft_additive_penalties[:raw_bs]
-                if additive is not None and logit_bias is not None:
-                    torch.add(
-                        additive[:raw_bs], logit_bias[:raw_bs], out=additive_dst
-                    )
-                elif additive is not None:
-                    additive_dst.copy_(additive[:raw_bs])
-                elif logit_bias is not None:
-                    additive_dst.copy_(logit_bias[:raw_bs])
-                else:
-                    additive_dst.zero_()
+            self.copy_sampling_info_to_graph(forward_batch.sampling_info, raw_bs)
 
         # TODO(ch-wan): support num_token_non_padded
         if self.require_gathered_buffer:
@@ -716,6 +767,7 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
                     "captured batch without padding"
                 )
             return None
+        self.advance_device_cycle_sampling_offsets()
         with device_timer_ctx(self.model_runner.device_timer, "eagle_draft"):
             out = self._replay_graph(shape_key, forward_batch)
         if self.buffers.dsa_seed_topk is not None:

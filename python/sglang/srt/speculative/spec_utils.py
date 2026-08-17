@@ -125,19 +125,39 @@ def resolve_num_tokens_per_req(
     raise ValueError(f"Unknown speculative phase: {phase}")
 
 
-def fast_sample(probs: torch.Tensor, num_samples: int = 1):
+def fast_sample(
+    probs: torch.Tensor,
+    num_samples: int = 1,
+    *,
+    races: Optional[torch.Tensor] = None,
+):
     """Draw an ordered sample without replacement from ``probs``.
 
     Positive-support entries use the exponential-race law.  Once that support
     is exhausted, zero-q entries follow in a uniform random order, matching the
     Sequoia proposal D = Uniform(unrejected).  The two score bands make every
     positive entry precede every zero entry without a support-dependent branch,
-    which keeps the operation CUDA-graph safe.
+    which keeps the operation CUDA-graph safe. ``races`` supplies caller-owned
+    Exp(1) draws when a raw composed graph cannot use PyTorch's graph replay
+    hook to advance generator offsets. The supplied tensor is consumed in
+    place and must match ``probs``.
     """
-    if not envs.SGLANG_OPT_USE_GUMBEL_SAMPLE.get() and num_samples == 1:
+    if (
+        races is None
+        and not envs.SGLANG_OPT_USE_GUMBEL_SAMPLE.get()
+        and num_samples == 1
+    ):
         sample_index = torch.multinomial(probs, num_samples=num_samples)
         return probs.gather(1, sample_index), sample_index
-    races = torch.empty_like(probs, dtype=torch.float32).exponential_(1.0)
+    if races is None:
+        races = torch.empty_like(probs, dtype=torch.float32).exponential_(1.0)
+    else:
+        if races.shape != probs.shape or races.dtype != torch.float32:
+            raise ValueError(
+                "fast_sample races must be float32 with the same shape as probs: "
+                f"races={tuple(races.shape)}/{races.dtype}, "
+                f"probs={tuple(probs.shape)}/{probs.dtype}"
+            )
     races.clamp_min_(torch.finfo(torch.float32).tiny)
     scores = probs.float() / races
     scores.add_(1.0).reciprocal_().neg_().add_(2.0)
@@ -183,6 +203,13 @@ def _get_windows_flashinfer_renorm():
     from flashinfer.sampling import top_k_renorm_prob, top_p_renorm_prob
 
     return top_k_renorm_prob, top_p_renorm_prob
+
+
+@functools.cache
+def _get_flashinfer_categorical_sample():
+    from flashinfer.sampling import sampling_from_probs
+
+    return sampling_from_probs
 
 
 def _match_draft_rows(
@@ -311,6 +338,10 @@ def sample_draft_proposal(
     next_token_logits: torch.Tensor,
     sampling_info_or_temperatures,
     draft_sampling_top_k: Optional[int] = None,
+    *,
+    races: Optional[torch.Tensor] = None,
+    sampling_seed: Optional[torch.Tensor] = None,
+    sampling_offset: Optional[torch.Tensor] = None,
 ):
     """Build and sample the exact Leviathan draft proposal ``q``.
 
@@ -336,9 +367,35 @@ def sample_draft_proposal(
         else sampling_info_or_temperatures
     )
 
+    if races is not None and (
+        sampling_seed is not None or sampling_offset is not None
+    ):
+        raise ValueError("Proposal sampling accepts races or seed/offset, not both")
+    if (sampling_seed is None) != (sampling_offset is None):
+        raise ValueError("Proposal sampling seed and offset must be supplied together")
+
+    def draw(probs: torch.Tensor):
+        if sampling_seed is not None:
+            if not probs.is_cuda:
+                raise ValueError("Explicit FlashInfer proposal sampling requires CUDA")
+            sample_index = _get_flashinfer_categorical_sample()(
+                probs,
+                deterministic=True,
+                seed=sampling_seed,
+                offset=sampling_offset,
+            ).to(torch.int64)[:, None]
+            return probs.gather(1, sample_index), sample_index
+        if races is None:
+            return fast_sample(probs, num_samples=1)
+        return fast_sample(
+            probs,
+            num_samples=1,
+            races=races,
+        )
+
     if draft_sampling_top_k is None:
         probs = torch.softmax(next_token_logits / temperatures, dim=-1)
-        topk_p, topk_index = fast_sample(probs, num_samples=1)
+        topk_p, topk_index = draw(probs)
         return probs, topk_p, topk_index
 
     probs = build_aligned_draft_probs(
@@ -346,7 +403,7 @@ def sample_draft_proposal(
         sampling_info_or_temperatures,
         draft_sampling_top_k,
     )
-    topk_p, topk_index = fast_sample(probs, num_samples=1)
+    topk_p, topk_index = draw(probs)
     return probs, topk_p, topk_index
 
 

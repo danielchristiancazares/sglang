@@ -114,6 +114,22 @@ tree throughput can be ranked for production.
 - Decision: the accepted-path repair does not regress the qualified top-k-one production chain. Use the stable **124.775 tok/s** second window as the immediate matched control while preserving the complete ten-run **118.514 tok/s** evidence. Tree work remains blocked on full-model non-front parity.
 - Commit: record update pending.
 
+### 2026-08-16 23:47 PDT - PERF-005 exact linear device-resident cycle, dense-race form
+
+- Change: extended the composed draft-extend/bridge/next-draft parent to ordinary top-k-one rejection sampling. The bridge now uses graph-stable temperature, top-p, accumulated additive penalties, logit bias, draft top-k 20, sampled token, and the exact q consumed by verification. Raw child-graph launch bypasses PyTorch's generator-offset replay hook, so this first form refreshes two full-vocabulary exponential-race rows before each parent launch.
+- Benchmark evidence: exact real samples were `117.251, 121.340, 118.959, 131.667, 123.663 tok/s`, mean **122.576**, median **121.340**. This is **1.762% below** the fresh warmed linear control at 124.775 tok/s.
+- Acceptance evidence: `2.188034, 2.216450, 2.188034, 2.275556, 2.359447`, mean **2.245504**, was **1.849% above** the matched control acceptance. Higher yield with lower TPS identifies an execution-cost regression.
+- Correctness evidence: exact `6213+64` smoke completed in 27 cycles at 2.370370 emitted/cycle; all five full samples returned exactly 512 tokens with thinking enabled. Proposal/cycle CPU suites passed **12**, **5**, and **4** tests across the affected files; composite/FlashInfer/exact-tree CUDA suites passed **16 tests**.
+- Decision: the architecture is retained for one smaller-randomness test. Replace the two 248K-wide exponential refreshes with FlashInfer categorical sampling driven by explicit graph-stable seed/offset tensors. Close the linear composite unchanged if that still does not beat the matched control.
+- Commit: uncommitted experiment.
+
+#### Explicit-seed categorical refinement
+
+- Replaced vocab-wide races with FlashInfer categorical sampling and one graph-stable seed plus two explicit offset scalars. Fixed-offset raw replay is deterministic; advancing the offset changes sampled tokens while preserving exact `q(X)`.
+- Five real samples were `115.058, 116.444, 120.530, 123.907, 124.434 tok/s`, mean **120.075**, median **120.530**, or **3.767% below** the 124.775 control.
+- Five acceptance probes averaged **2.277991**, **3.322% above** control. Their 1,124 verification cycles took 23.753 seconds combined, **21.132 ms/cycle**, versus **20.771 ms/cycle** for the ordinary path. The categorical form improved the dense-race composite's 21.239 ms/cycle, while the composition itself stayed slower.
+- Final decision: close exact linear device-cycle composition as a throughput candidate. Retain it opt-in as exact architectural infrastructure; keep production defaults unchanged.
+
 ## Candidate Inventory
 
 | ID | Hypothesis | Scope | Status | Evidence |
@@ -136,7 +152,7 @@ tree throughput can be ranked for production.
 | PERF-002 | Store and compute only strict GDN ancestry; remove value-tile parameter recomputation. | `gdn_tree_replay.cuh`, Python binding/backend | Implemented; opt-in tree path | Three native CUDA tests passed; measured direct saving is about 0.06 ms/cycle. Committed in `d0116b54e5`. |
 | PERF-003 | Apply exact branch-local presence/frequency state to SWOR p and q. | sampling state, fixed topology metadata, draft graph buffers, target verifier | Paused at correctness gate | q mass outside p is 0.096-0.164 on dominant rows; offline oracle already encodes branch-local semantics. Resume only after corrected full-model non-front path parity and a fresh linear baseline. |
 | PERF-004 | Attribute target/composite graph time by kernel family and exact graph ID before another kernel rewrite. | trace analyzer and Qwen3.5 target/draft hot paths | Ready for survey | Current whole-trace families mix prefill and graph work. The MacPro ledger confirms synchronized microbenchmarks can mis-rank async serving changes. |
-| PERF-005 | Extend the device-resident cycle to exact linear rejection sampling. | proposal sampling, exact-q buffers, verification/extend bridge | Survey | Production baseline still pays graph/scheduler boundaries. Requires exact RNG/q/residual semantics and a measured cycle projection. |
+| PERF-005 | Extend the device-resident cycle to exact linear rejection sampling. | proposal sampling, exact-q buffers, verification/extend bridge | Closed for throughput; retained opt-in | Dense races reached 122.576 tok/s; explicit-seed categorical reached 120.075 versus 124.775 control despite higher acceptance. Composite cycle cost remained 1.7% slower. |
 | PERF-006 | Improve proposal quality with a distinct trained/calibrated proposal mechanism. | MTP adapter/training, standalone draft, or device-side mixture oracle | Survey | RadixArk and Gittensor embedded MTP tensors are byte-identical. Temperature/support calibration is flat. Any training path needs held-out behavior evidence. |
 | PERF-007 | Fuse remaining target FP8/BF16 projection work only after graph-specific attribution. | Qwen3.5 GDN input/BA/output projections and ModelOpt linear kernels | Survey | Existing qkvz and BA projections are already merged separately; prior target/draft quantizers and broad GEMM autotuning lost. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q oracle and topology optimizer | Gated | Current-q optimistic 32-node search reached only 4.0921 expected outputs and stayed cost-limited. |

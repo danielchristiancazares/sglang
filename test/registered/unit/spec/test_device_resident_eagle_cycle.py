@@ -7,13 +7,91 @@ from unittest.mock import Mock
 import torch
 
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
+from sglang.srt.speculative.eagle_draft_cuda_graph_runner import (
+    EAGLEDraftCudaGraphRunner,
+)
 from sglang.srt.speculative.eagle_worker_common import (
     duplicate_prefix_tail_to_draft_branches,
 )
 from sglang.srt.speculative.eagle_worker_v2 import EagleDraftWorker
+from sglang.srt.speculative.spec_utils import sample_draft_proposal
 
 
 class TestDeviceResidentEagleCycle(unittest.TestCase):
+    @staticmethod
+    def _sampling_info(
+        *,
+        temperatures,
+        top_ps,
+        additive=None,
+        logit_bias=None,
+    ):
+        rows = temperatures.shape[0]
+        return SamplingBatchInfo(
+            temperatures=temperatures,
+            top_ps=top_ps,
+            top_ks=torch.full((rows,), -1, dtype=torch.int32),
+            min_ps=torch.zeros((rows,), dtype=torch.float32),
+            is_all_greedy=False,
+            is_any_greedy=False,
+            need_top_p_sampling=True,
+            need_top_k_sampling=False,
+            need_min_p_sampling=False,
+            vocab_size=additive.shape[1] if additive is not None else 4,
+            acc_additive_penalties=additive,
+            logit_bias=logit_bias,
+            device="cpu",
+        )
+
+    def test_graph_sampling_buffers_refresh_penalties_and_bias(self):
+        runner = object.__new__(EAGLEDraftCudaGraphRunner)
+        runner.temperatures = torch.zeros((2, 1), dtype=torch.float32)
+        runner.draft_top_ps = torch.zeros((2,), dtype=torch.float32)
+        runner.draft_additive_penalties = torch.zeros((2, 4), dtype=torch.float32)
+        runner.model_runner = SimpleNamespace(
+            model_config=SimpleNamespace(vocab_size=4)
+        )
+        source = self._sampling_info(
+            temperatures=torch.tensor([[0.75], [1.25]]),
+            top_ps=torch.tensor([0.9, 0.8]),
+            additive=torch.tensor(
+                [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]
+            ),
+            logit_bias=torch.tensor(
+                [[0.5, 0.0, -0.5, 1.0], [1.0, -1.0, 0.0, 0.5]]
+            ),
+        )
+
+        runner.copy_sampling_info_to_graph(source, 2)
+        stable = runner.sampling_info_for_graph(2)
+
+        torch.testing.assert_close(stable.temperatures, source.temperatures)
+        torch.testing.assert_close(stable.top_ps, source.top_ps)
+        torch.testing.assert_close(
+            stable.acc_additive_penalties,
+            source.acc_additive_penalties + source.logit_bias,
+        )
+        self.assertIsNone(stable.logit_bias)
+
+    def test_exact_proposal_consumes_caller_races(self):
+        logits = torch.tensor([[4.0, 3.0, 2.0, 1.0]], dtype=torch.float32)
+        sampling_info = self._sampling_info(
+            temperatures=torch.ones((1, 1)),
+            top_ps=torch.ones((1,)),
+        )
+        races = torch.tensor([[10.0, 0.1, 10.0, 10.0]], dtype=torch.float32)
+
+        q, q_x, token = sample_draft_proposal(
+            logits,
+            sampling_info,
+            draft_sampling_top_k=4,
+            races=races,
+        )
+
+        self.assertEqual(int(token.item()), 1)
+        torch.testing.assert_close(q_x, q.gather(1, token))
+
     def test_page_tail_copy_uses_fixed_capture_safe_shape(self):
         class FakePool:
             def move_kv_cache(self, target, source):

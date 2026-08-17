@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-16
-23:24 PDT.
+23:55 PDT.
 
 **Qualified source line:** commit `9681850bed660b9079ee1aee906cda819603da7a`
 (`Add exact SWOR tree verification and topology analysis`), with the final
@@ -65,6 +65,13 @@ pool passed virtual target-KV slot ids directly to a physical backing pool. The
 multi-layer EAGLE caller also allowed tree-path front compaction to be skipped
 while draft extend indexed tokens and hidden rows as a compact front block.
 
+The recorded M8/M12/M16 servers used `enable_unified_memory=False` and the
+single-layer finalizer was already active. The unified-pool reproducer therefore
+establishes a real optional-path defect, not proof that those exact requests
+were corrupted. Their production hold remains because a full current-config
+cross-cycle state comparison has not established target KV, recurrent state,
+next-draft state, reclamation, and next-cycle proposal parity together.
+
 The pending repair installs physical full-KV translation for relocation,
 preserves MLA's separate dense kernel address space, and makes accepted-path
 compaction mandatory for every top-k tree worker. Factory-created MHA/MLA tests
@@ -86,6 +93,14 @@ was **118.514 tok/s**, and five native acceptance probes averaged **2.204748**.
 This confirms the top-k-one comparison path remains within the established
 performance range while preserving the startup sample and lower stochastic
 acceptance as real evidence.
+
+An exact-q device-resident linear cycle was then qualified functionally and
+closed for throughput. The dense-race form averaged **122.576 tok/s**; an
+explicit-seed FlashInfer categorical refinement averaged **120.075 tok/s**
+despite **2.277991** emitted tokens/cycle. Its normalized 21.132 ms/cycle
+remained above the ordinary path's 20.771 ms/cycle. The architecture stays
+opt-in, SWOR is rejected on raw-composite RNG grounds, and production defaults
+remain unchanged.
 
 ## Final handoff
 

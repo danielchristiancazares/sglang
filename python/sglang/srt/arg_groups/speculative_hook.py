@@ -718,17 +718,15 @@ def _handle_eagle_family(server_args: ServerArgs) -> None:
                 "--speculative-device-resident-cycle currently requires the "
                 "single-layer EAGLE worker."
             )
-        if server_args.speculative_eagle_topk <= 1:
-            raise ValueError(
-                "--speculative-device-resident-cycle currently requires a tree "
-                "with --speculative-eagle-topk > 1."
-            )
         if server_args.speculative_tree_sampling_mode != "target_only":
             raise ValueError(
                 "--speculative-device-resident-cycle currently requires "
                 "--speculative-tree-sampling-mode=target_only."
             )
-        if server_args.speculative_draft_sampling_top_k is not None:
+        if (
+            server_args.speculative_eagle_topk > 1
+            and server_args.speculative_draft_sampling_top_k is not None
+        ):
             raise ValueError(
                 "--speculative-device-resident-cycle currently requires plain "
                 "draft tree scoring without --speculative-draft-sampling-top-k."

@@ -194,6 +194,8 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         self._draft_cycle_graph = None
         self._draft_cycle_bridge_graph = None
         self._draft_cycle_bridge_refs = None
+        self._device_cycle_sampling_seed = None
+        self._device_cycle_sampling_offsets = None
         self.tree_sampling_mode = getattr(
             server_args, "speculative_tree_sampling_mode", "target_only"
         )
@@ -206,6 +208,12 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         if self.use_tree_swor:
             assert self.topk > 1, "Tree SWOR sampling requires speculative_eagle_topk > 1"
             assert not get_spec().speculative_use_rejection_sampling
+            if self.device_resident_cycle:
+                raise ValueError(
+                    "Device-resident draft-cycle composition does not support "
+                    "SWOR sampling: raw child-graph launches bypass PyTorch RNG "
+                    "offset updates"
+                )
         self.speculative_num_steps = server_args.speculative_num_steps
         self.speculative_num_draft_tokens = server_args.speculative_num_draft_tokens
         self.swor_topology = None
@@ -824,10 +832,17 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                     logits_output.next_token_logits, f"draft_forward step {i}"
                 )
                 if get_spec().speculative_use_rejection_sampling:
+                    sampling_offset = (
+                        self._device_cycle_sampling_offsets[i + 1 : i + 2]
+                        if self._device_cycle_sampling_offsets is not None
+                        else None
+                    )
                     probs, topk_p, topk_index = sample_draft_proposal(
                         logits_output.next_token_logits,
                         forward_batch.sampling_info,
                         getattr(self, "draft_sampling_top_k", None),
+                        sampling_seed=self._device_cycle_sampling_seed,
+                        sampling_offset=sampling_offset,
                     )
                     draft_probs_list.append(probs)
                     forward_batch.positions.add_(1)
@@ -1037,6 +1052,42 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             self.dsa_extend_topk_buf = buf
         return buf[:num_tokens]
 
+    def _sample_next_draft_proposal(
+        self,
+        next_token_logits: torch.Tensor,
+        sampling_info,
+        *,
+        sampling_seed: Optional[torch.Tensor] = None,
+        sampling_offset: Optional[torch.Tensor] = None,
+    ):
+        """Apply the exact post-extend proposal policy used by the next draft."""
+        if get_spec().speculative_use_rejection_sampling:
+            return sample_draft_proposal(
+                next_token_logits,
+                sampling_info,
+                getattr(self, "draft_sampling_top_k", None),
+                sampling_seed=sampling_seed,
+                sampling_offset=sampling_offset,
+            )
+        if sampling_seed is not None or sampling_offset is not None:
+            raise ValueError("Explicit proposal RNG requires stochastic sampling")
+        if self.topk == 1 and not _is_hip:
+            topk_index = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+            topk_p = torch.ones_like(topk_index, dtype=torch.float32)
+            return None, topk_p, topk_index
+
+        probs = renorm_draft_probs(
+            next_token_logits,
+            sampling_info,
+            False,
+            getattr(self, "draft_sampling_top_k", None),
+        )
+        if self.use_tree_swor:
+            topk_p, topk_index = fast_sample(probs, self.topk)
+            return probs, topk_p, topk_index
+        topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
+        return None, topk_p, topk_index
+
     def _draft_extend_for_decode(
         self, batch: ScheduleBatch, batch_result: GenerationBatchResult
     ):
@@ -1157,33 +1208,12 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             ]
         # The draft-extend graph only anchors full logits; selected-row topk is
         # owned by the worker for both graph and eager paths.
-        if get_spec().speculative_use_rejection_sampling:
-            ret_draft_probs, ret_topk_p, ret_topk_index = sample_draft_proposal(
+        ret_draft_probs, ret_topk_p, ret_topk_index = (
+            self._sample_next_draft_proposal(
                 draft_logits_output.next_token_logits,
                 batch.sampling_info,
-                getattr(self, "draft_sampling_top_k", None),
             )
-        elif self.topk == 1 and not _is_hip:
-            # Gated to CUDA: see #26358 — ROCm's argmax tie-break corrupts
-            # MTP draft selection on FP8 logits.
-            ret_topk_index = torch.argmax(
-                draft_logits_output.next_token_logits, dim=-1, keepdim=True
-            )
-            ret_topk_p = torch.ones_like(ret_topk_index, dtype=torch.float32)
-            ret_draft_probs = None
-        else:
-            probs = renorm_draft_probs(
-                draft_logits_output.next_token_logits,
-                batch.sampling_info,
-                get_spec().speculative_use_rejection_sampling,
-                getattr(self, "draft_sampling_top_k", None),
-            )
-            if self.use_tree_swor:
-                ret_topk_p, ret_topk_index = fast_sample(probs, self.topk)
-                ret_draft_probs = probs
-            else:
-                ret_topk_p, ret_topk_index = fast_topk(probs, self.topk, dim=-1)
-                ret_draft_probs = None
+        )
         ret_hidden_states = draft_logits_output.hidden_states
 
         # Construct the return values
@@ -1247,6 +1277,12 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             raise RuntimeError(
                 "Device-resident draft-cycle capture does not yet support DSA seeds"
             )
+        if self.use_tree_swor:
+            raise RuntimeError(
+                "Device-resident draft-cycle capture does not yet support SWOR "
+                "sampling because raw child-graph launches bypass PyTorch RNG "
+                "offset updates"
+            )
         extend_runner = self.cuda_graph_runner_for_draft_extend
         draft_runner = self.cuda_graph_runner
         if extend_runner is None or draft_runner is None:
@@ -1256,6 +1292,7 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         bs = 1
         extend_output = extend_runner.captured_output(bs)
         extend_buffers = extend_runner.buffers
+        bridge_sampling_info = draft_runner.sampling_info_for_graph(bs)
 
         def prepare_bridge():
             accept_lens = extend_buffers.num_accept_tokens[:bs].to(torch.int64)
@@ -1266,8 +1303,17 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                 if extend_output.hidden_states is not None
                 else None
             )
-            probs = torch.softmax(selected_logits, dim=-1)
-            topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
+            sampling_offset = (
+                self._device_cycle_sampling_offsets[:1]
+                if self._device_cycle_sampling_offsets is not None
+                else None
+            )
+            draft_probs, topk_p, topk_index = self._sample_next_draft_proposal(
+                selected_logits,
+                bridge_sampling_info,
+                sampling_seed=self._device_cycle_sampling_seed,
+                sampling_offset=sampling_offset,
+            )
             next_seq_lens = (
                 extend_buffers.seq_lens[:bs]
                 - self.speculative_num_draft_tokens
@@ -1276,6 +1322,7 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             draft_input = EagleDraftInput(
                 topk_p=topk_p,
                 topk_index=topk_index,
+                draft_probs=draft_probs,
                 hidden_states=selected_hidden,
                 bonus_tokens=torch.zeros(
                     (bs,), dtype=torch.int32, device=topk_index.device
@@ -1288,6 +1335,7 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             cycle_batch.seq_lens_sum = None
             cycle_batch.req_pool_indices = extend_buffers.req_pool_indices[:bs]
             cycle_batch.spec_info = draft_input
+            cycle_batch.sampling_info = bridge_sampling_info
             self.draft(cycle_batch, prepare_graph_only=True)
             return cycle_batch, draft_input
 
@@ -1327,6 +1375,8 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         draft_extend_forward_batch: ForwardBatch,
     ) -> None:
         """Prepare one parent launch and cache its next target-verify input."""
+        self.cuda_graph_runner.copy_sampling_info_to_graph(batch.sampling_info, 1)
+        self.cuda_graph_runner.advance_device_cycle_sampling_offsets()
         self.cuda_graph_runner_for_draft_extend.execute(
             draft_extend_forward_batch, prepare_only=True
         )

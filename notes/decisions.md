@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-16 23:11 PDT.
+**Reconciled through:** 2026-08-16 23:55 PDT.
 
 ## Selected production choices
 
@@ -30,7 +30,8 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Compile mode | `default`, with established partial fallbacks | Five-run fixed-work win over other compile/fallback arrangements |
 | Scheduling | Receive interval 4; stream interval 4; incremental output | Measured fixed-work wins while retaining client streaming behavior |
 | Implementation language | C++/CUDA hot paths with thin Python integration | Explicit user direction after the display-GPU incident; preserves graph capture and native dispatch |
-| Tree/SWOR implementation | Retained as opt-in, production-ineligible infrastructure | A non-front unified-pool KV/compaction defect invalidated prior production-ranking claims; isolated repair tests pass, while corrected full-model parity is still required |
+| Tree/SWOR implementation | Retained as opt-in, production-ineligible infrastructure | A non-front unified-pool KV/compaction defect exists outside the measured static-pool route; current-config full cross-cycle parity is still required, and raw-composite SWOR RNG is invalid |
+| Device-resident linear cycle | Retained opt-in; rejected for throughput | Exact-q dense-race and explicit-seed categorical forms reached 122.576 and 120.075 tok/s versus 124.775 matched control; ordinary scheduling remains selected |
 
 ## Qualified reference results
 
