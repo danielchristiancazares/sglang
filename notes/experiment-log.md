@@ -2947,3 +2947,34 @@ mean 13.929045  17.125658 446.051        39.730
   110, but no exact `199000+16` run has yet met both headline targets
   together. Raw outputs and server logs remain in the active session-state
   `files` directory.
+
+### 2026-08-20 11:54 PDT - selected-row draft-extend logits save memory, not time
+
+- Implemented a narrow single-layer port of the multi-layer EAGLE
+  `select_index` contract. Non-gathered, non-standalone, non-device-resident
+  draft-extend graphs kept all hidden/KV rows but passed only the last accepted
+  row into `lm_head`; the worker avoided a second logits gather. A graph-stable
+  select-index buffer changed on replay. Device-resident and gathered paths
+  retained full logits.
+- Added a CPU white-box replay test for selection-index copying, pruned logits
+  shape, and full hidden output, plus direct logits-processor row-selection
+  coverage. The focused new/existing runner command passed **6 tests**.
+  A broader unrelated top-k-one file was not usable in the plain shell because
+  its native JIT lacked MSVC in `PATH` and several pre-existing `__new__`
+  fixtures omit current worker fields; those failures did not enter the
+  candidate decision.
+- The selective chunk-7680 server captured successfully. Draft-extend graph
+  memory fell from roughly 0.05 to 0.03 GiB and graph-end available memory rose
+  to 4.63 GiB. Exact `6213+128` profile completed in 54 cycles at
+  **2.370370** tokens/cycle.
+- Candidate trace:
+  `benchmark/windows/profiles/target_width_m3-20260820-115319/target_width_m3-1787251999.850064-TP-0.trace.json.gz`,
+  SHA-256
+  `3d431c6142df0037fcf2180729d65ca1a6f1626b070083832e2f92ca693230cc`.
+  Full cycles averaged **16.066558 ms**, median 16.047987, versus matched
+  unpruned **16.058328 ms**. Draft-extend graph 8 averaged **1.061 ms** versus
+  **1.059 ms** control; kernel count was 29 versus 28.
+- Decision: the apparent 147.534 tok/s projection was acceptance-only. Row
+  pruning saves memory but not execution because the NVFP4 lm-head reads the
+  same weights at M=1 and M=3. Removed all code and test changes, stopped the
+  server, and retained only the trace/manifest plus documentation.

@@ -334,6 +334,9 @@ code changes, or process state matter.
 - Global promotion was rejected after base RadixArk reached only 2226.770
   prompt tok/s and 200 MiB free before follow-up probes. Production stays at
   4096; selective 7680 is an explicit benchmark profile.
+- Single-layer selected-row draft-extend logits then reduced graph memory but
+  not time: graph span was 1.061 ms versus 1.059 control and full M3 cycle was
+  16.066558 ms versus 16.058328. The patch was removed.
 
 ## Supersession map
 

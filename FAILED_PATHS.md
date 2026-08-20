@@ -542,3 +542,31 @@
   query length.
 - Related commit or revert: configuration-only; 7680 remains the selective
   winner.
+
+## PERF-F041 - Single-layer selected-row draft-extend logits
+
+- Hypothesis: draft extend needs all three hidden/KV rows but only one row's
+  vocabulary logits, so pruning `lm_head` input from three rows to one would
+  reduce each speculative cycle.
+- Scope: single-layer `EAGLEDraftExtendCudaGraphRunner` and
+  `EagleDraftWorker._draft_extend_for_decode`, reusing the existing
+  `EagleDraftExtendInput.select_index` and logits-processor contract.
+- Attempted change: added graph-stable selection indices, reduced the logits
+  output buffer to one row per request, preserved full hidden rows, and gated
+  pruning off for gathered buffers, standalone drafting, and the retained
+  device-resident composite.
+- Benchmark evidence: matched traces measured draft-extend graph
+  **1.059 ms control / 1.061 ms candidate** and full cycle **16.058328 /
+  16.066558 ms**. Candidate kernel count increased from 28 to 29.
+- Correctness evidence: the candidate captured all graphs and completed exact
+  `6213+128` profiling at **2.370370** tokens/cycle. Focused CPU runner tests
+  passed before launch.
+- Failure mode: the 248K-vocabulary NVFP4 projection is weight-bandwidth-bound
+  at these tiny row counts. Reducing M from three to one does not reduce the
+  dominant weight read and adds one selection operation.
+- Why not to retry unchanged: both the local graph span and end-to-end device
+  cycle are unchanged-to-worse despite lower logits-buffer residency.
+- Reopen only if: the lm-head kernel gains real cross-row weight reuse or a
+  sparse-vocabulary head changes the amount of weight data read.
+- Related commit or revert: implementation and test removed before commit;
+  trace/manifest retained as evidence.

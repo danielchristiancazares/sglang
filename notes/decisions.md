@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-20 11:44 PDT.
+**Reconciled through:** 2026-08-20 11:54 PDT.
 
 ## Selected production choices
 
@@ -86,6 +86,7 @@ exact-`199016` run.
 | FlashInfer paged-only prefill | Rejected | Exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token generation changed **106.467 -> 104.117**; deterministic output also changed |
 | Global chunk-7680 default | Rejected | Base RadixArk exact prompt fell to **2226.770 tok/s** and only 200 MiB remained before follow-up probes |
 | Selective chunk 7808 | Rejected | Exact-200K prompt averaged **2909.350 tok/s**, a stable cliff below the 7680 winner |
+| Single-layer selected-row draft-extend logits | Rejected | Graph memory fell, but draft-extend stayed **1.059/1.061 ms** control/candidate and full cycle stayed **16.058328/16.066558 ms** |
 
 The optional Windows quantization registrations, conversion repairs, backend
 selection, and isolated tests remain valuable compatibility work. Their
