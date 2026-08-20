@@ -277,6 +277,29 @@ tree throughput can be ranked for production.
   results, environment snapshots, and logs remain in the active session-state
   `files` directory.
 
+### 2026-08-20 09:35 PDT - PERF-017 exact-benchmark validity telemetry
+
+- Change: retained the user-selected prompt/generation formulas while making
+  benchmark validity explicit. `bench_openai_stream.py` now hashes both output
+  channels in stream order, emits separate reasoning/content hashes, records
+  nonempty SSE delta counts, first/max delta size, per-channel fragment counts,
+  and response time after the final output delta. It rejects prompt,
+  completion, total-token, and finish-reason mismatches. `--warmup-runs`
+  records fixed repeated warmups while `--skip-warmup` remains compatible.
+- Benchmark evidence: a live `256+16` request on the restored M3 server
+  completed exact `272`, `finish_reason=length`, with three nonempty reasoning
+  deltas, first/max delta sizes `2/39` characters, and 0.000168 seconds after
+  the final output delta. The new full-output and reasoning hashes matched;
+  the empty content hash was explicit.
+- Correctness evidence: the new CPU-only unit suite passed **3 tests plus 4
+  subtests**, covering dual-channel deltas, strict result validation, and an
+  impossible prompt target. Python compilation, CLI parsing, and
+  `git diff --check` passed.
+- Decision: retain as measurement infrastructure. The headline metrics remain
+  client-observed SSE timings, not pure device prefill/decode timers. Future
+  1-3% claims must retain the new fragment/trailing telemetry and exact-count
+  validity fields.
+
 ## Candidate Inventory
 
 | ID | Hypothesis | Scope | Status | Evidence |
@@ -303,6 +326,7 @@ tree throughput can be ranked for production.
 | PERF-006 | Improve proposal quality with a distinct trained/calibrated proposal mechanism. | MTP adapter/training, standalone draft, or device-side mixture oracle | Survey | RadixArk and Gittensor embedded MTP tensors are byte-identical. Temperature/support calibration is flat. Any training path needs held-out behavior evidence. |
 | PERF-007 | Reduce the exposed target GEMM critical path. | Qwen3.5 MLP gate/up/down and FP8 qkvz/output projections | Measured: admission window 1 passed | Derived `AttnNVFP4` checkpoint cut the cycle 10.96% and raised real TPS to 131.707 mean. Remaining: capacity, second window, OpenCode2, relaunch. |
 | PERF-014 | Raise the emitted-token path length from three to four (K+1) on the selective checkpoint. | launcher speculative shape only (three steps / four rows), EAGLE worker/graph code path | Rejected | Acceptance rose 3.636% while measured cycle cost rose 14.702%; projected TPS fell 139.841 -> 126.350 and matched exact-200K generation did not improve outside noise. |
+| PERF-017 | Make exact-200K prompt/generation comparisons fail closed and expose SSE timing boundaries. | `bench_openai_stream.py` and CPU unit tests | Retained | Headline formulas unchanged; exact token/finish validation, complete output hashes, fragment coalescing, trailing time, and repeated warmup metadata now accompany every run. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |

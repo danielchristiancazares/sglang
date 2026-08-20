@@ -136,7 +136,10 @@ execution probe and carries no semantic or production qualification.
    tree/oracle controls.
 4. Warm the exact request shape and flush cache explicitly. The benchmark
    reports TTFT, end-to-end time, prompt rate, steady decode rate, token counts,
-   finish reason, output length, and digest.
+   finish reason, output length, complete/per-channel digests, SSE fragment
+   counts and sizes, and time after the final output fragment. Preserve these
+   fields so text-fragment coalescing or delayed response closure cannot
+   masquerade as a model-speed change.
 5. Run at least five consecutive samples and report the mean plus every sample.
    A production promotion requires an independent second real-sampling window.
 6. Pair real TPS with native acceptance counters. Record accepted/emitted
@@ -247,6 +250,12 @@ use tree-aware fixtures or real exact verification.
   speculative cycles and measures only 15 post-first-token intervals. Use
   repeated A-B-A controls and a longer acceptance/cycle window; never classify
   a 2-3% single-run generation change by itself.
+- `observed_prompt_tps` and `decode_tps` are client-observed SSE metrics. Their
+  timing boundary is the first nonempty reasoning/content delta, not a
+  server-side token event. Require matching fragment-count/size and
+  trailing-response telemetry when comparing small deltas, and use device
+  cycles as supporting attribution rather than silently redefining the
+  headline metric.
 - Exact seeds can lock response sequences across restarts for attribution, yet
   graph capture and RNG lifecycle can still change speculative work. Preserve
   production randomness.

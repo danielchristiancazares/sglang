@@ -118,6 +118,11 @@ def calibrate_prompt(
     best_count = token_count(
         base_url, model, "", timeout, backend, enable_thinking
     )
+    if best_count > target_tokens:
+        raise ValueError(
+            f"Target {target_tokens} is below the empty templated prompt "
+            f"length {best_count}"
+        )
 
     while low <= high:
         middle = (low + high) // 2
@@ -231,8 +236,16 @@ def stream_request(
     usage: dict[str, Any] = {}
     finish_reason: str | None = None
     output_fragments: list[str] = []
+    reasoning_fragments: list[str] = []
+    content_fragments: list[str] = []
     reasoning_chars = 0
     content_chars = 0
+    nonempty_delta_count = 0
+    reasoning_fragment_count = 0
+    content_fragment_count = 0
+    first_output_delta_chars: int | None = None
+    max_output_delta_chars = 0
+    last_output_at: float | None = None
 
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -255,15 +268,28 @@ def stream_request(
                 delta = choice.get("delta") or {}
                 reasoning_fragment = delta.get("reasoning_content")
                 content_fragment = delta.get("content")
+                delta_chars = 0
                 if reasoning_fragment:
                     reasoning_chars += len(reasoning_fragment)
+                    reasoning_fragment_count += 1
+                    reasoning_fragments.append(reasoning_fragment)
+                    output_fragments.append(reasoning_fragment)
+                    delta_chars += len(reasoning_fragment)
                 if content_fragment:
                     content_chars += len(content_fragment)
-                fragment = reasoning_fragment or content_fragment
-                if fragment:
-                    output_fragments.append(fragment)
+                    content_fragment_count += 1
+                    content_fragments.append(content_fragment)
+                    output_fragments.append(content_fragment)
+                    delta_chars += len(content_fragment)
+                if delta_chars:
+                    now = time.perf_counter()
+                    nonempty_delta_count += 1
+                    if first_output_delta_chars is None:
+                        first_output_delta_chars = delta_chars
                     if first_token_at is None:
-                        first_token_at = time.perf_counter()
+                        first_token_at = now
+                    last_output_at = now
+                    max_output_delta_chars = max(max_output_delta_chars, delta_chars)
     except urllib.error.HTTPError as exc:
         detail = exc.read(4096).decode("utf-8", errors="replace")
         raise RuntimeError(
@@ -273,6 +299,8 @@ def stream_request(
     ended = time.perf_counter()
     if first_token_at is None:
         first_token_at = ended
+    if last_output_at is None:
+        last_output_at = ended
 
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
     completion_tokens = int(usage.get("completion_tokens") or 0)
@@ -303,8 +331,51 @@ def stream_request(
         "output_chars": len(output_text),
         "reasoning_chars": reasoning_chars,
         "content_chars": content_chars,
+        "nonempty_delta_count": nonempty_delta_count,
+        "reasoning_fragment_count": reasoning_fragment_count,
+        "content_fragment_count": content_fragment_count,
+        "first_output_delta_chars": first_output_delta_chars or 0,
+        "max_output_delta_chars": max_output_delta_chars,
+        "trailing_after_last_delta_s": round(ended - last_output_at, 6),
         "output_sha256": hashlib.sha256(output_text.encode("utf-8")).hexdigest(),
+        "reasoning_sha256": hashlib.sha256(
+            "".join(reasoning_fragments).encode("utf-8")
+        ).hexdigest(),
+        "content_sha256": hashlib.sha256(
+            "".join(content_fragments).encode("utf-8")
+        ).hexdigest(),
     }
+
+
+def validate_result_counts(
+    result: dict[str, Any],
+    *,
+    expected_prompt_tokens: int,
+    expected_completion_tokens: int,
+    label: str,
+) -> None:
+    prompt_tokens = result["prompt_tokens"]
+    completion_tokens = result["completion_tokens"]
+    total_tokens = result["total_tokens"]
+    if prompt_tokens != expected_prompt_tokens:
+        raise RuntimeError(
+            f"{label} prompt token mismatch: "
+            f"expected={expected_prompt_tokens}, actual={prompt_tokens}"
+        )
+    if completion_tokens != expected_completion_tokens:
+        raise RuntimeError(
+            f"{label} completion token mismatch: "
+            f"expected={expected_completion_tokens}, actual={completion_tokens}"
+        )
+    if total_tokens != prompt_tokens + completion_tokens:
+        raise RuntimeError(
+            f"{label} total token mismatch: total={total_tokens}, "
+            f"prompt={prompt_tokens}, completion={completion_tokens}"
+        )
+    if result["finish_reason"] != "length":
+        raise RuntimeError(
+            f"{label} finish reason mismatch: {result['finish_reason']!r}"
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -320,6 +391,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-tokens", type=int, default=6213)
     parser.add_argument("--output-tokens", type=int, default=128)
     parser.add_argument("--warmup-output-tokens", type=int, default=16)
+    parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float)
@@ -348,6 +420,10 @@ def main() -> None:
     args = parse_args()
     if args.input_tokens < 1 or args.output_tokens < 1:
         raise ValueError("input and output token counts must be positive")
+    if args.warmup_output_tokens < 1:
+        raise ValueError("warmup output token count must be positive")
+    if args.warmup_runs < 0:
+        raise ValueError("warmup run count must be non-negative")
 
     base_url = args.base_url.rstrip("/")
     enable_thinking = not args.disable_thinking
@@ -363,8 +439,9 @@ def main() -> None:
     # Remove the preceding invocation's measured request before warming this
     # exact shape; otherwise a repeated benchmark warms only a cached suffix.
     flush_cache(base_url, args.timeout, args.backend, args.slot_id)
-    if not args.skip_warmup:
-        stream_request(
+    warmup_runs = 0 if args.skip_warmup else args.warmup_runs
+    for warmup_index in range(warmup_runs):
+        warmup_result = stream_request(
             base_url,
             args.model,
             content,
@@ -379,6 +456,14 @@ def main() -> None:
             args.repetition_penalty,
             enable_thinking,
         )
+        validate_result_counts(
+            warmup_result,
+            expected_prompt_tokens=calibrated_tokens,
+            expected_completion_tokens=args.warmup_output_tokens,
+            label=f"warmup {warmup_index + 1}",
+        )
+        if warmup_index + 1 < warmup_runs:
+            flush_cache(base_url, args.timeout, args.backend, args.slot_id)
     flush_cache(base_url, args.timeout, args.backend, args.slot_id)
     result = stream_request(
         base_url,
@@ -395,6 +480,12 @@ def main() -> None:
         args.repetition_penalty,
         enable_thinking,
     )
+    validate_result_counts(
+        result,
+        expected_prompt_tokens=calibrated_tokens,
+        expected_completion_tokens=args.output_tokens,
+        label="measurement",
+    )
     result.update(
         {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -404,7 +495,8 @@ def main() -> None:
             "requested_prompt_tokens": args.input_tokens,
             "calibrated_prompt_tokens": calibrated_tokens,
             "requested_completion_tokens": args.output_tokens,
-            "warmup": not args.skip_warmup,
+            "warmup": warmup_runs > 0,
+            "warmup_runs": warmup_runs,
             "seed": args.seed,
             "temperature": args.temperature,
             "top_p": args.top_p,

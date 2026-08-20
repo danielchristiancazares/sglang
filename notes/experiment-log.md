@@ -2805,3 +2805,35 @@ mean 13.929045  17.125658 446.051        39.730
   +0.035%, and exact generation did not improve outside noise. Reject plain
   SGLang M4 K+1 and keep M3 selected. The external vLLM TurboQuant/full-graph
   K+1 lane is architecturally distinct and remains an information gate.
+
+### 2026-08-20 09:35 PDT - exact benchmark now fails closed and exposes SSE boundaries
+
+- A skeptical read of the exact client found that its headline formulas are
+  deliberately client-observed: TTFT ends at the first nonempty
+  `reasoning_content` or `content` SSE fragment, and generation ends at
+  response completion. Speculative token coalescing or delayed final metadata
+  can therefore move the reported split without changing model work. It also
+  found that `reasoning_content or content` omitted content from the digest
+  when both fields appeared in one delta, and measured token counts were not
+  enforced.
+- Updated `scripts/windows/bench_openai_stream.py` without changing either
+  headline formula. It now appends both output channels in event order,
+  reports full/reasoning/content SHA-256 values, nonempty delta and per-channel
+  fragment counts, first/max delta character counts, and time from the final
+  output delta to response completion. Warmup and measured responses must
+  exactly match prompt, completion, total-token, and `finish_reason=length`
+  expectations. Added `--warmup-runs`; `--skip-warmup` still forces zero.
+  Prompt calibration now rejects a requested target below the empty templated
+  prompt length.
+- Added
+  `test/registered/unit/scripts/test_bench_openai_stream.py` using
+  `CustomTestCase` and CPU CI registration. It covers a single SSE delta that
+  contains both reasoning and content, all count/finish failure modes, and the
+  below-template calibration boundary. The focused run passed **3 tests, 4
+  subtests**; Python compilation, CLI parsing, and `git diff --check` passed.
+- Live M3 smoke:
+  `bench_openai_stream.py --input-tokens 256 --output-tokens 16 --timeout 120`
+  completed exact `272`, returned three nonempty reasoning deltas, first/max
+  delta sizes `2/39`, 0.000168 seconds of trailing response time, and matching
+  full/reasoning hashes. Decision: retain this measurement guardrail before
+  screening further small prompt or generation candidates.
