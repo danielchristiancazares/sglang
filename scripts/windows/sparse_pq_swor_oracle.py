@@ -18,7 +18,11 @@ Minimal schema::
       "parents": [-1, 0, 0],
       "root_token": 3,
       "initial_token_counts": {"3": 2},
-      "penalties": {"presence": 1.5, "frequency": 0.0},
+      "penalties": {
+        "presence": 1.5,
+        "frequency": 0.0,
+        "repetition": 1.0
+      },
       "target_sampling": {"temperature": 1.0, "top_k": 4, "top_p": 0.95},
       "draft_sampling": {"temperature": 1.0, "top_k": 4, "top_p": 0.95},
       "rows": [
@@ -62,6 +66,7 @@ class SamplingTransform:
 class AdditivePenalties:
     presence: float = 0.0
     frequency: float = 0.0
+    repetition: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -235,7 +240,11 @@ def parse_document(document: Any) -> OracleInput:
             initial_token_counts[token] = count
 
     raw_penalties = _require_object(source.get("penalties", {}), "penalties")
-    unknown_penalties = set(raw_penalties) - {"presence", "frequency"}
+    unknown_penalties = set(raw_penalties) - {
+        "presence",
+        "frequency",
+        "repetition",
+    }
     if unknown_penalties:
         raise OracleInputError(
             f"penalties has unknown fields: {sorted(unknown_penalties)}"
@@ -247,7 +256,12 @@ def parse_document(document: Any) -> OracleInput:
         frequency=_finite_float(
             raw_penalties.get("frequency", 0.0), "penalties.frequency"
         ),
+        repetition=_finite_float(
+            raw_penalties.get("repetition", 1.0), "penalties.repetition"
+        ),
     )
+    if not 0.0 < penalties.repetition <= 2.0:
+        raise OracleInputError("penalties.repetition must be within (0, 2]")
 
     target_sampling = _parse_sampling(
         source.get("target_sampling", {}), "target_sampling", vocab_size
@@ -353,7 +367,19 @@ def _distribution_from_logits(
         penalty = penalties.frequency * count
         if count:
             penalty += penalties.presence
-        adjusted.append((token, (raw_logit - penalty) / sampling.temperature))
+        adjusted_logit = raw_logit - penalty
+        # Match the active speculative/overlap target path: accumulated
+        # presence/frequency state is additive first, then repetition is a
+        # single sign-aware scaling whenever the token has appeared.  Repeated
+        # occurrences affect frequency only; repetition is never exponentiated
+        # by the count.
+        if count and penalties.repetition != 1.0:
+            adjusted_logit = (
+                adjusted_logit * penalties.repetition
+                if adjusted_logit < 0.0
+                else adjusted_logit / penalties.repetition
+            )
+        adjusted.append((token, adjusted_logit / sampling.temperature))
 
     adjusted.sort(key=lambda item: (-item[1], item[0]))
     if sampling.top_k is not None:
@@ -646,6 +672,10 @@ class SparsePQSworOracle:
                 "expectation": "integrated proposal draws and verifier coins",
                 "penalty_scope": (
                     "initial_token_counts + root_token + accepted branch suffix"
+                ),
+                "penalty_order": (
+                    "presence/frequency additive, then sign-aware repetition, "
+                    "then temperature/top-k/top-p"
                 ),
             },
             "topology": {

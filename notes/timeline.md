@@ -273,6 +273,39 @@ code changes, or process state matter.
   independent warmed window averaged 124.775 tok/s, confirming the production
   comparison path remained in its established range.
 
+### 23:24–01:17 — close graph-tail work and expose the target/proposal frontier
+
+- Exact linear composition preserved semantics and raised acceptance, yet its
+  categorical form cost 21.132 ms/cycle and reached 120.075 tok/s. Ordinary
+  scheduling remained selected.
+- Added asynchronous CUDA-event timestamps at raw graph boundaries. Two
+  independent windows produced 1,471 records; the best repeatable recoverable
+  tail was 0.658355 ms, below the 0.75 ms admission floor.
+- Added branch-exact p/q capture with branch-local additive and repetition
+  state, explicit worker/compile provenance, and immutable multi-policy replay.
+  Selected-tree capture now makes every unsupported counterfactual unavailable.
+- Exact Qwen3.5 target attribution matched 305 primary GEMMs per M3 replay.
+  The target graph spans 15.322 ms mean; primary GEMMs occupy 12.360 ms on the
+  terminal stream. NVFP4 MLP gate/up and down expose 6.539 ms of that path.
+- Measured M3/M8/M12/M16 geometries all fail the impossible path-length oracle.
+  Candidate funding now requires complete lattice coverage, a conservative
+  projection of at least 215 TPS, and strict clearance of the measured
+  emitted-token/full-cycle-cost frontier.
+
+## 2026-08-17–20
+
+### Selective target NVFP4 sets the primary 200K scoreboard
+
+- Converted the exposed FP8 target projection families into a distinct,
+  provenance-tracked NVFP4 checkpoint. The measured M3 cycle fell from 19.446
+  ms to 17.315 ms while reasoning and tool probes passed.
+- The checkpoint completed the exact `199000+16` capacity run at **2838.980
+  prompt tok/s**, **107.253 generation tok/s**, **70.096 s TTFT**, and **70.235
+  s** end to end, with exact `199016` tokens.
+- The user selected this exact near-limit workload as the primary performance
+  scoreboard. Root `BENCHMARK.md` carries the record to beat; qualification
+  continues to distinguish experimental records from production selection.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
@@ -281,7 +314,7 @@ Use these results when older “final” checkpoints conflict:
 |---|---|---|
 | Fixed `6213/512` | `171.263 tok/s` safe five-run mean | `167.776`, `162.726`, `159.973`, `156.968`, `135.167`, `86.016` |
 | Real sampled `6213/512` | `122.712 tok/s` ten-run mean | `121.075`, `117.794`, `110.750`, `98.126`, `96.110` |
-| Near-limit `199000/16` | `2608.263` prompt, `102.358` generation tok/s | `2570.356`, `2429.153`, `2423.812`, `2200.563` prompt results |
+| Near-limit `199000/16` record | `2838.980` prompt, `107.253` generation tok/s on selective target NVFP4; qualified production remains `2608.263/102.358` | `2570.356`, `2429.153`, `2423.812`, `2200.563` prompt results |
 | Production capacity | `200000` context and token pools | rejected `232000` operating-margin experiment |
 | Speculation geometry | 2 steps / 3 draft tokens | 3 steps / 4 draft tokens |
 | Target verification | TRT-LLM MHA/XQA | FlashInfer-prefill verify route |

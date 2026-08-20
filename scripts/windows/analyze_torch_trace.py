@@ -28,6 +28,7 @@ def kernel_family(name: str) -> str:
         ("gdn_replayssm", "replayssm"),
         ("gated_delta_rule", "gdn"),
         ("causal_conv1d", "causal_conv1d"),
+        ("fused_sigmoid_mul_kernel", "sigmoid_and_mul"),
         ("triton_", "triton_generated"),
         ("layer_norm", "normalization"),
         ("rmsnorm", "normalization"),
@@ -42,6 +43,97 @@ def kernel_family(name: str) -> str:
         if needle in name:
             return family
     return "other"
+
+
+def _cycle_samples_from_graph_runs(
+    graph_runs: list[tuple[int, float, float, float, int]],
+) -> dict | None:
+    """Measure full device cycles from starts of the dominant target graph."""
+    by_graph: dict[int, list[tuple[int, float, float, float, int]]] = defaultdict(
+        list
+    )
+    for run in graph_runs:
+        by_graph[run[0]].append(run)
+    candidates = {
+        graph_id: runs for graph_id, runs in by_graph.items() if len(runs) >= 2
+    }
+    if not candidates:
+        return None
+    anchor_graph_id = max(
+        candidates,
+        key=lambda graph_id: statistics.median(
+            run[2] - run[1] for run in candidates[graph_id]
+        ),
+    )
+    starts = [run[1] for run in candidates[anchor_graph_id]]
+    samples_ms = [
+        (current - previous) / 1000.0
+        for previous, current in zip(starts, starts[1:])
+        if current > previous
+    ]
+    if not samples_ms:
+        return None
+    return {
+        "method": "dominant_target_graph_start_to_start",
+        "anchor_graph_id": anchor_graph_id,
+        "samples_ms": samples_ms,
+        "count": len(samples_ms),
+        "mean_ms": statistics.mean(samples_ms),
+        "median_ms": statistics.median(samples_ms),
+        "min_ms": min(samples_ms),
+        "max_ms": max(samples_ms),
+    }
+
+
+def cuda_cycle_samples(trace: Path) -> dict | None:
+    """Return raw full-cycle device samples from a gzipped profiler trace."""
+    with gzip.open(trace, "rt", encoding="utf-8") as trace_file:
+        events = json.load(trace_file)["traceEvents"]
+    graph_kernels = [
+        event
+        for event in events
+        if event.get("cat") == "kernel" and event.get("args", {}).get("graph id")
+    ]
+    graph_runs: list[tuple[int, float, float, float, int]] = []
+    current_graph_id: int | None = None
+    current_start_us = 0.0
+    current_end_us = 0.0
+    current_kernel_us = 0.0
+    current_kernel_count = 0
+    for event in sorted(graph_kernels, key=lambda item: float(item.get("ts", 0.0))):
+        graph_id = int(event["args"]["graph id"])
+        start_us = float(event.get("ts", 0.0))
+        end_us = start_us + float(event.get("dur") or 0.0)
+        if graph_id != current_graph_id:
+            if current_graph_id is not None:
+                graph_runs.append(
+                    (
+                        current_graph_id,
+                        current_start_us,
+                        current_end_us,
+                        current_kernel_us,
+                        current_kernel_count,
+                    )
+                )
+            current_graph_id = graph_id
+            current_start_us = start_us
+            current_end_us = end_us
+            current_kernel_us = 0.0
+            current_kernel_count = 0
+        current_end_us = max(current_end_us, end_us)
+        current_kernel_us += float(event.get("dur") or 0.0)
+        current_kernel_count += 1
+    if current_graph_id is not None:
+        graph_runs.append(
+            (
+                current_graph_id,
+                current_start_us,
+                current_end_us,
+                current_kernel_us,
+                current_kernel_count,
+            )
+        )
+    return _cycle_samples_from_graph_runs(graph_runs)
 
 
 def main() -> None:
@@ -228,6 +320,7 @@ def main() -> None:
             graph_transitions.items()
         )
     }
+    report["cuda_full_cycle_samples"] = _cycle_samples_from_graph_runs(graph_runs)
     if match_terms:
         report["matched_events"] = [
             {

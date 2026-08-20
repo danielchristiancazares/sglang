@@ -30,6 +30,11 @@ class EagleVerifyInput(SpecInput):
     # Draft proposal distribution q. Shape is (bs, num_steps, vocab) for a
     # rejection chain and (bs, draft_token_num, vocab) for a SWOR tree.
     draft_probs: torch.Tensor = None
+    # Diagnostic-only raw draft logits aligned to internal verifier nodes.
+    # Ordinary inference leaves this unset and pays no storage/copy cost.
+    diagnostic_draft_logits: torch.Tensor = None
+    # Diagnostic payload populated immediately before verifier RNG.
+    pq_capture: object = None
     # Oracle-only CUDA overlap grid, populated immediately before SWOR mutates p.
     swor_overlap_metrics: torch.Tensor = None
 
@@ -152,6 +157,8 @@ class EagleDraftInput(SpecInput):
     # Draft proposal q from draft-extend, only set under rejection sampling:
     # (b, vocab) single-layer; (b, num_steps, vocab) multi-layer chain.
     draft_probs: torch.Tensor = None
+    # Diagnostic-only unpenalized root logits carried into the next draft.
+    diagnostic_draft_logits: Optional[torch.Tensor] = None
     # shape: (b, hidden_size) - one hidden per req, consumed by `draft` forward.
     # None when the spec algorithm's draft doesn't read hidden_states
     # (e.g., STANDALONE — vanilla LLM draft).
@@ -206,6 +213,7 @@ class EagleDraftInput(SpecInput):
                 == "swor"
                 else None
             ),
+            diagnostic_draft_logits=None,
             capture_hidden_mode=capture_hidden_mode,
         )
 
@@ -222,6 +230,8 @@ class EagleDraftInput(SpecInput):
         self.topk_index = self.topk_index[new_indices]
         if self.draft_probs is not None:
             self.draft_probs = self.draft_probs[new_indices]
+        if self.diagnostic_draft_logits is not None:
+            self.diagnostic_draft_logits = self.diagnostic_draft_logits[new_indices]
         if self.hidden_states is not None:
             self.hidden_states = self.hidden_states[new_indices]
         self.bonus_tokens = self.bonus_tokens[new_indices]
@@ -249,6 +259,7 @@ class EagleDraftInput(SpecInput):
             self.topk_p = spec_info.topk_p
             self.topk_index = spec_info.topk_index
             self.draft_probs = spec_info.draft_probs
+            self.diagnostic_draft_logits = spec_info.diagnostic_draft_logits
             self.dsa_topk_indices = spec_info.dsa_topk_indices
             return
         if len(spec_info.topk_index) == 0:
@@ -270,6 +281,15 @@ class EagleDraftInput(SpecInput):
             self.dsa_topk_indices = None
         if self.draft_probs is not None and spec_info.draft_probs is not None:
             self.draft_probs = torch.cat([self.draft_probs, spec_info.draft_probs])
+        if (
+            self.diagnostic_draft_logits is not None
+            and spec_info.diagnostic_draft_logits is not None
+        ):
+            self.diagnostic_draft_logits = torch.cat(
+                [self.diagnostic_draft_logits, spec_info.diagnostic_draft_logits]
+            )
+        else:
+            self.diagnostic_draft_logits = None
 
 
 @dataclass

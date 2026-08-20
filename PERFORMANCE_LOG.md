@@ -8,6 +8,7 @@
 | Qwen3.8-27B Q4_0, batch 24, 128 output tokens each, real top-k/top-p sampling | 49.500 TPS | **62.034 TPS** | **+12.534 TPS** | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_batched_request.py --url http://127.0.0.1:30001/generate --batch-size 24 --output-tokens 128` | 2026-08-16 22:35 PDT |
 | Qwen3.8-27B RadixArk, real sampled `6213/512`, reasoning preserved | 122.712 tok/s | 122.712 tok/s | 0.000 | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` | 2026-08-16 22:40 PDT |
 | Post-correctness linear comparison, second warmed five-run window | 122.712 tok/s | 124.775 tok/s measured | +2.063 / +1.681% | same exact real-sampling command | 2026-08-16 23:24 PDT |
+| Selective target NVFP4 (`AttnNVFP4`) candidate, real sampled `6213/512`, admission window 1 | 124.775 tok/s | 131.707 tok/s mean / 130.824 median (unqualified) | +6.932 / +5.556% | same exact real-sampling command against `-ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` | 2026-08-17 02:00 PDT |
 | Same production topology, fixed accepted length 3 | 171.263 tok/s | 171.263 tok/s | 0.000 | same client with launcher `-SimulateAcceptedLength 3` | 2026-08-16 22:40 PDT |
 | Exact `199000+16` capacity | 199016 total tokens | 199016 total tokens | preserved | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600` | 2026-08-16 22:40 PDT |
 
@@ -130,6 +131,65 @@ tree throughput can be ranked for production.
 - Five acceptance probes averaged **2.277991**, **3.322% above** control. Their 1,124 verification cycles took 23.753 seconds combined, **21.132 ms/cycle**, versus **20.771 ms/cycle** for the ordinary path. The categorical form improved the dense-race composite's 21.239 ms/cycle, while the composition itself stayed slower.
 - Final decision: close exact linear device-cycle composition as a throughput candidate. Retain it opt-in as exact architectural infrastructure; keep production defaults unchanged.
 
+### 2026-08-17 00:42 PDT - PERF-009 asynchronous graph-tail admission
+
+- Change: placed CUDA events at the actual raw draft, target-verify, and draft-extend graph boundaries. Event completion is queried asynchronously and written through a bounded background JSONL sink; the disabled path allocates no timing state.
+- Benchmark evidence: two independent ordinary real-sampling windows emitted 512 tokens in 221 and 246 cycles, with mean emitted lengths **2.316742** and **2.081301**. The retained artifact contains **1,471** transition records. Target-to-draft-extend was repeatable with conservative p10 **0.658355 ms**; extend-to-next-draft p10 was 0.474054 ms and failed the strict p80-span repeatability rule; draft-to-target was about 0.09-0.10 ms.
+- Correctness evidence: active worker was `EAGLEWorkerV2`, torch compile was enabled in mode `default`, both `/server_info` and startup logs recorded the same provenance, and three focused CPU tests passed.
+- Decision: **close graph-tail work**. The best repeatable recoverable time is below the required **0.75 ms** admission threshold.
+- Artifact: `benchmark/windows/profiles/m3_graph_gaps_20260817_0042.jsonl`, SHA-256 `4c7797ae1cf70694994b10fb2d9936543f3e415c1a5ecb2a96174dddf2b7c819`.
+
+### 2026-08-17 00:46 PDT - PERF-010 branch-exact diagnostic and replay boundary
+
+- Change: added opt-in post-transform p/q capture with exact child/parent IDs, depth, branch rank, token IDs, topology membership, branch-local presence/frequency/repetition counts, explicit transform order, active worker, and actual compile mode. Added immutable schema-v2 replay for current/aligned/irregular/calibrated/SWOR/confidence-gated/target-aware policies.
+- Correctness evidence: the sequential small-vocabulary reference covers repeated-token branches and the active additive-then-sign-aware-repetition transform order. The live six-cycle JSONL capture preserved exact selected edges and full probability mass accounting. Runtime provenance resolved `EAGLEWorkerV2` with torch compile `default`.
+- Coverage boundary: the artifact is explicitly `capture_scope=selected_tree`. Its observed current membership is replayable; descendant and alternate support becomes incomplete. Every counterfactual policy now fails closed until a declared complete proposal lattice is present.
+- Frontier gate: an explicitly measured current membership defines the frontier. Every geometry candidate's conservative lower TPS must be strictly greater than the frontier's best-case upper TPS. Funding additionally requires complete lattice coverage and at least **215 TPS**. Family rejection requires a complete impossible target-aware upper at or below **200 TPS**.
+- Artifact: `benchmark/windows/profiles/m3_pq_capture_20260817_0046.jsonl`, six records, SHA-256 `f87c0bf9b0d91c920dba3735823c05ee86cbdb3b30f724d9d4014a4ce629f588`.
+
+### 2026-08-17 01:17 PDT - PERF-011 exact target-GEMM attribution and measured frontier
+
+- Change: added `analyze_target_graph_gemms.py`. It groups replays by CUDA launch correlation, matches all **305** primary GEMMs per target replay against the Qwen3.5 projection contract, and fails model-role attribution closed on any count drift. Each launch and mathematical problem shape retains aggregate kernel time, all-stream wall coverage, terminal-stream serialized residency, and exclusive observed-wall exposure.
+- M3 graph evidence: 61 graph-2 replays span **15.321986 ms mean / 14.660981 ms median**. Target-start-to-target-start cycles average **19.446434 ms** over 60 samples. Primary GEMMs are **13.086192 ms aggregate**, **12.360049 ms terminal-stream**, and **11.821001 ms exclusive observed wall** per replay.
+
+| M3 target problem shape | Role | Aggregate ms/replay | Terminal-stream ms | Exclusive-wall ms |
+|---|---|---:|---:|---:|
+| NVFP4 `M3 x N34816 x K5120` | 64 MLP gate/up projections | 4.211372 | 4.211372 | 4.184174 |
+| FP8 `M3 x N16384 x K5120` | 48 GDN qkvz projections | 2.851188 | 2.851188 | 1.675006 |
+| NVFP4 `M3 x N5120 x K17408` | 64 MLP down projections | 2.328160 | 2.328160 | 2.293793 |
+| FP8 `M3 x N5120 x K6144` | 48 GDN + 16 full-attention output projections | 1.483579 | 1.483579 | 1.483579 |
+| FP8 `M3 x N8192 x K5120` | 16 full-attention qkv projections | 0.946352 | 0.946352 | 0.946352 |
+| BF16 `M3 x N96 x K5120` | 48 GDN BA projections | 0.726143 | 0.000000 | 0.000081 |
+| NVFP4 `M3 x N248320 x K5120` | lm-head | 0.539398 | 0.539398 | 0.539212 |
+
+- Proposal execution evidence: graph 5 draft decode spans **1.216837 ms** and is led by five BF16 GEMVs at 0.515453 ms plus one NVFP4 GEMM at 0.441165 ms. Graph 8 draft extend spans **1.062720 ms** and is led by five BF16 GEMMs at 0.561803 ms plus one NVFP4 GEMM at 0.432317 ms. Full cycle minus target span is about **4.124 ms**, including proposal graphs and scheduling transitions.
+- Width frontier: trace-local M3 emitted 2.133333/cycle for **109.703 projected TPS**. Its impossible depth-two ceiling is **154.270 TPS** at mean cost and **167.480 TPS** at the best observed cycle. Post-change M8, corrected M12, and M16 depth-four best-sample impossible ceilings are **185.782**, **179.547**, and **166.666 TPS**. All four measured geometries are rejected before proposal quality.
+- Decision: no new topology is funded. Target work begins with the exposed NVFP4 gate/up and down shapes; the BF16 BA path is already hidden at M3. Geometry work waits for complete lattice capture and must clear both the measured frontier and the 215-TPS conservative floor.
+- Artifact: M3 trace SHA-256 `01a113fa2e8aed1bee57a15fd3b02a718afafd712504722dd295233a1a694e92`; generated attribution SHA-256 `fb27a0ab703711a4629e1bff0d75f02d4fa33049a79d5a69eab60d72a8333d06`.
+
+### 2026-08-17 01:26 PDT - PERF-012 external vLLM MTP-3/TurboQuant architecture
+
+- Evidence: `MiaAI-Lab/Qwen3.8-27B-NVFP4-RTX-5090` serves the same RadixArk checkpoint on one RTX 5090 through vLLM 0.27.1 and claims approximately **160 tok/s** single-stream at full 262K context.
+- Architecture: three speculative MTP tokens, four-row K+1 verification, TurboQuant 4-bit KV pinned to 5.5 GiB, Flash Attention v2, one sequence, full CUDA graphs, and a backport of vLLM PR #40914 that routes uniform K+1 verify through the TurboQuant decode kernel with GPU-only synthetic metadata.
+- Ceiling implication: at our 19.446 ms measured cycle, a four-token maximum is **205.693 TPS**, while the current three-token maximum is 154.270 TPS. The external result escapes the current topology's mathematical ceiling before any target GEMM improvement.
+- Qualification gap: the external repository publishes no prompt length, output length, raw samples, sampling parameters, acceptance, or cycle data. Its examples use temperature zero and thinking disabled. The 160 claim is an architecture lead rather than a production comparison.
+- Decision: matched vLLM reproduction under exact `6213/512` real sampling becomes the next gate. Porting or selecting this lane requires the 200/215 frontier plus reasoning/tool/200K behavior qualification.
+
+### 2026-08-17 01:36 PDT - PERF-013 selective target NVFP4 admission probe
+
+- Compared production-shaped static-FP8 cuBLAS BMM against CUTLASS NVFP4 for QKVZ `3x16384x5120`, output `3x5120x6144`, and full-attention QKV `3x8192x5120`. Both sides include activation quantization and replay family graphs with one distinct weight per production layer.
+- Two paired family-streaming windows projected **1.976456 ms** and **1.865227 ms** overlap-adjusted full-cycle savings. The second assigned 0.724913 ms to QKVZ, 0.819841 ms to output projections, and 0.320473 ms to full-attention QKV.
+- At the lower 1.865227 ms projection, M3 cost is 17.580773 ms: **170.641 TPS** at the three-token perfect ceiling and **227.521 TPS** at a four-token K+1 perfect ceiling.
+- Decision: fund selective FP8-to-NVFP4 checkpoint construction. It clears the 0.75 ms implementation gate and the 215-TPS geometry floor when paired with K+1. The exact-shape probe remains as diagnostic infrastructure.
+
+### 2026-08-17 02:00 PDT - PERF-014 selective target NVFP4 admission window 1
+
+- Change: loaded the derived `Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` checkpoint (208 target attention projection bases converted FP8 -> NVFP4) through the unchanged production launcher with only `-ModelPath` changed.
+- Benchmark evidence: five consecutive real samples `130.403, 134.384, 130.824, 136.749, 126.173 tok/s`, mean **131.707**, median **130.824**, versus the 124.775 matched control and 122.712 qualified baseline. Five acceptance probes `2.216450, 2.275556, 2.178723, 2.226087, 2.188034`, mean **2.216970** over 1,155 cycles, aggregate histogram `[308, 292, 555]`. Device cycle previously measured **17.314950 ms** (from 19.446434 ms, -10.96%).
+- Correctness evidence: tool gate passed (one `multiply({"a":37,"b":19})` call, `finish_reason=tool_calls`), preserved coherent reasoning, exact 512-token completions, `/model_info` language-only, all three graphs captured.
+- Decision: admission window 1 passes with the largest measured single-window gain so far. Width-three remains capped near 173.260 TPS; K+1 geometry is required for 200. Remaining gates: exact `199000+16` capacity, second independent window, OpenCode2 integration, unsimulated relaunch, and removal of the temporary loader diagnostic.
+- Commit: uncommitted experiment.
+
 ## Candidate Inventory
 
 | ID | Hypothesis | Scope | Status | Evidence |
@@ -150,12 +210,15 @@ tree throughput can be ranked for production.
 | PERF-012 | Extend vectorized Q5_K projection to exact batch 24. | `gguf_q4_0.mm` Q5_K kernel | Retained | `2.081 -> 0.891 ms` per GDN projection; reference relative error `3.81316e-07`; final median `62.034 TPS`. |
 | PERF-001 | Remove the cross-iteration speculative seam with a two-graph device-resident cycle. | CUDA graph backend, EAGLE draft/extend runners, worker bridge | Implemented; opt-in | Child graph test passed and steady M12 has two graph IDs. Committed in `d0116b54e5`; production relevance remains blocked by the tree correctness/full-model gate. |
 | PERF-002 | Store and compute only strict GDN ancestry; remove value-tile parameter recomputation. | `gdn_tree_replay.cuh`, Python binding/backend | Implemented; opt-in tree path | Three native CUDA tests passed; measured direct saving is about 0.06 ms/cycle. Committed in `d0116b54e5`. |
-| PERF-003 | Apply exact branch-local presence/frequency state to SWOR p and q. | sampling state, fixed topology metadata, draft graph buffers, target verifier | Paused at correctness gate | q mass outside p is 0.096-0.164 on dominant rows; offline oracle already encodes branch-local semantics. Resume only after corrected full-model non-front path parity and a fresh linear baseline. |
-| PERF-004 | Attribute target/composite graph time by kernel family and exact graph ID before another kernel rewrite. | trace analyzer and Qwen3.5 target/draft hot paths | Ready for survey | Current whole-trace families mix prefill and graph work. The MacPro ledger confirms synchronized microbenchmarks can mis-rank async serving changes. |
+| PERF-003 | Apply exact branch-local presence/frequency/repetition state to SWOR p and q. | sampling state, topology metadata, draft graph buffers, target verifier | Diagnostic implemented | Live selected-tree p/q capture is exact for the observed membership; counterfactual policy coverage fails closed. |
+| PERF-004 | Attribute target/composite graph time by kernel family, exact M/N/K, and graph ID before another kernel rewrite. | trace analyzer and Qwen3.5 target/draft hot paths | Complete for M3/M8/M12/M16 | All 305 primary target GEMMs/replay match exactly; M3 gate/up and down expose 6.539 ms on the terminal stream. |
 | PERF-005 | Extend the device-resident cycle to exact linear rejection sampling. | proposal sampling, exact-q buffers, verification/extend bridge | Closed for throughput; retained opt-in | Dense races reached 122.576 tok/s; explicit-seed categorical reached 120.075 versus 124.775 control despite higher acceptance. Composite cycle cost remained 1.7% slower. |
 | PERF-006 | Improve proposal quality with a distinct trained/calibrated proposal mechanism. | MTP adapter/training, standalone draft, or device-side mixture oracle | Survey | RadixArk and Gittensor embedded MTP tensors are byte-identical. Temperature/support calibration is flat. Any training path needs held-out behavior evidence. |
-| PERF-007 | Fuse remaining target FP8/BF16 projection work only after graph-specific attribution. | Qwen3.5 GDN input/BA/output projections and ModelOpt linear kernels | Survey | Existing qkvz and BA projections are already merged separately; prior target/draft quantizers and broad GEMM autotuning lost. |
-| PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q oracle and topology optimizer | Gated | Current-q optimistic 32-node search reached only 4.0921 expected outputs and stayed cost-limited. |
+| PERF-007 | Reduce the exposed target GEMM critical path. | Qwen3.5 MLP gate/up/down and FP8 qkvz/output projections | Measured: admission window 1 passed | Derived `AttnNVFP4` checkpoint cut the cycle 10.96% and raised real TPS to 131.707 mean. Remaining: capacity, second window, OpenCode2, relaunch. |
+| PERF-014 | Raise the emitted-token path length from three to four (K+1) on the now-faster 17.315 ms cycle. | launcher speculative shape only (three steps / four rows), EAGLE worker/graph code path | Next funded experiment | Perfect four-token ceiling is ~231.014 TPS at the measured cycle; reject immediately if a measured four-token ceiling falls below 215 TPS. |
+| PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
+| PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
+| PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
 
 ### 2026-08-16 20:29 PDT - PERF-001
 

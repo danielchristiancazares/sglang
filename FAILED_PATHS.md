@@ -410,5 +410,17 @@
 - Correctness evidence: all requests returned exactly 512 sampled tokens with thinking enabled; short exact acceptance smoke passed; q(X), offset replay, proposal transforms, and raw child graph tests passed. Five categorical acceptance probes averaged **2.277991**, above control.
 - Failure mode: normalized execution cost remained higher. The categorical composite used **21.132 ms per verification cycle** over 1,124 cycles, while the ordinary linear path used **20.771 ms/cycle** over 1,163 cycles. Removing vocab-wide RNG recovered only part of the composite overhead.
 - Why not to retry unchanged: both RNG strategies lost with higher acceptance, isolating the composition/bridge path rather than proposal yield.
-- Reopen only if: graph-specific profiling identifies a removable parent/bridge cost of at least 0.4 ms/cycle or CUDA/PyTorch gains a composition API that preserves runner bookkeeping without the current bridge work.
+- Reopen only if: a dependency/runtime change produces at least 0.75 ms of repeatable recoverable CUDA-event time under two independent windows, or CUDA/PyTorch gains a composition API that preserves runner bookkeeping without the current bridge work.
 - Related commit or revert: retained opt-in in the pending exact linear device-cycle commit; launcher default remains off.
+
+## PERF-F036 - Graph-tail scheduling recovery below the admission floor
+
+- Hypothesis: work between target verify, draft extend, and the next draft graph contains enough repeatable idle device time to fund another graph-tail implementation.
+- Scope: ordinary M3 linear rejection sampling, actual raw graph boundaries, asynchronous CUDA-event timestamps, active `EAGLEWorkerV2`, and torch compile mode `default`.
+- Attempted change: added zero-default-overhead boundary probes, asynchronous event query, a bounded JSONL writer, and a robust admission analyzer using p10, median absolute deviation, and p10-to-p90 spread. Collected two independent 512-token windows and 1,471 transition records.
+- Benchmark evidence: target-to-draft-extend was the best repeatable transition at conservative p10 **0.658355 ms**. Extend-to-next-draft had p10 0.474054 ms and failed the strict p80-span repeatability rule. Draft-to-target was roughly 0.09-0.10 ms.
+- Correctness evidence: both startup logs and `/server_info` resolved the active worker and compile mode explicitly; the endpoint stayed healthy; three focused analyzer/probe tests passed; the exact process tree was stopped and port/GPU cleanup passed.
+- Failure mode: the best repeatable recoverable tail is smaller than the **0.75 ms** minimum required to justify implementation and production requalification cost.
+- Why not to retry unchanged: two independent windows agree on the same sub-threshold boundary, and the prior exact composite already regressed full-cycle cost.
+- Reopen only if: code, CUDA, PyTorch, WDDM, or graph scheduling changes move the conservative repeatable p10 to at least 0.75 ms in two fresh windows.
+- Related commit or revert: diagnostic probe retained; graph-tail production implementation remains closed.

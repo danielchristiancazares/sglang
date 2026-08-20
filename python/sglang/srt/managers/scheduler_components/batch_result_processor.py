@@ -947,6 +947,11 @@ class SchedulerBatchResultProcessor:
             result.copy_done.synchronize()
         auxiliary_output_starts = self.snapshot_auxiliary_output_starts(batch, result)
         auxiliary_output = result.auxiliary_host_output
+        if result.pq_capture is not None:
+            from sglang.srt.speculative.pq_diagnostic import submit_capture
+
+            submit_capture(result.pq_capture)
+            result.pq_capture = None
         if result.routed_experts_output is not None:
             result.routed_experts_output.finalize()
             result.routed_experts_output = None

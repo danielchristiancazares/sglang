@@ -152,6 +152,26 @@ class Spec(msgspec.Struct):
         "Collect CUDA proposal-overlap grids for SWOR q calibration. This is "
         "an oracle-only diagnostic and is disabled by default.",
     ] = False
+    speculative_pq_capture_path: A[
+        Optional[str],
+        "Append branch-exact sparse p/q diagnostic cycles as JSONL at this "
+        "path. The capture retains raw target/draft logits, applies branch-local "
+        "presence/frequency/repetition state off the GPU hot path, and is "
+        "disabled by default.",
+    ] = None
+    speculative_pq_capture_max_cycles: A[
+        int,
+        "Maximum number of p/q diagnostic cycles written by one server process.",
+    ] = 256
+    speculative_graph_gap_timing_path: A[
+        Optional[str],
+        "Append asynchronous CUDA-event gaps between EAGLE draft, target, and "
+        "draft-extend graph launches as JSONL. Disabled by default.",
+    ] = None
+    speculative_graph_gap_timing_max_samples: A[
+        int,
+        "Maximum number of asynchronous speculative graph-gap samples.",
+    ] = 2048
     speculative_swor_topology: A[
         Optional[str],
         "JSON array of fixed parent node IDs for an experimental SWOR topology. "

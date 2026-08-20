@@ -1,7 +1,7 @@
 # Current state
 
-**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-16
-23:55 PDT.
+**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
+08:17 PDT.
 
 **Qualified source line:** commit `9681850bed660b9079ee1aee906cda819603da7a`
 (`Add exact SWOR tree verification and topology analysis`), with the final
@@ -72,7 +72,7 @@ were corrupted. Their production hold remains because a full current-config
 cross-cycle state comparison has not established target KV, recurrent state,
 next-draft state, reclamation, and next-cycle proposal parity together.
 
-The pending repair installs physical full-KV translation for relocation,
+Signed commit `3f276e8acda4` installs physical full-KV translation for relocation,
 preserves MLA's separate dense kernel address space, and makes accepted-path
 compaction mandatory for every top-k tree worker. Factory-created MHA/MLA tests
 and a captured four-cycle serial-path comparison now cover target K/V,
@@ -102,24 +102,84 @@ remained above the ordinary path's 20.771 ms/cycle. The architecture stays
 opt-in, SWOR is rejected on raw-composite RNG grounds, and production defaults
 remain unchanged.
 
-## Final handoff
+## Active performance handoff
 
-The exhaustive NVFP4 optimization goal was explicitly marked complete at
-19:06 PDT. The accepted final action restored both launcher defaults from a
-232K experiment to `ContextLength=200000` and `MaxTotalTokens=200000`, then
-captured a fresh unsimulated production server.
+The user designated the exact `199000+16` request in the real 200K pools as the
+primary performance scoreboard. The record to beat is the selective
+target-NVFP4 checkpoint at **2838.980 prompt tok/s** and **107.253 generation
+tok/s**, with **70.096 s TTFT**, **70.235 s** end to end, exact `199016`
+tokens, and `finish_reason=length`. Root [`../BENCHMARK.md`](../BENCHMARK.md)
+is the compact authority for this scoreboard.
 
-At that timestamp, the hidden PowerShell parent was PID `30688`, the endpoint
-was ready on port 30000, graph capture took 43.45 seconds for target verify,
-1.39 seconds for draft decode, and 1.23 seconds for draft extend, and reported
-headroom was 1.84 GiB. Every PID, listener, log path, and runtime health fact is
-a snapshot; establish live state from the process tree, port, GPU, logs, and
-endpoint before a lifecycle action.
+The current active milestone is **3000 prompt tok/s** and **110 generation
+tok/s** on the same exact request, with **TTFT <=66.33 s**, **end-to-end time
+<=66.5 s**, and exact `199016` completion. Both throughput targets must be met
+in one matched run.
 
-The historical 200 tok/s real-sampled target remains evidence about the
-performance frontier. The completed goal supplies no standing authorization
-for another GPU experiment. A future branch starts from an explicit request or
-a fresh measured gap.
+The qualified RadixArk production baseline remains **2608.263 prompt tok/s**
+and **102.358 generation tok/s** on the same exact workload. The selective
+checkpoint passed the capacity ladder, arithmetic, tools, model surface, and
+one ordinary sampled window; it remains an experimental performance record.
+A new overall record must complete exact `199016` and exceed both selective
+checkpoint throughput values under the matched benchmark contract.
+
+The earlier 200-TPS short-context objective and 215-TPS geometry funding floor
+remain historical diagnostic context. Production defaults and the qualified
+122.712 TPS `6213/512` line remain unchanged.
+
+Asynchronous CUDA-event timing collected 1,471 transition records over two
+independent real-sampling windows. The best repeatable graph-tail opportunity
+was target-to-draft-extend at conservative p10 **0.658355 ms**, below the
+required 0.75 ms. Graph-tail composition is closed.
+
+The M3 target trace contains 61 exact graph-2 replays at **15.322 ms mean** and
+**14.661 ms median**. Full target-start-to-target-start cycles averaged
+**19.446 ms**. Primary GEMMs consume **13.086 ms aggregate** per replay,
+**12.360 ms** on the terminal stream, and **11.821 ms** of exclusive observed
+wall. Exact mathematical shape attribution ranks:
+
+1. NVFP4 MLP gate/up, `M=3,N=34816,K=5120`: **4.211 ms** terminal-stream;
+2. FP8 GDN qkvz, `3x16384x5120`: **2.851 ms** terminal-stream, **1.675 ms**
+   exclusive wall because alternate-stream work overlaps it;
+3. NVFP4 MLP down, `3x5120x17408`: **2.328 ms**;
+4. FP8 output projections, `3x5120x6144`: **1.484 ms**;
+5. FP8 full-attention qkv, `3x8192x5120`: **0.946 ms**;
+6. NVFP4 lm-head, `3x248320x5120`: **0.539 ms**.
+
+The BF16 GDN `in_proj_ba` consumes 0.726 ms of aggregate device work and has
+only 0.000081 ms of exclusive observed wall at M3, so it is already hidden by
+the qkvz stream. The draft-decode and draft-extend graphs span **1.217 ms** and
+**1.063 ms**; together with inter-graph scheduling they account for the other
+roughly 4.124 ms of the full cycle.
+
+Two exact-shape, distinct-weight CUDA-graph windows funded selective conversion
+of the exposed FP8 projections to NVFP4. Their overlap-adjusted cycle
+projections were **1.976456 ms** and **1.865227 ms**. The derived checkpoint
+then reduced the measured M3 cycle from 19.446 ms to **17.315 ms**, passed exact
+`199000+16`, and established the current **2838.980/107.253 tok/s** scoreboard
+record.
+
+Current measured geometries fail the path-length oracle before proposal
+quality is considered. M3's depth-two maximum is 154.270 TPS at mean cycle
+cost. M8, corrected M12, and M16 depth-four best-sample impossible ceilings are
+185.782, 179.547, and 166.666 TPS. Width/topology implementation remains
+unfunded.
+
+Branch-exact p/q capture, branch-local presence/frequency/repetition state,
+startup worker/compile provenance, and deterministic replay tooling are now in
+the worktree. The live six-cycle artifact is deliberately marked
+`capture_scope=selected_tree`; later states have incomplete support. It can
+replay the observed membership and cannot qualify aligned, irregular,
+calibrated, SWOR, confidence-gated, or target-aware counterfactuals. The replay
+gate requires complete lattice coverage and requires every geometry candidate's
+conservative lower TPS to strictly clear the measured frontier's best-case
+upper TPS before applying the 215-TPS funding floor.
+
+MiaAI-Lab's single-5090 vLLM 0.27.1 recipe remains relevant architecture
+evidence: it uses the same RadixArk checkpoint with MTP-3, TurboQuant 4-bit KV,
+and a patched all-GPU K+1 verify route. Any reproduction or SGLang port now
+ranks first on the exact `199000+16` scoreboard. Short-context acceptance and
+device-cycle measurements remain supporting diagnostics.
 
 ## Behavior and capacity invariants
 
