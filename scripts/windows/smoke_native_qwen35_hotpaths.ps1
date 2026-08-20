@@ -28,6 +28,9 @@ from sglang.kernels.ops.layernorm.norm import (
 )
 from sglang.srt.layers.activation import silu_and_mul as native_silu_and_mul
 from sglang.srt.layers.layernorm import gemma_rmsnorm as native_gemma_rmsnorm
+from sglang.srt.layers.layernorm import (
+    gemma_fused_add_rmsnorm as native_gemma_fused_add_rmsnorm,
+)
 from sglang.srt.layers.layernorm import rmsnorm as native_rmsnorm
 
 
@@ -91,6 +94,10 @@ for rows in (1, 3):
     input_native = norm_input.clone()
     residual_ref = residual_base.clone()
     input_ref = norm_input.clone()
+    residual_gemma_native = residual_base.clone()
+    input_gemma_native = norm_input.clone()
+    residual_gemma_staged = residual_base.clone()
+    input_gemma_staged = norm_input.clone()
 
     def native_norm():
         return native_rmsnorm(norm_input, weight, 1e-6)
@@ -135,8 +142,28 @@ for rows in (1, 3):
         )
         input_ref.copy_((normalized * weight.float()).to(input_ref.dtype))
 
+    def native_gemma_fused():
+        input_gemma_native.copy_(norm_input)
+        residual_gemma_native.copy_(residual_base)
+        native_gemma_fused_add_rmsnorm(
+            input_gemma_native,
+            residual_gemma_native,
+            weight,
+            1e-6,
+        )
+
+    def staged_gemma_fused():
+        input_gemma_staged.copy_(norm_input)
+        residual_gemma_staged.copy_(residual_base)
+        residual_gemma_staged.add_(input_gemma_staged)
+        input_gemma_staged.copy_(
+            native_gemma_rmsnorm(residual_gemma_staged, weight, 1e-6)
+        )
+
     native_fused()
     torch_fused()
+    native_gemma_fused()
+    staged_gemma_fused()
     torch.cuda.synchronize()
     results.append(
         {
@@ -168,6 +195,20 @@ for rows in (1, 3):
             "torch_us": elapsed_us(torch_fused, iterations),
             "input_max_abs": float((input_native.float() - input_ref.float()).abs().max()),
             "residual_exact": bool(torch.equal(residual_native, residual_ref)),
+        }
+    )
+    results.append(
+        {
+            "op": "gemma_fused_add_rmsnorm_direct_out",
+            "rows": rows,
+            "native_us": elapsed_us(native_gemma_fused, iterations),
+            "staged_us": elapsed_us(staged_gemma_fused, iterations),
+            "input_exact": bool(
+                torch.equal(input_gemma_native, input_gemma_staged)
+            ),
+            "residual_exact": bool(
+                torch.equal(residual_gemma_native, residual_gemma_staged)
+            ),
         }
     )
 

@@ -133,7 +133,7 @@ if _is_cuda or _is_xpu or _is_musa:
 
         def gemma_fused_add_rmsnorm(x, residual, weight, epsilon):
             residual.add_(x)
-            x.copy_(gemma_rmsnorm(residual, weight, epsilon))
+            _jit_gemma_rmsnorm(residual, weight, x, epsilon)
 
     else:
         from sgl_kernel import (

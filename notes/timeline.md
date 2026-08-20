@@ -338,6 +338,21 @@ code changes, or process state matter.
   not time: graph span was 1.061 ms versus 1.059 control and full M3 cycle was
   16.066558 ms versus 16.058328. The patch was removed.
 
+### Direct Gemma output clears the combined milestone
+
+- Native Windows previously allocated a temporary Gemma-normalized tensor and
+  copied it back after `residual.add_(x)`. Passing `x` directly as the existing
+  JIT kernel's output preserves bit-exact arithmetic while removing the
+  allocation/copy.
+- The local Qwen shape fell 38.731 -> 29.254 us at M1 and 37.578 -> 29.184 us
+  at M3. Two independent sampled windows averaged 144.535 and 138.621 tok/s.
+- Exact `199000+16` set the new record at **3016.444 prompt / 112.355
+  generation tok/s**, 65.971714 s TTFT, and 66.105219 s E2E. A fresh restart
+  independently reached **3013.736/112.012**.
+- Launcher-default base RadixArk also passed exact capacity, arithmetic,
+  tools, model surface, OpenCode2, and post-flush headroom; production chunk
+  remains 4096.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
@@ -346,7 +361,7 @@ Use these results when older “final” checkpoints conflict:
 |---|---|---|
 | Fixed `6213/512` | `171.263 tok/s` safe five-run mean | `167.776`, `162.726`, `159.973`, `156.968`, `135.167`, `86.016` |
 | Real sampled `6213/512` | `122.712 tok/s` ten-run mean | `121.075`, `117.794`, `110.750`, `98.126`, `96.110` |
-| Near-limit `199000/16` record | `2838.980` prompt, `107.253` generation tok/s on selective target NVFP4; qualified production remains `2608.263/102.358` | `2570.356`, `2429.153`, `2423.812`, `2200.563` prompt results |
+| Near-limit `199000/16` record | `3016.444` prompt, `112.355` generation tok/s on selective target NVFP4 + chunk 7680 + direct Gemma output; qualified production remains `2608.263/102.358` | `2838.980/107.253`, `2570.356`, `2429.153`, `2423.812`, `2200.563` |
 | Production capacity | `200000` context and token pools | rejected `232000` operating-margin experiment |
 | Speculation geometry | 2 steps / 3 draft tokens | 3 steps / 4 draft tokens |
 | Target verification | TRT-LLM MHA/XQA | FlashInfer-prefill verify route |

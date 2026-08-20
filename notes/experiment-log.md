@@ -2978,3 +2978,56 @@ mean 13.929045  17.125658 446.051        39.730
   pruning saves memory but not execution because the NVFP4 lm-head reads the
   same weights at M=1 and M=3. Removed all code and test changes, stopped the
   server, and retained only the trace/manifest plus documentation.
+
+### 2026-08-20 12:29 PDT - bit-exact Gemma direct output clears 3000/110
+
+- Found a lower-risk native-Windows norm opportunity before writing a new
+  kernel. The Windows `gemma_fused_add_rmsnorm` wrapper performed
+  `residual.add_(x)`, allocated a temporary through `gemma_rmsnorm`, then
+  copied the result back into `x`. The existing JIT API already accepts an
+  output tensor. Changed the wrapper to pass `x` directly, preserving the
+  exact residual update and exact JIT Gemma arithmetic.
+- Added native-Windows SM120 Qwen-shape coverage at rows 1/3 and hidden 5120.
+  Input and residual are bit-exact against the former staged sequence. The
+  four targeted Qwen Gemma tests passed. The updated native hot-path smoke
+  retained fullgraph exactness and measured **38.731 -> 29.254 us** at M1 and
+  **37.578 -> 29.184 us** at M3. A broader FP8 norm-fusion test still hits an
+  unrelated FlashInfer 0.6.17 source compile error (`uint` undefined); it is
+  outside this JIT path.
+- The first selective chunk-7680 exact window was:
+  prompt `3016.444, 3013.834, 3013.975`, generation
+  `112.355, 97.506, 112.534`, TTFT `65.971714, 66.028859, 66.025761 s`, E2E
+  `66.105219, 66.182696, 66.159054 s`. Two of three runs cleared every
+  milestone gate.
+- A fresh independent server produced prompt `3014.657, 3009.496, 3012.204,
+  3013.736, 3011.489` and generation `96.531, 86.114, 98.100, 112.012,
+  79.442`. Run four independently cleared every gate at
+  **3013.736/112.012**, TTFT 66.031008 s, E2E 66.164923 s. All eight exact
+  requests completed `199016`, `finish_reason=length`, and digest
+  `9a0e2074...62668b37`; prompt mean was **3013.229**.
+- Two exact `199000+512` support runs measured
+  `3015.106/108.271` and `3011.779/111.094`, mean
+  **3013.443/109.683**. Two real sampled `6213/512` windows averaged
+  **144.535** and **138.621 tok/s**; combined mean **141.578**. Five
+  acceptance probes averaged **2.249107**, showing the sampled gain did not
+  come from a materially different acceptance regime.
+- Selective behavior passed: coherent reasoning and final `703`, exactly one
+  `multiply({"a":37,"b":19})` call, language-only model surface, and 4,994 MiB
+  free after flush. The candidate full-cycle trace is
+  `benchmark/windows/profiles/target_width_m3-20260820-115928/target_width_m3-1787252368.4682736-TP-0.trace.json.gz`,
+  SHA-256
+  `e9f2e09a78a85f2656bc02b9379cbf3b401cb26c455f41ba634379cbfe8009b2`.
+- Relaunched launcher-default base RadixArk at production chunk 4096. All
+  target/draft/extend graphs captured; exact `199000+16` completed at
+  **2643.254 prompt / 101.980 generation tok/s**, with 698 MiB free after the
+  request and 1,910 MiB after arithmetic/tool probes plus flush. Arithmetic,
+  one parsed tool call, image/audio false, and five-run sampled mean
+  **124.208 tok/s** passed.
+- Standalone process-scoped OpenCode2 integration completed with exit code 0
+  and visible `READY`; the wrapper restored its environment overlay and did
+  not change global user configuration. The exact server tree was stopped
+  leaf-first afterward; port 30000, compiler workers, and CUDA residency
+  returned to clean state.
+- Decision: promote the bit-exact direct-output change and the combined
+  selective chunk-7680 record. The user's **3000 prompt / 110 generation
+  tok/s** milestone is fully achieved and independently verified.

@@ -5,20 +5,19 @@ Qwen3.8 production line. A comparable result records the request shape, server
 mode, cache treatment, sampling profile, graph state, GPU environment, and
 resolved launcher arguments.
 
-**Reconciled through:** 2026-08-20 11:44 PDT.
+**Reconciled through:** 2026-08-20 12:29 PDT.
 
 ## Primary performance scoreboard
 
 The user-selected headline workload is the exact near-limit `199000+16`
 request in the real 200K context and token pools. The current record to beat is
-the selective target-NVFP4 checkpoint at **2838.980 prompt tok/s** and
-**107.253 generation tok/s**, with **70.096 s TTFT**, **70.235 s** end to end,
+the selective target-NVFP4 checkpoint at **3016.444 prompt tok/s** and
+**112.355 generation tok/s**, with **65.971714 s TTFT**, **66.105219 s** end to end,
 exactly `199016` completed tokens, and `finish_reason=length`.
 
-The current active milestone is **3000 prompt tok/s** and **110 generation
-tok/s** on the same exact request, corresponding to **TTFT <=66.33 s** and
-**end-to-end time <=66.5 s**. The milestone requires both throughput targets
-in one successful `199016`-token run.
+The **3000 prompt / 110 generation tok/s** milestone is achieved. An
+independent restart also reached **3013.736/112.012**, with 66.031008 s TTFT
+and 66.164923 s end to end.
 
 A new overall record completes the same workload and exceeds both headline
 throughput values under a matched environment record. This single-run
@@ -33,11 +32,10 @@ with identical outputs, so one generation hit above 110 tok/s is not evidence
 of a regression or win. Pair this headline request with verification-cycle
 counts, a longer decode/acceptance window, and an A-B-A control.
 
-The independent prompt record uses the selective checkpoint with explicit
-`-ChunkedPrefillSize 7680`: **3002.344 prompt tok/s**, TTFT 66.281538 s, and
-E2E 66.434400 s on exact `199000+16`. It does not replace the combined record
-because that run generated at 98.127 tok/s. Keep the production launcher
-default at 4096; base RadixArk regressed and lost operating headroom at 7680.
+The record profile uses the selective checkpoint with explicit
+`-ChunkedPrefillSize 7680` plus the bit-exact native-Windows Gemma
+residual-norm direct-output path. Keep the production launcher chunk default
+at 4096; base RadixArk regressed and lost operating headroom at 7680.
 
 ## Qualified reference
 

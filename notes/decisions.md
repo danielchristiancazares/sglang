@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-20 11:54 PDT.
+**Reconciled through:** 2026-08-20 12:29 PDT.
 
 ## Selected production choices
 
@@ -12,12 +12,12 @@ remain in [`experiment-log.md`](experiment-log.md).
 |---|---|---|
 | Checkpoint | RadixArk Qwen3.8-27B NVFP4 | Restored coherent reasoning and tools; remained the fastest qualified real-sampled line |
 | Capacity | Real 200K target and draft pools | Exact `199016` passed repeatedly; 232K reached 98 MiB free before cache flush and was rejected for operating margin |
-| Primary performance scoreboard | Exact `199000+16` near-limit request | Current record is **2838.980 prompt / 107.253 generation tok/s** on selective target NVFP4; a new overall record must exceed both and complete exact `199016` |
-| Active performance milestone | **3000 prompt / 110 generation tok/s** | Requires one matched exact-`199016` run meeting both throughput targets; latency equivalents are TTFT <=66.33 s and end-to-end <=66.5 s |
+| Primary performance scoreboard | Exact `199000+16` near-limit request | Current record is **3016.444 prompt / 112.355 generation tok/s** on selective target NVFP4; a new record must exceed both and complete exact `199016` |
+| Performance milestone | **3000 prompt / 110 generation tok/s achieved** | Winning run completed exact `199016` at 65.971714 s TTFT / 66.105219 s E2E; independent restart reached **3013.736/112.012** |
 | Model surface | Language-only with Qwen3 reasoning and Qwen3 Coder tools | Preserves required behavior and VRAM; image/audio remain disabled |
 | FlashInfer | Clean native-Windows port of 0.6.17 | Passed JIT/kernel tests, fixed long-prefill correctness, and satisfies the SGLang version contract |
 | Prefill | FlashInfer, production chunk size 4096 | Base RadixArk stays safe at exact capacity; global 7680 regressed prompt and fell to 200 MiB free |
-| Selective long-context profile | `AttnNVFP4`, chunk size 7680, explicit override | Exact `199000+16` reached **3002.344 prompt tok/s**; exact `199000+512` reached **3004.324/110.693** without changing production defaults |
+| Selective long-context profile | `AttnNVFP4`, chunk size 7680, explicit override | With direct Gemma output, exact `199000+16` reached **3016.444/112.355** without changing production chunk defaults |
 | Target verify/decode | TRT-LLM MHA/XQA | Qualified real throughput and exact 200K capacity; compact unread mask removes redundant generic work |
 | Draft decode | TRT-LLM MHA/XQA | Controlled gain over Triton draft decode; semantics and long ladder passed |
 | Draft extend | Captured `DRAFT_EXTEND_V2` graph | Removed an eager dispatch wall and contributed to the later two-step winner |
@@ -27,7 +27,7 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Proposal alignment | Draft top-k 20, captured inside one multi-step CUDA graph | Preserves exact q for rejection, improves acceptance, and avoids Python between draft depths |
 | Chain metadata | Native C++/CUDA fixed-chain path with distinct per-cycle outputs | 4.227x isolated metadata speedup while preserving asynchronous output lifetimes |
 | Sampling | FlashInfer | Native CUDA renormalization controls the speculative target path; fallback sampling remains available |
-| Native elementwise/norm | C++/CUDA SiLU, RMSNorm, Gemma RMSNorm, and qualified sigmoid-multiply dispatch | Exact or explicitly gated parity with large isolated reductions in eager launch cost |
+| Native elementwise/norm | C++/CUDA SiLU, RMSNorm, Gemma RMSNorm, direct Gemma residual output, and qualified sigmoid-multiply dispatch | Direct output is bit-exact, removes a temporary/copy, and helped set the new exact-200K record |
 | GEMM tuning | FP4 autotune; skip FP8 GEMM autotune | FP4 tactics improved decode; FP8 tactics regressed decode and prefill |
 | Workspace | 128 MiB | Wins decode and long prefill; 64 MiB fails required graph allocation |
 | Compile mode | `default`, with established partial fallbacks | Five-run fixed-work win over other compile/fallback arrangements |
@@ -38,20 +38,18 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Geometry funding gate | Complete lattice; conservative lower >=215 TPS; strictly above measured frontier | Family rejection uses an impossible target-aware upper <=200 TPS; selected-tree gaps fail closed |
 | Graph-tail work | Closed at the 0.75 ms admission gate | Two independent windows produced 1,471 CUDA-event records; best repeatable recoverable p10 was 0.658355 ms |
 | Target attribution | Exact per-shape M/N/K plus overlap-aware exposure | M3 primary GEMMs occupy 12.360 ms on the terminal stream; aggregate residency alone overcounts alternate-stream overlap |
-| Selective target NVFP4 | Retain as the experimental performance record | Exact `199000+16` reached **2838.980 prompt / 107.253 generation tok/s**; production qualification remains incomplete |
+| Selective target NVFP4 | Retain as the experimental performance record | Exact `199000+16` reached **3016.444 prompt / 112.355 generation tok/s**; production defaults remain base RadixArk |
 | MiaAI-Lab vLLM recipe | Matched `199000+16` reproduction remains an information gate | Same checkpoint/GPU uses MTP-3, TurboQuant 4-bit KV, and patched full-graph K+1 verify; published ~160 TPS lacks raw workload evidence |
 
 ## Primary performance record
 
 The root [`../BENCHMARK.md`](../BENCHMARK.md) scoreboard governs optimization
 ranking. The selective target-NVFP4 checkpoint completed exact `199000+16` at
-**2838.980 prompt tok/s**, **107.253 generation tok/s**, **70.096 s TTFT**, and
-**70.235 s** end to end. This is the record to beat; production qualification
+**3016.444 prompt tok/s**, **112.355 generation tok/s**, **65.971714 s TTFT**,
+and **66.105219 s** end to end. This is the record to beat; production qualification
 remains a separate decision from the single-run scoreboard.
 
-The active first milestone is **3000 prompt tok/s** and **110 generation
-tok/s** on the same workload. Both values must be reached in one successful
-exact-`199016` run.
+The first milestone of **3000 prompt / 110 generation tok/s** is complete.
 
 ## Qualified reference results
 
