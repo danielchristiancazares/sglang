@@ -18,6 +18,8 @@
 | M4 versus M3 measured full-cycle projection | 139.841 tok/s M3 | 126.350 tok/s M4 | -13.491 / -9.647% | `bench_target_verify_width.py --width {3,4}` | 2026-08-20 09:23 PDT |
 | FlashInfer paged-only exact-200K prompt | 2789.036 tok/s matched default | 2785.260 tok/s | -3.776 / -0.135% | exact `199000+512`, `SGLANG_FLASHINFER_USE_PAGED=1` | 2026-08-20 10:03 PDT |
 | FlashInfer paged-only exact-200K long generation | 106.467 tok/s matched default | 104.117 tok/s | -2.350 / -2.207% | same exact `199000+512` pair | 2026-08-20 10:03 PDT |
+| Exact-200K prompt, chunk 4096/5120/6144 | 2792.988 tok/s matched 4096 | 2892.671 / **2940.905 tok/s** | +3.569% / **+5.296%** | exact `199000+16`, two full warmups + three scored runs per arm | 2026-08-20 10:31 PDT |
+| Exact-200K TTFT, chunk 4096/5120/6144 | 71.249895 s matched 4096 | 68.794554 / **67.666275 s** | -3.446% / **-5.030%** | same matched sweep | 2026-08-20 10:31 PDT |
 | Exact `199000+16` capacity | 199016 total tokens | 199016 total tokens | preserved | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600` | 2026-08-16 22:40 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
@@ -330,6 +332,28 @@ tree throughput can be ranked for production.
   loses on the longer generation comparison, and changes the deterministic
   trajectory. Keep the default ragged-current plus paged-prefix merge.
 
+### 2026-08-20 10:31 PDT - PERF-019 chunk-size sweep, 4096/5120/6144
+
+- Change: changed only `chunked_prefill_size` on fresh selective M3 servers,
+  using seed `615388882`, two full exact-shape warmups, and three scored exact
+  `199000+16` requests per arm. All other launcher values, pools, backends, and
+  graph settings remained matched.
+- Benchmark evidence: chunk 4096 prompt samples were `2795.255, 2790.685,
+  2793.024 tok/s`, mean **2792.988**, with mean TTFT **71.249895 s**. Chunk
+  5120 produced `2894.440, 2892.438, 2891.136`, mean **2892.671**, TTFT
+  **68.794554 s**. Chunk 6144 produced `2943.285, 2939.119, 2940.310`, mean
+  **2940.905**, TTFT **67.666275 s**. The 6144 candidate improves matched
+  prompt throughput **5.296%**, beats the historical 2838.980 prompt record by
+  3.590%, and remains 1.970% below the active 3000 target.
+- Correctness evidence: all nine scored requests completed exact `199016`,
+  returned `finish_reason=length`, and passed strict token/fragment telemetry.
+  Each chunk geometry selected a stable deterministic digest: `9a0e...8b37`
+  for 4096, `a6bc...19ec` for 5120, and `3e01...2417` for 6144.
+- Decision: retain 6144 as the leading prompt candidate, not yet as a launcher
+  default. Complete the nearby 6656/7168 sweep, then run long generation,
+  reasoning/tool, capacity/headroom, and restored-control gates on the final
+  winner.
+
 ## Candidate Inventory
 
 | ID | Hypothesis | Scope | Status | Evidence |
@@ -358,6 +382,7 @@ tree throughput can be ranked for production.
 | PERF-014 | Raise the emitted-token path length from three to four (K+1) on the selective checkpoint. | launcher speculative shape only (three steps / four rows), EAGLE worker/graph code path | Rejected | Acceptance rose 3.636% while measured cycle cost rose 14.702%; projected TPS fell 139.841 -> 126.350 and matched exact-200K generation did not improve outside noise. |
 | PERF-017 | Make exact-200K prompt/generation comparisons fail closed and expose SSE timing boundaries. | `bench_openai_stream.py` and CPU unit tests | Retained | Headline formulas unchanged; exact token/finish validation, complete output hashes, fragment coalescing, trailing time, and repeated warmup metadata now accompany every run. |
 | PERF-018 | Replace ragged-current plus paged-prefix merge with one paged FlashInfer prefill. | Existing `SGLANG_FLASHINFER_USE_PAGED` path | Rejected | Exact-200K prompt changed -0.135%; 512-token generation changed -2.207% and deterministic output changed. |
+| PERF-019 | Increase prefill chunks below the rejected 8192 geometry. | Launcher chunk sizes 5120/6144, then nearby refinement | Active; 6144 leads | Matched exact-200K prompt improved 2792.988 -> 2940.905 tok/s (+5.296%) with exact capacity preserved; final refinement and behavior/decode gates remain. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |

@@ -2872,3 +2872,33 @@ mean 13.929045  17.125658 446.051        39.730
   default ragged-current plus paged-prefix merge. Raw candidate/control JSONL,
   environment, stdout, and stderr files remain in the active session-state
   `files` directory.
+
+### 2026-08-20 10:31 PDT - 6144-token chunks set a new matched prompt leader
+
+- Began a fresh-server 4096/5120/6144 sweep on the selective M3 checkpoint.
+  Every arm used seed `615388882`, exact 200K pools, two complete
+  `199000+16` warmups, then three cache-flushed scored requests. GPU clocks
+  held around 2.96-3.01 GHz SM and 13.801 GHz memory under full prefill load;
+  every server reported 4.61-4.65 GiB after graph capture.
+- The 6144 server resolved only `chunked_prefill_size=6144`; all M3,
+  rejection, draft top-k 20, FlashInfer/XQA/ReplaySSM, quantization, compile,
+  scheduling, workspace, and cache settings remained matched. Its prompt
+  samples were `2943.285, 2939.119, 2940.310 tok/s`, mean **2940.905**. TTFT
+  was `67.611530, 67.707359, 67.679937 s`, mean **67.666275**. E2E was
+  `67.784737, 67.859864, 67.832433 s`.
+- The 5120 server resolved only `chunked_prefill_size=5120`. Prompt was
+  `2894.440, 2892.438, 2891.136 tok/s`, mean **2892.671**; mean TTFT was
+  **68.794554 s**.
+- Restored 4096 control prompt was `2795.255, 2790.685, 2793.024 tok/s`, mean
+  **2792.988**; mean TTFT was **71.249895 s**. This final control reproduces
+  the stable later M3 regime and confirms the earlier low 2654.502 window was
+  startup/environment history rather than the comparison authority.
+- All nine scored requests completed exact `199016`,
+  `finish_reason=length`, and valid fragment/trailing telemetry. Chunk
+  boundaries changed the deterministic trajectory: digest `9a0e...8b37` at
+  4096, `a6bc...19ec` at 5120, and `3e01...2417` at 6144.
+- Interim decision: 6144 improves prompt throughput **5.296%** over matched
+  4096 and **3.590%** over the historical 2838.980 record, while remaining
+  **1.970%** below 3000. Keep it as the leading candidate, not yet the
+  launcher default. Test nearby 6656 and 7168 before long-generation,
+  reasoning/tool, headroom, and production-relaunch qualification.
