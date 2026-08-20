@@ -490,3 +490,55 @@
   per-chunk profile and preserves long-context logits closely enough to fund a
   fresh full-model comparison.
 - Related commit or revert: environment-only experiment; default remains false.
+
+## PERF-F039 - Global 7680-token chunk default
+
+- Hypothesis: the selective checkpoint's exact-200K prompt win at chunk 7680
+  would transfer safely to the launcher's default base RadixArk checkpoint.
+- Scope: unchanged production launcher and base checkpoint, changing only the
+  default chunk size from 4096 to 7680.
+- Attempted change: temporarily changed the launcher default, relaunched base
+  RadixArk without a model/chunk override, measured two five-run sampled
+  windows, compared a fresh ten-run 4096 control, then ran exact
+  `199000+16`, arithmetic, tools, and memory snapshots at 7680.
+- Benchmark evidence: sampled generation was neutral: combined 7680 mean
+  **121.054 tok/s** versus 4096 **121.027**. Exact base `199000+16` at 7680
+  reached only **2226.770 prompt / 83.988 generation tok/s**, versus the
+  qualified base exact prompt reference 2608.263.
+- Correctness evidence: exact `199016` completed, arithmetic returned `703`,
+  one correct tool call was parsed, and the server stayed healthy. Memory
+  reached **31,988 MiB used / 200 MiB free** after the exact request; after
+  follow-up probes and flush it recovered to 2,358 MiB free.
+- Failure mode: the base checkpoint's larger residency and different target
+  projection mix make the larger prefill chunks slower and leave unsafe
+  transient operating margin, even though the selective checkpoint benefits.
+- Why not to retry unchanged: the exact production checkpoint loses 14.6%
+  prompt throughput against its qualified reference and approaches VRAM
+  exhaustion.
+- Reopen only if: base model/graph residency falls materially and a fresh
+  exact-capacity A/B demonstrates both prompt improvement and safe pre-probe
+  headroom.
+- Related commit or revert: the temporary one-line default change was restored
+  before commit. Use explicit `-ChunkedPrefillSize 7680` only with the
+  selective performance checkpoint.
+
+## PERF-F040 - Chunk 7808 refinement
+
+- Hypothesis: keeping 26 chunks while increasing the main chunk from 7680 to
+  7808 would move the selective exact prompt consistently above 3000 tok/s.
+- Scope: selective M3 checkpoint with only chunk size changed.
+- Attempted change: two full exact-shape warmups followed by three exact
+  `199000+16` measurements.
+- Benchmark evidence: prompt samples were `2912.697, 2909.720, 2905.634
+  tok/s`, mean **2909.350**, versus the 7680 two-window mean **2997.744**.
+- Correctness evidence: every request completed exact `199016` with one stable
+  deterministic digest and valid fragment telemetry.
+- Failure mode: the larger per-chunk shape hits a sharp kernel/planner
+  efficiency cliff; preserving the same chunk count does not preserve
+  throughput.
+- Why not to retry unchanged: the regression is about 2.95% and stable across
+  all three scored runs.
+- Reopen only if: FlashInfer planning or kernel schedules change for this
+  query length.
+- Related commit or revert: configuration-only; 7680 remains the selective
+  winner.

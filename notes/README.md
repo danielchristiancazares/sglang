@@ -4,7 +4,7 @@ This directory is the durable record for the native-Windows Qwen3.8-27B
 SGLang work. It contains both compact decision-oriented documents and the full
 chronological evidence migrated from the former root `NOTES.md`.
 
-**Last reconciled:** 2026-08-16 19:06 PDT.
+**Last reconciled:** 2026-08-20 11:44 PDT.
 
 ## Read only what the task needs
 

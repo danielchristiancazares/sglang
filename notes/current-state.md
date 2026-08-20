@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
-10:03 PDT.
+11:44 PDT.
 
 **Qualified source line:** commit `9681850bed660b9079ee1aee906cda819603da7a`
 (`Add exact SWOR tree verification and topology analysis`), with the final
@@ -116,6 +116,13 @@ tok/s** on the same exact request, with **TTFT <=66.33 s**, **end-to-end time
 <=66.5 s**, and exact `199016` completion. Both throughput targets must be met
 in one matched run.
 
+An explicit selective long-context profile now clears the prompt side:
+`AttnNVFP4` with chunk 7680 produced **3002.344 prompt tok/s** on exact
+`199000+16`, TTFT 66.281538 s, and E2E 66.434400 s. Across eight samples it
+averaged 2997.744 tok/s. Exact `199000+512` supporting runs averaged
+**3001.742 prompt / 109.836 generation tok/s** and peaked at
+**3004.324/110.693**. No exact-16 run has met both headline targets together.
+
 A fresh current-source M3 A-B-A control at seed `615388882` averaged
 **2791.022 prompt / 100.647 generation tok/s** over five exact completions;
 the four warmed prompt samples averaged **2789.288 tok/s** with 0.063% CV,
@@ -177,6 +184,11 @@ FlashInfer paged-only prefill is also closed. Against the restored default,
 exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token
 generation changed **106.467 -> 104.117 tok/s**. The default ragged-current
 plus paged-prefix merge remains selected.
+
+Chunk 7680 is selective-profile-only. Applying it to the launcher's default
+base RadixArk checkpoint reduced exact prompt throughput to **2226.770 tok/s**
+and left only 200 MiB free before follow-up probes. The production launcher
+therefore remains at chunk 4096.
 
 Current measured geometries fail the path-length oracle before proposal
 quality is considered. M3's depth-two maximum is 154.270 TPS at mean cycle
@@ -253,6 +265,9 @@ distribution, and cost topology:
   increase outweighed its 3.636% acceptance gain;
 - FlashInfer paged-only prefill, which changed exact-200K prompt by -0.135%
   and long generation by -2.207%;
+- global chunk-7680 promotion, which regressed the base checkpoint and
+  transiently reduced headroom to 200 MiB;
+- chunk 7808, which regressed the selective prompt mean to 2909.350 tok/s;
 - reusable fused metadata output buffers whose asynchronous lifetime changed
   real rejection-path scheduling;
 - draft proposal top-k 8;

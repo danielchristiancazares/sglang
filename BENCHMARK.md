@@ -230,6 +230,37 @@ This milestone requires approximately **5.7%** more prompt throughput and
 only when one matched run completes exactly **199,016 tokens** and meets both
 throughput targets. TTFT and end-to-end time are supporting latency gates.
 
+## Independent prompt-processing record
+
+The selective checkpoint with `--chunked-prefill-size 7680` has cleared the
+prompt side independently:
+
+| Metric | Best exact `199000+16` result |
+|---|---:|
+| Prompt processing | **3,002.344 tok/s** |
+| Generation | 98.127 tok/s |
+| Time to first token | **66.281538 s** |
+| End-to-end time | **66.434400 s** |
+| Tokens completed | **199,016** |
+
+Across two independent windows, eight prompt samples averaged **2,997.744
+tok/s** and ranged from 2,995.271 to 3,002.344. An exact `199000+512`
+supporting run reached **3,004.324 prompt / 110.693 generation tok/s**, but it
+is not the 16-token scoreboard workload and does not replace the overall
+record.
+
+Launch this opt-in profile with:
+
+```powershell
+.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 `
+  -ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4 `
+  -ChunkedPrefillSize 7680
+```
+
+Do not make 7680 the global launcher default. Base RadixArk regressed to
+2,226.770 prompt tok/s on exact `199000+16` and fell to 200 MiB free before
+follow-up probes. Its production default remains 4096.
+
 ## Qualified production baseline
 
 | Metric | Qualified baseline |
