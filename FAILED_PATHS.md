@@ -460,3 +460,33 @@
   changes M4 cost or yield by at least that amount before another server run.
 - Related commit or revert: configuration-only experiment; no runtime default
   changed. M3 remains selected.
+
+## PERF-F038 - FlashInfer paged-only prefill
+
+- Hypothesis: writing the current chunk to KV and running one paged attention
+  would avoid the separate ragged-current attention, paged-prefix attention,
+  and state merge on each long-prefill chunk.
+- Scope: selective target-NVFP4 M3 server with only
+  `SGLANG_FLASHINFER_USE_PAGED=1`.
+- Attempted change: resolved the environment switch as true, used two full
+  exact-shape warmups, measured three exact `199000+16` requests and two exact
+  `199000+512` requests, then restored the default server for matched long
+  generation and acceptance.
+- Benchmark evidence: paged-only exact-200K prompt averaged **2785.260 tok/s**
+  on the long pair versus **2789.036** control (-0.135%). Long generation
+  averaged **104.117** versus **106.467 tok/s** (-2.207%). Acceptance improved
+  only **1.961686 -> 1.976834** tokens/cycle.
+- Correctness evidence: all requests completed exact token counts with
+  `finish_reason=length`, and the hardened fragment/count telemetry passed.
+  Paged-only selected a repeatable but different deterministic output for both
+  16- and 512-token requests.
+- Failure mode: the single paged operation did not make the 199K chunk path
+  faster than the split ragged/paged calculation, and its numerical ordering
+  changed the subsequent speculative trajectory without a throughput return.
+- Why not to retry unchanged: matched prompt and long-generation results both
+  fail to improve, while the apparent stable 16-token peak was contradicted by
+  the 512-token comparison.
+- Reopen only if: a new FlashInfer paged kernel or planner wins a direct
+  per-chunk profile and preserves long-context logits closely enough to fund a
+  fresh full-model comparison.
+- Related commit or revert: environment-only experiment; default remains false.

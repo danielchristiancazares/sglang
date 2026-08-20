@@ -317,6 +317,9 @@ code changes, or process state matter.
   remained too variable to support its isolated peaks. Plain SGLang M4 is
   rejected. The patched vLLM TurboQuant/full-graph K+1 architecture remains a
   separate information gate.
+- The existing FlashInfer paged-only switch was then rejected: matched
+  exact-200K prompt changed -0.135%, 512-token generation changed -2.207%, and
+  its deterministic output diverged from the selected ragged/paged merge.
 
 ## Supersession map
 

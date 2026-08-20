@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
-09:23 PDT.
+10:03 PDT.
 
 **Qualified source line:** commit `9681850bed660b9079ee1aee906cda819603da7a`
 (`Add exact SWOR tree verification and topology analysis`), with the final
@@ -173,6 +173,11 @@ Measured projection fell **139.841 -> 126.350 tok/s**. Warmed exact-200K
 prompt means were indistinguishable, and generation means overlapped their
 8-11% variance. M3 remains selected.
 
+FlashInfer paged-only prefill is also closed. Against the restored default,
+exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token
+generation changed **106.467 -> 104.117 tok/s**. The default ragged-current
+plus paged-prefix merge remains selected.
+
 Current measured geometries fail the path-length oracle before proposal
 quality is considered. M3's depth-two maximum is 154.270 TPS at mean cycle
 cost. M8, corrected M12, and M16 depth-four best-sample impossible ceilings are
@@ -246,6 +251,8 @@ distribution, and cost topology:
 - static one-step and three-step linear speculation;
 - the selective-checkpoint plain M4 K+1 retest, whose 14.702% cycle-cost
   increase outweighed its 3.636% acceptance gain;
+- FlashInfer paged-only prefill, which changed exact-200K prompt by -0.135%
+  and long generation by -2.207%;
 - reusable fused metadata output buffers whose asynchronous lifetime changed
   real rejection-path scheduling;
 - draft proposal top-k 8;

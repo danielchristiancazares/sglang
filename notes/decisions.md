@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-20 09:23 PDT.
+**Reconciled through:** 2026-08-20 10:03 PDT.
 
 ## Selected production choices
 
@@ -82,6 +82,7 @@ exact-`199016` run.
 | Fully compiled repaired Triton kernels | Rejected | Correct yet slower, with very long startup compilation |
 | Explicit compiler-disable boundaries | Rejected | Changed graph segmentation and lost throughput |
 | Native fused-add RMSNorm on the target path | Gated | Residual is exact while output can move by one BF16 step; any draft-only use needs a separate controlled gate |
+| FlashInfer paged-only prefill | Rejected | Exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token generation changed **106.467 -> 104.117**; deterministic output also changed |
 
 The optional Windows quantization registrations, conversion repairs, backend
 selection, and isolated tests remain valuable compatibility work. Their
