@@ -10,6 +10,8 @@
 | Post-correctness linear comparison, second warmed five-run window | 122.712 tok/s | 124.775 tok/s measured | +2.063 / +1.681% | same exact real-sampling command | 2026-08-16 23:24 PDT |
 | Selective target NVFP4 (`AttnNVFP4`) candidate, real sampled `6213/512`, admission window 1 | 124.775 tok/s | 131.707 tok/s mean / 130.824 median (unqualified) | +6.932 / +5.556% | same exact real-sampling command against `-ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` | 2026-08-17 02:00 PDT |
 | Same production topology, fixed accepted length 3 | 171.263 tok/s | 171.263 tok/s | 0.000 | same client with launcher `-SimulateAcceptedLength 3` | 2026-08-16 22:40 PDT |
+| Exact `199000+16` prompt processing, selective target NVFP4 M3 | 2838.980 tok/s record | 2654.502 mean / 2653.105 median / 2733.249 best | -184.478 / -6.498% mean | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600` | 2026-08-20 08:57 PDT |
+| Exact `199000+16` generation, selective target NVFP4 M3 | 107.253 tok/s record | 96.682 mean / 91.627 median / 114.847 best | -10.571 / -9.856% mean; 14.850% CV | same exact command | 2026-08-20 08:57 PDT |
 | Exact `199000+16` capacity | 199016 total tokens | 199016 total tokens | preserved | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600` | 2026-08-16 22:40 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
@@ -189,6 +191,49 @@ tree throughput can be ranked for production.
 - Correctness evidence: tool gate passed (one `multiply({"a":37,"b":19})` call, `finish_reason=tool_calls`), preserved coherent reasoning, exact 512-token completions, `/model_info` language-only, all three graphs captured.
 - Decision: admission window 1 passes with the largest measured single-window gain so far. Width-three remains capped near 173.260 TPS; K+1 geometry is required for 200. Remaining gates: exact `199000+16` capacity, second independent window, OpenCode2 integration, unsimulated relaunch, and removal of the temporary loader diagnostic.
 - Commit: uncommitted experiment.
+
+### 2026-08-20 08:57 PDT - PERF-015 current exact-200K M3 baseline
+
+- Change: measurement only from clean `main` at
+  `2eddaf4e8fd13911be3937df0d1f5f40583e4b4d`. Launched the selective
+  target-NVFP4 checkpoint with explicit seed `615388882` and otherwise
+  unchanged production settings: real 200K pools, 4096-token prefill chunks,
+  M3 width, ordinary rejection sampling, draft top-k 20, FlashInfer prefill,
+  TRT-LLM MHA/XQA target and draft decode, FP8 draft KV, ReplaySSM, lazy
+  extra-buffer Mamba state, FP4-only autotuning, and all tree/device-cycle
+  experiments inactive.
+- Environment: native Windows RTX 5090, driver `610.88`, Python `3.13.14`,
+  PyTorch `2.13.0+cu130`, CUDA runtime `13.0`, Triton `3.7.1`, and FlashInfer
+  `0.6.17`. Graph capture completed for target verify, draft decode, and draft
+  extend in `31.04`, `1.38`, and `0.88` seconds. The measured runs held
+  2.962-3.015 GHz SM and 13.801 GHz memory clocks at 496.79-525.90 W and
+  60-68 C. Visible WDDM clients included Edge WebView, Windows shell/display,
+  iCloud, PC Manager, and OpenCode2.
+- Warmup/cache policy: run one used the benchmark's exact-shape internal warmup;
+  the following four skipped the redundant internal warmup on the already
+  loaded/captured server. Every measured request was cache-flushed, and the
+  server reported `cached-token: 0` on every long-prefill chunk.
+- Benchmark evidence: prompt samples were `2603.510, 2610.132, 2733.249,
+  2672.513, 2653.105 tok/s`, mean **2654.502**, median **2653.105**, standard
+  deviation **52.670**, and CV **1.984%**. Generation samples were `91.627,
+  108.879, 114.847, 83.791, 84.268 tok/s`, mean **96.682**, median **91.627**,
+  standard deviation **14.358**, and CV **14.850%**. TTFT samples were
+  `76.435263, 76.241344, 72.807133, 74.461748, 75.006454 s`.
+- Correctness evidence: all five requests completed exactly `199000+16`,
+  returned `finish_reason=length`, kept thinking enabled, and produced the
+  identical digest
+  `9a0e20749e2930a697fefdd3bdd7863a067abe4d9860e6d1e7d9b80a62668b37`.
+- Decision: accept this as the current reproducible M3 baseline, not a
+  replacement for the historical record. The historical `2838.980/107.253`
+  hit was not reproduced. A 16-token request has only 15 post-first-token
+  decode intervals, so generation is quantized by verification-cycle count
+  and shows far more variance than the 2.6% target gap. Candidate decisions
+  require matched interleaved controls and repeated exact completions; a
+  single favorable generation sample is insufficient.
+- Artifacts:
+  `baseline-m3-selective-199k.jsonl`,
+  `baseline-m3-selective-199k-environment.jsonl`, and the server logs under
+  the active Copilot session-state `files` directory.
 
 ## Candidate Inventory
 

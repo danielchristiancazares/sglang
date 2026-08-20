@@ -2700,3 +2700,64 @@ mean 13.929045  17.125658 446.051        39.730
 - At the user's direction, set the current active target in root `BENCHMARK.md` to **3000 prompt tok/s** and **110 generation tok/s** on the exact `199000+16` workload.
 - The equivalent supporting latency targets are **TTFT <=66.33 s** and **end-to-end <=66.5 s**. A successful milestone run must complete exact `199016` and meet both throughput targets together.
 - This asks for approximately **5.7%** more prompt throughput and **2.6%** more generation throughput than the current selective target-NVFP4 record. Reconciled the target into the compact benchmark contract, current-state handoff, and decision ledger.
+
+### 2026-08-20 08:57 PDT - clean current-source M3 baseline exposes material variance
+
+- Began the resumed optimization run from clean `main` at
+  `2eddaf4e8fd13911be3937df0d1f5f40583e4b4d`, synchronized with
+  `origin/main`. No pre-existing modified or untracked paths were present.
+  Port 30000 was free, no SGLang/CUDA/compiler tree existed, and the RTX 5090
+  initially reported 31 C, 69.77 W, 1,777 MHz SM, 810 MHz memory, 24 percent
+  utilization, 1,464 MiB used, and 30,724 MiB free. Installed versions are
+  Python 3.13.14, PyTorch 2.13.0+cu130, CUDA runtime 13.0, Triton 3.7.1, and
+  FlashInfer 0.6.17; the NVIDIA driver is 610.88.
+- Launched one deliberate selective-checkpoint server through
+  `scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -ModelPath
+  C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4 -RandomSeed
+  615388882`. The verified lineage was detached PowerShell `21704 -> 28808`,
+  SGLang shim `43340`, Python parents/listener `47012 -> 26572`, scheduler/CUDA
+  worker `16760`, and detokenizer `34624`; listener `26572` owned
+  `127.0.0.1:30000`.
+- Resolved runtime matched the intended baseline: exact
+  `context_length=max_total_tokens=max_total_num_tokens=200000`, one request,
+  chunk size 4096, page size 64, checkpoint-selected target KV, FP8 E4M3 draft
+  KV, FlashInfer prefill/sampling, TRT-LLM MHA/XQA target/draft decode,
+  ReplaySSM Triton linear attention, M3 top-k-one rejection sampling, draft
+  top-k 20, FP32 Mamba with four slots and `extra_buffer_lazy`, torch compile
+  default, batch-one full decode graphs, prefill graphs disabled, FP4
+  autotuning with FP8 GEMM skipped, and every tree/adaptive/device-cycle
+  control inactive. `/model_info` reported image/audio understanding false.
+  Target, draft, and draft-extend captures took 31.04, 1.38, and 0.88 seconds;
+  4.59 GiB was available at graph end.
+- Ran five exact measured completions with
+  `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py
+  --input-tokens 199000 --output-tokens 16 --timeout 600`. Run one retained
+  the benchmark's exact-shape internal warmup; runs two through five used
+  `--skip-warmup` on the already loaded/captured server. Every measured request
+  flushed the cache, and every long-prefill server line reported
+  `#cached-token: 0`.
+- Prompt throughput was `2603.510, 2610.132, 2733.249, 2672.513, 2653.105
+  tok/s`: mean **2654.502**, median **2653.105**, standard deviation 52.670,
+  and CV 1.984 percent. TTFT was `76.435263, 76.241344, 72.807133, 74.461748,
+  75.006454 s`; end-to-end time was `76.598970, 76.379112, 72.937741,
+  74.640765, 75.184459 s`.
+- Generation throughput was `91.627, 108.879, 114.847, 83.791, 84.268
+  tok/s`: mean **96.682**, median **91.627**, standard deviation 14.358, and
+  CV 14.850 percent. The post-first-token interval contains only 15 decoded
+  tokens and an integer number of speculative verification cycles, so this
+  spread is much larger than the active 2.6-percent generation target.
+- All five requests returned exact `199016`, `finish_reason=length`, thinking
+  enabled, and digest
+  `9a0e20749e2930a697fefdd3bdd7863a067abe4d9860e6d1e7d9b80a62668b37`.
+  During retained runs the GPU held 2.962-3.015 GHz SM and 13.801 GHz memory
+  clocks at 496.79-525.90 W, 60-68 C, and 98-99 percent utilization. WDDM
+  clients included Edge WebView, Windows shell/display, iCloud, PC Manager,
+  and OpenCode2.
+- Decision: the historical **2838.980 prompt / 107.253 generation tok/s**
+  record remains the scoreboard but is not today's reproducible baseline.
+  Use **2654.502/96.682 mean** and the complete raw distribution for immediate
+  matched A/B work. Interleave controls with candidates; do not promote a
+  single favorable 16-token generation hit. The server remains live for the
+  first M4/K+1 comparison. Raw result, environment, stdout, and stderr files
+  are under
+  `C:\Users\Daniel\.copilot\session-state\f539b6f3-61df-4654-ab5a-6cb8c5c40957\files`.
