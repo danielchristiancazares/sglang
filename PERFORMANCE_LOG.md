@@ -25,6 +25,10 @@
 | Selective real sampled `6213/512`, chunk 7680 | 131.707 tok/s prior selective window | 138.537 / 139.885 two five-run means | +5.186% / +6.208% | sampled production profile, two independent windows | 2026-08-20 11:27 PDT |
 | Base RadixArk real sampled `6213/512`, chunk 7680 vs 4096 | 121.027 tok/s matched 4096 | 121.054 tok/s combined 7680 | +0.027 / +0.022%; neutral | ten runs per geometry | 2026-08-20 11:36 PDT |
 | Single-layer selected-row draft-extend logits | 16.058328 ms M3 cycle / 1.059 ms extend graph | 16.066558 ms / 1.061 ms | +0.008230 ms cycle; no-op | matched width-3 GPU traces | 2026-08-20 11:54 PDT |
+| Exact `199000+16` overall record | 2838.980 prompt / 107.253 generation tok/s | **3016.444 / 112.355 tok/s** | +177.464 / +6.251% prompt; +5.102 / +4.757% generation | selective checkpoint, chunk 7680, direct Gemma output | 2026-08-20 12:22 PDT |
+| Exact winner prompt, two independent windows | 2997.744 tok/s pre-change mean | **3014.751 / 3012.316 tok/s** | every sample >3000 | three plus five exact runs | 2026-08-20 12:22 PDT |
+| Selective real sampled `6213/512`, direct Gemma output | 138.537 / 139.885 prior 7680 means | **144.535 / 138.621 tok/s** | combined 141.578 | two independent five-run windows | 2026-08-20 12:23 PDT |
+| Production base sampled `6213/512`, direct Gemma output | 121.027 matched pre-change mean | **124.208 tok/s** | +3.181 / +2.628% | launcher-default base RadixArk | 2026-08-20 12:29 PDT |
 | Exact `199000+16` capacity | 199016 total tokens | 199016 total tokens | preserved | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600` | 2026-08-16 22:40 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
@@ -410,6 +414,36 @@ tree throughput can be ranked for production.
   weight-bandwidth-bound at one to three rows, so pruning rows saves about
   0.02 GiB of graph residency but no device time.
 
+### 2026-08-20 12:29 PDT - PERF-022 direct native Gemma residual-norm output
+
+- Change: on native Windows, preserve `residual.add_(x)` and write the existing
+  bit-exact JIT Gemma RMSNorm result directly into `x`. This removes the
+  temporary normalized tensor and subsequent `x.copy_()` without changing
+  arithmetic, dtype, dispatch, or output ownership.
+- Isolated evidence: Qwen hidden-size 5120 measured **38.731 -> 29.254 us** at
+  one row and **37.578 -> 29.184 us** at three rows, reductions of 24.47% and
+  22.34%. Input and residual were bit-exact. Four targeted Qwen Gemma tests
+  passed; the native hot-path smoke retained fullgraph parity.
+- Exact scoreboard evidence: first independent window was prompt
+  `3016.444, 3013.834, 3013.975` and generation `112.355, 97.506, 112.534`.
+  Second window was prompt `3014.657, 3009.496, 3012.204, 3013.736, 3011.489`
+  and generation `96.531, 86.114, 98.100, 112.012, 79.442`. All eight
+  completed exact `199016` with the established digest. The new overall record
+  is **3016.444/112.355 tok/s**, TTFT **65.971714 s**, E2E **66.105219 s**.
+- Supporting evidence: exact `199000+512` averaged **3013.443 prompt /
+  109.683 generation tok/s**. Selective sampled `6213/512` windows averaged
+  **144.535** and **138.621 tok/s** with five-probe acceptance **2.249107**.
+  Arithmetic, tools, language-only surface, and standalone OpenCode2 `READY`
+  passed.
+- Production-default evidence: base RadixArk exact `199000+16` completed at
+  **2643.254 prompt / 101.980 generation tok/s** with 698 MiB free, recovering
+  to 1.91 GiB after probes/flush. Its five-run sampled mean was **124.208
+  tok/s**. Arithmetic, tools, model surface, and all three graph captures
+  passed.
+- Decision: retain and promote. This is a bit-exact Windows hot-path
+  simplification and the combined selective chunk-7680 profile clears the
+  complete 3000/110 milestone.
+
 ## Candidate Inventory
 
 | ID | Hypothesis | Scope | Status | Evidence |
@@ -440,6 +474,7 @@ tree throughput can be ranked for production.
 | PERF-018 | Replace ragged-current plus paged-prefix merge with one paged FlashInfer prefill. | Existing `SGLANG_FLASHINFER_USE_PAGED` path | Rejected | Exact-200K prompt changed -0.135%; 512-token generation changed -2.207% and deterministic output changed. |
 | PERF-019 | Increase prefill chunks below the rejected 8192 geometry. | Selective-checkpoint chunk sweep through 7808 | Retained as explicit 7680 profile | Eight exact-200K prompt samples averaged 2997.744 with 3002.344 best; long decode reached 110.693. Global default rejected on base checkpoint. |
 | PERF-021 | Run single-layer draft-extend `lm_head` only on each selected accepted row. | EAGLE worker/graph runner using the existing multi-layer selection contract | Rejected | Draft-extend span changed 1.059 -> 1.061 ms and full cycle 16.058328 -> 16.066558 ms; memory fell but runtime did not. |
+| PERF-022 | Remove the temporary/copy from native-Windows Gemma residual normalization. | Windows `GemmaRMSNorm` dispatch using existing JIT output buffer | Retained | Bit-exact; 22-24% isolated reduction; exact `199000+16` record **3016.444/112.355**, independent confirmation **3013.736/112.012**. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |

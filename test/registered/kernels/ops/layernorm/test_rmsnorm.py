@@ -178,5 +178,46 @@ def test_qwen35_gemma_rmsnorm_weight_offset(batch_size: int) -> None:
         torch.testing.assert_close(output, expected, atol=1e-2, rtol=1e-2)
 
 
+@pytest.mark.parametrize("batch_size", [1, 3])
+def test_qwen35_gemma_fused_add_rmsnorm_exact(batch_size: int) -> None:
+    if sys.platform != "win32" or torch.cuda.get_device_capability()[0] < 12:
+        pytest.skip("Native Windows SM120 dispatch only")
+
+    from sglang.kernels.ops.layernorm.norm import gemma_rmsnorm
+    from sglang.srt.layers.layernorm import gemma_fused_add_rmsnorm
+
+    torch.manual_seed(2)
+    hidden_size = 5120
+    input = torch.randn(
+        batch_size, hidden_size, device=DEVICE, dtype=torch.bfloat16
+    )
+    residual = torch.randn_like(input)
+    weight = torch.randn(hidden_size, device=DEVICE, dtype=torch.bfloat16)
+
+    expected_input = torch.empty_like(input)
+    expected_residual = residual.clone()
+    expected_residual.add_(input)
+    gemma_rmsnorm(
+        expected_residual,
+        weight,
+        out=expected_input,
+        eps=EPS,
+    )
+
+    actual_input = input.clone()
+    actual_residual = residual.clone()
+    gemma_fused_add_rmsnorm(
+        actual_input,
+        actual_residual,
+        weight,
+        EPS,
+    )
+
+    torch.testing.assert_close(actual_input, expected_input, atol=0.0, rtol=0.0)
+    torch.testing.assert_close(
+        actual_residual, expected_residual, atol=0.0, rtol=0.0
+    )
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v", "-s"]))

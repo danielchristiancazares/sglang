@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
-11:54 PDT.
+12:29 PDT.
 
 **Qualified source line:** commit `9681850bed660b9079ee1aee906cda819603da7a`
 (`Add exact SWOR tree verification and topology analysis`), with the final
@@ -106,22 +106,21 @@ remain unchanged.
 
 The user designated the exact `199000+16` request in the real 200K pools as the
 primary performance scoreboard. The record to beat is the selective
-target-NVFP4 checkpoint at **2838.980 prompt tok/s** and **107.253 generation
-tok/s**, with **70.096 s TTFT**, **70.235 s** end to end, exact `199016`
+target-NVFP4 checkpoint at **3016.444 prompt tok/s** and **112.355 generation
+tok/s**, with **65.971714 s TTFT**, **66.105219 s** end to end, exact `199016`
 tokens, and `finish_reason=length`. Root [`../BENCHMARK.md`](../BENCHMARK.md)
 is the compact authority for this scoreboard.
 
-The current active milestone is **3000 prompt tok/s** and **110 generation
-tok/s** on the same exact request, with **TTFT <=66.33 s**, **end-to-end time
-<=66.5 s**, and exact `199016` completion. Both throughput targets must be met
-in one matched run.
+The **3000 prompt / 110 generation tok/s** milestone is achieved in one exact
+request. An independent restart confirmed **3013.736/112.012**, TTFT
+66.031008 s, E2E 66.164923 s.
 
-An explicit selective long-context profile now clears the prompt side:
-`AttnNVFP4` with chunk 7680 produced **3002.344 prompt tok/s** on exact
-`199000+16`, TTFT 66.281538 s, and E2E 66.434400 s. Across eight samples it
-averaged 2997.744 tok/s. Exact `199000+512` supporting runs averaged
-**3001.742 prompt / 109.836 generation tok/s** and peaked at
-**3004.324/110.693**. No exact-16 run has met both headline targets together.
+The winning selective profile is `AttnNVFP4`, chunk 7680, M3, and the
+bit-exact Windows Gemma residual-norm direct-output path. All eight exact
+prompt samples across two launches exceeded 3000 tok/s and averaged
+**3013.229**. Three samples also exceeded 110 generation tok/s. Two
+`199000+512` support runs averaged **3013.443/109.683** and peaked at 111.094
+generation tok/s.
 
 A fresh current-source M3 A-B-A control at seed `615388882` averaged
 **2791.022 prompt / 100.647 generation tok/s** over five exact completions;
@@ -131,11 +130,11 @@ decode intervals are measured. This is the immediate matched control, not a
 replacement for the historical scoreboard record.
 
 The qualified RadixArk production baseline remains **2608.263 prompt tok/s**
-and **102.358 generation tok/s** on the same exact workload. The selective
-checkpoint passed the capacity ladder, arithmetic, tools, model surface, and
-one ordinary sampled window; it remains an experimental performance record.
-A new overall record must complete exact `199016` and exceed both selective
-checkpoint throughput values under the matched benchmark contract.
+and **102.358 generation tok/s** on the same exact workload. A current
+launcher-default gate with the retained direct-output code reached
+**2643.254/101.980**, exact capacity, arithmetic/tools, model surface, and
+1.91 GiB post-flush headroom. The selective checkpoint remains the performance
+record profile rather than the production default.
 
 The earlier 200-TPS short-context objective and 215-TPS geometry funding floor
 remain historical diagnostic context. Production defaults and the qualified
@@ -170,8 +169,8 @@ Two exact-shape, distinct-weight CUDA-graph windows funded selective conversion
 of the exposed FP8 projections to NVFP4. Their overlap-adjusted cycle
 projections were **1.976456 ms** and **1.865227 ms**. The derived checkpoint
 then reduced the measured M3 cycle from 19.446 ms to **17.315 ms**, passed exact
-`199000+16`, and established the current **2838.980/107.253 tok/s** scoreboard
-record.
+`199000+16`, and established the earlier **2838.980/107.253 tok/s** scoreboard
+record that the direct-output profile later superseded.
 
 The funded plain M4 K+1 retest is now closed on current source. M4 raised
 accepted length from **2.245614** to **2.327273** (+3.636%) while increasing
@@ -242,6 +241,8 @@ capabilities:
 - native C++/CUDA SiLU-and-multiply, standard RMSNorm, Gemma RMSNorm, full-
   attention sigmoid-multiply, and fixed-chain metadata paths behind narrow
   native-Windows dispatch gates;
+- bit-exact native-Windows Gemma residual normalization that writes the JIT
+  result directly into caller-owned `x`, removing a temporary tensor and copy;
 - FlashInfer CUDA top-k/top-p renormalization on the speculative target path;
 - aligned draft proposal transforms and exact-q capture inside the single
   multi-step CUDA graph;

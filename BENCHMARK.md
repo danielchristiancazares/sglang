@@ -204,20 +204,21 @@ inside the real 200,000-token context and token pools**.
 
 | Metric | Current record |
 |---|---:|
-| Prompt processing | **2,838.980 tok/s** |
-| Generation | **107.253 tok/s** |
-| Time to first token | **70.096 s** |
-| End-to-end time | **70.235 s** |
+| Prompt processing | **3,016.444 tok/s** |
+| Generation | **112.355 tok/s** |
+| Time to first token | **65.971714 s** |
+| End-to-end time | **66.105219 s** |
 | Tokens completed | **199,016** |
 
 This record was measured on the selective target-NVFP4 checkpoint
 `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` with the
-width-three NEXTN topology and production inference settings. The request
-completed successfully with `finish_reason=length`.
+width-three NEXTN topology, chunk size 7680, and the bit-exact native-Windows
+Gemma residual-norm direct-output path. The request completed successfully
+with `finish_reason=length` and retained the established digest.
 
-## Current active target
+## Achieved target
 
-| Metric | Active target |
+| Metric | Milestone |
 |---|---:|
 | Prompt processing | **3,000 tok/s** |
 | Generation | **110 tok/s** |
@@ -225,29 +226,32 @@ completed successfully with `finish_reason=length`.
 | End-to-end time | **<= 66.5 s** |
 | Tokens completed | **199,016** |
 
-This milestone requires approximately **5.7%** more prompt throughput and
-**2.6%** more generation throughput than the current record. It is achieved
-only when one matched run completes exactly **199,016 tokens** and meets both
-throughput targets. TTFT and end-to-end time are supporting latency gates.
+The current record clears every milestone value in one exact request. A second
+independent server launch also cleared both throughput targets at
+**3,013.736 prompt / 112.012 generation tok/s**, with 66.031008 s TTFT and
+66.164923 s end to end.
 
-## Independent prompt-processing record
+## Qualification windows
 
-The selective checkpoint with `--chunked-prefill-size 7680` has cleared the
-prompt side independently:
+Eight exact `199000+16` samples across two independent server launches all
+cleared 3,000 prompt tok/s:
 
-| Metric | Best exact `199000+16` result |
-|---|---:|
-| Prompt processing | **3,002.344 tok/s** |
-| Generation | 98.127 tok/s |
-| Time to first token | **66.281538 s** |
-| End-to-end time | **66.434400 s** |
-| Tokens completed | **199,016** |
+| Window/run | Prompt tok/s | Generation tok/s | TTFT | E2E |
+|---|---:|---:|---:|---:|
+| 1/1 | **3,016.444** | **112.355** | 65.971714 s | 66.105219 s |
+| 1/2 | 3,013.834 | 97.506 | 66.028859 s | 66.182696 s |
+| 1/3 | 3,013.975 | **112.534** | 66.025761 s | 66.159054 s |
+| 2/1 | 3,014.657 | 96.531 | 66.010835 s | 66.166226 s |
+| 2/2 | 3,009.496 | 86.114 | 66.124024 s | 66.298210 s |
+| 2/3 | 3,012.204 | 98.100 | 66.064592 s | 66.217497 s |
+| 2/4 | **3,013.736** | **112.012** | 66.031008 s | 66.164923 s |
+| 2/5 | 3,011.489 | 79.442 | 66.080266 s | 66.269082 s |
 
-Across two independent windows, eight prompt samples averaged **2,997.744
-tok/s** and ranged from 2,995.271 to 3,002.344. An exact `199000+512`
-supporting run reached **3,004.324 prompt / 110.693 generation tok/s**, but it
-is not the 16-token scoreboard workload and does not replace the overall
-record.
+Prompt averaged **3,013.229 tok/s** across all eight. The 16-token generation
+metric remains cycle-quantized; three samples cleared 110 tok/s. Two exact
+`199000+512` support runs averaged **3,013.443 prompt / 109.683 generation
+tok/s** and peaked at 111.094 generation tok/s. Two sampled `6213/512`
+windows averaged **144.535** and **138.621 tok/s**.
 
 Launch this opt-in profile with:
 
@@ -287,7 +291,7 @@ counts, finish reason, resolved launcher arguments, GPU/process environment,
 and cache treatment.
 
 An overall record must complete exactly **199,016 tokens** and beat both
-**2,838.980 prompt tok/s** and **107.253 generation tok/s** under the matched
+**3,016.444 prompt tok/s** and **112.355 generation tok/s** under the matched
 contract. Lower TTFT and end-to-end time are supporting wins.
 
 Detailed qualification rules and historical evidence remain in

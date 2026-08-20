@@ -7,7 +7,7 @@ under `docs/`.
 
 Last reconciled with
 [`notes/experiment-log.md`](notes/experiment-log.md) through
-**2026-08-20 11:44 PDT**. A later experiment-log entry or fresh runtime
+**2026-08-20 12:29 PDT**. A later experiment-log entry or fresh runtime
 evidence supersedes every snapshot in this file.
 
 ## Recover context before acting
@@ -88,13 +88,15 @@ or launcher defaults have moved.
 The primary exact-200K scoreboard now also has a selective-checkpoint,
 long-context-only profile:
 `Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` with
-`-ChunkedPrefillSize 7680`. It reached **3002.344 prompt tok/s** on exact
-`199000+16`; an exact `199000+512` support run reached
-**3004.324 prompt / 110.693 generation tok/s**. This is not the production
-launcher default. Applying 7680 globally to base RadixArk reduced its exact
-prompt result to 2226.770 tok/s and left only 200 MiB before follow-up probes,
-so production remains at 4096. Use the explicit model/chunk override only for
-the selective performance lane.
+`-ChunkedPrefillSize 7680`. Combined with the bit-exact native-Windows Gemma
+residual-norm direct-output path, it set the overall exact `199000+16` record
+at **3016.444 prompt / 112.355 generation tok/s**, **65.971714 s TTFT**, and
+**66.105219 s** end to end. An independent restart reached
+**3013.736/112.012**. The 7680 chunk is not the production launcher default:
+applying it globally to base RadixArk reduced its exact prompt result to
+2226.770 tok/s and left only 200 MiB before follow-up probes, so production
+remains at 4096. Use the explicit model/chunk override only for the selective
+performance lane.
 
 The exhaustive NVFP4 optimization run was marked complete. A new performance
 branch begins from an explicit request or a newly measured gap. The historical
@@ -183,6 +185,9 @@ work has frozen the desktop.
 
 - Performance hot-path implementations use C++/CUDA. Python is the thin
   binding, dispatch, configuration, test, and launch surface.
+- Native-Windows Gemma residual normalization writes the existing bit-exact
+  JIT result directly into caller-owned `x`; do not reintroduce its former
+  temporary allocation and copy.
 - Preserve upstream and non-Windows behavior behind narrow native-Windows
   dispatch gates. Keep experiments opt-in and launcher defaults production
   safe.
