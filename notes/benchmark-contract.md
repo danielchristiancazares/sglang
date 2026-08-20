@@ -5,7 +5,7 @@ Qwen3.8 production line. A comparable result records the request shape, server
 mode, cache treatment, sampling profile, graph state, GPU environment, and
 resolved launcher arguments.
 
-**Reconciled through:** 2026-08-20 09:23 PDT.
+**Reconciled through:** 2026-08-20 11:44 PDT.
 
 ## Primary performance scoreboard
 
@@ -32,6 +32,12 @@ decode intervals. Current M3/M4 batches showed roughly 8-15% generation CV
 with identical outputs, so one generation hit above 110 tok/s is not evidence
 of a regression or win. Pair this headline request with verification-cycle
 counts, a longer decode/acceptance window, and an A-B-A control.
+
+The independent prompt record uses the selective checkpoint with explicit
+`-ChunkedPrefillSize 7680`: **3002.344 prompt tok/s**, TTFT 66.281538 s, and
+E2E 66.434400 s on exact `199000+16`. It does not replace the combined record
+because that run generated at 98.127 tok/s. Keep the production launcher
+default at 4096; base RadixArk regressed and lost operating headroom at 7680.
 
 ## Qualified reference
 

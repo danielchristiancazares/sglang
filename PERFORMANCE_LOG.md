@@ -20,6 +20,10 @@
 | FlashInfer paged-only exact-200K long generation | 106.467 tok/s matched default | 104.117 tok/s | -2.350 / -2.207% | same exact `199000+512` pair | 2026-08-20 10:03 PDT |
 | Exact-200K prompt, chunk 4096/5120/6144 | 2792.988 tok/s matched 4096 | 2892.671 / **2940.905 tok/s** | +3.569% / **+5.296%** | exact `199000+16`, two full warmups + three scored runs per arm | 2026-08-20 10:31 PDT |
 | Exact-200K TTFT, chunk 4096/5120/6144 | 71.249895 s matched 4096 | 68.794554 / **67.666275 s** | -3.446% / **-5.030%** | same matched sweep | 2026-08-20 10:31 PDT |
+| Selective exact-200K prompt, chunk 7680 | 2792.988 tok/s matched 4096 | 2997.744 mean / **3002.344 best** over 8 | +7.330% mean / **+7.497% best** | exact `199000+16`, two independent windows | 2026-08-20 11:14 PDT |
+| Selective exact-200K long generation, chunk 7680 | 106.467 tok/s matched 4096 | 109.836 mean / **110.693 best** | +3.164% mean / **+3.970% best** | exact `199000+512`, two runs | 2026-08-20 10:02 PDT |
+| Selective real sampled `6213/512`, chunk 7680 | 131.707 tok/s prior selective window | 138.537 / 139.885 two five-run means | +5.186% / +6.208% | sampled production profile, two independent windows | 2026-08-20 11:27 PDT |
+| Base RadixArk real sampled `6213/512`, chunk 7680 vs 4096 | 121.027 tok/s matched 4096 | 121.054 tok/s combined 7680 | +0.027 / +0.022%; neutral | ten runs per geometry | 2026-08-20 11:36 PDT |
 | Exact `199000+16` capacity | 199016 total tokens | 199016 total tokens | preserved | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600` | 2026-08-16 22:40 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
@@ -354,6 +358,37 @@ tree throughput can be ranked for production.
   reasoning/tool, capacity/headroom, and restored-control gates on the final
   winner.
 
+### 2026-08-20 11:44 PDT - PERF-020 selective long-context chunk profile
+
+- Change: completed the chunk refinement at 6656, 7168, 7680, and 7808. The
+  production launcher continues to default to 4096; the winner is invoked
+  explicitly with the selective checkpoint and `-ChunkedPrefillSize 7680`.
+- Sweep evidence: exact-200K prompt means were **2965.411** at 6656,
+  **2980.383** at 7168, **2998.342** in the first 7680 window, **2997.386** in
+  the second 7680 window, and **2909.350** at 7808. The 7808 cliff closes
+  upward refinement without reopening the rejected 8192 branch.
+- Independent prompt record: eight 7680 exact `199000+16` samples averaged
+  **2997.744 tok/s**, with best **3002.344**, best TTFT **66.281538 s**, and
+  best E2E **66.434400 s**. Every request completed exact `199016`; all eight
+  retained the established 4096 digest `9a0e...8b37`.
+- Long decode: exact `199000+512` samples reached
+  `3004.324/110.693` and `2999.159/108.978` prompt/generation tok/s, mean
+  **3001.742/109.836**. Both completed exact `199512` with a stable digest.
+- Production-profile evidence: selective 7680 real sampled `6213/512` windows
+  averaged **138.537** and **139.885 tok/s**. Five acceptance probes averaged
+  **2.245332** tokens/cycle. Arithmetic returned `703`, the tool gate emitted
+  exactly one `multiply({"a":37,"b":19})`, image/audio remained false, and
+  post-flush headroom was 4.63 GiB.
+- Default-safety evidence: base RadixArk sampled generation was neutral across
+  ten-run geometry windows (**121.054** at 7680 versus **121.027 tok/s** at
+  4096), but exact base `199000+16` at 7680 fell to **2226.770 prompt tok/s**
+  and only 200 MiB free before follow-up probes. Capacity and semantic gates
+  passed, but prompt performance and operating margin did not.
+- Decision: retain 7680 as an explicit selective-checkpoint long-context
+  profile and restore the global launcher default to 4096. This establishes an
+  independent prompt milestone, not the combined exact-16 winner; generation
+  work continues.
+
 ## Candidate Inventory
 
 | ID | Hypothesis | Scope | Status | Evidence |
@@ -382,7 +417,7 @@ tree throughput can be ranked for production.
 | PERF-014 | Raise the emitted-token path length from three to four (K+1) on the selective checkpoint. | launcher speculative shape only (three steps / four rows), EAGLE worker/graph code path | Rejected | Acceptance rose 3.636% while measured cycle cost rose 14.702%; projected TPS fell 139.841 -> 126.350 and matched exact-200K generation did not improve outside noise. |
 | PERF-017 | Make exact-200K prompt/generation comparisons fail closed and expose SSE timing boundaries. | `bench_openai_stream.py` and CPU unit tests | Retained | Headline formulas unchanged; exact token/finish validation, complete output hashes, fragment coalescing, trailing time, and repeated warmup metadata now accompany every run. |
 | PERF-018 | Replace ragged-current plus paged-prefix merge with one paged FlashInfer prefill. | Existing `SGLANG_FLASHINFER_USE_PAGED` path | Rejected | Exact-200K prompt changed -0.135%; 512-token generation changed -2.207% and deterministic output changed. |
-| PERF-019 | Increase prefill chunks below the rejected 8192 geometry. | Launcher chunk sizes 5120/6144, then nearby refinement | Active; 6144 leads | Matched exact-200K prompt improved 2792.988 -> 2940.905 tok/s (+5.296%) with exact capacity preserved; final refinement and behavior/decode gates remain. |
+| PERF-019 | Increase prefill chunks below the rejected 8192 geometry. | Selective-checkpoint chunk sweep through 7808 | Retained as explicit 7680 profile | Eight exact-200K prompt samples averaged 2997.744 with 3002.344 best; long decode reached 110.693. Global default rejected on base checkpoint. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |

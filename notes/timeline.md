@@ -321,6 +321,20 @@ code changes, or process state matter.
   exact-200K prompt changed -0.135%, 512-token generation changed -2.207%, and
   its deterministic output diverged from the selected ragged/paged merge.
 
+### Selective chunk 7680 clears the prompt milestone
+
+- A 4096/5120/6144/6656/7168/7680/7808 sweep found a sharp selective
+  long-context optimum at 7680. Eight exact prompt samples averaged 2997.744
+  tok/s and peaked at **3002.344**, with best TTFT/E2E
+  **66.281538/66.434400 s**.
+- Exact `199000+512` support runs averaged **3001.742 prompt / 109.836
+  generation tok/s** and peaked at **3004.324/110.693**. Two independent
+  sampled `6213/512` windows averaged 138.537 and 139.885 tok/s; behavior,
+  tools, model surface, and selective headroom passed.
+- Global promotion was rejected after base RadixArk reached only 2226.770
+  prompt tok/s and 200 MiB free before follow-up probes. Production stays at
+  4096; selective 7680 is an explicit benchmark profile.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:

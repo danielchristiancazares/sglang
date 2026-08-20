@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-20 10:03 PDT.
+**Reconciled through:** 2026-08-20 11:44 PDT.
 
 ## Selected production choices
 
@@ -16,7 +16,8 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Active performance milestone | **3000 prompt / 110 generation tok/s** | Requires one matched exact-`199016` run meeting both throughput targets; latency equivalents are TTFT <=66.33 s and end-to-end <=66.5 s |
 | Model surface | Language-only with Qwen3 reasoning and Qwen3 Coder tools | Preserves required behavior and VRAM; image/audio remain disabled |
 | FlashInfer | Clean native-Windows port of 0.6.17 | Passed JIT/kernel tests, fixed long-prefill correctness, and satisfies the SGLang version contract |
-| Prefill | FlashInfer, chunk size 4096 | Strong short and long prefill without the pressure and throughput losses of 8192 |
+| Prefill | FlashInfer, production chunk size 4096 | Base RadixArk stays safe at exact capacity; global 7680 regressed prompt and fell to 200 MiB free |
+| Selective long-context profile | `AttnNVFP4`, chunk size 7680, explicit override | Exact `199000+16` reached **3002.344 prompt tok/s**; exact `199000+512` reached **3004.324/110.693** without changing production defaults |
 | Target verify/decode | TRT-LLM MHA/XQA | Qualified real throughput and exact 200K capacity; compact unread mask removes redundant generic work |
 | Draft decode | TRT-LLM MHA/XQA | Controlled gain over Triton draft decode; semantics and long ladder passed |
 | Draft extend | Captured `DRAFT_EXTEND_V2` graph | Removed an eager dispatch wall and contributed to the later two-step winner |
@@ -83,6 +84,8 @@ exact-`199016` run.
 | Explicit compiler-disable boundaries | Rejected | Changed graph segmentation and lost throughput |
 | Native fused-add RMSNorm on the target path | Gated | Residual is exact while output can move by one BF16 step; any draft-only use needs a separate controlled gate |
 | FlashInfer paged-only prefill | Rejected | Exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token generation changed **106.467 -> 104.117**; deterministic output also changed |
+| Global chunk-7680 default | Rejected | Base RadixArk exact prompt fell to **2226.770 tok/s** and only 200 MiB remained before follow-up probes |
+| Selective chunk 7808 | Rejected | Exact-200K prompt averaged **2909.350 tok/s**, a stable cliff below the 7680 winner |
 
 The optional Windows quantization registrations, conversion repairs, backend
 selection, and isolated tests remain valuable compatibility work. Their

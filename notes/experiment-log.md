@@ -2902,3 +2902,48 @@ mean 13.929045  17.125658 446.051        39.730
   **1.970%** below 3000. Keep it as the leading candidate, not yet the
   launcher default. Test nearby 6656 and 7168 before long-generation,
   reasoning/tool, headroom, and production-relaunch qualification.
+
+### 2026-08-20 11:44 PDT - selective 7680 profile clears prompt target; global default rejected
+
+- Continued the selective-checkpoint sweep with identical seed, pools,
+  backends, two full warmups, and three scored exact requests per fresh server.
+  Chunk 6656 produced `2969.057, 2963.184, 2963.991 prompt tok/s`, mean
+  **2965.411** and mean TTFT 67.107117 s. Chunk 7168 produced `2983.084,
+  2975.322, 2982.743`, mean **2980.383** and mean TTFT 66.770039 s.
+- Chunk 7680 first-window prompt was `3001.487, 2996.399, 2997.141`, mean
+  **2998.342**. A launcher-default-style second independent window produced
+  `3002.344, 2995.936, 2995.271, 2996.713, 2996.665`, mean **2997.386**.
+  Across all eight, mean was **2997.744** and range **2995.271..3002.344**.
+  Best TTFT/E2E were **66.281538/66.434400 s**. Every request completed exact
+  `199016` and retained the original 4096 digest `9a0e...8b37`.
+- A same-count 7808 refinement regressed sharply: `2912.697, 2909.720,
+  2905.634`, mean **2909.350**. This closes upward refinement without
+  reopening the previously rejected 8192 branch.
+- Two exact selective `199000+512` requests at 7680 measured prompt
+  `3004.324, 2999.159` and generation `110.693, 108.978 tok/s`, with exact
+  `199512` completion and stable digest `1e90...e97f9`. This is supporting
+  evidence, not the exact-16 scoreboard result.
+- Selective 7680 behavior and short-work qualification passed. Arithmetic
+  returned `703`; the tool parser emitted exactly one
+  `multiply({"a":37,"b":19})` call with `finish_reason=tool_calls`;
+  `/model_info` kept image/audio false. Post-long-request/headroom was 2,336
+  MiB before explicit flush and 4,634 MiB after. Two independent real sampled
+  `6213/512` windows were `137.173, 139.825, 135.042, 137.258, 143.387`
+  (mean **138.537**) and `140.353, 139.883, 139.233, 142.658, 137.297`
+  (mean **139.885**). Five acceptance probes averaged **2.245332**.
+- Temporarily changed the launcher's chunk default to 7680 and checked its
+  actual default checkpoint before committing. Base RadixArk sampled
+  `6213/512` was neutral: two 7680 windows averaged **121.221** and
+  **120.887**, combined **121.054**; a fresh 4096 ten-run control averaged
+  **121.027**. Acceptance means were 2.268015 at 7680 and 2.218692 at 4096.
+- The exact base-checkpoint capacity gate rejected global promotion. Base
+  7680 completed exact `199000+16`, but reached only **2226.770 prompt /
+  83.988 generation tok/s**, TTFT 89.367121 s, E2E 89.545717 s, and fell to
+  **200 MiB free** before arithmetic/tool probes. Arithmetic and tools still
+  passed; after flush, free VRAM recovered to 2,358 MiB.
+- Decision: restore the production launcher default to 4096. Retain selective
+  `AttnNVFP4 + chunk 7680` as an explicit long-context performance profile.
+  It sets the independent prompt record and demonstrates long decode above
+  110, but no exact `199000+16` run has yet met both headline targets
+  together. Raw outputs and server logs remain in the active session-state
+  `files` directory.
