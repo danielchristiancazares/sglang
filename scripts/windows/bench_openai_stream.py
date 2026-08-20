@@ -435,6 +435,11 @@ def main() -> None:
         args.backend,
         enable_thinking,
     )
+    if calibrated_tokens != args.input_tokens:
+        raise RuntimeError(
+            "Prompt calibration did not reach the exact requested token count: "
+            f"requested={args.input_tokens}, calibrated={calibrated_tokens}"
+        )
 
     # Remove the preceding invocation's measured request before warming this
     # exact shape; otherwise a repeated benchmark warms only a cached suffix.
@@ -458,7 +463,7 @@ def main() -> None:
         )
         validate_result_counts(
             warmup_result,
-            expected_prompt_tokens=calibrated_tokens,
+            expected_prompt_tokens=args.input_tokens,
             expected_completion_tokens=args.warmup_output_tokens,
             label=f"warmup {warmup_index + 1}",
         )
@@ -482,7 +487,7 @@ def main() -> None:
     )
     validate_result_counts(
         result,
-        expected_prompt_tokens=calibrated_tokens,
+        expected_prompt_tokens=args.input_tokens,
         expected_completion_tokens=args.output_tokens,
         label="measurement",
     )

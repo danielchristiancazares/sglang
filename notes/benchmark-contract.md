@@ -138,12 +138,14 @@ execution probe and carries no semantic or production qualification.
 3. Confirm resolved server arguments, expected graph-capture markers,
    `/health`, `/model_info`, and the presence or absence of fixed-acceptance or
    tree/oracle controls.
-4. Warm the exact request shape and flush cache explicitly. The benchmark
-   reports TTFT, end-to-end time, prompt rate, steady decode rate, token counts,
-   finish reason, output length, complete/per-channel digests, SSE fragment
-   counts and sizes, and time after the final output fragment. Preserve these
-   fields so text-fragment coalescing or delayed response closure cannot
-   masquerade as a model-speed change.
+4. Require prompt calibration to equal the requested token count exactly
+   before cache flush, warmup, or measurement; the benchmark fails closed
+   otherwise. Warm the exact request shape and flush cache explicitly. The
+   benchmark reports TTFT, end-to-end time, prompt rate, steady decode rate,
+   token counts, finish reason, output length, complete/per-channel digests,
+   SSE fragment counts and sizes, and time after the final output fragment.
+   Preserve these fields so text-fragment coalescing or delayed response
+   closure cannot masquerade as a model-speed change.
 5. Run at least five consecutive samples and report the mean plus every sample.
    A production promotion requires an independent second real-sampling window.
 6. Pair real TPS with native acceptance counters. Record accepted/emitted

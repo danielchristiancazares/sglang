@@ -353,6 +353,20 @@ code changes, or process state matter.
   tools, model surface, OpenCode2, and post-flush headroom; production chunk
   remains 4096.
 
+### A new branch starts from a fresh current-source baseline
+
+- An explicit new optimization request reopened the performance lane from
+  `adf3a620ef64` without touching the user-owned `BENCHMARK.md` edit or
+  `HANDOFF.md` deletion.
+- The selective chunk-7680 server resolved the intended M3 200K route and
+  captured all three speculative graphs.
+- After two full warmups, five exact `199000+16` scores averaged
+  **2871.358 prompt / 90.459 legacy generation tok/s**. Prompt CV was 0.747%;
+  generation CV was 15.633%; every result retained exact counts and digest.
+- Active WDDM clients and accumulated software power-capping accompanied the
+  4.810% prompt gap from the historical record. This is the immediate matched
+  control, not a replacement for the qualified winner.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:

@@ -30,6 +30,10 @@
 | Selective real sampled `6213/512`, direct Gemma output | 138.537 / 139.885 prior 7680 means | **144.535 / 138.621 tok/s** | combined 141.578 | two independent five-run windows | 2026-08-20 12:23 PDT |
 | Production base sampled `6213/512`, direct Gemma output | 121.027 matched pre-change mean | **124.208 tok/s** | +3.181 / +2.628% | launcher-default base RadixArk | 2026-08-20 12:29 PDT |
 | Exact `199000+16` capacity | 199016 total tokens | 199016 total tokens | preserved | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600` | 2026-08-16 22:40 PDT |
+| Fresh current-source exact `199000+16` prompt baseline | 3016.444 tok/s record | 2871.358 mean / 2873.846 median / 2897.795 best | -145.086 / -4.810% mean | same exact command; selective checkpoint, chunk 7680, seed `615388882`, two full warmups then five cache-flushed scored requests | 2026-08-20 15:36 PDT |
+| Fresh current-source exact `199000+16` legacy generation baseline | 112.355 tok/s record | 90.459 arithmetic mean / 88.746 aggregate / 111.926 best | -21.896 / -19.488% arithmetic mean; 15.633% CV | same exact command and launch | 2026-08-20 15:36 PDT |
+| Adjacent pre-candidate exact `199000+16` prompt control A | 3016.444 tok/s record | 2867.286 mean / 2858.962 median / 2909.109 best | -149.158 / -4.945% mean | same launch, five cache-flushed `--skip-warmup` requests after long/sampled support probes | 2026-08-20 15:55 PDT |
+| Adjacent pre-candidate exact `199000+512` support control | 3013.443 tok/s prior qualified mean | 2956.842 prompt / 108.738 legacy generation tok/s | -56.601 prompt / -0.945 generation | same launch, three exact cache-flushed requests; stable output digest | 2026-08-20 15:44 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
 
@@ -444,6 +448,92 @@ tree throughput can be ranked for production.
   simplification and the combined selective chunk-7680 profile clears the
   complete 3000/110 milestone.
 
+### 2026-08-20 15:36 PDT - PERF-023 fresh current-source exact baseline
+
+- Change: measurement only from `main` at
+  `adf3a620ef64e11aea6159643f560c790327c57f`, with the pre-existing
+  user-owned `BENCHMARK.md` edit and `HANDOFF.md` deletion left untouched.
+  Launched the selective `AttnNVFP4` checkpoint with chunk 7680 and server
+  seed `615388882`; all tree, SWOR, adaptive, simulation, and
+  device-resident-cycle controls remained inactive.
+- Runtime evidence: the listener was PID `41904` under
+  `44500 -> 37588 -> 16276 -> 41904`. Resolved arguments retained exact
+  200K context and pools, page size 64, one request, FlashInfer prefill and
+  sampling, TRT-LLM MHA target/draft decode, M3 linear rejection sampling,
+  draft top-k 20, FP8 draft KV, FP32 ReplaySSM state, torch compile
+  `default`, and the 128 MiB workspace. Target, draft-decode, and
+  draft-extend graph captures completed in **33.49, 1.43, and 0.88 s** with
+  4.29 GiB reported after capture. `/health` returned 200 and `/model_info`
+  reported image/audio understanding false.
+- Environment: native Windows RTX 5090, driver `610.88`, Python `3.13.14`,
+  PyTorch `2.13.0+cu130`, CUDA runtime `13.0`, toolkit `13.3.33`, Triton
+  `3.7.1`, and FlashInfer `0.6.17`. WDDM clients included Chrome, Edge
+  WebView, iCloud, Windows shell/display processes, and an unrelated Python
+  process. Scored-run snapshots reached P1, 2.947-2.977 GHz SM,
+  13.801 GHz memory, 59-69 C, and 515-559 W. NVIDIA reported accumulated
+  software power-capping time, so this window is not an uncontended
+  replacement for the historical record.
+- Warmup/cache policy: two complete exact-shape warmups preceded the first
+  score. All five scored requests were cache-flushed and subsequent
+  invocations used `--skip-warmup`.
+- Prompt evidence: `2897.795, 2875.047, 2837.904, 2873.846, 2872.198
+  tok/s`; mean **2871.358**, median **2873.846**, standard deviation
+  **21.439**, CV **0.747%**, and aggregate fixed-token rate **2871.229**.
+  TTFT was `68.672916, 69.216270, 70.122180, 69.245186, 69.284914 s`.
+- Legacy generation evidence: `90.816, 85.650, 91.199, 111.926, 72.704
+  tok/s`; arithmetic mean **90.459**, aggregate
+  `75 / sum(E2E-TTFT)` rate **88.746**, standard deviation **14.141**, and
+  CV **15.633%**. E2E was `68.838085, 69.391402, 70.286654, 69.379203,
+  69.491229 s`. Nonempty SSE fragment counts varied `4,4,4,4,3`, reinforcing
+  that the 16-token legacy generation metric is not a stable small-effect
+  estimator.
+- Correctness evidence: every request completed exact `199000+16`, returned
+  `finish_reason=length`, kept thinking enabled, and retained output digest
+  `9a0e20749e2930a697fefdd3bdd7863a067abe4d9860e6d1e7d9b80a62668b37`.
+- Decision: retain **2871.358 prompt / 90.459 legacy generation tok/s** as
+  the immediate current-environment baseline. It does not supersede the
+  **3016.444/112.355** record. Candidate decisions require fresh matched
+  controls in the same launch block; recovering or explaining the 4.810%
+  prompt gap is part of the active optimization branch.
+- Artifact:
+  `C:\Users\Daniel\.copilot\session-state\df1c744a-8e2f-4823-bd37-18b450ed10d1\files\baseline-200k-20260820-1527.log`.
+
+### 2026-08-20 15:55 PDT - PERF-023 supporting controls and exact-client guard
+
+- Long-generation support: three cache-flushed exact `199000+512` requests
+  measured prompt `2983.007, 2942.383, 2945.135 tok/s` and legacy generation
+  `107.385, 107.491, 111.337 tok/s`. Means were **2956.842 prompt /
+  108.738 generation tok/s**, prompt CV was 0.768%, generation CV was 2.071%,
+  and aggregate generation was **108.707 tok/s**. All three completed exact
+  `199512` with digest
+  `1e90cc8fad3e1b1802db4cdc2af762790bcd392c062a14f0afc334df8b5e97f9`.
+- Real sampled support: five `6213/512` requests measured
+  `122.714, 122.917, 111.596, 119.056, 113.418 tok/s`, mean **117.940** and
+  CV 4.436%. Five independent native counter probes averaged accepted length
+  **2.155292**, acceptance rate **0.577233**, and **237.6** target
+  verifications.
+- Adjacent control A: after those probes, five cache-flushed exact
+  `199000+16` requests measured prompt
+  `2909.109, 2827.344, 2908.788, 2832.229, 2858.962 tok/s`, mean
+  **2867.286**, median **2858.962**, CV 1.391%, and aggregate
+  **2866.843**. Legacy generation was
+  `92.718, 92.717, 112.714, 103.474, 107.168 tok/s`, mean **101.758**,
+  CV 8.731%, and aggregate **101.136**. Exact counts, `finish_reason=length`,
+  and the established digest held.
+- Interpretation: prompt throughput moved materially between the three-run
+  `+512` window and the immediately following `+16` window despite identical
+  prompt shape and cache flushing. Candidate attribution therefore requires
+  A-B-A windows and cannot use the historical record or either standalone
+  baseline as its sole control.
+- Measurement hardening: `bench_openai_stream.py` now rejects any calibrated
+  prompt below the requested count before cache flush, warmup, or measurement,
+  and validates server usage against the requested count. A CPU regression
+  test proves an inexact `198999` calibration sends no request.
+- Artifacts:
+  `C:\Users\Daniel\.copilot\session-state\df1c744a-8e2f-4823-bd37-18b450ed10d1\files\baseline-support-20260820-1542.log`
+  and
+  `C:\Users\Daniel\.copilot\session-state\df1c744a-8e2f-4823-bd37-18b450ed10d1\files\control-a-exact16-20260820-1554.log`.
+
 ## Candidate Inventory
 
 | ID | Hypothesis | Scope | Status | Evidence |
@@ -470,11 +560,16 @@ tree throughput can be ranked for production.
 | PERF-006 | Improve proposal quality with a distinct trained/calibrated proposal mechanism. | MTP adapter/training, standalone draft, or device-side mixture oracle | Survey | RadixArk and Gittensor embedded MTP tensors are byte-identical. Temperature/support calibration is flat. Any training path needs held-out behavior evidence. |
 | PERF-007 | Reduce the exposed target GEMM critical path. | Qwen3.5 MLP gate/up/down and FP8 qkvz/output projections | Measured: admission window 1 passed | Derived `AttnNVFP4` checkpoint cut the cycle 10.96% and raised real TPS to 131.707 mean. Remaining: capacity, second window, OpenCode2, relaunch. |
 | PERF-014 | Raise the emitted-token path length from three to four (K+1) on the selective checkpoint. | launcher speculative shape only (three steps / four rows), EAGLE worker/graph code path | Rejected | Acceptance rose 3.636% while measured cycle cost rose 14.702%; projected TPS fell 139.841 -> 126.350 and matched exact-200K generation did not improve outside noise. |
-| PERF-017 | Make exact-200K prompt/generation comparisons fail closed and expose SSE timing boundaries. | `bench_openai_stream.py` and CPU unit tests | Retained | Headline formulas unchanged; exact token/finish validation, complete output hashes, fragment coalescing, trailing time, and repeated warmup metadata now accompany every run. |
+| PERF-017 | Make exact-200K prompt/generation comparisons fail closed and expose SSE timing boundaries. | `bench_openai_stream.py` and CPU unit tests | Retained | Headline formulas unchanged; exact calibration now fails before a request, and exact token/finish validation, complete output hashes, fragment coalescing, trailing time, and repeated warmup metadata accompany every run. |
 | PERF-018 | Replace ragged-current plus paged-prefix merge with one paged FlashInfer prefill. | Existing `SGLANG_FLASHINFER_USE_PAGED` path | Rejected | Exact-200K prompt changed -0.135%; 512-token generation changed -2.207% and deterministic output changed. |
 | PERF-019 | Increase prefill chunks below the rejected 8192 geometry. | Selective-checkpoint chunk sweep through 7808 | Retained as explicit 7680 profile | Eight exact-200K prompt samples averaged 2997.744 with 3002.344 best; long decode reached 110.693. Global default rejected on base checkpoint. |
 | PERF-021 | Run single-layer draft-extend `lm_head` only on each selected accepted row. | EAGLE worker/graph runner using the existing multi-layer selection contract | Rejected | Draft-extend span changed 1.059 -> 1.061 ms and full cycle 16.058328 -> 16.066558 ms; memory fell but runtime did not. |
 | PERF-022 | Remove the temporary/copy from native-Windows Gemma residual normalization. | Windows `GemmaRMSNorm` dispatch using existing JIT output buffer | Retained | Bit-exact; 22-24% isolated reduction; exact `199000+16` record **3016.444/112.355**, independent confirmation **3013.736/112.012**. |
+| PERF-023 | Re-establish the current-source exact-200K baseline before changing code. | Selective checkpoint, chunk 7680, exact benchmark and live environment | Complete | Five exact scores averaged **2871.358/90.459** with exact digest; current environment did not reproduce the historical record. |
+| PERF-024 | Autotune target ordinary-EXTEND FP4 tactics at the real 7680/7000 prefill shapes without overwriting M1/M3 tactics. | FlashInfer autotune runner and speculative target prefill | Survey | Current speculative startup tunes target-verify-sized buffers; the opt-in extend autotuner rejects speculative runners. Requires direct source and installed-backend admission. |
+| PERF-025 | Evaluate the already-implemented FlashInfer TRT-LLM dense FP4 backend on native-Windows SM120. | `ModelOptFp4LinearMethod`, FP4 backend selector, launcher | Survey | Core source and B200 tests expose `flashinfer_trtllm`, while the Windows launcher omits it. Must prove installed 0.6.17 capability, SM120 parity, M3/M7680 timing, and memory. |
+| PERF-026 | Specialize greedy EAGLE draft proposals and retain a sparse exact sampled p/q path. | EAGLE draft graphs, proposal buffers, rejection sampling | Survey | Temperature-zero target verification is greedy while the draft still samples stochastic top-k 20. Any change must preserve exact q(X), RNG, graph replay, and asynchronous output lifetimes. |
+| PERF-027 | Fuse Qwen SwiGLU output directly into byte-identical NVFP4 activation/scales for `down_proj`. | Native CUDA activation/quant producer and FP4 linear tuple input | Survey | Removes 64 BF16 intermediate write/read pairs per target pass; first gate is byte-identical packed output at M1/M3/M7000/M7680 and a whole-chain win. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
