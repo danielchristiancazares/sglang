@@ -12,6 +12,10 @@
 | Same production topology, fixed accepted length 3 | 171.263 tok/s | 171.263 tok/s | 0.000 | same client with launcher `-SimulateAcceptedLength 3` | 2026-08-16 22:40 PDT |
 | Exact `199000+16` prompt processing, selective target NVFP4 M3 | 2838.980 tok/s record | 2654.502 mean / 2653.105 median / 2733.249 best | -184.478 / -6.498% mean | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600` | 2026-08-20 08:57 PDT |
 | Exact `199000+16` generation, selective target NVFP4 M3 | 107.253 tok/s record | 96.682 mean / 91.627 median / 114.847 best | -10.571 / -9.856% mean; 14.850% CV | same exact command | 2026-08-20 08:57 PDT |
+| Matched A2 exact `199000+16` prompt, selective target NVFP4 M3 | 2838.980 tok/s record | 2791.022 mean / 2789.956 median | -47.958 / -1.689% mean | same exact command, explicit seed `615388882` | 2026-08-20 09:23 PDT |
+| M4 versus M3 warmed exact `199000+16` prompt | 2789.288 tok/s M3 | 2790.258 tok/s M4 | +0.970 / +0.035%; no material change | same exact command; only steps/width changed from `2/3` to `3/4` | 2026-08-20 09:23 PDT |
+| M4 versus M3 warmed exact `199000+16` generation | 100.982 tok/s M3 | 98.957 tok/s M4 | -2.025 / -2.005%; noisy | same exact command; four warmed runs per arm | 2026-08-20 09:23 PDT |
+| M4 versus M3 measured full-cycle projection | 139.841 tok/s M3 | 126.350 tok/s M4 | -13.491 / -9.647% | `bench_target_verify_width.py --width {3,4}` | 2026-08-20 09:23 PDT |
 | Exact `199000+16` capacity | 199016 total tokens | 199016 total tokens | preserved | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600` | 2026-08-16 22:40 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
@@ -235,6 +239,44 @@ tree throughput can be ranked for production.
   `baseline-m3-selective-199k-environment.jsonl`, and the server logs under
   the active Copilot session-state `files` directory.
 
+### 2026-08-20 09:23 PDT - PERF-016 selective-checkpoint M4/K+1 retest
+
+- Change: changed only the selective-checkpoint speculative shape from two
+  steps / three target rows to three steps / four target rows. Both arms used
+  seed `615388882`, real 200K pools, the same checkpoint and backends, ordinary
+  rejection sampling, draft top-k 20, and complete target/draft/extend graph
+  capture. A fresh M3 server followed the M4 server for an A-B-A comparison.
+- Device evidence: M4 accepted **2.327273** tokens/cycle over 55 cycles versus
+  M3 **2.245614** over 57 cycles, a 3.636% gain. M4 full-cycle cost rose from
+  **16.058328 ms** to **18.419190 ms**, or 14.702%. The resulting measured
+  projection fell from **139.841** to **126.350 tok/s** (-9.647%). M4's
+  perfect-four ceiling is **217.165 tok/s**, barely above the 215-TPS funding
+  floor and dependent on unattained full acceptance.
+- Exact-200K evidence: M4 samples were prompt `2653.695, 2792.130, 2788.118,
+  2790.292, 2790.491` and generation `117.545, 91.572, 106.251, 92.061,
+  105.943 tok/s`. The matched M3 A2 samples were prompt `2797.957, 2789.956,
+  2787.745, 2787.968, 2791.484` and generation `99.306, 115.665, 100.016,
+  100.035, 88.214 tok/s`. Excluding each arm's first internally warmed run,
+  prompt means were **2790.258 M4** and **2789.288 M3** (+0.035%), while
+  generation means were **98.957 M4** and **100.982 M3** (-2.005%). Both
+  generation arms had 8-11% CV and peaks above 110, so neither peak is a
+  decision-capable win.
+- Correctness evidence: all ten exact requests completed `199000+16`, returned
+  `finish_reason=length`, kept thinking enabled, and produced the same digest
+  `9a0e20749e2930a697fefdd3bdd7863a067abe4d9860e6d1e7d9b80a62668b37`.
+  Both profiles resolved `EAGLEWorkerV2`, torch compile `default`, the intended
+  chain topology, and exact width.
+- Decision: reject plain M4/K+1 under the current selected checkpoint and
+  execution path. Its acceptance gain does not repay the extra draft and
+  target work, prompt throughput is unchanged, and exact generation does not
+  improve outside noise. The external vLLM TurboQuant/full-graph K+1
+  architecture remains a distinct information gate rather than evidence for
+  this SGLang shape.
+- Artifacts: tracked M3/M4 traces and manifests under
+  `benchmark/windows/profiles/target_width_m{3,4}-20260820-*`; raw exact
+  results, environment snapshots, and logs remain in the active session-state
+  `files` directory.
+
 ## Candidate Inventory
 
 | ID | Hypothesis | Scope | Status | Evidence |
@@ -260,7 +302,7 @@ tree throughput can be ranked for production.
 | PERF-005 | Extend the device-resident cycle to exact linear rejection sampling. | proposal sampling, exact-q buffers, verification/extend bridge | Closed for throughput; retained opt-in | Dense races reached 122.576 tok/s; explicit-seed categorical reached 120.075 versus 124.775 control despite higher acceptance. Composite cycle cost remained 1.7% slower. |
 | PERF-006 | Improve proposal quality with a distinct trained/calibrated proposal mechanism. | MTP adapter/training, standalone draft, or device-side mixture oracle | Survey | RadixArk and Gittensor embedded MTP tensors are byte-identical. Temperature/support calibration is flat. Any training path needs held-out behavior evidence. |
 | PERF-007 | Reduce the exposed target GEMM critical path. | Qwen3.5 MLP gate/up/down and FP8 qkvz/output projections | Measured: admission window 1 passed | Derived `AttnNVFP4` checkpoint cut the cycle 10.96% and raised real TPS to 131.707 mean. Remaining: capacity, second window, OpenCode2, relaunch. |
-| PERF-014 | Raise the emitted-token path length from three to four (K+1) on the now-faster 17.315 ms cycle. | launcher speculative shape only (three steps / four rows), EAGLE worker/graph code path | Next funded experiment | Perfect four-token ceiling is ~231.014 TPS at the measured cycle; reject immediately if a measured four-token ceiling falls below 215 TPS. |
+| PERF-014 | Raise the emitted-token path length from three to four (K+1) on the selective checkpoint. | launcher speculative shape only (three steps / four rows), EAGLE worker/graph code path | Rejected | Acceptance rose 3.636% while measured cycle cost rose 14.702%; projected TPS fell 139.841 -> 126.350 and matched exact-200K generation did not improve outside noise. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |

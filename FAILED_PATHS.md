@@ -424,3 +424,39 @@
 - Why not to retry unchanged: two independent windows agree on the same sub-threshold boundary, and the prior exact composite already regressed full-cycle cost.
 - Reopen only if: code, CUDA, PyTorch, WDDM, or graph scheduling changes move the conservative repeatable p10 to at least 0.75 ms in two fresh windows.
 - Related commit or revert: diagnostic probe retained; graph-tail production implementation remains closed.
+
+## PERF-F037 - Selective-checkpoint M4 K+1 geometry
+
+- Hypothesis: three speculative steps and four target rows would raise useful
+  output per verification enough to exploit the selective target-NVFP4
+  checkpoint's faster target cycle.
+- Scope: unchanged single-layer NEXTN/EAGLE top-k-one rejection path, changing
+  only `speculative_num_steps=3` and `speculative_num_draft_tokens=4`.
+- Attempted change: launched the real 200K selective checkpoint with explicit
+  seed `615388882`, profiled M4, measured five exact `199000+16` completions,
+  then restored M3 and repeated the profile plus five exact completions.
+- Benchmark evidence: M4 acceptance was **2.327273** over 55 cycles versus M3
+  **2.245614** over 57 cycles. Full-cycle cost increased **16.058328 ->
+  18.419190 ms**. Aggregate projected throughput therefore fell **139.841 ->
+  126.350 tok/s** (-9.647%). Warmed exact prompt means were indistinguishable
+  (**2790.258 M4**, **2789.288 M3**). Warmed generation means were
+  **98.957 M4** and **100.982 M3** with 8-11% CV; isolated peaks above 110
+  occurred in both arms.
+- Correctness evidence: every exact request completed `199016`, returned
+  `finish_reason=length`, kept thinking enabled, and retained digest
+  `9a0e20749e2930a697fefdd3bdd7863a067abe4d9860e6d1e7d9b80a62668b37`.
+  Both graph profiles resolved the intended width, worker, compile mode, and
+  topology.
+- Failure mode: the third draft step and fourth target row cost 14.702% more
+  per cycle while acceptance improved only 3.636%. The 16-token generation
+  metric is too cycle-quantized and variable to turn its isolated M4 peak into
+  evidence against the device-cycle loss.
+- Why not to retry unchanged: the A-B-A comparison directly measures the
+  current selected checkpoint and exact production route. The unchanged shape
+  needs either about **1.78 ms/cycle** less work or roughly **0.25** more
+  accepted tokens/cycle merely to match the measured M3 projection.
+- Reopen only if: selected-row draft-extend logits, a new proposal model, a
+  quantized-KV/full-graph attention route, or another measured mechanism
+  changes M4 cost or yield by at least that amount before another server run.
+- Related commit or revert: configuration-only experiment; no runtime default
+  changed. M3 remains selected.

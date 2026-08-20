@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
-08:17 PDT.
+09:23 PDT.
 
 **Qualified source line:** commit `9681850bed660b9079ee1aee906cda819603da7a`
 (`Add exact SWOR tree verification and topology analysis`), with the final
@@ -116,6 +116,13 @@ tok/s** on the same exact request, with **TTFT <=66.33 s**, **end-to-end time
 <=66.5 s**, and exact `199016` completion. Both throughput targets must be met
 in one matched run.
 
+A fresh current-source M3 A-B-A control at seed `615388882` averaged
+**2791.022 prompt / 100.647 generation tok/s** over five exact completions;
+the four warmed prompt samples averaged **2789.288 tok/s** with 0.063% CV,
+while generation retained roughly 10% CV because only 15 post-first-token
+decode intervals are measured. This is the immediate matched control, not a
+replacement for the historical scoreboard record.
+
 The qualified RadixArk production baseline remains **2608.263 prompt tok/s**
 and **102.358 generation tok/s** on the same exact workload. The selective
 checkpoint passed the capacity ladder, arithmetic, tools, model surface, and
@@ -158,6 +165,13 @@ projections were **1.976456 ms** and **1.865227 ms**. The derived checkpoint
 then reduced the measured M3 cycle from 19.446 ms to **17.315 ms**, passed exact
 `199000+16`, and established the current **2838.980/107.253 tok/s** scoreboard
 record.
+
+The funded plain M4 K+1 retest is now closed on current source. M4 raised
+accepted length from **2.245614** to **2.327273** (+3.636%) while increasing
+the matched full cycle from **16.058328** to **18.419190 ms** (+14.702%).
+Measured projection fell **139.841 -> 126.350 tok/s**. Warmed exact-200K
+prompt means were indistinguishable, and generation means overlapped their
+8-11% variance. M3 remains selected.
 
 Current measured geometries fail the path-length oracle before proposal
 quality is considered. M3's depth-two maximum is 154.270 TPS at mean cycle
@@ -230,6 +244,8 @@ distribution, and cost topology:
 
 - adaptive depth over two and three steps;
 - static one-step and three-step linear speculation;
+- the selective-checkpoint plain M4 K+1 retest, whose 14.702% cycle-cost
+  increase outweighed its 3.636% acceptance gain;
 - reusable fused metadata output buffers whose asynchronous lifetime changed
   real rejection-path scheduling;
 - draft proposal top-k 8;

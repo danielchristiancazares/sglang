@@ -306,6 +306,18 @@ code changes, or process state matter.
   scoreboard. Root `BENCHMARK.md` carries the record to beat; qualification
   continues to distinguish experimental records from production selection.
 
+### Current-source M4 retest closes plain K+1
+
+- Reproduced M3, tested M4, then restored M3 with the same selective
+  checkpoint, seed, real 200K pools, and runtime backends.
+- M4 acceptance rose **2.245614 -> 2.327273**, while measured full-cycle cost
+  rose **16.058328 -> 18.419190 ms**. Projected throughput fell
+  **139.841 -> 126.350 tok/s**.
+- Warmed exact-200K prompt throughput was unchanged; 16-token generation
+  remained too variable to support its isolated peaks. Plain SGLang M4 is
+  rejected. The patched vLLM TurboQuant/full-graph K+1 architecture remains a
+  separate information gate.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
