@@ -2761,3 +2761,47 @@ mean 13.929045  17.125658 446.051        39.730
   first M4/K+1 comparison. Raw result, environment, stdout, and stderr files
   are under
   `C:\Users\Daniel\.copilot\session-state\f539b6f3-61df-4654-ab5a-6cb8c5c40957\files`.
+
+### 2026-08-20 09:23 PDT - selective M4 K+1 rejected by matched cycle economics
+
+- Stopped the verified M3 tree leaf-first and confirmed port 30000 free,
+  compiler workers absent, and the GPU back at 1,324 MiB display residency.
+  Launched the same selective checkpoint and seed `615388882` with only
+  `-SpeculativeNumSteps 3 -SpeculativeNumDraftTokens 4` changed. The live
+  endpoint resolved exact 200K pools, width four, top-k one, draft top-k 20,
+  ordinary rejection sampling, full target/draft/extend graphs, and no
+  device-resident/tree controls. M4 target/draft/extend captures took
+  17.79/1.03/0.81 seconds with 4.58 GiB available at graph end.
+- `bench_target_verify_width.py --width 4` produced trace
+  `benchmark/windows/profiles/target_width_m4-20260820-090229/target_width_m4-1787241749.4595737-TP-0.trace.json.gz`,
+  SHA-256
+  `c2ea02706b7fdf90792f82163f537c2c2a2b78fb8cd92a3de608e014237d512f`.
+  The exact chain accepted **2.327273** tokens/cycle over 55 cycles. Full
+  target-start cycles averaged **18.419190 ms**, median 18.394597, minimum
+  17.140989, and maximum 20.765297. Actual measured projection was
+  **126.350 tok/s**; perfect-four mean ceiling was **217.165 tok/s**.
+- Five exact M4 `199000+16` runs returned prompt `2653.695, 2792.130,
+  2788.118, 2790.292, 2790.491 tok/s` and generation `117.545, 91.572,
+  106.251, 92.061, 105.943 tok/s`. Excluding the first exact-shape warmup
+  recovery, prompt mean/median were **2790.258/2790.491** with 0.059% CV;
+  generation mean/median were **98.957/105.943** with 8.335% CV. All five
+  completed exact `199016`, `finish_reason=length`, and the established
+  `9a0e...8b37` digest.
+- Stopped the M4 tree leaf-first and restored the same M3 control. M3 captures
+  took 14.39/0.96/0.76 seconds with 4.61 GiB available. The matched trace
+  `benchmark/windows/profiles/target_width_m3-20260820-091451/target_width_m3-1787242491.6518054-TP-0.trace.json.gz`,
+  SHA-256
+  `170ab49f24dce5ea69e45130b0133d92c42291c7303fcc23c3857deec5dbd7b6`,
+  accepted **2.245614** tokens/cycle over 57 cycles. Full cycles averaged
+  **16.058328 ms**, minimum 15.655271, for **139.841 tok/s** actual projection
+  and 186.819 tok/s perfect-three ceiling.
+- Five exact M3 A2 runs returned prompt `2797.957, 2789.956, 2787.745,
+  2787.968, 2791.484 tok/s` and generation `99.306, 115.665, 100.016,
+  100.035, 88.214 tok/s`. Warmed prompt mean was **2789.288**, while warmed
+  generation mean was **100.982** with 11.152% CV. All five retained exact
+  completion and the same digest.
+- A-B-A conclusion: M4 acceptance improved only 3.636% while cycle cost rose
+  14.702%, reducing projected throughput 9.647%. Warmed prompt changed only
+  +0.035%, and exact generation did not improve outside noise. Reject plain
+  SGLang M4 K+1 and keep M3 selected. The external vLLM TurboQuant/full-graph
+  K+1 lane is architecturally distinct and remains an information gate.

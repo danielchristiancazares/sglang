@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-20 08:17 PDT.
+**Reconciled through:** 2026-08-20 09:23 PDT.
 
 ## Selected production choices
 
@@ -93,6 +93,7 @@ production performance status stays closed unless the cost topology changes.
 |---|---|---|
 | One-step/two-token MTP | Rejected | Fixed samples near 102 tok/s expose an insufficient emission ceiling |
 | Static three-step/four-token MTP | Rejected for real production | Full acceptance crossed 200 tok/s once, while honest sampled mean was **117.239 tok/s** |
+| Selective-checkpoint M4 K+1 retest | Rejected | Acceptance improved 3.636%, but the matched full cycle regressed 14.702% and projected TPS fell **139.841 -> 126.350**; exact-200K generation overlapped M3 noise |
 | Adaptive 2/3 depth, aggressive policy | Rejected | Oscillation reduced acceptance and first real sample reached only 100.739 tok/s |
 | Adaptive 2/3 depth, sparse policy | Rejected | Two real windows combined to **110.276 tok/s** |
 | No MTP | Superseded | Useful control and slower than the trained RadixArk MTP path |

@@ -5,7 +5,7 @@ Qwen3.8 production line. A comparable result records the request shape, server
 mode, cache treatment, sampling profile, graph state, GPU environment, and
 resolved launcher arguments.
 
-**Reconciled through:** 2026-08-20 08:17 PDT.
+**Reconciled through:** 2026-08-20 09:23 PDT.
 
 ## Primary performance scoreboard
 
@@ -25,6 +25,13 @@ throughput values under a matched environment record. This single-run
 scoreboard is distinct from production qualification, which still requires
 the behavior, repeated-sampling, capacity, relaunch, and client gates below.
 The compact scoreboard is [`../BENCHMARK.md`](../BENCHMARK.md).
+
+Candidate ranking still requires repeated matched controls. The request
+produces its first token during prefill, leaving only 15 post-first-token
+decode intervals. Current M3/M4 batches showed roughly 8-15% generation CV
+with identical outputs, so one generation hit above 110 tok/s is not evidence
+of a regression or win. Pair this headline request with verification-cycle
+counts, a longer decode/acceptance window, and an A-B-A control.
 
 ## Qualified reference
 
@@ -236,6 +243,10 @@ use tree-aware fixtures or real exact verification.
   ordinary semantics come from real rejection sampling.
 - Real speculative throughput moves with acceptance. Interpret TPS together
   with accepted length and verification cycles.
+- Exact `199000+16` generation is quantized by a small integer number of
+  speculative cycles and measures only 15 post-first-token intervals. Use
+  repeated A-B-A controls and a longer acceptance/cycle window; never classify
+  a 2-3% single-run generation change by itself.
 - Exact seeds can lock response sequences across restarts for attribution, yet
   graph capture and RNG lifecycle can still change speculative work. Preserve
   production randomness.
