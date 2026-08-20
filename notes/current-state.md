@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
-11:44 PDT.
+11:54 PDT.
 
 **Qualified source line:** commit `9681850bed660b9079ee1aee906cda819603da7a`
 (`Add exact SWOR tree verification and topology analysis`), with the final
@@ -268,6 +268,9 @@ distribution, and cost topology:
 - global chunk-7680 promotion, which regressed the base checkpoint and
   transiently reduced headroom to 200 MiB;
 - chunk 7808, which regressed the selective prompt mean to 2909.350 tok/s;
+- single-layer selected-row draft-extend logits, which reduced graph memory
+  but changed draft-extend 1.059 -> 1.061 ms and full cycle
+  16.058328 -> 16.066558 ms;
 - reusable fused metadata output buffers whose asynchronous lifetime changed
   real rejection-path scheduling;
 - draft proposal top-k 8;

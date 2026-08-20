@@ -24,6 +24,7 @@
 | Selective exact-200K long generation, chunk 7680 | 106.467 tok/s matched 4096 | 109.836 mean / **110.693 best** | +3.164% mean / **+3.970% best** | exact `199000+512`, two runs | 2026-08-20 10:02 PDT |
 | Selective real sampled `6213/512`, chunk 7680 | 131.707 tok/s prior selective window | 138.537 / 139.885 two five-run means | +5.186% / +6.208% | sampled production profile, two independent windows | 2026-08-20 11:27 PDT |
 | Base RadixArk real sampled `6213/512`, chunk 7680 vs 4096 | 121.027 tok/s matched 4096 | 121.054 tok/s combined 7680 | +0.027 / +0.022%; neutral | ten runs per geometry | 2026-08-20 11:36 PDT |
+| Single-layer selected-row draft-extend logits | 16.058328 ms M3 cycle / 1.059 ms extend graph | 16.066558 ms / 1.061 ms | +0.008230 ms cycle; no-op | matched width-3 GPU traces | 2026-08-20 11:54 PDT |
 | Exact `199000+16` capacity | 199016 total tokens | 199016 total tokens | preserved | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600` | 2026-08-16 22:40 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
@@ -389,6 +390,26 @@ tree throughput can be ranked for production.
   independent prompt milestone, not the combined exact-16 winner; generation
   work continues.
 
+### 2026-08-20 11:54 PDT - PERF-021 selected-row draft-extend logits
+
+- Change: ported the multi-layer EAGLE selected-row `lm_head` pruning contract
+  to the single-layer graph behind gathered-buffer, standalone, and
+  device-resident-cycle guards. The graph kept full hidden rows and computed
+  vocabulary logits only for each request's selected accepted row. The patch
+  and its new white-box tests were removed after measurement.
+- Benchmark evidence: draft-extend graph span was **1.061 ms** versus the
+  matched unpruned trace's **1.059 ms**. Full M3 cycle was **16.066558 ms**
+  versus **16.058328 ms** control. Kernel count was 29 versus 28. The
+  candidate's 147.534 projected tok/s came entirely from a favorable
+  **2.370370** acceptance sample, not execution savings.
+- Correctness evidence: graph capture completed; exact `6213+128` profiling
+  completed in 54 verification cycles. Focused runner tests passed **6** before
+  the full-model gate. The candidate trace hash is
+  `3d431c6142df0037fcf2180729d65ca1a6f1626b070083832e2f92ca693230cc`.
+- Decision: reject and remove. The NVFP4 vocabulary projection is
+  weight-bandwidth-bound at one to three rows, so pruning rows saves about
+  0.02 GiB of graph residency but no device time.
+
 ## Candidate Inventory
 
 | ID | Hypothesis | Scope | Status | Evidence |
@@ -418,6 +439,7 @@ tree throughput can be ranked for production.
 | PERF-017 | Make exact-200K prompt/generation comparisons fail closed and expose SSE timing boundaries. | `bench_openai_stream.py` and CPU unit tests | Retained | Headline formulas unchanged; exact token/finish validation, complete output hashes, fragment coalescing, trailing time, and repeated warmup metadata now accompany every run. |
 | PERF-018 | Replace ragged-current plus paged-prefix merge with one paged FlashInfer prefill. | Existing `SGLANG_FLASHINFER_USE_PAGED` path | Rejected | Exact-200K prompt changed -0.135%; 512-token generation changed -2.207% and deterministic output changed. |
 | PERF-019 | Increase prefill chunks below the rejected 8192 geometry. | Selective-checkpoint chunk sweep through 7808 | Retained as explicit 7680 profile | Eight exact-200K prompt samples averaged 2997.744 with 3002.344 best; long decode reached 110.693. Global default rejected on base checkpoint. |
+| PERF-021 | Run single-layer draft-extend `lm_head` only on each selected accepted row. | EAGLE worker/graph runner using the existing multi-layer selection contract | Rejected | Draft-extend span changed 1.059 -> 1.061 ms and full cycle 16.058328 -> 16.066558 ms; memory fell but runtime did not. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
