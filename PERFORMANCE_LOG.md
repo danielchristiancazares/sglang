@@ -16,6 +16,8 @@
 | M4 versus M3 warmed exact `199000+16` prompt | 2789.288 tok/s M3 | 2790.258 tok/s M4 | +0.970 / +0.035%; no material change | same exact command; only steps/width changed from `2/3` to `3/4` | 2026-08-20 09:23 PDT |
 | M4 versus M3 warmed exact `199000+16` generation | 100.982 tok/s M3 | 98.957 tok/s M4 | -2.025 / -2.005%; noisy | same exact command; four warmed runs per arm | 2026-08-20 09:23 PDT |
 | M4 versus M3 measured full-cycle projection | 139.841 tok/s M3 | 126.350 tok/s M4 | -13.491 / -9.647% | `bench_target_verify_width.py --width {3,4}` | 2026-08-20 09:23 PDT |
+| FlashInfer paged-only exact-200K prompt | 2789.036 tok/s matched default | 2785.260 tok/s | -3.776 / -0.135% | exact `199000+512`, `SGLANG_FLASHINFER_USE_PAGED=1` | 2026-08-20 10:03 PDT |
+| FlashInfer paged-only exact-200K long generation | 106.467 tok/s matched default | 104.117 tok/s | -2.350 / -2.207% | same exact `199000+512` pair | 2026-08-20 10:03 PDT |
 | Exact `199000+16` capacity | 199016 total tokens | 199016 total tokens | preserved | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600` | 2026-08-16 22:40 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
@@ -300,6 +302,34 @@ tree throughput can be ranked for production.
   1-3% claims must retain the new fragment/trailing telemetry and exact-count
   validity fields.
 
+### 2026-08-20 10:03 PDT - PERF-018 FlashInfer paged-only prefill
+
+- Change: set only `SGLANG_FLASHINFER_USE_PAGED=1` for the selective M3
+  checkpoint. This writes the current chunk into KV first and runs one paged
+  attention over prefix plus current tokens instead of separate ragged-current
+  and paged-prefix calls followed by state merge. The process resolved the
+  environment switch as true; all launcher arguments and pools remained
+  matched.
+- Exact-200K prompt evidence: after two full-shape warmups, three
+  `199000+16` prompt samples were `2790.384, 2782.369, 2781.207 tok/s`, mean
+  **2784.653**. Two `199000+512` samples were `2786.844, 2783.676`, mean
+  **2785.260**. The restored default control measured `2789.332, 2788.740`,
+  mean **2789.036**. Paged-only therefore changed prompt throughput by
+  **-0.135%** in the long matched pair.
+- Generation evidence: paged-only's three 16-token samples clustered at
+  `114.675, 114.644, 114.877 tok/s`, but the result did not survive the longer
+  validation. Exact `199000+512` generation was `104.514, 103.720`, mean
+  **104.117**, versus restored-control `108.022, 104.912`, mean **106.467**
+  (-2.207%). Short acceptance moved only `1.961686 -> 1.976834` tokens/cycle.
+- Correctness evidence: every request completed its exact token count and
+  `finish_reason=length`; fragment/trailing telemetry was valid. Paged-only
+  deterministically changed the output digest (`35dc...dabd1` for 16 tokens,
+  `d2f8...cdf73` for 512) from the default path (`9a0e...8b37` and
+  `9ca9...25ee8`), consistent with attention-order numerical differences.
+- Decision: reject paged-only for this workload. It provides no prompt gain,
+  loses on the longer generation comparison, and changes the deterministic
+  trajectory. Keep the default ragged-current plus paged-prefix merge.
+
 ## Candidate Inventory
 
 | ID | Hypothesis | Scope | Status | Evidence |
@@ -327,6 +357,7 @@ tree throughput can be ranked for production.
 | PERF-007 | Reduce the exposed target GEMM critical path. | Qwen3.5 MLP gate/up/down and FP8 qkvz/output projections | Measured: admission window 1 passed | Derived `AttnNVFP4` checkpoint cut the cycle 10.96% and raised real TPS to 131.707 mean. Remaining: capacity, second window, OpenCode2, relaunch. |
 | PERF-014 | Raise the emitted-token path length from three to four (K+1) on the selective checkpoint. | launcher speculative shape only (three steps / four rows), EAGLE worker/graph code path | Rejected | Acceptance rose 3.636% while measured cycle cost rose 14.702%; projected TPS fell 139.841 -> 126.350 and matched exact-200K generation did not improve outside noise. |
 | PERF-017 | Make exact-200K prompt/generation comparisons fail closed and expose SSE timing boundaries. | `bench_openai_stream.py` and CPU unit tests | Retained | Headline formulas unchanged; exact token/finish validation, complete output hashes, fragment coalescing, trailing time, and repeated warmup metadata now accompany every run. |
+| PERF-018 | Replace ragged-current plus paged-prefix merge with one paged FlashInfer prefill. | Existing `SGLANG_FLASHINFER_USE_PAGED` path | Rejected | Exact-200K prompt changed -0.135%; 512-token generation changed -2.207% and deterministic output changed. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |

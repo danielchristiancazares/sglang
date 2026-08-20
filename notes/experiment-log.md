@@ -2837,3 +2837,38 @@ mean 13.929045  17.125658 446.051        39.730
   delta sizes `2/39`, 0.000168 seconds of trailing response time, and matching
   full/reasoning hashes. Decision: retain this measurement guardrail before
   screening further small prompt or generation candidates.
+
+### 2026-08-20 10:03 PDT - paged-only FlashInfer prefill rejected
+
+- Took two instrumented exact M3 controls on the aged restored server before
+  the candidate. Prompt was `2802.045, 2792.021 tok/s`; both completed exact
+  `199016` with the established digest. Their 16-token generation rates
+  `87.343, 88.725` accompanied three/four SSE output fragments, demonstrating
+  why fragment telemetry and longer decode evidence are required.
+- Stopped the verified M3 tree and relaunched the identical selective
+  checkpoint and seed with process-scoped
+  `SGLANG_FLASHINFER_USE_PAGED=1`. Startup provenance printed
+  `SGLANG_FLASHINFER_USE_PAGED=True`; `/server_info` retained 200K pools, M3,
+  FlashInfer prefill, XQA decode, and all other defaults. The server had 4.61
+  GiB available after all three graph captures.
+- After two full exact-shape warmups, paged-only `199000+16` prompt samples
+  were `2790.384, 2782.369, 2781.207 tok/s`, mean **2784.653**. Generation
+  samples were `114.675, 114.644, 114.877 tok/s`, but two/three-fragment SSE
+  output and the short 15-interval window made that apparent gain
+  non-decision-capable. The candidate's deterministic digest was
+  `35dc6596...7dabd1`, different from default.
+- Extended the same prompt to 512 output tokens. Paged-only prompt measured
+  `2786.844, 2783.676 tok/s`; generation measured `104.514, 103.720 tok/s`;
+  both runs produced digest `d2f8ad71...51cdf73`. A temperature-zero
+  acceptance probe returned **1.976834** tokens/cycle over 259 verifications.
+- Stopped paged-only and restored the default M3 server with the same seed.
+  After the same two full warmups, the control `199000+16` prompt was
+  **2796.116 tok/s**. Two `199000+512` runs measured prompt `2789.332,
+  2788.740` and generation `108.022, 104.912 tok/s`; both produced digest
+  `9ca9ea3b...25ee8`. Control acceptance was **1.961686** over 261
+  verifications.
+- Decision: paged-only changes long prompt by **-0.135%** and long generation
+  by **-2.207%** despite a 0.772% acceptance increase. Reject it and retain the
+  default ragged-current plus paged-prefix merge. Raw candidate/control JSONL,
+  environment, stdout, and stderr files remain in the active session-state
+  `files` directory.
