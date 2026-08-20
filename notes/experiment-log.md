@@ -3031,3 +3031,124 @@ mean 13.929045  17.125658 446.051        39.730
 - Decision: promote the bit-exact direct-output change and the combined
   selective chunk-7680 record. The user's **3000 prompt / 110 generation
   tok/s** milestone is fully achieved and independently verified.
+
+### 2026-08-20 15:36 PDT - new optimization branch establishes a fresh exact baseline
+
+- Began a new explicitly authorized performance branch on `main` at
+  `adf3a620ef64e11aea6159643f560c790327c57f`. Initial worktree state was
+  `BENCHMARK.md` modified and `HANDOFF.md` deleted; both are pre-existing
+  user-owned changes and remain untouched. Root `PERFORMANCE_LOG.md` and
+  `FAILED_PATHS.md` were present and retained.
+- Read the compact benchmark authorities and full latest notebook, then
+  dispatched read-only documentation and source surveys covering repository
+  rules, all root/notes records, all human-authored `docs/` pages and rendered
+  cookbook prose, benchmark/test/script documentation, kernel/cache/runtime
+  documentation, multimodal documentation, and the remaining peripheral
+  trees. The surveys used no shell commands, processes, or edits.
+- Pre-launch state: port 30000 free; no `cl`, `link`, `nvcc`, `ninja`, or
+  `ptxas` worker; RTX 5090 driver `610.88`, P8, 29 C, 1,716 MiB used and
+  30,472 MiB free. Installed versions were Python `3.13.14`, PyTorch
+  `2.13.0+cu130`, CUDA runtime `13.0`, CUDA toolkit `13.3.33`, Triton `3.7.1`,
+  and FlashInfer `0.6.17`. Both base RadixArk and selective AttnNVFP4 model
+  paths existed.
+- Launched exactly:
+
+  ```powershell
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 `
+    -ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4 `
+    -ChunkedPrefillSize 7680 `
+    -RandomSeed 615388882
+  ```
+
+  The verified listener lineage was
+  `44500 (pwsh) -> 37588 (sglang) -> 16276 (python) -> 41904 (listener)`.
+  The command line resolved exact 200K context/pools, page 64, one request,
+  FlashInfer prefill/sampling, TRT-LLM MHA target/draft decode, M3 linear
+  rejection sampling, draft top-k 20, FP8 draft KV, FP32 ReplaySSM state,
+  `extra_buffer_lazy`, torch compile `default`, and no tree, SWOR, adaptive,
+  simulation, or device-resident-cycle control.
+- Target, draft-decode, and draft-extend graphs captured in **33.49, 1.43,
+  and 0.88 s** with 4.29 GiB reported after capture. `/health` returned 200;
+  `/model_info` reported image/audio understanding false. Startup weight,
+  KV allocation, and scheduler timings were 24.82, 0.82, and 69.99 seconds.
+- Ran two complete exact-shape warmups, then five consecutive cache-flushed
+  scores. The first invocation used `--warmup-runs 2`; the following four
+  used `--skip-warmup`:
+
+  ```powershell
+  .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py `
+    --input-tokens 199000 --output-tokens 16 --timeout 600
+  ```
+
+  Prompt samples were `2897.795, 2875.047, 2837.904, 2873.846, 2872.198
+  tok/s`; mean **2871.358**, median **2873.846**, standard deviation
+  **21.439**, CV **0.747%**, and fixed-token aggregate **2871.229**.
+  TTFT was `68.672916, 69.216270, 70.122180, 69.245186, 69.284914 s`.
+- Legacy generation samples were `90.816, 85.650, 91.199, 111.926, 72.704
+  tok/s`; arithmetic mean **90.459**, aggregate
+  `75 / sum(E2E-TTFT)` rate **88.746**, standard deviation **14.141**, and
+  CV **15.633%**. E2E was `68.838085, 69.391402, 70.286654, 69.379203,
+  69.491229 s`. Nonempty SSE fragments varied `4,4,4,4,3`, so this
+  short-generation result remains cycle- and transport-quantized.
+- Every score completed exact `199000+16`, returned `finish_reason=length`,
+  kept thinking enabled, and retained digest
+  `9a0e20749e2930a697fefdd3bdd7863a067abe4d9860e6d1e7d9b80a62668b37`.
+  Scored snapshots reached P1, 2.947-2.977 GHz SM, 13.801 GHz memory,
+  59-69 C, and 515-559 W. Chrome, Edge WebView, iCloud, shell/display
+  clients, and an unrelated Python process remained present. NVIDIA reported
+  accumulated software power-capping time.
+- Decision: the current environment did not reproduce the historical
+  **3016.444/112.355** record. Retain **2871.358/90.459** as the immediate
+  matched baseline without replacing the qualified record. The prompt gap is
+  4.810%; every candidate now needs an adjacent same-environment control.
+  Longer generation and device-cycle evidence will determine whether an
+  apparent generation change is real.
+- Raw artifact:
+  `C:\Users\Daniel\.copilot\session-state\df1c744a-8e2f-4823-bd37-18b450ed10d1\files\baseline-200k-20260820-1527.log`.
+
+### 2026-08-20 15:55 PDT - supporting baseline, adjacent control A, and exact calibration guard
+
+- On the same verified selective chunk-7680 server, ran three cache-flushed
+  exact long-generation requests:
+
+  ```powershell
+  .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py `
+    --input-tokens 199000 --output-tokens 512 --timeout 600
+  ```
+
+  The first invocation included one same-shape warmup; the next two used
+  `--skip-warmup`. Prompt was `2983.007, 2942.383, 2945.135 tok/s`, mean
+  **2956.842**, median **2945.135**, and CV 0.768%. Legacy generation was
+  `107.385, 107.491, 111.337 tok/s`, mean **108.738**, median **107.491**,
+  CV 2.071%, and aggregate **108.707**. All completed exact `199512` with
+  stable digest
+  `1e90cc8fad3e1b1802db4cdc2af762790bcd392c062a14f0afc334df8b5e97f9`.
+- Five real sampled `6213/512` requests then measured
+  `122.714, 122.917, 111.596, 119.056, 113.418 tok/s`, mean **117.940**,
+  median **119.056**, and CV 4.436%. Five native acceptance probes measured
+  accepted length `2.133333, 2.169492, 2.124481, 2.142259, 2.206897`, mean
+  **2.155292**; mean acceptance rate was **0.577233** and mean verify count
+  was **237.6**.
+- Took the adjacent exact-shape control A after those probes, with five
+  cache-flushed `--skip-warmup` requests. Prompt was
+  `2909.109, 2827.344, 2908.788, 2832.229, 2858.962 tok/s`, mean
+  **2867.286**, median **2858.962**, CV 1.391%, and aggregate **2866.843**.
+  Legacy generation was `92.718, 92.717, 112.714, 103.474, 107.168 tok/s`,
+  mean **101.758**, median **103.474**, CV 8.731%, and aggregate
+  **101.136**. Every request completed exact `199016`, returned
+  `finish_reason=length`, and retained digest
+  `9a0e20749e2930a697fefdd3bdd7863a067abe4d9860e6d1e7d9b80a62668b37`.
+- The long and short windows had the same exact 199000-token prompt,
+  explicit cache flushes, server, and source but differed materially in TTFT.
+  This confirms the environment is non-stationary enough that every candidate
+  requires adjacent A-B-A evidence.
+- Hardened `scripts/windows/bench_openai_stream.py`: if local calibration
+  returns anything other than `args.input_tokens`, it raises before cache
+  flush or generation. Warmup and measurement usage validation now compares
+  against the requested count. Added a CPU regression test showing a
+  `198999` result for a `199000` request invokes neither `flush_cache` nor
+  `stream_request`. All four focused tests and Python compilation passed.
+- Raw artifacts:
+  `C:\Users\Daniel\.copilot\session-state\df1c744a-8e2f-4823-bd37-18b450ed10d1\files\baseline-support-20260820-1542.log`
+  and
+  `C:\Users\Daniel\.copilot\session-state\df1c744a-8e2f-4823-bd37-18b450ed10d1\files\control-a-exact16-20260820-1554.log`.

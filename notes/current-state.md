@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
-12:29 PDT.
+15:36 PDT.
 
 **Qualified source line:** commit `9681850bed660b9079ee1aee906cda819603da7a`
 (`Add exact SWOR tree verification and topology analysis`), with the final
@@ -128,6 +128,27 @@ the four warmed prompt samples averaged **2789.288 tok/s** with 0.063% CV,
 while generation retained roughly 10% CV because only 15 post-first-token
 decode intervals are measured. This is the immediate matched control, not a
 replacement for the historical scoreboard record.
+
+The new explicitly authorized branch established a post-promotion
+current-source baseline from `adf3a620ef64` with the selective checkpoint,
+chunk 7680, and the same server seed. After two complete warmups, five exact
+cache-flushed scores averaged **2871.358 prompt / 90.459 legacy generation
+tok/s**; prompt CV was 0.747%, generation CV was 15.633%, and the best pair
+was **2873.846/111.926**. Every request completed exact `199016` with the
+established digest. This window did not reproduce the historical record and
+ran with active desktop WDDM clients plus accumulated software power-capping
+time, so it is the immediate same-environment control rather than a new
+qualified reference. Recovering or explaining the **4.810% prompt gap** is
+part of the active handoff.
+
+Supporting measurements on that same launch were not stationary. Three exact
+`199000+512` requests averaged **2956.842 prompt / 108.738 legacy generation
+tok/s** with stable output, while the immediately following five-request
+`199000+16` control averaged **2867.286/101.758**. The exact prompt shape and
+cache policy were unchanged. Treat A-B-A controls as mandatory for attribution;
+neither standalone window is a sufficient candidate baseline. The benchmark
+client now also fails before sending a request unless prompt calibration equals
+the requested count exactly.
 
 The qualified RadixArk production baseline remains **2608.263 prompt tok/s**
 and **102.358 generation tok/s** on the same exact workload. A current

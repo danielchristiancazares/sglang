@@ -1,3 +1,4 @@
+import argparse
 import hashlib
 import json
 import unittest
@@ -155,6 +156,37 @@ class TestBenchOpenAIStream(CustomTestCase):
                     10,
                     "sglang",
                 )
+
+    def test_main_rejects_inexact_calibration_before_request(self):
+        args = argparse.Namespace(
+            base_url="http://127.0.0.1:30000",
+            model="model",
+            backend="sglang",
+            input_tokens=199000,
+            output_tokens=16,
+            warmup_output_tokens=16,
+            warmup_runs=1,
+            timeout=10,
+            disable_thinking=False,
+        )
+        with (
+            patch.object(bench_openai_stream, "parse_args", return_value=args),
+            patch.object(
+                bench_openai_stream,
+                "calibrate_prompt",
+                return_value=("prompt", 198999),
+            ),
+            patch.object(bench_openai_stream, "flush_cache") as flush_cache,
+            patch.object(bench_openai_stream, "stream_request") as stream_request,
+            self.assertRaisesRegex(
+                RuntimeError,
+                "requested=199000, calibrated=198999",
+            ),
+        ):
+            bench_openai_stream.main()
+
+        flush_cache.assert_not_called()
+        stream_request.assert_not_called()
 
 
 if __name__ == "__main__":
