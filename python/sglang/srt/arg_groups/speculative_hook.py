@@ -771,6 +771,86 @@ def _handle_eagle_family(server_args: ServerArgs) -> None:
             "--speculative-tree-sampling-mode=swor."
         )
 
+    if server_args.speculative_pq_capture_path is not None:
+        if server_args.speculative_algorithm not in ("EAGLE", "EAGLE3"):
+            raise ValueError(
+                "--speculative-pq-capture-path requires EAGLE / EAGLE3 / NEXTN."
+            )
+        if server_args.enable_multi_layer_eagle:
+            raise ValueError(
+                "--speculative-pq-capture-path initially requires the "
+                "single-layer EAGLE worker."
+            )
+        if server_args.max_running_requests != 1:
+            raise ValueError(
+                "--speculative-pq-capture-path requires --max-running-requests 1."
+            )
+        if server_args.disable_overlap_schedule:
+            raise ValueError(
+                "--speculative-pq-capture-path initially requires overlap "
+                "scheduling for its pinned asynchronous D2H lifetime."
+            )
+        if server_args.cuda_graph_max_bs_decode != 1:
+            raise ValueError(
+                "--speculative-pq-capture-path requires "
+                "--cuda-graph-max-bs-decode 1."
+            )
+        if server_args.speculative_draft_sampling_top_k is None:
+            raise ValueError(
+                "--speculative-pq-capture-path requires a finite "
+                "--speculative-draft-sampling-top-k."
+            )
+        if (
+            not server_args.speculative_use_rejection_sampling
+            and server_args.speculative_tree_sampling_mode != "swor"
+            and server_args.speculative_eagle_topk > 1
+        ):
+            raise ValueError(
+                "--speculative-pq-capture-path currently captures wider trees "
+                "through --speculative-tree-sampling-mode=swor so raw q rows "
+                "remain node-aligned."
+            )
+        if server_args.speculative_device_resident_cycle:
+            raise ValueError(
+                "--speculative-pq-capture-path is incompatible with the "
+                "experimental device-resident cycle."
+            )
+        if server_args.speculative_pq_capture_max_cycles <= 0:
+            raise ValueError(
+                "--speculative-pq-capture-max-cycles must be positive."
+            )
+        logger.info(
+            "Branch-exact sparse p/q capture is enabled: path=%s max_cycles=%d",
+            server_args.speculative_pq_capture_path,
+            server_args.speculative_pq_capture_max_cycles,
+        )
+
+    if server_args.speculative_graph_gap_timing_path is not None:
+        if server_args.speculative_algorithm not in ("EAGLE", "EAGLE3"):
+            raise ValueError(
+                "--speculative-graph-gap-timing-path requires EAGLE / EAGLE3 / NEXTN."
+            )
+        if server_args.enable_multi_layer_eagle:
+            raise ValueError(
+                "--speculative-graph-gap-timing-path initially requires the "
+                "single-layer EAGLE worker."
+            )
+        if server_args.max_running_requests != 1:
+            raise ValueError(
+                "--speculative-graph-gap-timing-path requires "
+                "--max-running-requests 1."
+            )
+        if server_args.speculative_graph_gap_timing_max_samples <= 0:
+            raise ValueError(
+                "--speculative-graph-gap-timing-max-samples must be positive."
+            )
+        logger.info(
+            "Asynchronous speculative graph-gap timing is enabled: "
+            "path=%s max_samples=%d",
+            server_args.speculative_graph_gap_timing_path,
+            server_args.speculative_graph_gap_timing_max_samples,
+        )
+
     if server_args.speculative_draft_sampling_top_k is not None:
         if server_args.speculative_draft_sampling_top_k < 1:
             raise ValueError(

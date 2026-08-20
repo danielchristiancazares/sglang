@@ -1,0 +1,3041 @@
+{
+  "aggregate_all_kernel_time": {
+    "max_ms": 19.937438999999998,
+    "mean_ms": 16.579155508196724,
+    "median_ms": 15.975100000000001,
+    "min_ms": 15.47851
+  },
+  "all_cuda_graphs": {
+    "2": {
+      "aggregate_all_kernel_time": {
+        "max_ms": 19.937438999999998,
+        "mean_ms": 16.579155508196724,
+        "median_ms": 15.975100000000001,
+        "min_ms": 15.47851
+      },
+      "completion_stream_replay_counts": {
+        "13": 61
+      },
+      "kernel_families": [
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 8.381333,
+            "mean_ms": 7.07892986885246,
+            "median_ms": 6.759096,
+            "min_ms": 6.73224,
+            "total_trace_ms": 431.814722
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 8.38133447265625,
+            "mean_ms": 7.078929871606045,
+            "median_ms": 6.75909619140625,
+            "min_ms": 6.732240234375
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 8.38133447265625,
+              "mean_ms": 7.078929871606045,
+              "median_ms": 6.75909619140625,
+              "min_ms": 6.732240234375
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 8.3197900390625,
+              "mean_ms": 7.017179335297131,
+              "median_ms": 6.6976787109375,
+              "min_ms": 6.67255810546875
+            }
+          },
+          "kernel_count": 7869,
+          "kernel_family": "cutlass_nvfp4_gemm",
+          "kernels_per_replay": {
+            "max": 129,
+            "mean": 129.0,
+            "min": 129
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 6.8892430000000004,
+            "mean_ms": 5.281118967213114,
+            "median_ms": 4.989749,
+            "min_ms": 4.961139,
+            "total_trace_ms": 322.148257
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 6.88924267578125,
+            "mean_ms": 5.2811191566342215,
+            "median_ms": 4.98974853515625,
+            "min_ms": 4.96113916015625
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 6.88924267578125,
+              "mean_ms": 5.2811191566342215,
+              "median_ms": 4.98974853515625,
+              "min_ms": 4.96113916015625
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 5.3829501953125,
+              "mean_ms": 4.104937275870902,
+              "median_ms": 3.858220703125,
+              "min_ms": 3.8130703125
+            }
+          },
+          "kernel_count": 7808,
+          "kernel_family": "cublas_fp8_gemm",
+          "kernels_per_replay": {
+            "max": 128,
+            "mean": 128.0,
+            "min": 128
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 1.46549,
+            "mean_ms": 0.7261431475409836,
+            "median_ms": 0.690843,
+            "min_ms": 0.68329,
+            "total_trace_ms": 44.29473199999998
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 1.465490234375,
+            "mean_ms": 0.7261429623463115,
+            "median_ms": 0.69084423828125,
+            "min_ms": 0.68328857421875
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.0,
+              "mean_ms": 0.0,
+              "median_ms": 0.0,
+              "min_ms": 0.0
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 9.716796875e-05,
+              "mean_ms": 8.127081198770491e-05,
+              "median_ms": 9.521484375e-05,
+              "min_ms": 6.25e-05
+            }
+          },
+          "kernel_count": 2928,
+          "kernel_family": "cutlass_bf16_gemm",
+          "kernels_per_replay": {
+            "max": 48,
+            "mean": 48.0,
+            "min": 48
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 1.719005,
+            "mean_ms": 0.6018588032786886,
+            "median_ms": 0.545972,
+            "min_ms": 0.53346,
+            "total_trace_ms": 36.713387
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 1.719005859375,
+            "mean_ms": 0.6018587266265368,
+            "median_ms": 0.5459716796875,
+            "min_ms": 0.53346044921875
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 1.719005859375,
+              "mean_ms": 0.6018587266265368,
+              "median_ms": 0.5459716796875,
+              "min_ms": 0.53346044921875
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.03773046875,
+              "mean_ms": 0.03613678278688525,
+              "median_ms": 0.0361923828125,
+              "min_ms": 0.03488134765625
+            }
+          },
+          "kernel_count": 976,
+          "kernel_family": "sigmoid_and_mul",
+          "kernels_per_replay": {
+            "max": 16,
+            "mean": 16.0,
+            "min": 16
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 1.541377,
+            "mean_ms": 0.6004528196721313,
+            "median_ms": 0.548436,
+            "min_ms": 0.5358959999999999,
+            "total_trace_ms": 36.627622
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 1.5413798828125,
+            "mean_ms": 0.6004542376408811,
+            "median_ms": 0.5484365234375,
+            "min_ms": 0.53589599609375
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 1.5413798828125,
+              "mean_ms": 0.6004542376408811,
+              "median_ms": 0.5484365234375,
+              "min_ms": 0.53589599609375
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 1.51171630859375,
+              "mean_ms": 0.5694339459528689,
+              "median_ms": 0.51739599609375,
+              "min_ms": 0.5059072265625
+            }
+          },
+          "kernel_count": 11773,
+          "kernel_family": "other",
+          "kernels_per_replay": {
+            "max": 193,
+            "mean": 193.0,
+            "min": 193
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 1.7017280000000001,
+            "mean_ms": 0.5969034262295081,
+            "median_ms": 0.522356,
+            "min_ms": 0.509009,
+            "total_trace_ms": 36.411109
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 1.701728515625,
+            "mean_ms": 0.5969034003586066,
+            "median_ms": 0.52235595703125,
+            "min_ms": 0.509009765625
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 1.701728515625,
+              "mean_ms": 0.5969034003586066,
+              "median_ms": 0.52235595703125,
+              "min_ms": 0.509009765625
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 1.1898037109375,
+              "mean_ms": 0.02450581935194672,
+              "median_ms": 0.0051201171875,
+              "min_ms": 0.00377490234375
+            }
+          },
+          "kernel_count": 976,
+          "kernel_family": "flashinfer_xqa",
+          "kernels_per_replay": {
+            "max": 16,
+            "mean": 16.0,
+            "min": 16
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 1.5610760000000001,
+            "mean_ms": 0.5192621311475409,
+            "median_ms": 0.502322,
+            "min_ms": 0.484694,
+            "total_trace_ms": 31.674989999999994
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 1.56107861328125,
+            "mean_ms": 0.5192637038934427,
+            "median_ms": 0.502326171875,
+            "min_ms": 0.484697265625
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 1.31044384765625,
+              "mean_ms": 0.2658071609246926,
+              "median_ms": 0.24883837890625,
+              "min_ms": 0.24331591796875
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 1.2914970703125,
+              "mean_ms": 0.24651061411372951,
+              "median_ms": 0.229197265625,
+              "min_ms": 0.224880859375
+            }
+          },
+          "kernel_count": 11895,
+          "kernel_family": "triton_generated",
+          "kernels_per_replay": {
+            "max": 195,
+            "mean": 195.0,
+            "min": 195
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 1.191527,
+            "mean_ms": 0.2420109344262295,
+            "median_ms": 0.22586099999999998,
+            "min_ms": 0.22026300000000001,
+            "total_trace_ms": 14.762666999999999
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 1.1915263671875,
+            "mean_ms": 0.2420124791880123,
+            "median_ms": 0.22586474609375,
+            "min_ms": 0.2202666015625
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 1.1915263671875,
+              "mean_ms": 0.2420124791880123,
+              "median_ms": 0.22586474609375,
+              "min_ms": 0.2202666015625
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 1.11496044921875,
+              "mean_ms": 0.16566784868084017,
+              "median_ms": 0.14999609375,
+              "min_ms": 0.14621484375
+            }
+          },
+          "kernel_count": 7869,
+          "kernel_family": "trtllm_nvfp4_quantize",
+          "kernels_per_replay": {
+            "max": 129,
+            "mean": 129.0,
+            "min": 129
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.569907,
+            "mean_ms": 0.22465906557377047,
+            "median_ms": 0.212968,
+            "min_ms": 0.206568,
+            "total_trace_ms": 13.704203
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.56990771484375,
+            "mean_ms": 0.22465898757684424,
+            "median_ms": 0.212966796875,
+            "min_ms": 0.20656689453125
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.0,
+              "mean_ms": 0.0,
+              "median_ms": 0.0,
+              "min_ms": 0.0
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.0,
+              "mean_ms": 0.0,
+              "median_ms": 0.0,
+              "min_ms": 0.0
+            }
+          },
+          "kernel_count": 2928,
+          "kernel_family": "cublas_splitk_reduce",
+          "kernels_per_replay": {
+            "max": 48,
+            "mean": 48.0,
+            "min": 48
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 1.3199880000000002,
+            "mean_ms": 0.1856276557377049,
+            "median_ms": 0.12921700000000003,
+            "min_ms": 0.12595699999999999,
+            "total_trace_ms": 11.323287
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 1.31998779296875,
+            "mean_ms": 0.18562712122182376,
+            "median_ms": 0.1292158203125,
+            "min_ms": 0.12595703125
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 1.31998779296875,
+              "mean_ms": 0.18562712122182376,
+              "median_ms": 0.1292158203125,
+              "min_ms": 0.12595703125
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 1.316759765625,
+              "mean_ms": 0.1822327820824795,
+              "median_ms": 0.12582958984375,
+              "min_ms": 0.1227890625
+            }
+          },
+          "kernel_count": 3904,
+          "kernel_family": "normalization",
+          "kernels_per_replay": {
+            "max": 64,
+            "mean": 64.0,
+            "min": 64
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.656442,
+            "mean_ms": 0.18458409836065576,
+            "median_ms": 0.17652299999999999,
+            "min_ms": 0.172066,
+            "total_trace_ms": 11.259630000000003
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.656349609375,
+            "mean_ms": 0.18447474545338116,
+            "median_ms": 0.176427734375,
+            "min_ms": 0.17193994140625
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.656349609375,
+              "mean_ms": 0.18447474545338116,
+              "median_ms": 0.176427734375,
+              "min_ms": 0.17193994140625
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.65612451171875,
+              "mean_ms": 0.18432939773309426,
+              "median_ms": 0.1762041015625,
+              "min_ms": 0.17181201171875
+            }
+          },
+          "kernel_count": 8784,
+          "kernel_family": "pytorch_elementwise",
+          "kernels_per_replay": {
+            "max": 144,
+            "mean": 144.0,
+            "min": 144
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 1.5990309999999999,
+            "mean_ms": 0.17587770491803278,
+            "median_ms": 0.12893000000000002,
+            "min_ms": 0.125061,
+            "total_trace_ms": 10.728539999999999
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 1.59902978515625,
+            "mean_ms": 0.17587645683913933,
+            "median_ms": 0.12892724609375,
+            "min_ms": 0.125056640625
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 1.59902978515625,
+              "mean_ms": 0.17587645683913933,
+              "median_ms": 0.12892724609375,
+              "min_ms": 0.125056640625
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 1.59902978515625,
+              "mean_ms": 0.17587645683913933,
+              "median_ms": 0.12892724609375,
+              "min_ms": 0.125056640625
+            }
+          },
+          "kernel_count": 2928,
+          "kernel_family": "causal_conv1d",
+          "kernels_per_replay": {
+            "max": 48,
+            "mean": 48.0,
+            "min": 48
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.08912300000000001,
+            "mean_ms": 0.08724562295081968,
+            "median_ms": 0.087271,
+            "min_ms": 0.08540900000000001,
+            "total_trace_ms": 5.3219829999999995
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.08911962890625,
+            "mean_ms": 0.08724135502049181,
+            "median_ms": 0.08726611328125,
+            "min_ms": 0.0854033203125
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.08911962890625,
+              "mean_ms": 0.08724135502049181,
+              "median_ms": 0.08726611328125,
+              "min_ms": 0.0854033203125
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.08255908203125,
+              "mean_ms": 0.08054282466700818,
+              "median_ms": 0.080580078125,
+              "min_ms": 0.078662109375
+            }
+          },
+          "kernel_count": 4880,
+          "kernel_family": "flashinfer_nvfp4_quantize",
+          "kernels_per_replay": {
+            "max": 80,
+            "mean": 80.0,
+            "min": 80
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.345804,
+            "mean_ms": 0.07448126229508197,
+            "median_ms": 0.07021,
+            "min_ms": 0.068259,
+            "total_trace_ms": 4.543356999999999
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.3458076171875,
+            "mean_ms": 0.07448356653432377,
+            "median_ms": 0.0702138671875,
+            "min_ms": 0.06826171875
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.3458076171875,
+              "mean_ms": 0.07448356653432377,
+              "median_ms": 0.0702138671875,
+              "min_ms": 0.06826171875
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.3458076171875,
+              "mean_ms": 0.07448356653432377,
+              "median_ms": 0.0702138671875,
+              "min_ms": 0.06826171875
+            }
+          },
+          "kernel_count": 2928,
+          "kernel_family": "pytorch_copy",
+          "kernels_per_replay": {
+            "max": 48,
+            "mean": 48.0,
+            "min": 48
+          },
+          "replay_count": 61
+        }
+      ],
+      "replay_count": 61,
+      "span": {
+        "max_ms": 17.61718408203125,
+        "mean_ms": 15.321986248078895,
+        "median_ms": 14.66098095703125,
+        "min_ms": 14.24090087890625
+      }
+    },
+    "5": {
+      "aggregate_all_kernel_time": {
+        "max_ms": 1.236112,
+        "mean_ms": 1.2142192131147542,
+        "median_ms": 1.2136399999999998,
+        "min_ms": 1.202991
+      },
+      "completion_stream_replay_counts": {
+        "13": 61
+      },
+      "kernel_families": [
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.524851,
+            "mean_ms": 0.515453131147541,
+            "median_ms": 0.5147390000000001,
+            "min_ms": 0.511091,
+            "total_trace_ms": 31.44264099999999
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.5248515625,
+            "mean_ms": 0.515453125,
+            "median_ms": 0.51473876953125,
+            "min_ms": 0.5110908203125
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.5248515625,
+              "mean_ms": 0.515453125,
+              "median_ms": 0.51473876953125,
+              "min_ms": 0.5110908203125
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.5248515625,
+              "mean_ms": 0.515453125,
+              "median_ms": 0.51473876953125,
+              "min_ms": 0.5110908203125
+            }
+          },
+          "kernel_count": 305,
+          "kernel_family": "cublas_bf16_gemv",
+          "kernels_per_replay": {
+            "max": 5,
+            "mean": 5.0,
+            "min": 5
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.44961599999999996,
+            "mean_ms": 0.44116540983606556,
+            "median_ms": 0.440016,
+            "min_ms": 0.434864,
+            "total_trace_ms": 26.91109000000001
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.4496162109375,
+            "mean_ms": 0.4411653992699795,
+            "median_ms": 0.44001611328125,
+            "min_ms": 0.43486376953125
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.4496162109375,
+              "mean_ms": 0.4411653992699795,
+              "median_ms": 0.44001611328125,
+              "min_ms": 0.43486376953125
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.4496162109375,
+              "mean_ms": 0.4411653992699795,
+              "median_ms": 0.44001611328125,
+              "min_ms": 0.43486376953125
+            }
+          },
+          "kernel_count": 61,
+          "kernel_family": "cutlass_nvfp4_gemm",
+          "kernels_per_replay": {
+            "max": 1,
+            "mean": 1.0,
+            "min": 1
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.131559,
+            "mean_ms": 0.12756834426229507,
+            "median_ms": 0.12784399999999999,
+            "min_ms": 0.12387700000000001,
+            "total_trace_ms": 7.7816690000000035
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.13155859375,
+            "mean_ms": 0.12756811123206968,
+            "median_ms": 0.12784375,
+            "min_ms": 0.123876953125
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.13155859375,
+              "mean_ms": 0.12756811123206968,
+              "median_ms": 0.12784375,
+              "min_ms": 0.123876953125
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.13069482421875,
+              "mean_ms": 0.12676788230020491,
+              "median_ms": 0.1270126953125,
+              "min_ms": 0.1230458984375
+            }
+          },
+          "kernel_count": 1098,
+          "kernel_family": "other",
+          "kernels_per_replay": {
+            "max": 18,
+            "mean": 18.0,
+            "min": 18
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.04893,
+            "mean_ms": 0.047558540983606554,
+            "median_ms": 0.047585,
+            "min_ms": 0.045826,
+            "total_trace_ms": 2.901071
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.04893017578125,
+            "mean_ms": 0.047558561731557376,
+            "median_ms": 0.0475849609375,
+            "min_ms": 0.045826171875
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.04893017578125,
+              "mean_ms": 0.047558561731557376,
+              "median_ms": 0.0475849609375,
+              "min_ms": 0.045826171875
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.04893017578125,
+              "mean_ms": 0.047558561731557376,
+              "median_ms": 0.0475849609375,
+              "min_ms": 0.045826171875
+            }
+          },
+          "kernel_count": 61,
+          "kernel_family": "softmax",
+          "kernels_per_replay": {
+            "max": 1,
+            "mean": 1.0,
+            "min": 1
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.024353000000000003,
+            "mean_ms": 0.02382932786885246,
+            "median_ms": 0.023808,
+            "min_ms": 0.023232,
+            "total_trace_ms": 1.4535890000000005
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.02422607421875,
+            "mean_ms": 0.023700147284836066,
+            "median_ms": 0.02368017578125,
+            "min_ms": 0.0231357421875
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.02422607421875,
+              "mean_ms": 0.023700147284836066,
+              "median_ms": 0.02368017578125,
+              "min_ms": 0.0231357421875
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.02422607421875,
+              "mean_ms": 0.023700147284836066,
+              "median_ms": 0.02368017578125,
+              "min_ms": 0.0231357421875
+            }
+          },
+          "kernel_count": 1220,
+          "kernel_family": "pytorch_elementwise",
+          "kernels_per_replay": {
+            "max": 20,
+            "mean": 20.0,
+            "min": 20
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.022593,
+            "mean_ms": 0.021786540983606557,
+            "median_ms": 0.021793,
+            "min_ms": 0.021185,
+            "total_trace_ms": 1.3289790000000001
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.0225927734375,
+            "mean_ms": 0.021786533043032786,
+            "median_ms": 0.02179296875,
+            "min_ms": 0.02118505859375
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.0225927734375,
+              "mean_ms": 0.021786533043032786,
+              "median_ms": 0.02179296875,
+              "min_ms": 0.02118505859375
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.00246337890625,
+              "mean_ms": 0.0022547387295081965,
+              "median_ms": 0.002240234375,
+              "min_ms": 0.00211181640625
+            }
+          },
+          "kernel_count": 61,
+          "kernel_family": "sigmoid_and_mul",
+          "kernels_per_replay": {
+            "max": 1,
+            "mean": 1.0,
+            "min": 1
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.021440999999999998,
+            "mean_ms": 0.020794999999999998,
+            "median_ms": 0.020769,
+            "min_ms": 0.020225,
+            "total_trace_ms": 1.2684950000000004
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.02144091796875,
+            "mean_ms": 0.02079501793032787,
+            "median_ms": 0.02076904296875,
+            "min_ms": 0.02022509765625
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.02144091796875,
+              "mean_ms": 0.02079501793032787,
+              "median_ms": 0.02076904296875,
+              "min_ms": 0.02022509765625
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.000671875,
+              "mean_ms": 0.0005901959528688525,
+              "median_ms": 0.00060791015625,
+              "min_ms": 0.000416015625
+            }
+          },
+          "kernel_count": 61,
+          "kernel_family": "flashinfer_xqa",
+          "kernels_per_replay": {
+            "max": 1,
+            "mean": 1.0,
+            "min": 1
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.008416,
+            "mean_ms": 0.007829868852459017,
+            "median_ms": 0.00784,
+            "min_ms": 0.007615,
+            "total_trace_ms": 0.4776219999999999
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.008416015625,
+            "mean_ms": 0.007829878009733606,
+            "median_ms": 0.00784033203125,
+            "min_ms": 0.00761572265625
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.008416015625,
+              "mean_ms": 0.007829878009733606,
+              "median_ms": 0.00784033203125,
+              "min_ms": 0.00761572265625
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.00825634765625,
+              "mean_ms": 0.007702676741803279,
+              "median_ms": 0.0077119140625,
+              "min_ms": 0.00748779296875
+            }
+          },
+          "kernel_count": 366,
+          "kernel_family": "normalization",
+          "kernels_per_replay": {
+            "max": 6,
+            "mean": 6.0,
+            "min": 6
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.0038399999999999997,
+            "mean_ms": 0.00353,
+            "median_ms": 0.00352,
+            "min_ms": 0.003327,
+            "total_trace_ms": 0.2153300000000001
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.00384033203125,
+            "mean_ms": 0.003529881211577869,
+            "median_ms": 0.00351953125,
+            "min_ms": 0.0033271484375
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.00384033203125,
+              "mean_ms": 0.003529881211577869,
+              "median_ms": 0.00351953125,
+              "min_ms": 0.0033271484375
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.00384033203125,
+              "mean_ms": 0.003529881211577869,
+              "median_ms": 0.00351953125,
+              "min_ms": 0.0033271484375
+            }
+          },
+          "kernel_count": 183,
+          "kernel_family": "pytorch_copy",
+          "kernels_per_replay": {
+            "max": 3,
+            "mean": 3.0,
+            "min": 3
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.003393,
+            "mean_ms": 0.0031921311475409837,
+            "median_ms": 0.0031999999999999997,
+            "min_ms": 0.0030710000000000004,
+            "total_trace_ms": 0.19472000000000003
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.00339306640625,
+            "mean_ms": 0.0031923828125,
+            "median_ms": 0.0032001953125,
+            "min_ms": 0.00307080078125
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.00339306640625,
+              "mean_ms": 0.0031923828125,
+              "median_ms": 0.0032001953125,
+              "min_ms": 0.00307080078125
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.00339306640625,
+              "mean_ms": 0.0031923828125,
+              "median_ms": 0.0032001953125,
+              "min_ms": 0.00307080078125
+            }
+          },
+          "kernel_count": 244,
+          "kernel_family": "triton_generated",
+          "kernels_per_replay": {
+            "max": 4,
+            "mean": 4.0,
+            "min": 4
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.0015689999999999999,
+            "mean_ms": 0.0015109180327868852,
+            "median_ms": 0.001504,
+            "min_ms": 0.0014399999999999999,
+            "total_trace_ms": 0.09216599999999996
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.00156884765625,
+            "mean_ms": 0.0015109503073770492,
+            "median_ms": 0.00150390625,
+            "min_ms": 0.00143994140625
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.00156884765625,
+              "mean_ms": 0.0015109503073770492,
+              "median_ms": 0.00150390625,
+              "min_ms": 0.00143994140625
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.00156884765625,
+              "mean_ms": 0.0015109503073770492,
+              "median_ms": 0.00150390625,
+              "min_ms": 0.00143994140625
+            }
+          },
+          "kernel_count": 61,
+          "kernel_family": "trtllm_nvfp4_quantize",
+          "kernels_per_replay": {
+            "max": 1,
+            "mean": 1.0,
+            "min": 1
+          },
+          "replay_count": 61
+        }
+      ],
+      "replay_count": 61,
+      "span": {
+        "max_ms": 1.23751708984375,
+        "mean_ms": 1.216837378329918,
+        "median_ms": 1.216236328125,
+        "min_ms": 1.20577197265625
+      }
+    },
+    "8": {
+      "aggregate_all_kernel_time": {
+        "max_ms": 1.3677570000000001,
+        "mean_ms": 1.0932970819672132,
+        "median_ms": 1.088071,
+        "min_ms": 1.070918
+      },
+      "completion_stream_replay_counts": {
+        "13": 61
+      },
+      "kernel_families": [
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.832509,
+            "mean_ms": 0.5618030655737705,
+            "median_ms": 0.55631,
+            "min_ms": 0.546419,
+            "total_trace_ms": 34.26998700000001
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.8325087890625,
+            "mean_ms": 0.5618031025870902,
+            "median_ms": 0.55631005859375,
+            "min_ms": 0.5464189453125
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.8325087890625,
+              "mean_ms": 0.5618031025870902,
+              "median_ms": 0.55631005859375,
+              "min_ms": 0.5464189453125
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.83241259765625,
+              "mean_ms": 0.5617128265881148,
+              "median_ms": 0.5562451171875,
+              "min_ms": 0.54632275390625
+            }
+          },
+          "kernel_count": 305,
+          "kernel_family": "cutlass_bf16_gemm",
+          "kernels_per_replay": {
+            "max": 5,
+            "mean": 5.0,
+            "min": 5
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.440017,
+            "mean_ms": 0.43231726229508194,
+            "median_ms": 0.431152,
+            "min_ms": 0.430095,
+            "total_trace_ms": 26.371352999999996
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.44001708984375,
+            "mean_ms": 0.43231727074795084,
+            "median_ms": 0.43115185546875,
+            "min_ms": 0.43009521484375
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.44001708984375,
+              "mean_ms": 0.43231727074795084,
+              "median_ms": 0.43115185546875,
+              "min_ms": 0.43009521484375
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.43988818359375,
+              "mean_ms": 0.4321634221311475,
+              "median_ms": 0.4310556640625,
+              "min_ms": 0.42993505859375
+            }
+          },
+          "kernel_count": 61,
+          "kernel_family": "cutlass_nvfp4_gemm",
+          "kernels_per_replay": {
+            "max": 1,
+            "mean": 1.0,
+            "min": 1
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.041345999999999994,
+            "mean_ms": 0.03536547540983607,
+            "median_ms": 0.03533,
+            "min_ms": 0.03325,
+            "total_trace_ms": 2.1572940000000003
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.04134619140625,
+            "mean_ms": 0.03536549052254098,
+            "median_ms": 0.035330078125,
+            "min_ms": 0.03325
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.04134619140625,
+              "mean_ms": 0.03536549052254098,
+              "median_ms": 0.035330078125,
+              "min_ms": 0.03325
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.00278369140625,
+              "mean_ms": 0.0025170738345286887,
+              "median_ms": 0.0025283203125,
+              "min_ms": 0.0018251953125
+            }
+          },
+          "kernel_count": 61,
+          "kernel_family": "sigmoid_and_mul",
+          "kernels_per_replay": {
+            "max": 1,
+            "mean": 1.0,
+            "min": 1
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.040896999999999996,
+            "mean_ms": 0.03424906557377049,
+            "median_ms": 0.034273000000000005,
+            "min_ms": 0.032034,
+            "total_trace_ms": 2.0891930000000003
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.04089697265625,
+            "mean_ms": 0.034249039446721315,
+            "median_ms": 0.03427294921875,
+            "min_ms": 0.0320341796875
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.04089697265625,
+              "mean_ms": 0.034249039446721315,
+              "median_ms": 0.03427294921875,
+              "min_ms": 0.0320341796875
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.000896484375,
+              "mean_ms": 0.0006992907914959017,
+              "median_ms": 0.0007041015625,
+              "min_ms": 0.0006396484375
+            }
+          },
+          "kernel_count": 61,
+          "kernel_family": "flashinfer_xqa",
+          "kernels_per_replay": {
+            "max": 1,
+            "mean": 1.0,
+            "min": 1
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.009824,
+            "mean_ms": 0.009173278688524591,
+            "median_ms": 0.009153,
+            "min_ms": 0.008608000000000001,
+            "total_trace_ms": 0.55957
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.00982421875,
+            "mean_ms": 0.009173379866803279,
+            "median_ms": 0.00915283203125,
+            "min_ms": 0.00860791015625
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.00982421875,
+              "mean_ms": 0.009173379866803279,
+              "median_ms": 0.00915283203125,
+              "min_ms": 0.00860791015625
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.0090244140625,
+              "mean_ms": 0.008353963883196721,
+              "median_ms": 0.0083203125,
+              "min_ms": 0.00784033203125
+            }
+          },
+          "kernel_count": 366,
+          "kernel_family": "other",
+          "kernels_per_replay": {
+            "max": 6,
+            "mean": 6.0,
+            "min": 6
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.008544000000000001,
+            "mean_ms": 0.008193672131147542,
+            "median_ms": 0.008223000000000001,
+            "min_ms": 0.00784,
+            "total_trace_ms": 0.4998140000000001
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.0085439453125,
+            "mean_ms": 0.008193543481045082,
+            "median_ms": 0.00822216796875,
+            "min_ms": 0.00783984375
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.0085439453125,
+              "mean_ms": 0.008193543481045082,
+              "median_ms": 0.00822216796875,
+              "min_ms": 0.00783984375
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.0084169921875,
+              "mean_ms": 0.00807545946465164,
+              "median_ms": 0.00809423828125,
+              "min_ms": 0.0077431640625
+            }
+          },
+          "kernel_count": 366,
+          "kernel_family": "normalization",
+          "kernels_per_replay": {
+            "max": 6,
+            "mean": 6.0,
+            "min": 6
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.005535,
+            "mean_ms": 0.005198967213114754,
+            "median_ms": 0.005185,
+            "min_ms": 0.00496,
+            "total_trace_ms": 0.31713699999999995
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.00553466796875,
+            "mean_ms": 0.005199002625512295,
+            "median_ms": 0.0051845703125,
+            "min_ms": 0.0049599609375
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.00553466796875,
+              "mean_ms": 0.005199002625512295,
+              "median_ms": 0.0051845703125,
+              "min_ms": 0.0049599609375
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.00534375,
+              "mean_ms": 0.004975417840676229,
+              "median_ms": 0.00499169921875,
+              "min_ms": 0.00473681640625
+            }
+          },
+          "kernel_count": 183,
+          "kernel_family": "pytorch_elementwise",
+          "kernels_per_replay": {
+            "max": 3,
+            "mean": 3.0,
+            "min": 3
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.005056,
+            "mean_ms": 0.0047047377049180324,
+            "median_ms": 0.004704,
+            "min_ms": 0.004512,
+            "total_trace_ms": 0.2869889999999999
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.0050556640625,
+            "mean_ms": 0.004704725922131147,
+            "median_ms": 0.00470361328125,
+            "min_ms": 0.00451220703125
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.0050556640625,
+              "mean_ms": 0.004704725922131147,
+              "median_ms": 0.00470361328125,
+              "min_ms": 0.00451220703125
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.00486474609375,
+              "mean_ms": 0.004498439100922132,
+              "median_ms": 0.00447998046875,
+              "min_ms": 0.00422412109375
+            }
+          },
+          "kernel_count": 183,
+          "kernel_family": "cublas_splitk_reduce",
+          "kernels_per_replay": {
+            "max": 3,
+            "mean": 3.0,
+            "min": 3
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.001472,
+            "mean_ms": 0.0014054590163934423,
+            "median_ms": 0.001408,
+            "min_ms": 0.0013440000000000001,
+            "total_trace_ms": 0.08573300000000003
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.00147216796875,
+            "mean_ms": 0.0014055375896516393,
+            "median_ms": 0.001408203125,
+            "min_ms": 0.00134423828125
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.00147216796875,
+              "mean_ms": 0.0014055375896516393,
+              "median_ms": 0.001408203125,
+              "min_ms": 0.00134423828125
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.001408203125,
+              "mean_ms": 0.0013592629354508196,
+              "median_ms": 0.00134521484375,
+              "min_ms": 0.00131103515625
+            }
+          },
+          "kernel_count": 61,
+          "kernel_family": "trtllm_nvfp4_quantize",
+          "kernels_per_replay": {
+            "max": 1,
+            "mean": 1.0,
+            "min": 1
+          },
+          "replay_count": 61
+        },
+        {
+          "aggregate_kernel_time": {
+            "max_ms": 0.000992,
+            "mean_ms": 0.0008860983606557377,
+            "median_ms": 0.000896,
+            "min_ms": 0.0008629999999999999,
+            "total_trace_ms": 0.054051999999999975
+          },
+          "all_stream_wall_coverage": {
+            "max_ms": 0.0009921875,
+            "mean_ms": 0.0008860303534836066,
+            "median_ms": 0.00089599609375,
+            "min_ms": 0.00086279296875
+          },
+          "critical_path_exposure": {
+            "completion_stream_replay_counts": {
+              "13": 61
+            },
+            "completion_stream_serialized": {
+              "max_ms": 0.0009921875,
+              "mean_ms": 0.0008860303534836066,
+              "median_ms": 0.00089599609375,
+              "min_ms": 0.00086279296875
+            },
+            "exclusive_observed_wall": {
+              "max_ms": 0.0009921875,
+              "mean_ms": 0.0008860303534836066,
+              "median_ms": 0.00089599609375,
+              "min_ms": 0.00086279296875
+            }
+          },
+          "kernel_count": 61,
+          "kernel_family": "pytorch_copy",
+          "kernels_per_replay": {
+            "max": 1,
+            "mean": 1.0,
+            "min": 1
+          },
+          "replay_count": 61
+        }
+      ],
+      "replay_count": 61,
+      "span": {
+        "max_ms": 1.33927978515625,
+        "mean_ms": 1.0627202468621926,
+        "median_ms": 1.05751025390625,
+        "min_ms": 1.0425009765625
+      }
+    }
+  },
+  "artifact_type": "target_graph_gemm_attribution",
+  "completion_stream_replay_counts": {
+    "13": 61
+  },
+  "critical_path_semantics": {
+    "completion_stream_serialized": "union residency for the shape on the stream containing the terminal kernel of each replay",
+    "exclusive_observed_wall": "all-kernel interval union minus the interval union after the shape is removed; a conservative directly exposed wall-time measure",
+    "remeasurement_required": true
+  },
+  "full_cycle_start_to_start": {
+    "count": 60,
+    "max_ms": 21.90098779296875,
+    "mean_ms": 19.446433504231774,
+    "median_ms": 19.432881103515626,
+    "method": "selected_target_graph_start_to_start",
+    "min_ms": 17.91255517578125,
+    "samples_ms": [
+      21.22313818359375,
+      18.0723359375,
+      18.13460986328125,
+      21.07225390625,
+      20.19743701171875,
+      21.475083984375,
+      18.3256572265625,
+      20.17753271484375,
+      19.58535107421875,
+      19.48989111328125,
+      19.69236279296875,
+      18.142291015625,
+      21.0799970703125,
+      18.0310869140625,
+      19.80686328125,
+      20.210845703125,
+      19.14018310546875,
+      20.23817529296875,
+      18.01140576171875,
+      20.86731689453125,
+      18.14437109375,
+      19.587111328125,
+      19.48598779296875,
+      18.077328125,
+      21.276419921875,
+      18.06305615234375,
+      19.284091796875,
+      19.937908203125,
+      18.2876396484375,
+      21.17430517578125,
+      17.95457177734375,
+      19.432033203125,
+      21.90098779296875,
+      18.0446552734375,
+      20.93947998046875,
+      18.01489404296875,
+      20.92965576171875,
+      18.02577490234375,
+      19.7427001953125,
+      17.9639482421875,
+      17.99735791015625,
+      20.976921875,
+      17.9772919921875,
+      19.37782421875,
+      19.52185986328125,
+      18.24552685546875,
+      20.94360791015625,
+      17.99214208984375,
+      20.803794921875,
+      18.312537109375,
+      18.66077294921875,
+      20.92927197265625,
+      17.91255517578125,
+      19.3103330078125,
+      21.3493828125,
+      19.27650830078125,
+      19.43372900390625,
+      19.1095576171875,
+      21.48842822265625,
+      17.9258671875
+    ]
+  },
+  "graph_span": {
+    "max_ms": 17.61718408203125,
+    "mean_ms": 15.321986248078895,
+    "median_ms": 14.66098095703125,
+    "min_ms": 14.24090087890625
+  },
+  "graph_width": 3,
+  "launch_shapes": [
+    {
+      "aggregate_kernel_time": {
+        "max_ms": 5.5778,
+        "mean_ms": 4.211372196721311,
+        "median_ms": 4.068689,
+        "min_ms": 4.059126,
+        "total_trace_ms": 256.89370399999996
+      },
+      "all_stream_wall_coverage": {
+        "max_ms": 5.5778017578125,
+        "mean_ms": 4.211372150358606,
+        "median_ms": 4.06868994140625,
+        "min_ms": 4.05912646484375
+      },
+      "block": [
+        384,
+        1,
+        1
+      ],
+      "critical_path_exposure": {
+        "completion_stream_replay_counts": {
+          "13": 61
+        },
+        "completion_stream_serialized": {
+          "max_ms": 5.5778017578125,
+          "mean_ms": 4.211372150358606,
+          "median_ms": 4.06868994140625,
+          "min_ms": 4.05912646484375
+        },
+        "exclusive_observed_wall": {
+          "max_ms": 5.5505322265625,
+          "mean_ms": 4.184173732069672,
+          "median_ms": 4.04158740234375,
+          "min_ms": 4.03204345703125
+        }
+      },
+      "dynamic_shared_memory_bytes": 83968,
+      "grid": [
+        1,
+        170,
+        1
+      ],
+      "kernel_count": 3904,
+      "kernel_family": "cutlass_nvfp4_gemm",
+      "kernel_symbol_sha256": "e31bc6fdb1208547",
+      "kernel_variant": "cutlass_sm120_blockscaled",
+      "kernels_per_replay": {
+        "max": 64,
+        "mean": 64.0,
+        "min": 64
+      },
+      "launch_shape_id": "cutlass_nvfp4_gemm:e31bc6fdb1208547:grid=[1, 170, 1]:block=[384, 1, 1]",
+      "replay_count": 61
+    },
+    {
+      "aggregate_kernel_time": {
+        "max_ms": 4.106901,
+        "mean_ms": 2.8511877868852458,
+        "median_ms": 2.6392930000000003,
+        "min_ms": 2.630145,
+        "total_trace_ms": 173.92245500000007
+      },
+      "all_stream_wall_coverage": {
+        "max_ms": 4.106900390625,
+        "mean_ms": 2.8511878041752046,
+        "median_ms": 2.6392939453125,
+        "min_ms": 2.63014501953125
+      },
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "critical_path_exposure": {
+        "completion_stream_replay_counts": {
+          "13": 61
+        },
+        "completion_stream_serialized": {
+          "max_ms": 4.106900390625,
+          "mean_ms": 2.8511878041752046,
+          "median_ms": 2.6392939453125,
+          "min_ms": 2.63014501953125
+        },
+        "exclusive_observed_wall": {
+          "max_ms": 2.9724013671875,
+          "mean_ms": 1.6750059234118853,
+          "median_ms": 1.50812451171875,
+          "min_ms": 1.4779130859375
+        }
+      },
+      "dynamic_shared_memory_bytes": 30720,
+      "grid": [
+        1,
+        256,
+        1
+      ],
+      "kernel_count": 2928,
+      "kernel_family": "cublas_fp8_gemm",
+      "kernel_symbol_sha256": "aef6299e70018014",
+      "kernel_variant": "tilesize32x64x64_stage5",
+      "kernels_per_replay": {
+        "max": 48,
+        "mean": 48.0,
+        "min": 48
+      },
+      "launch_shape_id": "cublas_fp8_gemm:aef6299e70018014:grid=[1, 256, 1]:block=[128, 1, 1]",
+      "replay_count": 61
+    },
+    {
+      "aggregate_kernel_time": {
+        "max_ms": 3.349373,
+        "mean_ms": 2.328159754098361,
+        "median_ms": 2.21009,
+        "min_ms": 2.1942579999999996,
+        "total_trace_ms": 142.01774500000002
+      },
+      "all_stream_wall_coverage": {
+        "max_ms": 3.349375,
+        "mean_ms": 2.3281597960425207,
+        "median_ms": 2.21009130859375,
+        "min_ms": 2.1942568359375
+      },
+      "block": [
+        384,
+        1,
+        1
+      ],
+      "critical_path_exposure": {
+        "completion_stream_replay_counts": {
+          "13": 61
+        },
+        "completion_stream_serialized": {
+          "max_ms": 3.349375,
+          "mean_ms": 2.3281597960425207,
+          "median_ms": 2.21009130859375,
+          "min_ms": 2.1942568359375
+        },
+        "exclusive_observed_wall": {
+          "max_ms": 3.31408642578125,
+          "mean_ms": 2.2937934890496927,
+          "median_ms": 2.17569677734375,
+          "min_ms": 2.1608466796875
+        }
+      },
+      "dynamic_shared_memory_bytes": 83968,
+      "grid": [
+        1,
+        40,
+        1
+      ],
+      "kernel_count": 3904,
+      "kernel_family": "cutlass_nvfp4_gemm",
+      "kernel_symbol_sha256": "e31bc6fdb1208547",
+      "kernel_variant": "cutlass_sm120_blockscaled",
+      "kernels_per_replay": {
+        "max": 64,
+        "mean": 64.0,
+        "min": 64
+      },
+      "launch_shape_id": "cutlass_nvfp4_gemm:e31bc6fdb1208547:grid=[1, 40, 1]:block=[384, 1, 1]",
+      "replay_count": 61
+    },
+    {
+      "aggregate_kernel_time": {
+        "max_ms": 2.4657509999999996,
+        "mean_ms": 1.4835792295081967,
+        "median_ms": 1.444532,
+        "min_ms": 1.4363679999999999,
+        "total_trace_ms": 90.49833300000002
+      },
+      "all_stream_wall_coverage": {
+        "max_ms": 2.46575244140625,
+        "mean_ms": 1.4835794937884221,
+        "median_ms": 1.444533203125,
+        "min_ms": 1.43636865234375
+      },
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "critical_path_exposure": {
+        "completion_stream_replay_counts": {
+          "13": 61
+        },
+        "completion_stream_serialized": {
+          "max_ms": 2.46575244140625,
+          "mean_ms": 1.4835794937884221,
+          "median_ms": 1.444533203125,
+          "min_ms": 1.43636865234375
+        },
+        "exclusive_observed_wall": {
+          "max_ms": 2.46575244140625,
+          "mean_ms": 1.4835794937884221,
+          "median_ms": 1.444533203125,
+          "min_ms": 1.43636865234375
+        }
+      },
+      "dynamic_shared_memory_bytes": 30720,
+      "grid": [
+        1,
+        80,
+        3
+      ],
+      "kernel_count": 3904,
+      "kernel_family": "cublas_fp8_gemm",
+      "kernel_symbol_sha256": "aef6299e70018014",
+      "kernel_variant": "tilesize32x64x64_stage5",
+      "kernels_per_replay": {
+        "max": 64,
+        "mean": 64.0,
+        "min": 64
+      },
+      "launch_shape_id": "cublas_fp8_gemm:aef6299e70018014:grid=[1, 80, 3]:block=[128, 1, 1]",
+      "replay_count": 61
+    },
+    {
+      "aggregate_kernel_time": {
+        "max_ms": 1.922214,
+        "mean_ms": 0.946351950819672,
+        "median_ms": 0.902018,
+        "min_ms": 0.8916499999999999,
+        "total_trace_ms": 57.72746900000001
+      },
+      "all_stream_wall_coverage": {
+        "max_ms": 1.92221337890625,
+        "mean_ms": 0.9463518586705943,
+        "median_ms": 0.90201904296875,
+        "min_ms": 0.891650390625
+      },
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "critical_path_exposure": {
+        "completion_stream_replay_counts": {
+          "13": 61
+        },
+        "completion_stream_serialized": {
+          "max_ms": 1.92221337890625,
+          "mean_ms": 0.9463518586705943,
+          "median_ms": 0.90201904296875,
+          "min_ms": 0.891650390625
+        },
+        "exclusive_observed_wall": {
+          "max_ms": 1.92221337890625,
+          "mean_ms": 0.9463518586705943,
+          "median_ms": 0.90201904296875,
+          "min_ms": 0.891650390625
+        }
+      },
+      "dynamic_shared_memory_bytes": 49152,
+      "grid": [
+        1,
+        112,
+        6
+      ],
+      "kernel_count": 976,
+      "kernel_family": "cublas_fp8_gemm",
+      "kernel_symbol_sha256": "900ea718f3290ebd",
+      "kernel_variant": "tilesize64x128x64_stage4",
+      "kernels_per_replay": {
+        "max": 16,
+        "mean": 16.0,
+        "min": 16
+      },
+      "launch_shape_id": "cublas_fp8_gemm:900ea718f3290ebd:grid=[1, 112, 6]:block=[128, 1, 1]",
+      "replay_count": 61
+    },
+    {
+      "aggregate_kernel_time": {
+        "max_ms": 1.46549,
+        "mean_ms": 0.7261431475409836,
+        "median_ms": 0.690843,
+        "min_ms": 0.68329,
+        "total_trace_ms": 44.29473199999998
+      },
+      "all_stream_wall_coverage": {
+        "max_ms": 1.465490234375,
+        "mean_ms": 0.7261429623463115,
+        "median_ms": 0.69084423828125,
+        "min_ms": 0.68328857421875
+      },
+      "block": [
+        32,
+        1,
+        1
+      ],
+      "critical_path_exposure": {
+        "completion_stream_replay_counts": {
+          "13": 61
+        },
+        "completion_stream_serialized": {
+          "max_ms": 0.0,
+          "mean_ms": 0.0,
+          "median_ms": 0.0,
+          "min_ms": 0.0
+        },
+        "exclusive_observed_wall": {
+          "max_ms": 9.716796875e-05,
+          "mean_ms": 8.127081198770491e-05,
+          "median_ms": 9.521484375e-05,
+          "min_ms": 6.25e-05
+        }
+      },
+      "dynamic_shared_memory_bytes": 16896,
+      "grid": [
+        8,
+        1,
+        16
+      ],
+      "kernel_count": 2928,
+      "kernel_family": "cutlass_bf16_gemm",
+      "kernel_symbol_sha256": "bd8cfc5f041eaf90",
+      "kernel_variant": "cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x2_tn_align8",
+      "kernels_per_replay": {
+        "max": 48,
+        "mean": 48.0,
+        "min": 48
+      },
+      "launch_shape_id": "cutlass_bf16_gemm:bd8cfc5f041eaf90:grid=[8, 1, 16]:block=[32, 1, 1]",
+      "replay_count": 61
+    },
+    {
+      "aggregate_kernel_time": {
+        "max_ms": 1.676285,
+        "mean_ms": 0.5393979180327869,
+        "median_ms": 0.47646499999999997,
+        "min_ms": 0.458449,
+        "total_trace_ms": 32.903273
+      },
+      "all_stream_wall_coverage": {
+        "max_ms": 1.67628515625,
+        "mean_ms": 0.539397925204918,
+        "median_ms": 0.47646484375,
+        "min_ms": 0.45844921875
+      },
+      "block": [
+        384,
+        1,
+        1
+      ],
+      "critical_path_exposure": {
+        "completion_stream_replay_counts": {
+          "13": 61
+        },
+        "completion_stream_serialized": {
+          "max_ms": 1.67628515625,
+          "mean_ms": 0.539397925204918,
+          "median_ms": 0.47646484375,
+          "min_ms": 0.45844921875
+        },
+        "exclusive_observed_wall": {
+          "max_ms": 1.67622119140625,
+          "mean_ms": 0.5392121141777664,
+          "median_ms": 0.4762412109375,
+          "min_ms": 0.45822509765625
+        }
+      },
+      "dynamic_shared_memory_bytes": 83968,
+      "grid": [
+        170,
+        1,
+        1
+      ],
+      "kernel_count": 61,
+      "kernel_family": "cutlass_nvfp4_gemm",
+      "kernel_symbol_sha256": "2c28cdb73c2a076b",
+      "kernel_variant": "cutlass_sm120_blockscaled",
+      "kernels_per_replay": {
+        "max": 1,
+        "mean": 1.0,
+        "min": 1
+      },
+      "launch_shape_id": "cutlass_nvfp4_gemm:2c28cdb73c2a076b:grid=[170, 1, 1]:block=[384, 1, 1]",
+      "replay_count": 61
+    }
+  ],
+  "model_config": "C:\\Users\\Daniel\\models\\Qwen3.8-27B-NVFP4-RadixArk\\config.json",
+  "model_config_sha256": "7ff41ec6f96ad50efea3c92751cd261b63839d39936eb6e6ffc9066db8672740",
+  "qwen35_model_role_attribution": {
+    "all_primary_gemms": {
+      "aggregate_kernel_time": {
+        "max_ms": 14.765023,
+        "mean_ms": 13.086191983606557,
+        "median_ms": 12.717357,
+        "min_ms": 12.381759,
+        "total_trace_ms": 798.257711
+      },
+      "all_stream_wall_coverage": {
+        "max_ms": 13.70385546875,
+        "mean_ms": 12.360362200627561,
+        "median_ms": 12.032083984375,
+        "min_ms": 11.69431103515625
+      },
+      "critical_path_exposure": {
+        "completion_stream_replay_counts": {
+          "13": 61
+        },
+        "completion_stream_serialized": {
+          "max_ms": 13.7035673828125,
+          "mean_ms": 12.360049028240265,
+          "median_ms": 12.031828125,
+          "min_ms": 11.69405517578125
+        },
+        "exclusive_observed_wall": {
+          "max_ms": 13.18303369140625,
+          "mean_ms": 11.821001360783812,
+          "median_ms": 11.49042236328125,
+          "min_ms": 11.15006201171875
+        }
+      },
+      "kernel_count": 18605,
+      "kernels_per_replay": {
+        "max": 305,
+        "mean": 305.0,
+        "min": 305
+      },
+      "replay_count": 61
+    },
+    "by_model_role": [
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 5.5778,
+          "mean_ms": 4.211372196721311,
+          "median_ms": 4.068689,
+          "min_ms": 4.059126,
+          "total_trace_ms": 256.89370399999996
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 5.5778017578125,
+          "mean_ms": 4.211372150358606,
+          "median_ms": 4.06868994140625,
+          "min_ms": 4.05912646484375
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 5.5778017578125,
+            "mean_ms": 4.211372150358606,
+            "median_ms": 4.06868994140625,
+            "min_ms": 4.05912646484375
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 5.5505322265625,
+            "mean_ms": 4.184173732069672,
+            "median_ms": 4.04158740234375,
+            "min_ms": 4.03204345703125
+          }
+        },
+        "kernel_count": 3904,
+        "kernels_per_replay": {
+          "max": 64,
+          "mean": 64.0,
+          "min": 64
+        },
+        "launch_shape_ids": [
+          "cutlass_nvfp4_gemm:e31bc6fdb1208547:grid=[1, 170, 1]:block=[384, 1, 1]"
+        ],
+        "layers_per_replay": 64,
+        "model_role": "mlp.gate_up_proj",
+        "problem_shapes_mnk": [
+          {
+            "k": 5120,
+            "m": 3,
+            "n": 34816
+          }
+        ],
+        "replay_count": 61
+      },
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 4.106901,
+          "mean_ms": 2.8511877868852458,
+          "median_ms": 2.6392930000000003,
+          "min_ms": 2.630145,
+          "total_trace_ms": 173.92245500000007
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 4.106900390625,
+          "mean_ms": 2.8511878041752046,
+          "median_ms": 2.6392939453125,
+          "min_ms": 2.63014501953125
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 4.106900390625,
+            "mean_ms": 2.8511878041752046,
+            "median_ms": 2.6392939453125,
+            "min_ms": 2.63014501953125
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 2.9724013671875,
+            "mean_ms": 1.6750059234118853,
+            "median_ms": 1.50812451171875,
+            "min_ms": 1.4779130859375
+          }
+        },
+        "kernel_count": 2928,
+        "kernels_per_replay": {
+          "max": 48,
+          "mean": 48.0,
+          "min": 48
+        },
+        "launch_shape_ids": [
+          "cublas_fp8_gemm:aef6299e70018014:grid=[1, 256, 1]:block=[128, 1, 1]"
+        ],
+        "layers_per_replay": 48,
+        "model_role": "linear_attention.in_proj_qkvz",
+        "problem_shapes_mnk": [
+          {
+            "k": 5120,
+            "m": 3,
+            "n": 16384
+          }
+        ],
+        "replay_count": 61
+      },
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 3.349373,
+          "mean_ms": 2.328159754098361,
+          "median_ms": 2.21009,
+          "min_ms": 2.1942579999999996,
+          "total_trace_ms": 142.01774500000002
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 3.349375,
+          "mean_ms": 2.3281597960425207,
+          "median_ms": 2.21009130859375,
+          "min_ms": 2.1942568359375
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 3.349375,
+            "mean_ms": 2.3281597960425207,
+            "median_ms": 2.21009130859375,
+            "min_ms": 2.1942568359375
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 3.31408642578125,
+            "mean_ms": 2.2937934890496927,
+            "median_ms": 2.17569677734375,
+            "min_ms": 2.1608466796875
+          }
+        },
+        "kernel_count": 3904,
+        "kernels_per_replay": {
+          "max": 64,
+          "mean": 64.0,
+          "min": 64
+        },
+        "launch_shape_ids": [
+          "cutlass_nvfp4_gemm:e31bc6fdb1208547:grid=[1, 40, 1]:block=[384, 1, 1]"
+        ],
+        "layers_per_replay": 64,
+        "model_role": "mlp.down_proj",
+        "problem_shapes_mnk": [
+          {
+            "k": 17408,
+            "m": 3,
+            "n": 5120
+          }
+        ],
+        "replay_count": 61
+      },
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 2.107978,
+          "mean_ms": 1.1235845409836067,
+          "median_ms": 1.084362,
+          "min_ms": 1.0778599999999998,
+          "total_trace_ms": 68.538657
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 2.10797900390625,
+          "mean_ms": 1.1235848568775615,
+          "median_ms": 1.08436328125,
+          "min_ms": 1.077859375
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 2.10797900390625,
+            "mean_ms": 1.1235848568775615,
+            "median_ms": 1.08436328125,
+            "min_ms": 1.077859375
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 2.10797900390625,
+            "mean_ms": 1.1235848568775615,
+            "median_ms": 1.08436328125,
+            "min_ms": 1.077859375
+          }
+        },
+        "kernel_count": 2928,
+        "kernels_per_replay": {
+          "max": 48,
+          "mean": 48.0,
+          "min": 48
+        },
+        "launch_shape_ids": [
+          "cublas_fp8_gemm:aef6299e70018014:grid=[1, 80, 3]:block=[128, 1, 1]"
+        ],
+        "layers_per_replay": 48,
+        "model_role": "linear_attention.out_proj",
+        "problem_shapes_mnk": [
+          {
+            "k": 6144,
+            "m": 3,
+            "n": 5120
+          }
+        ],
+        "replay_count": 61
+      },
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 1.922214,
+          "mean_ms": 0.946351950819672,
+          "median_ms": 0.902018,
+          "min_ms": 0.8916499999999999,
+          "total_trace_ms": 57.72746900000001
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 1.92221337890625,
+          "mean_ms": 0.9463518586705943,
+          "median_ms": 0.90201904296875,
+          "min_ms": 0.891650390625
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 1.92221337890625,
+            "mean_ms": 0.9463518586705943,
+            "median_ms": 0.90201904296875,
+            "min_ms": 0.891650390625
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 1.92221337890625,
+            "mean_ms": 0.9463518586705943,
+            "median_ms": 0.90201904296875,
+            "min_ms": 0.891650390625
+          }
+        },
+        "kernel_count": 976,
+        "kernels_per_replay": {
+          "max": 16,
+          "mean": 16.0,
+          "min": 16
+        },
+        "launch_shape_ids": [
+          "cublas_fp8_gemm:900ea718f3290ebd:grid=[1, 112, 6]:block=[128, 1, 1]"
+        ],
+        "layers_per_replay": 16,
+        "model_role": "full_attention.qkv_proj",
+        "problem_shapes_mnk": [
+          {
+            "k": 5120,
+            "m": 3,
+            "n": 8192
+          }
+        ],
+        "replay_count": 61
+      },
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 1.46549,
+          "mean_ms": 0.7261431475409836,
+          "median_ms": 0.690843,
+          "min_ms": 0.68329,
+          "total_trace_ms": 44.29473199999998
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 1.465490234375,
+          "mean_ms": 0.7261429623463115,
+          "median_ms": 0.69084423828125,
+          "min_ms": 0.68328857421875
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 0.0,
+            "mean_ms": 0.0,
+            "median_ms": 0.0,
+            "min_ms": 0.0
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 9.716796875e-05,
+            "mean_ms": 8.127081198770491e-05,
+            "median_ms": 9.521484375e-05,
+            "min_ms": 6.25e-05
+          }
+        },
+        "kernel_count": 2928,
+        "kernels_per_replay": {
+          "max": 48,
+          "mean": 48.0,
+          "min": 48
+        },
+        "launch_shape_ids": [
+          "cutlass_bf16_gemm:bd8cfc5f041eaf90:grid=[8, 1, 16]:block=[32, 1, 1]"
+        ],
+        "layers_per_replay": 48,
+        "model_role": "linear_attention.in_proj_ba",
+        "problem_shapes_mnk": [
+          {
+            "k": 5120,
+            "m": 3,
+            "n": 96
+          }
+        ],
+        "replay_count": 61
+      },
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 1.676285,
+          "mean_ms": 0.5393979180327869,
+          "median_ms": 0.47646499999999997,
+          "min_ms": 0.458449,
+          "total_trace_ms": 32.903273
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 1.67628515625,
+          "mean_ms": 0.539397925204918,
+          "median_ms": 0.47646484375,
+          "min_ms": 0.45844921875
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 1.67628515625,
+            "mean_ms": 0.539397925204918,
+            "median_ms": 0.47646484375,
+            "min_ms": 0.45844921875
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 1.67622119140625,
+            "mean_ms": 0.5392121141777664,
+            "median_ms": 0.4762412109375,
+            "min_ms": 0.45822509765625
+          }
+        },
+        "kernel_count": 61,
+        "kernels_per_replay": {
+          "max": 1,
+          "mean": 1.0,
+          "min": 1
+        },
+        "launch_shape_ids": [
+          "cutlass_nvfp4_gemm:2c28cdb73c2a076b:grid=[170, 1, 1]:block=[384, 1, 1]"
+        ],
+        "layers_per_replay": 1,
+        "model_role": "lm_head",
+        "problem_shapes_mnk": [
+          {
+            "k": 5120,
+            "m": 3,
+            "n": 248320
+          }
+        ],
+        "replay_count": 61
+      },
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 0.362956,
+          "mean_ms": 0.35999468852459016,
+          "median_ms": 0.359917,
+          "min_ms": 0.35777299999999995,
+          "total_trace_ms": 21.959675999999998
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 0.3629560546875,
+          "mean_ms": 0.35999463691086064,
+          "median_ms": 0.3599169921875,
+          "min_ms": 0.3577724609375
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 0.3629560546875,
+            "mean_ms": 0.35999463691086064,
+            "median_ms": 0.3599169921875,
+            "min_ms": 0.3577724609375
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 0.3629560546875,
+            "mean_ms": 0.35999463691086064,
+            "median_ms": 0.3599169921875,
+            "min_ms": 0.3577724609375
+          }
+        },
+        "kernel_count": 976,
+        "kernels_per_replay": {
+          "max": 16,
+          "mean": 16.0,
+          "min": 16
+        },
+        "launch_shape_ids": [
+          "cublas_fp8_gemm:aef6299e70018014:grid=[1, 80, 3]:block=[128, 1, 1]"
+        ],
+        "layers_per_replay": 16,
+        "model_role": "full_attention.o_proj",
+        "problem_shapes_mnk": [
+          {
+            "k": 6144,
+            "m": 3,
+            "n": 5120
+          }
+        ],
+        "replay_count": 61
+      }
+    ],
+    "by_problem_shape": [
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 5.5778,
+          "mean_ms": 4.211372196721311,
+          "median_ms": 4.068689,
+          "min_ms": 4.059126,
+          "total_trace_ms": 256.89370399999996
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 5.5778017578125,
+          "mean_ms": 4.211372150358606,
+          "median_ms": 4.06868994140625,
+          "min_ms": 4.05912646484375
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 5.5778017578125,
+            "mean_ms": 4.211372150358606,
+            "median_ms": 4.06868994140625,
+            "min_ms": 4.05912646484375
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 5.5505322265625,
+            "mean_ms": 4.184173732069672,
+            "median_ms": 4.04158740234375,
+            "min_ms": 4.03204345703125
+          }
+        },
+        "family_group": "nvfp4",
+        "k": 5120,
+        "kernel_count": 3904,
+        "kernels_per_replay": {
+          "max": 64,
+          "mean": 64.0,
+          "min": 64
+        },
+        "m": 3,
+        "model_roles": [
+          "mlp.gate_up_proj"
+        ],
+        "n": 34816,
+        "occurrences_per_replay": 64,
+        "replay_count": 61
+      },
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 4.106901,
+          "mean_ms": 2.8511877868852458,
+          "median_ms": 2.6392930000000003,
+          "min_ms": 2.630145,
+          "total_trace_ms": 173.92245500000007
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 4.106900390625,
+          "mean_ms": 2.8511878041752046,
+          "median_ms": 2.6392939453125,
+          "min_ms": 2.63014501953125
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 4.106900390625,
+            "mean_ms": 2.8511878041752046,
+            "median_ms": 2.6392939453125,
+            "min_ms": 2.63014501953125
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 2.9724013671875,
+            "mean_ms": 1.6750059234118853,
+            "median_ms": 1.50812451171875,
+            "min_ms": 1.4779130859375
+          }
+        },
+        "family_group": "fp8",
+        "k": 5120,
+        "kernel_count": 2928,
+        "kernels_per_replay": {
+          "max": 48,
+          "mean": 48.0,
+          "min": 48
+        },
+        "m": 3,
+        "model_roles": [
+          "linear_attention.in_proj_qkvz"
+        ],
+        "n": 16384,
+        "occurrences_per_replay": 48,
+        "replay_count": 61
+      },
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 3.349373,
+          "mean_ms": 2.328159754098361,
+          "median_ms": 2.21009,
+          "min_ms": 2.1942579999999996,
+          "total_trace_ms": 142.01774500000002
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 3.349375,
+          "mean_ms": 2.3281597960425207,
+          "median_ms": 2.21009130859375,
+          "min_ms": 2.1942568359375
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 3.349375,
+            "mean_ms": 2.3281597960425207,
+            "median_ms": 2.21009130859375,
+            "min_ms": 2.1942568359375
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 3.31408642578125,
+            "mean_ms": 2.2937934890496927,
+            "median_ms": 2.17569677734375,
+            "min_ms": 2.1608466796875
+          }
+        },
+        "family_group": "nvfp4",
+        "k": 17408,
+        "kernel_count": 3904,
+        "kernels_per_replay": {
+          "max": 64,
+          "mean": 64.0,
+          "min": 64
+        },
+        "m": 3,
+        "model_roles": [
+          "mlp.down_proj"
+        ],
+        "n": 5120,
+        "occurrences_per_replay": 64,
+        "replay_count": 61
+      },
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 2.4657509999999996,
+          "mean_ms": 1.4835792295081967,
+          "median_ms": 1.444532,
+          "min_ms": 1.4363679999999999,
+          "total_trace_ms": 90.49833300000002
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 2.46575244140625,
+          "mean_ms": 1.4835794937884221,
+          "median_ms": 1.444533203125,
+          "min_ms": 1.43636865234375
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 2.46575244140625,
+            "mean_ms": 1.4835794937884221,
+            "median_ms": 1.444533203125,
+            "min_ms": 1.43636865234375
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 2.46575244140625,
+            "mean_ms": 1.4835794937884221,
+            "median_ms": 1.444533203125,
+            "min_ms": 1.43636865234375
+          }
+        },
+        "family_group": "fp8",
+        "k": 6144,
+        "kernel_count": 3904,
+        "kernels_per_replay": {
+          "max": 64,
+          "mean": 64.0,
+          "min": 64
+        },
+        "m": 3,
+        "model_roles": [
+          "full_attention.o_proj",
+          "linear_attention.out_proj"
+        ],
+        "n": 5120,
+        "occurrences_per_replay": 64,
+        "replay_count": 61
+      },
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 1.922214,
+          "mean_ms": 0.946351950819672,
+          "median_ms": 0.902018,
+          "min_ms": 0.8916499999999999,
+          "total_trace_ms": 57.72746900000001
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 1.92221337890625,
+          "mean_ms": 0.9463518586705943,
+          "median_ms": 0.90201904296875,
+          "min_ms": 0.891650390625
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 1.92221337890625,
+            "mean_ms": 0.9463518586705943,
+            "median_ms": 0.90201904296875,
+            "min_ms": 0.891650390625
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 1.92221337890625,
+            "mean_ms": 0.9463518586705943,
+            "median_ms": 0.90201904296875,
+            "min_ms": 0.891650390625
+          }
+        },
+        "family_group": "fp8",
+        "k": 5120,
+        "kernel_count": 976,
+        "kernels_per_replay": {
+          "max": 16,
+          "mean": 16.0,
+          "min": 16
+        },
+        "m": 3,
+        "model_roles": [
+          "full_attention.qkv_proj"
+        ],
+        "n": 8192,
+        "occurrences_per_replay": 16,
+        "replay_count": 61
+      },
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 1.46549,
+          "mean_ms": 0.7261431475409836,
+          "median_ms": 0.690843,
+          "min_ms": 0.68329,
+          "total_trace_ms": 44.29473199999998
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 1.465490234375,
+          "mean_ms": 0.7261429623463115,
+          "median_ms": 0.69084423828125,
+          "min_ms": 0.68328857421875
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 0.0,
+            "mean_ms": 0.0,
+            "median_ms": 0.0,
+            "min_ms": 0.0
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 9.716796875e-05,
+            "mean_ms": 8.127081198770491e-05,
+            "median_ms": 9.521484375e-05,
+            "min_ms": 6.25e-05
+          }
+        },
+        "family_group": "bf16",
+        "k": 5120,
+        "kernel_count": 2928,
+        "kernels_per_replay": {
+          "max": 48,
+          "mean": 48.0,
+          "min": 48
+        },
+        "m": 3,
+        "model_roles": [
+          "linear_attention.in_proj_ba"
+        ],
+        "n": 96,
+        "occurrences_per_replay": 48,
+        "replay_count": 61
+      },
+      {
+        "aggregate_kernel_time": {
+          "max_ms": 1.676285,
+          "mean_ms": 0.5393979180327869,
+          "median_ms": 0.47646499999999997,
+          "min_ms": 0.458449,
+          "total_trace_ms": 32.903273
+        },
+        "all_stream_wall_coverage": {
+          "max_ms": 1.67628515625,
+          "mean_ms": 0.539397925204918,
+          "median_ms": 0.47646484375,
+          "min_ms": 0.45844921875
+        },
+        "critical_path_exposure": {
+          "completion_stream_replay_counts": {
+            "13": 61
+          },
+          "completion_stream_serialized": {
+            "max_ms": 1.67628515625,
+            "mean_ms": 0.539397925204918,
+            "median_ms": 0.47646484375,
+            "min_ms": 0.45844921875
+          },
+          "exclusive_observed_wall": {
+            "max_ms": 1.67622119140625,
+            "mean_ms": 0.5392121141777664,
+            "median_ms": 0.4762412109375,
+            "min_ms": 0.45822509765625
+          }
+        },
+        "family_group": "nvfp4",
+        "k": 5120,
+        "kernel_count": 61,
+        "kernels_per_replay": {
+          "max": 1,
+          "mean": 1.0,
+          "min": 1
+        },
+        "m": 3,
+        "model_roles": [
+          "lm_head"
+        ],
+        "n": 248320,
+        "occurrences_per_replay": 1,
+        "replay_count": 61
+      }
+    ],
+    "expected_primary_gemms_per_replay": {
+      "bf16": 48,
+      "fp8": 128,
+      "nvfp4": 129
+    },
+    "matching_rule": "ordered Qwen3.5 projection contract matched independently within each primary GEMM family group on every replay",
+    "observed_primary_gemms_per_replay": [
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      },
+      {
+        "bf16": 48,
+        "fp8": 128,
+        "nvfp4": 129
+      }
+    ],
+    "status": "exact"
+  },
+  "replay_count": 61,
+  "schema_version": 1,
+  "selected_graph_id": 2,
+  "tensor_parallel_size": 1,
+  "trace": "benchmark\\windows\\profiles\\target_width_m3-20260817-000307\\target_width_m3-1786950187.0744395-TP-0.trace.json.gz",
+  "trace_sha256": "01a113fa2e8aed1bee57a15fd3b02a718afafd712504722dd295233a1a694e92"
+}

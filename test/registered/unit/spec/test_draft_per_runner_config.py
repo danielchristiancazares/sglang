@@ -8,10 +8,12 @@ its load format is `--speculative-draft-load-format`, and both are consumed by
 one constructor each — so they travel as arguments to the runner that owns them.
 """
 
+import os
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from sglang.srt.managers.scheduler import Scheduler
+from sglang.srt.managers.scheduler import Scheduler, _torch_compile_startup_mode
 from sglang.srt.model_executor.model_runner import (
     ModelRunner,
     resolve_draft_attention_backend,
@@ -208,6 +210,48 @@ class TestDraftPerRunnerConfig(CustomTestCase):
         self.assertIs(seen["worker"], server_args)
         self.assertEqual(seen["published_while_building"], "auto")
         self.assertIs(get_context().server_args, server_args)
+
+    def test_startup_records_active_worker_and_resolved_compile_mode(self):
+        server_args = self._seed(
+            speculative_algorithm="EAGLE",
+            load_format="auto",
+            enable_torch_compile=True,
+        )
+
+        class ActiveWorker:
+            def __init__(self, **_kwargs):
+                pass
+
+        scheduler = self._scheduler(server_args, lambda _args: ActiveWorker)
+        with (
+            patch.dict(os.environ, {"SGLANG_TORCH_COMPILE_MODE": "default"}),
+            self.assertLogs("sglang.srt.managers.scheduler", level="INFO") as logs,
+        ):
+            scheduler.maybe_init_draft_worker()
+
+        startup = "\n".join(logs.output)
+        worker_name = f"{ActiveWorker.__module__}.{ActiveWorker.__qualname__}"
+        self.assertIn(f"requested_worker={worker_name}", startup)
+        self.assertIn(f"active_worker={worker_name}", startup)
+        self.assertIn("torch_compile_enabled=True", startup)
+        self.assertIn("torch_compile_mode=default", startup)
+
+    def test_disabled_compile_mode_is_explicit(self):
+        server_args = SimpleNamespace(enable_torch_compile=False)
+        with patch.dict(
+            os.environ,
+            {"SGLANG_TORCH_COMPILE_MODE": "max-autotune-no-cudagraphs"},
+        ):
+            self.assertEqual(_torch_compile_startup_mode(server_args), "disabled")
+
+    def test_enabled_compile_mode_uses_the_wrapper_default(self):
+        server_args = SimpleNamespace(enable_torch_compile=True)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SGLANG_TORCH_COMPILE_MODE", None)
+            self.assertEqual(
+                _torch_compile_startup_mode(server_args),
+                "max-autotune-no-cudagraphs",
+            )
 
 
 if __name__ == "__main__":

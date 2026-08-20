@@ -5,7 +5,26 @@ Qwen3.8 production line. A comparable result records the request shape, server
 mode, cache treatment, sampling profile, graph state, GPU environment, and
 resolved launcher arguments.
 
-**Reconciled through:** 2026-08-16 23:11 PDT.
+**Reconciled through:** 2026-08-20 08:17 PDT.
+
+## Primary performance scoreboard
+
+The user-selected headline workload is the exact near-limit `199000+16`
+request in the real 200K context and token pools. The current record to beat is
+the selective target-NVFP4 checkpoint at **2838.980 prompt tok/s** and
+**107.253 generation tok/s**, with **70.096 s TTFT**, **70.235 s** end to end,
+exactly `199016` completed tokens, and `finish_reason=length`.
+
+The current active milestone is **3000 prompt tok/s** and **110 generation
+tok/s** on the same exact request, corresponding to **TTFT <=66.33 s** and
+**end-to-end time <=66.5 s**. The milestone requires both throughput targets
+in one successful `199016`-token run.
+
+A new overall record completes the same workload and exceeds both headline
+throughput values under a matched environment record. This single-run
+scoreboard is distinct from production qualification, which still requires
+the behavior, repeated-sampling, capacity, relaunch, and client gates below.
+The compact scoreboard is [`../BENCHMARK.md`](../BENCHMARK.md).
 
 ## Qualified reference
 
@@ -50,13 +69,19 @@ temperature, free VRAM, listener, process tree, and competing WDDM clients.
 | Sampled profile | Temperature `1.0`, top-p `0.95`, top-k `20`, presence `1.5` | Match the selected Qwen reasoning workload |
 | Native acceptance | `bench_spec_acceptance.py` under sampled production settings | Pair TPS with emitted/accepted length, proposal counts, histograms, and verify cycles |
 | Long ladder | `32768/16`, `32768/512`, `65536/16` | Catch prefill, residency, repeated-request, and long-decode regressions |
-| Capacity gate | `199000/16` | Prove exact total `199016` inside the selected 200K pool |
+| Primary scoreboard and capacity gate | `199000/16` | Rank near-limit prompt/generation throughput and prove exact total `199016` inside the selected 200K pool |
 | Real client | Standalone OpenCode2 with fixed provider/workload | Final reasoning, tool continuity, queue, parser, and wall-time integration |
 
 `6213` input tokens come from the calibrated local OpenCode-shaped fixture in
 [`../benchmark/windows/qwen38_local_prompt.json`](../benchmark/windows/qwen38_local_prompt.json).
 
 ## Standard commands
+
+Primary 200K scoreboard:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600
+```
 
 Greedy current-shape control:
 
@@ -87,12 +112,6 @@ Native speculative acceptance counters:
 ```
 
 Add `--disable-thinking` to take the matching non-thinking acceptance probe.
-
-Near-limit capacity:
-
-```powershell
-.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600
-```
 
 For deterministic linear fixed-work attribution, launch
 `serve_qwen38_27b_nvfp4_5090.ps1 -SimulateAcceptedLength 3`. That server is an
@@ -177,6 +196,35 @@ measurement contract adds these requirements:
 - run that accepted-path comparison on both eager and captured/device-cycle
   execution. A plausible response or matching token count does not substitute
   for state parity.
+
+Proposal-geometry replay uses an immutable branch-exact corpus. Record child
+and parent IDs, token IDs, depth, branch rank, post-transform target `p`, draft
+`q`, branch-local counts and penalties, active worker, compile mode, topology
+hash, and raw full-cycle device samples. A selected-tree capture qualifies only
+the observed current membership. Every aligned, calibrated, variable-fanout,
+SWOR, confidence-gated, or target-aware counterfactual fails closed when its
+required proposal-lattice node or support is absent.
+
+Aggregate geometry throughput as:
+
+```text
+TPS = 1000 * sum(E[L] per cycle) / sum(full-cycle milliseconds)
+```
+
+Never average per-cycle TPS ratios. A geometry candidate's conservative lower
+TPS must strictly exceed the explicitly measured frontier's best-case upper
+TPS. Reject a family when its impossible target-aware upper bound cannot exceed
+**200 TPS**. Fund a production implementation only when a complete-lattice,
+implementable policy retains a conservative lower projection of at least
+**215 TPS**.
+
+Target-graph attribution records exact mathematical GEMM `M,N,K`, aggregate
+kernel residency, all-stream wall coverage, terminal-stream serialized
+residency, and exclusive observed-wall exposure per shape. Overlapping kernel
+time may exceed graph wall time; every optimized graph requires device-cycle
+remeasurement. Graph-tail implementation work additionally requires at least
+**0.75 ms** of repeatable recoverable time from asynchronous CUDA-event
+timestamps.
 
 Linear `SimulateAcceptedLength` produces contiguous accepted indices and does
 not represent tree ancestry. Tree fixed-work and recurrent-state validation

@@ -606,7 +606,17 @@ class EAGLEDraftExtendCudaGraphRunner(DecodeCudaGraphRunner):
                     "captured batch without padding"
                 )
             return None
-        with device_timer_ctx(self.model_runner.device_timer, "eagle_draft_extend"):
+        graph_gap_probe = getattr(
+            getattr(self, "eagle_worker", None), "graph_gap_probe", None
+        )
+        graph_gap_ctx = (
+            graph_gap_probe.wrap("draft_extend")
+            if graph_gap_probe is not None
+            else contextlib.nullcontext()
+        )
+        with graph_gap_ctx, device_timer_ctx(
+            self.model_runner.device_timer, "eagle_draft_extend"
+        ):
             out = self._replay_graph(shape_key, forward_batch)
 
         out = LogitsProcessorOutput(

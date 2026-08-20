@@ -72,6 +72,9 @@ from sglang.srt.configs.model_config import (
     is_deepseek_v4,
     is_minimax_sparse,
 )
+from sglang.srt.compilation.torch_compile_decoration import (
+    resolve_torch_compile_mode,
+)
 from sglang.srt.constrained.grammar_manager import GrammarManager
 from sglang.srt.debug_utils.pr_fix_toggle import maybe_revert_pr_fix
 from sglang.srt.disaggregation.decode import (
@@ -364,6 +367,13 @@ else:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _torch_compile_startup_mode(server_args) -> str:
+    """Return the mode actually handed to the decode torch.compile wrapper."""
+    return resolve_torch_compile_mode(
+        bool(getattr(server_args, "enable_torch_compile", False))
+    )
 
 
 def _prewarm_hccl_group(device, group, device_module):
@@ -966,6 +976,16 @@ class Scheduler(
 
         DraftWorkerClass = self.spec_algorithm.create_worker(self.server_args)
         self.draft_worker = DraftWorkerClass(**draft_worker_kwargs)
+        active_worker_class = type(self.draft_worker)
+        logger.info(
+            "Speculative startup provenance: algorithm=%s requested_worker=%s "
+            "active_worker=%s torch_compile_enabled=%s torch_compile_mode=%s",
+            self.spec_algorithm,
+            f"{DraftWorkerClass.__module__}.{DraftWorkerClass.__qualname__}",
+            f"{active_worker_class.__module__}.{active_worker_class.__qualname__}",
+            bool(getattr(self.server_args, "enable_torch_compile", False)),
+            _torch_compile_startup_mode(self.server_args),
+        )
 
         if self.spec_algorithm.is_ngram():
             from sglang.srt.speculative.external_corpus_manager import (
@@ -4335,6 +4355,18 @@ class Scheduler(
         )
         ret["startup_time"] = self.startup_time
         ret["effective_max_running_requests_per_dp"] = self.max_running_requests
+        active_worker_class = (
+            type(self.draft_worker) if self.draft_worker is not None else None
+        )
+        ret["active_speculative_worker"] = (
+            None
+            if active_worker_class is None
+            else f"{active_worker_class.__module__}.{active_worker_class.__qualname__}"
+        )
+        ret["torch_compile_enabled"] = bool(
+            getattr(self.server_args, "enable_torch_compile", False)
+        )
+        ret["torch_compile_mode"] = _torch_compile_startup_mode(self.server_args)
 
         if get_exec().moe.elastic_ep_backend is not None:
             from sglang.srt.elastic_ep.elastic_ep import ElasticEPStateManager

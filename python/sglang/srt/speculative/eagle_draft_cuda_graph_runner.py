@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional
 
@@ -67,6 +68,7 @@ class EagleDraftInputBuffers(ForwardInputBuffers):
     topk_p: torch.Tensor
     topk_index: torch.Tensor
     draft_probs: Optional[torch.Tensor]
+    diagnostic_draft_logits: Optional[torch.Tensor]
     hidden_states: Optional[torch.Tensor]
     global_num_tokens_gpu: Optional[torch.Tensor]
     global_num_tokens_for_logprob_gpu: Optional[torch.Tensor]
@@ -206,6 +208,14 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
                 == "swor"
                 else None
             )
+            diagnostic_draft_logits = (
+                torch.zeros(
+                    (self.max_bs, self.model_runner.model_config.vocab_size),
+                    dtype=torch.float32,
+                )
+                if eagle_worker.pq_capture_enabled
+                else None
+            )
             _hidden_size, _hidden_dtype = get_draft_recurrent_hidden_state_spec(
                 model_runner
             )
@@ -305,6 +315,7 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
             topk_p=topk_p,
             topk_index=topk_index,
             draft_probs=draft_probs,
+            diagnostic_draft_logits=diagnostic_draft_logits,
             hidden_states=hidden_states,
             global_num_tokens_gpu=global_num_tokens_gpu,
             global_num_tokens_for_logprob_gpu=global_num_tokens_for_logprob_gpu,
@@ -471,6 +482,11 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
         draft_probs = (
             buffers.draft_probs[:num_seqs] if buffers.draft_probs is not None else None
         )
+        diagnostic_draft_logits = (
+            buffers.diagnostic_draft_logits[:num_seqs]
+            if buffers.diagnostic_draft_logits is not None
+            else None
+        )
 
         if self.require_mlp_tp_gather:
             global_num_tokens_cpu = [num_tokens] * self.attn_dp_size
@@ -504,6 +520,7 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
             topk_p=topk_p,
             topk_index=topk_index,
             draft_probs=draft_probs,
+            diagnostic_draft_logits=diagnostic_draft_logits,
             hidden_states=hidden_states,
             capture_hidden_mode=capture_mode,
         )
@@ -694,6 +711,13 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
         ):
             buffers.draft_probs[:raw_bs].copy_(forward_batch.spec_info.draft_probs)
         if (
+            buffers.diagnostic_draft_logits is not None
+            and forward_batch.spec_info.diagnostic_draft_logits is not None
+        ):
+            buffers.diagnostic_draft_logits[:raw_bs].copy_(
+                forward_batch.spec_info.diagnostic_draft_logits
+            )
+        if (
             buffers.hidden_states is not None
             and forward_batch.spec_info.hidden_states is not None
         ):
@@ -768,7 +792,17 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
                 )
             return None
         self.advance_device_cycle_sampling_offsets()
-        with device_timer_ctx(self.model_runner.device_timer, "eagle_draft"):
+        graph_gap_probe = getattr(
+            getattr(self, "eagle_worker", None), "graph_gap_probe", None
+        )
+        graph_gap_ctx = (
+            graph_gap_probe.wrap("draft")
+            if graph_gap_probe is not None
+            else contextlib.nullcontext()
+        )
+        with graph_gap_ctx, device_timer_ctx(
+            self.model_runner.device_timer, "eagle_draft"
+        ):
             out = self._replay_graph(shape_key, forward_batch)
         if self.buffers.dsa_seed_topk is not None:
             forward_batch.spec_info.dsa_topk_indices = None

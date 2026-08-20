@@ -294,12 +294,28 @@ def organize_swor_draft_results(
     parent_list = topology.parent_list.expand(bs, -1)
     selected_indices = topology.selected_indices.expand(bs, -1)
 
-    q_rows = []
-    unused_leaf = q_blocks[0][:, :1]
-    for source in topology.q_sources:
-        q_rows.append(unused_leaf if source is None else q_blocks[source[0]][:, source[1] : source[1] + 1])
-    draft_probs = torch.cat(q_rows, dim=1)
+    draft_probs = organize_swor_rows(topology, q_blocks)
     return parent_list, selected_indices, draft_tokens, draft_probs
+
+
+def organize_swor_rows(
+    topology: SworTopology, row_blocks: Sequence[torch.Tensor]
+) -> torch.Tensor:
+    """Map per-depth proposal rows to final target-node order."""
+    if len(row_blocks) != topology.num_steps:
+        raise ValueError(
+            f"SWOR topology expects {topology.num_steps} row blocks, got "
+            f"{len(row_blocks)}"
+        )
+    rows = []
+    unused_leaf = row_blocks[0][:, :1]
+    for source in topology.q_sources:
+        rows.append(
+            unused_leaf
+            if source is None
+            else row_blocks[source[0]][:, source[1] : source[1] + 1]
+        )
+    return torch.cat(rows, dim=1)
 
 _use_triton_spec_fallback = False
 _windows_top_k_renorm_prob = None
@@ -1119,6 +1135,10 @@ def eagle_sample(
     bs = len(batch.seq_lens)
     sampling_info = batch.sampling_info
     next_token_logits = logits_output.next_token_logits
+    pq_capture_path = getattr(get_spec(), "speculative_pq_capture_path", None)
+    raw_target_logits = (
+        next_token_logits.clone() if pq_capture_path is not None else None
+    )
 
     sanitize_nan_logits(next_token_logits, "verify: target model logits")
 
@@ -1290,6 +1310,46 @@ def eagle_sample(
                 "Exact p/q verification requires a target-vocab draft proposal "
                 "distribution; the current speculative algorithm/draft worker "
                 "does not produce one (draft_probs missing or vocab-mismatched)."
+            )
+
+        if pq_capture_path is not None:
+            from sglang.srt.compilation.torch_compile_decoration import (
+                resolve_torch_compile_mode,
+            )
+            from sglang.srt.runtime_context import get_flags
+            from sglang.srt.speculative.pq_diagnostic import (
+                make_branch_pq_capture,
+            )
+
+            raw_draft_logits = verify_input.diagnostic_draft_logits
+            if raw_target_logits is None or raw_draft_logits is None:
+                raise RuntimeError(
+                    "p/q capture requires retained raw target and draft logits"
+                )
+            raw_draft_logits = raw_draft_logits.reshape(
+                -1, raw_draft_logits.shape[-1]
+            )
+            compile_enabled = bool(get_flags().capture.enable_torch_compile)
+            verify_input.pq_capture = make_branch_pq_capture(
+                output_path=pq_capture_path,
+                max_cycles=getattr(
+                    get_spec(), "speculative_pq_capture_max_cycles", 256
+                ),
+                batch=batch,
+                raw_target_logits=raw_target_logits,
+                raw_draft_logits=raw_draft_logits,
+                node_tokens=verify_input.draft_token,
+                retrieve_next_token=verify_input.retrieve_next_token,
+                retrieve_next_sibling=verify_input.retrieve_next_sibling,
+                draft_sampling_top_k=getattr(
+                    get_spec(), "speculative_draft_sampling_top_k"
+                ),
+                active_worker=(
+                    "sglang.srt.speculative.eagle_worker_v2.EAGLEWorkerV2"
+                ),
+                torch_compile_enabled=compile_enabled,
+                torch_compile_mode=resolve_torch_compile_mode(compile_enabled),
+                speculative_algorithm=str(get_spec().speculative_algorithm),
             )
 
         if use_tree_swor and getattr(

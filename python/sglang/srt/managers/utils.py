@@ -86,6 +86,10 @@ class GenerationBatchResult:
     # ordinary inference because even a tiny asynchronous D2H is needless there.
     swor_accept_indices: Optional[torch.Tensor] = None
     swor_overlap_metrics: Optional[torch.Tensor] = None
+    # Opt-in branch-exact sparse p/q diagnostic payload. Its device tensors use
+    # the same pinned asynchronous D2H and source-stream lifetime as other
+    # result holders.
+    pq_capture: Optional[Any] = None
 
     block_accept_lens: Optional[torch.Tensor] = None
 
@@ -174,6 +178,7 @@ class GenerationBatchResult:
         # primitive (_async_d2h: pinned D2H + record_stream) is injected here so
         # all device->host copying and lifetime safety lives in one place.
         for holder in (
+            self.pq_capture,
             self.routed_experts_output,
             self.indexer_topk_output,
             self.expert_distribution_metrics,

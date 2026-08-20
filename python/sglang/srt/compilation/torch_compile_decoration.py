@@ -26,6 +26,14 @@ from sglang.srt.utils import get_bool_env_var, is_hip
 from sglang.srt.utils.patch_torch import monkey_patch_torch_compile
 
 _is_hip = is_hip()
+DEFAULT_TORCH_COMPILE_MODE = "max-autotune-no-cudagraphs"
+
+
+def resolve_torch_compile_mode(enabled: bool) -> str:
+    """Resolve the exact mode used by the decode torch.compile wrapper."""
+    if not enabled:
+        return "disabled"
+    return os.environ.get("SGLANG_TORCH_COMPILE_MODE", DEFAULT_TORCH_COMPILE_MODE)
 
 
 def _to_torch(model: torch.nn.Module, reverse: bool, num_tokens: int) -> None:
@@ -55,9 +63,7 @@ def patch_model(
             backup_ca_comm = tp_group.ca_comm
             yield torch.compile(
                 torch.no_grad()(model.forward),
-                mode=os.environ.get(
-                    "SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs"
-                ),
+                mode=resolve_torch_compile_mode(True),
                 dynamic=_is_hip and get_bool_env_var("SGLANG_TORCH_DYNAMIC_SHAPE"),
             )
         else:

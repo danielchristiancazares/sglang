@@ -85,6 +85,7 @@ from sglang.srt.speculative.eagle_utils import (
     get_draft_recurrent_hidden_state_spec,
     organize_draft_results,
     organize_swor_draft_results,
+    organize_swor_rows,
     parse_swor_topology,
     per_step_draft_out_cache_loc,
     select_swor_topology_step,
@@ -95,6 +96,7 @@ from sglang.srt.speculative.eagle_worker_common import (
     prepare_for_draft_extend,
     run_eagle_verify,
 )
+from sglang.srt.speculative.graph_gap_probe import create_graph_gap_probe
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.speculative.spec_utils import (
     discount_tree_node_scores_,
@@ -203,6 +205,11 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         self.collect_swor_path_stats = getattr(
             server_args, "speculative_swor_collect_path_stats", False
         )
+        self.pq_capture_path = getattr(
+            server_args, "speculative_pq_capture_path", None
+        )
+        self.pq_capture_enabled = self.pq_capture_path is not None
+        self._diagnostic_draft_logits = None
         if get_spec().speculative_use_rejection_sampling:
             assert self.topk == 1, "Chain speculative sampling supports only topk=1"
         if self.use_tree_swor:
@@ -703,6 +710,9 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             top_scores_index,
             draft_tokens,
             draft_probs,
+            diagnostic_draft_logits=(
+                self._diagnostic_draft_logits if self.pq_capture_enabled else None
+            ),
             target_worker=self.target_worker,
             topk=self.topk,
             num_steps=self.speculative_num_steps,
@@ -744,6 +754,17 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                 raise ValueError("SWOR draft input is missing the root proposal q row")
             draft_probs_list = [spec_info.draft_probs.unsqueeze(1)]
             swor_token_blocks = []
+        diagnostic_logits_blocks = None
+        if self.pq_capture_enabled:
+            if spec_info.diagnostic_draft_logits is None:
+                raise RuntimeError(
+                    "p/q capture is missing the root draft-logit row"
+                )
+            diagnostic_logits_blocks = (
+                [spec_info.diagnostic_draft_logits.unsqueeze(1)]
+                if self.use_tree_swor
+                else [spec_info.diagnostic_draft_logits]
+            )
 
         topk1_chain_fits = (
             self.topk == 1
@@ -831,6 +852,14 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                 maybe_detect_inf(
                     logits_output.next_token_logits, f"draft_forward step {i}"
                 )
+                if diagnostic_logits_blocks is not None:
+                    diagnostic_logits_blocks.append(
+                        logits_output.next_token_logits.view(
+                            -1, self.topk, logits_output.next_token_logits.shape[-1]
+                        )
+                        if self.use_tree_swor
+                        else logits_output.next_token_logits
+                    )
                 if get_spec().speculative_use_rejection_sampling:
                     sampling_offset = (
                         self._device_cycle_sampling_offsets[i + 1 : i + 2]
@@ -888,10 +917,31 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         draft_probs = None
         if get_spec().speculative_use_rejection_sampling:
             draft_probs = torch.stack(draft_probs_list, dim=1)
+            if diagnostic_logits_blocks is not None:
+                self._diagnostic_draft_logits = torch.stack(
+                    diagnostic_logits_blocks, dim=1
+                )
 
         if self.use_tree_swor:
+            if diagnostic_logits_blocks is not None:
+                self._diagnostic_draft_logits = organize_swor_rows(
+                    self.swor_topology, diagnostic_logits_blocks
+                )
             return organize_swor_draft_results(
                 self.swor_topology, swor_token_blocks, draft_probs_list
+            )
+
+        if (
+            diagnostic_logits_blocks is not None
+            and not get_spec().speculative_use_rejection_sampling
+        ):
+            # Target-only deterministic trees do not retain dense q in the
+            # verifier, but the diagnostic keeps raw rows in proposal order.
+            # Final selected-node alignment is only guaranteed for top-k-one;
+            # wider deterministic captures are rejected by the runtime hook in
+            # the first diagnostic revision.
+            self._diagnostic_draft_logits = torch.stack(
+                diagnostic_logits_blocks, dim=1
             )
 
         # Organize the results
@@ -1032,6 +1082,11 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             topk_p=topk_p,
             topk_index=topk_index,
             draft_probs=probs if use_rejection_sampling or self.use_tree_swor else None,
+            diagnostic_draft_logits=(
+                logits_output.next_token_logits.clone()
+                if self.pq_capture_enabled
+                else None
+            ),
             hidden_states=logits_output.hidden_states,
             bonus_tokens=next_token_ids,
             num_tokens_per_req=1,
@@ -1227,6 +1282,10 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             ret_topk_index,
             ret_hidden_states,
         )
+        if self.pq_capture_enabled:
+            next_draft_input.diagnostic_draft_logits = (
+                draft_logits_output.next_token_logits.clone()
+            )
         if get_spec().speculative_use_rejection_sampling or self.use_tree_swor:
             next_draft_input.draft_probs = ret_draft_probs
         if self.seed_dsa_topk_from_draft_extend:
@@ -1442,6 +1501,13 @@ class EAGLEWorkerV2(BaseSpecWorker):
             nccl_port,
             target_worker,
         )
+        self.graph_gap_probe = create_graph_gap_probe(
+            getattr(server_args, "speculative_graph_gap_timing_path", None),
+            getattr(
+                server_args, "speculative_graph_gap_timing_max_samples", 2048
+            ),
+        )
+        self._draft_worker.graph_gap_probe = self.graph_gap_probe
 
         # Adaptive speculative
         self.adaptive_controller: Optional[AdaptiveController] = None
@@ -1913,6 +1979,7 @@ class EAGLEWorkerV2(BaseSpecWorker):
             metadata_ready_pre_pad=False,
             collect_swor_path_stats=self.draft_worker.collect_swor_path_stats,
             grammar_barrier=grammar_barrier,
+            graph_gap_probe=self.graph_gap_probe,
         )
 
     def update_weights_from_tensor(self, recv_req: UpdateWeightsFromTensorReqInput):

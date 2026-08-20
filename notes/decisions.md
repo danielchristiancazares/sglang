@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-16 23:55 PDT.
+**Reconciled through:** 2026-08-20 08:17 PDT.
 
 ## Selected production choices
 
@@ -12,6 +12,8 @@ remain in [`experiment-log.md`](experiment-log.md).
 |---|---|---|
 | Checkpoint | RadixArk Qwen3.8-27B NVFP4 | Restored coherent reasoning and tools; remained the fastest qualified real-sampled line |
 | Capacity | Real 200K target and draft pools | Exact `199016` passed repeatedly; 232K reached 98 MiB free before cache flush and was rejected for operating margin |
+| Primary performance scoreboard | Exact `199000+16` near-limit request | Current record is **2838.980 prompt / 107.253 generation tok/s** on selective target NVFP4; a new overall record must exceed both and complete exact `199016` |
+| Active performance milestone | **3000 prompt / 110 generation tok/s** | Requires one matched exact-`199016` run meeting both throughput targets; latency equivalents are TTFT <=66.33 s and end-to-end <=66.5 s |
 | Model surface | Language-only with Qwen3 reasoning and Qwen3 Coder tools | Preserves required behavior and VRAM; image/audio remain disabled |
 | FlashInfer | Clean native-Windows port of 0.6.17 | Passed JIT/kernel tests, fixed long-prefill correctness, and satisfies the SGLang version contract |
 | Prefill | FlashInfer, chunk size 4096 | Strong short and long prefill without the pressure and throughput losses of 8192 |
@@ -32,6 +34,23 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Implementation language | C++/CUDA hot paths with thin Python integration | Explicit user direction after the display-GPU incident; preserves graph capture and native dispatch |
 | Tree/SWOR implementation | Retained as opt-in, production-ineligible infrastructure | A non-front unified-pool KV/compaction defect exists outside the measured static-pool route; current-config full cross-cycle parity is still required, and raw-composite SWOR RNG is invalid |
 | Device-resident linear cycle | Retained opt-in; rejected for throughput | Exact-q dense-race and explicit-seed categorical forms reached 122.576 and 120.075 tok/s versus 124.775 matched control; ordinary scheduling remains selected |
+| Geometry funding gate | Complete lattice; conservative lower >=215 TPS; strictly above measured frontier | Family rejection uses an impossible target-aware upper <=200 TPS; selected-tree gaps fail closed |
+| Graph-tail work | Closed at the 0.75 ms admission gate | Two independent windows produced 1,471 CUDA-event records; best repeatable recoverable p10 was 0.658355 ms |
+| Target attribution | Exact per-shape M/N/K plus overlap-aware exposure | M3 primary GEMMs occupy 12.360 ms on the terminal stream; aggregate residency alone overcounts alternate-stream overlap |
+| Selective target NVFP4 | Retain as the experimental performance record | Exact `199000+16` reached **2838.980 prompt / 107.253 generation tok/s**; production qualification remains incomplete |
+| MiaAI-Lab vLLM recipe | Matched `199000+16` reproduction remains an information gate | Same checkpoint/GPU uses MTP-3, TurboQuant 4-bit KV, and patched full-graph K+1 verify; published ~160 TPS lacks raw workload evidence |
+
+## Primary performance record
+
+The root [`../BENCHMARK.md`](../BENCHMARK.md) scoreboard governs optimization
+ranking. The selective target-NVFP4 checkpoint completed exact `199000+16` at
+**2838.980 prompt tok/s**, **107.253 generation tok/s**, **70.096 s TTFT**, and
+**70.235 s** end to end. This is the record to beat; production qualification
+remains a separate decision from the single-run scoreboard.
+
+The active first milestone is **3000 prompt tok/s** and **110 generation
+tok/s** on the same workload. Both values must be reached in one successful
+exact-`199016` run.
 
 ## Qualified reference results
 
@@ -108,6 +127,9 @@ production performance status stays closed unless the cost topology changes.
 | Scalar depth discount 0.8 | Rejected | **2.9286** emitted/traversal versus plain M12 **2.9436** |
 | Initial M12 exact SWOR topology | Rejected | **2.9653** emitted/traversal and **84.713 tok/s** real mean |
 | Topology-only SWOR search at current q | Exhausted | Optimistic 32-node search reached only **4.0921** expected outputs and remained cost-limited |
+| M3 depth-two geometry | Rejected by impossible oracle | Mean 19.446 ms full cycle caps perfect output at **154.270 TPS**; best observed cycle caps it at **167.480 TPS** |
+| Post-change M8/M12/M16 depth-four geometries | Rejected by impossible oracle | Best-sample perfect-path ceilings are **185.782**, **179.547**, and **166.666 TPS**, below 200 before real sampling |
+| Selected-tree p/q corpus for counterfactual topology ranking | Diagnostic only | The observed membership is replayable; incomplete descendant/support coverage makes every counterfactual policy unavailable |
 
 The tree implementation itself is retained. It includes native target-only/SWOR
 sampling, sparse support up to 64 entries with dense fallback, low-rank GDN

@@ -71,6 +71,7 @@ class TestEagleDraftCudaGraphRunner(CustomTestCase):
             topk_p=torch.empty(CAPTURE_BS, 1, dtype=torch.float32),
             topk_index=torch.empty(CAPTURE_BS, 1, dtype=torch.int64),
             draft_probs=None,
+            diagnostic_draft_logits=None,
             hidden_states=torch.empty(CAPTURE_BS, 2, dtype=torch.float32),
             req_pool_indices=torch.empty(CAPTURE_BS, dtype=torch.int32),
             seq_lens_cpu=torch.empty(CAPTURE_BS, dtype=torch.int32),
@@ -119,6 +120,7 @@ class TestEagleDraftCudaGraphRunner(CustomTestCase):
                 topk_p=torch.ones(raw_bs, 1, dtype=torch.float32),
                 topk_index=torch.zeros(raw_bs, 1, dtype=torch.int64),
                 draft_probs=None,
+                diagnostic_draft_logits=None,
                 hidden_states=torch.zeros(raw_bs, 2, dtype=torch.float32),
             ),
         )
@@ -235,6 +237,29 @@ class TestEagleDraftCudaGraphRunner(CustomTestCase):
         torch.testing.assert_close(runner.draft_top_ps[2:], torch.ones(2))
         torch.testing.assert_close(
             runner.draft_additive_penalties[2:],
+            torch.zeros((2, vocab_size), dtype=torch.float32),
+        )
+
+    def test_diagnostic_root_logits_are_copied_to_the_stable_graph_input(self):
+        backend = _RecordingDraftBackend()
+        runner = self._build_runner(backend)
+        vocab_size = runner.model_runner.model_config.vocab_size
+        runner.buffers.diagnostic_draft_logits = torch.zeros(
+            (CAPTURE_BS, vocab_size), dtype=torch.float32
+        )
+        forward_batch = self._build_forward_batch([10, 11], 21)
+        raw_logits = torch.arange(2 * vocab_size, dtype=torch.float32).reshape(
+            2, vocab_size
+        )
+        forward_batch.spec_info.diagnostic_draft_logits = raw_logits
+
+        runner.execute(forward_batch)
+
+        torch.testing.assert_close(
+            runner.buffers.diagnostic_draft_logits[:2], raw_logits
+        )
+        torch.testing.assert_close(
+            runner.buffers.diagnostic_draft_logits[2:],
             torch.zeros((2, vocab_size), dtype=torch.float32),
         )
 

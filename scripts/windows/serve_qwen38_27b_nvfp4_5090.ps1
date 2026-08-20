@@ -90,6 +90,12 @@ param(
     [string] $SpeculativeTreeSamplingMode = 'target_only',
     [switch] $SpeculativeSworCollectPathStats,
     [switch] $SpeculativeSworCollectOverlapStats,
+    [string] $SpeculativePqCapturePath = '',
+    [ValidateRange(1, 1000000)]
+    [int] $SpeculativePqCaptureMaxCycles = 256,
+    [string] $SpeculativeGraphGapTimingPath = '',
+    [ValidateRange(1, 1000000)]
+    [int] $SpeculativeGraphGapTimingMaxSamples = 2048,
     [string] $SpeculativeSworTopology = '',
     [ValidateRange(0.05, 4.0)]
     [double] $SpeculativeTreeDepthDiscount = 1.0,
@@ -221,6 +227,22 @@ if ($SpeculativeNumSteps -gt 0) {
     }
     if ($SpeculativeSworCollectOverlapStats) {
         $ServeArgs += '--speculative-swor-collect-overlap-stats'
+    }
+    if ($SpeculativePqCapturePath) {
+        $ServeArgs += @(
+            '--speculative-pq-capture-path',
+            ([System.IO.Path]::GetFullPath($SpeculativePqCapturePath)),
+            '--speculative-pq-capture-max-cycles',
+            $SpeculativePqCaptureMaxCycles
+        )
+    }
+    if ($SpeculativeGraphGapTimingPath) {
+        $ServeArgs += @(
+            '--speculative-graph-gap-timing-path',
+            ([System.IO.Path]::GetFullPath($SpeculativeGraphGapTimingPath)),
+            '--speculative-graph-gap-timing-max-samples',
+            $SpeculativeGraphGapTimingMaxSamples
+        )
     }
     if ($SpeculativeSworTopology) {
         $ServeArgs += @('--speculative-swor-topology', $SpeculativeSworTopology)

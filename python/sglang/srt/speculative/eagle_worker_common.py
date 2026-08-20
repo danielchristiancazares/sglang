@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Optional
 
 import torch
@@ -338,6 +339,7 @@ def build_eagle_verify_input(
     top_scores_index: torch.Tensor,
     draft_tokens: torch.Tensor,
     draft_probs: Optional[torch.Tensor],
+    diagnostic_draft_logits: Optional[torch.Tensor] = None,
     *,
     target_worker: TpModelWorker,
     topk: int,
@@ -418,6 +420,7 @@ def build_eagle_verify_input(
         seq_lens_sum=None,
         seq_lens_cpu=None,
         draft_probs=draft_probs,
+        diagnostic_draft_logits=diagnostic_draft_logits,
     )
 
 
@@ -490,6 +493,7 @@ def run_eagle_verify(
     metadata_ready_pre_pad: bool,
     collect_swor_path_stats: bool,
     grammar_barrier=None,
+    graph_gap_probe=None,
 ) -> GenerationBatchResult:
     """Shared verify step: target-verify forward, sampling, acceptance bookkeeping.
 
@@ -576,11 +580,19 @@ def run_eagle_verify(
     # eagle_prepare_for_verify marked the batch in exactly that case; the
     # non-cuda-graph path stays unmarked and gets forward_extend's init
     # (post-pad).
-    forward_batch_output = target_worker.forward_batch_generation(
-        batch=None,
-        forward_batch=verify_forward_batch,
-        is_verify=True,
+    graph_gap_ctx = (
+        graph_gap_probe.wrap("target_verify")
+        if graph_gap_probe is not None and can_run_cuda_graph
+        else nullcontext()
     )
+    if graph_gap_probe is not None and not can_run_cuda_graph:
+        graph_gap_probe.cancel()
+    with graph_gap_ctx:
+        forward_batch_output = target_worker.forward_batch_generation(
+            batch=None,
+            forward_batch=verify_forward_batch,
+            is_verify=True,
+        )
     logits_output = forward_batch_output.logits_output
 
     # Generate vocab mask for constrained decoding
@@ -672,6 +684,7 @@ def run_eagle_verify(
         accept_lens=accept_lens,
         swor_accept_indices=accept_index if collect_swor_path_stats else None,
         swor_overlap_metrics=verify_input.swor_overlap_metrics,
+        pq_capture=verify_input.pq_capture,
         new_seq_lens=new_seq_lens,
         routed_experts_output=forward_batch_output.routed_experts_output,
         indexer_topk_output=forward_batch_output.indexer_topk_output,

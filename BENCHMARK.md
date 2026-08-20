@@ -191,3 +191,74 @@ different part of the system.
 
 The broader inherited workload and acceptance definitions remain in
 [`notes/benchmark-contract.md`](notes/benchmark-contract.md).
+---
+
+# Native-Windows 200K Context Benchmark
+
+This is the primary performance scoreboard for the native-Windows
+Qwen3.8-27B serving lane. The numbers that matter are measured at the exact
+near-limit context workload: **199,000 prompt tokens plus 16 generated tokens
+inside the real 200,000-token context and token pools**.
+
+## Record to beat
+
+| Metric | Current record |
+|---|---:|
+| Prompt processing | **2,838.980 tok/s** |
+| Generation | **107.253 tok/s** |
+| Time to first token | **70.096 s** |
+| End-to-end time | **70.235 s** |
+| Tokens completed | **199,016** |
+
+This record was measured on the selective target-NVFP4 checkpoint
+`C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` with the
+width-three NEXTN topology and production inference settings. The request
+completed successfully with `finish_reason=length`.
+
+## Current active target
+
+| Metric | Active target |
+|---|---:|
+| Prompt processing | **3,000 tok/s** |
+| Generation | **110 tok/s** |
+| Time to first token | **<= 66.33 s** |
+| End-to-end time | **<= 66.5 s** |
+| Tokens completed | **199,016** |
+
+This milestone requires approximately **5.7%** more prompt throughput and
+**2.6%** more generation throughput than the current record. It is achieved
+only when one matched run completes exactly **199,016 tokens** and meets both
+throughput targets. TTFT and end-to-end time are supporting latency gates.
+
+## Qualified production baseline
+
+| Metric | Qualified baseline |
+|---|---:|
+| Prompt processing | **2,608.263 tok/s** |
+| Generation | **102.358 tok/s** |
+| End-to-end time | **76.442544 s** |
+| Tokens completed | **199,016** |
+
+The qualified baseline uses
+`C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk` and the real 200K
+production configuration.
+
+## Benchmark command
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600
+```
+
+Run it against one deliberate native-Windows RTX 5090 server with the real
+200K pools, ordinary inference, and every fixed-acceptance simulation disabled.
+Record prompt throughput, generation throughput, TTFT, end-to-end time, token
+counts, finish reason, resolved launcher arguments, GPU/process environment,
+and cache treatment.
+
+An overall record must complete exactly **199,016 tokens** and beat both
+**2,838.980 prompt tok/s** and **107.253 generation tok/s** under the matched
+contract. Lower TTFT and end-to-end time are supporting wins.
+
+Detailed qualification rules and historical evidence remain in
+[`notes/benchmark-contract.md`](notes/benchmark-contract.md) and
+[`notes/experiment-log.md`](notes/experiment-log.md).
