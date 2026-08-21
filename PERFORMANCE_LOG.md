@@ -632,6 +632,7 @@ tree throughput can be ranked for production.
 | PERF-031 | Remove target-verify GDN Q/K/V split materialization. | Post-convolution QKV handoff into ReplaySSM | Closed by source gate | Qwen3.8 `qkv_dim=10240` already exceeds the 8192 materialization threshold and uses zero-copy strided aliases accepted by ReplaySSM. There is no split kernel to remove. |
 | PERF-032 | Coalesce the final 7680+7000 prefill pair into one 14680-token forward. | Scheduler tail geometry and Mamba branching checkpoint | Rejected | Exact completion fell to 1917.509 prompt tok/s and 103.780505 s TTFT with a changed digest. The larger ragged-current pass erased the saved dispatch. |
 | PERF-033 | Fuse full-attention sigmoid gating directly into the NVFP4 `o_proj` tuple. | PDL-safe native gate/quant producer | Rejected at isolated admission | Exact and 37% faster at M7680, but M3 saved only 0.427 us/layer (0.007 ms/replay) and total exact-prefill projection was about 21 ms. No model wiring was retained. |
+| PERF-034 | Tune global KV page size for the paged-prefix attention wall. | Page sizes 128 and 32 | Rejected | Page 128 floored pools to 199,936 tokens. Page 32 retained exact pools but does not reach prefill's page-size-1 token-index wrapper and reduced long generation to 112.576 tok/s. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -952,3 +953,17 @@ tree throughput can be ranked for production.
   projection is only about **20.9 ms**. Both are below the admission scale
   needed to separate from current noise. No model code was wired; all
   experimental files were removed.
+
+### 2026-08-20 23:34 PDT - PERF-034 page-size sweep rejected
+
+- Page 128 failed the exact-pool contract during startup: both pools were
+  floored to 199,936 tokens because 200,000 is not divisible by 128.
+- Page 32 retained exact pools and the deterministic digests. Five warmed
+  short prompts averaged **3030.480 tok/s** with **65.668465 s TTFT**; the
+  isolated screening hit was 3071.156 tok/s. Three long requests averaged
+  **2970.617 prompt / 112.576 generation tok/s**, below the retained
+  3001.344/115.225 adjacent window.
+- Source reachability explains the inconsistency: FlashInfer prefill is planned
+  with page size 1 and per-token slot IDs, so the storage-pool page setting
+  does not change the dominant paged-prefix kernel. Page 32 mainly changes
+  XQA/cache geometry and regressed decode. Page 64 remains selected.

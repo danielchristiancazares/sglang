@@ -4067,3 +4067,61 @@ mean 13.929045  17.125658 446.051        39.730
   exact-prefill passes save about 20.9 ms. These are not fundable against the
   measured cycle and request variance, so no model integration or server
   launch ran. Removed every experimental file.
+
+### 2026-08-20 23:14 PDT - exact prefill profile identifies paged attention as the wall
+
+- Relaunched retained source `0c755bf824` with the selective checkpoint,
+  chunk 7680, selected target tactics, exact 200K pools, and no experimental
+  controls. After two exact warmups, the adjacent unprofiled score reached
+  **2912.098 prompt tok/s** with the established digest.
+- Captured one cache-flushed exact `199000+16` request through the server's
+  GPU-only torch profiler. The profiled request reached **2967.410 prompt
+  tok/s**, **67.061848 s TTFT**, exact `199016`, and digest
+  `cdf5bb57...f647d9`.
+- Unified single-trace triage:
+  - FlashInfer paged-prefix attention: **51,923.90 ms / 78.1%** GPU share,
+    425 launches.
+  - primary NVFP4 GEMM family: **5,278.98 ms / 7.9%**, 4,992 launches.
+  - ragged-current attention: **1,656.45 ms / 2.5%**, 442 launches.
+  - secondary NVFP4 GEMM family: **1,529.68 ms / 2.3%**, 1,664 launches.
+  - fused eager SwiGLU-to-NVFP4: **703.86 ms / 1.1%**, 1,664 launches.
+- The fuse table confirmed existing QK/RoPE/cache-write and activation fusion
+  paths rather than exposing a missing large fusion. No overlap row cleared
+  the 1% single-trace bar. The next prompt work must change paged-prefix
+  attention economics; sub-1% elementwise fusion cannot close the target.
+- Trace:
+  `prefill-exact-profile-20260820-2313\exact199k-1787292754.2172203-TP-0.trace.json.gz`.
+  Triage:
+  `prefill-exact-profile-20260820-2313\triage.txt`.
+- Stopped verified tree `35256/5916 -> 35796 -> 29236 -> 32216`; port and
+  workers cleared, and the GPU returned to 1,654 MiB display residency with
+  30,534 MiB free.
+
+### 2026-08-20 23:34 PDT - PERF-034 page geometry does not tune prefill
+
+- Page 128 startup allocated both KV pools at **199,936 tokens**, the largest
+  multiple of 128 below 200,000. It was stopped before graph qualification or
+  scoring because the production contract requires real 200,000-token pools.
+- Page 32 startup retained both exact 200,000-token pools and all three graphs.
+  After one warmup, the first score reached **3071.156 prompt tok/s** and
+  64.796457 s TTFT with the established digest.
+- Five subsequent exact short scores measured prompt
+  `3041.236, 3011.310, 3042.182, 3050.992, 3006.681` tok/s, mean
+  **3030.480**, and TTFT mean **65.668465 s**. Every request completed exact
+  `199016` with digest `cdf5bb57...f647d9`.
+- Three exact long requests measured prompt
+  `2961.318, 2946.852, 3003.681` tok/s, mean **2970.617**, and generation
+  `107.687, 114.043, 115.998` tok/s, mean **112.576**. Digest
+  `cac0c6...a2092` remained exact.
+- The page-32 short movement does not survive the supporting workload and has
+  no dominant-prefill reachability. `create_flashinfer_kv_indices_triton`
+  emits per-token pool slots, and the paged-prefix wrapper is planned with
+  `page_size=1`; global page 32/64 changes pool/XQA organization, not the
+  78.1%-share prefill kernel's logical page shape.
+- Re-resolved and stopped page-32 tree
+  `41376/32220 -> 35820 -> 21496 -> 26416`. Port/compiler cleanup passed; GPU
+  returned to 1,759 MiB used and 30,429 MiB free. Page 64 remains selected.
+  Artifacts: `perf034-page128-server-20260820-2315.log`,
+  `perf034-page32-server-20260820-2318.log`,
+  `perf034-page32-exact-20260820-2322.log`, and
+  `perf034-page32-long-20260820-2329.log`.

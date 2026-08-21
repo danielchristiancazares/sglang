@@ -768,3 +768,23 @@
   removes at least 0.05 ms of measured full-cycle exposure.
 - Related commit or revert: all kernel, wrapper, test, and benchmark files were
   removed before model integration.
+
+## PERF-F050 - Global KV page-size sweep for exact-200K prefill
+
+- Hypothesis: page 128 or 32 could improve the FlashInfer paged-prefix kernel
+  that dominates exact prefill.
+- Scope: selective checkpoint, chunk 7680, page 64 control versus 128/32.
+- Attempted change: launch-only page-size overrides; no source change.
+- Benchmark evidence: page 32 short prompt mean was 3030.480 tok/s, but three
+  long requests averaged only **2970.617 prompt / 112.576 generation tok/s**.
+  Page 128 was not timed.
+- Correctness evidence: page 32 retained exact counts and digests. Page 128
+  allocated only 199,936 target/draft tokens and failed the 200K pool gate.
+- Failure mode: SGLang's FlashInfer prefill wrapper plans with page size 1 and
+  per-token slot IDs, independent of the global storage page size. The apparent
+  page-32 short movement has no paged-prefill mechanism and decode regressed.
+- Why not to retry unchanged: page 128 is capacity-ineligible; page 32 moves
+  the wrong runtime surface and loses stable generation.
+- Reopen only if: prefill receives a real page-layout specialization rather
+  than the existing token-index interface.
+- Related commit or revert: no source change; launcher default remains 64.
