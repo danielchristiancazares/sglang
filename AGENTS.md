@@ -11,7 +11,7 @@ under `docs/`.
 
 Last reconciled with
 [`notes/experiment-log.md`](notes/experiment-log.md) through
-**2026-08-20 12:29 PDT**. A later experiment-log entry or fresh runtime
+**2026-08-21 13:48 PDT**. A later experiment-log entry or fresh runtime
 evidence supersedes every snapshot in this file.
 
 ## Recover context before acting
@@ -64,43 +64,42 @@ The executable source of truth is
 At the notebook cutoff, the accepted production configuration is:
 
 - native Windows on the RTX 5090;
-- checkpoint `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk`;
+- checkpoint
+  `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4`;
 - endpoint `http://127.0.0.1:30000/v1`, served model `qwen3.8-27b`;
 - real context and target/draft token pools of `200000`, one running request;
 - language-only surface, Qwen3 reasoning parser, Qwen3 Coder tool parser;
 - NEXTN linear rejection sampling, two speculative steps, three draft tokens,
-  top-k-one chain, aligned draft sampling top-k 20 inside the single
-  multi-step CUDA graph;
+  top-k-one chain, draft top-k one, and native CUDA direct one-hot proposal
+  construction inside the single multi-step CUDA graph;
 - FlashInfer prefill and sampling, TRT-LLM MHA/XQA target and draft decode,
   ReplaySSM linear speculation, FP8 E4M3 draft KV, checkpoint-selected target
-  KV, 4096-token prefill chunks, and page size 64;
+  KV, 7680-token prefill chunks, and page size 64;
 - FP32 Mamba state with four slots and `extra_buffer_lazy` caching;
-- FP4 FlashInfer autotuning with FP8 GEMM autotuning skipped;
+- FP4 FlashInfer autotuning, including large ordinary EXTEND, with FP8 GEMM
+  autotuning skipped;
+- Cutlass NVFP4 prefill plus in-place Marlin decode for all 64 target gate/up
+  projections; the 85 MiB relayout scratch is reused across layers;
 - torch compile mode `default`, batch-one full decode graphs, scheduler receive
   interval 4, stream interval 4, incremental output, and a 128 MiB FlashInfer
   workspace;
 - every SWOR topology/oracle switch, adaptive depth, fixed-acceptance
   simulation, and explicit online draft quantizer left inactive.
 
-The established results for that line are **122.712 tok/s** real sampled over
-ten exact `6213/512` runs, **171.263 tok/s** for the safe fixed-work control,
-and exact `199000+16` capacity. The final 200K relaunch captured all three
-speculative graph phases with 1.84 GiB reported headroom. Treat these as the
-comparison baseline and remeasure when code, dependencies, GPU environment,
-or launcher defaults have moved.
+The accepted exact `199000+16` record is **3078.058 prompt / 114.617
+generation tok/s**, **64.651152 s TTFT**, and **64.782022 s** end to end.
+An independent no-override launcher restart reached **3052.437/114.053**,
+**65.193816 s TTFT**, and **65.325334 s** end to end, beating every prior
+record metric in the same exact request. The default relaunch captured target
+verify, draft decode, and draft extend graphs, preserved reasoning/tools and
+OpenCode2, and left 4,338 MiB free after cache flush. Treat this as the
+production comparison baseline and remeasure when source, dependencies, GPU
+environment, or launcher defaults move.
 
-The primary exact-200K scoreboard now also has a selective-checkpoint,
-long-context-only profile:
-`Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` with
-`-ChunkedPrefillSize 7680`. Combined with the bit-exact native-Windows Gemma
-residual-norm direct-output path, it set the overall exact `199000+16` record
-at **3016.444 prompt / 112.355 generation tok/s**, **65.971714 s TTFT**, and
-**66.105219 s** end to end. An independent restart reached
-**3013.736/112.012**. The 7680 chunk is not the production launcher default:
-applying it globally to base RadixArk reduced its exact prompt result to
-2226.770 tok/s and left only 200 MiB before follow-up probes, so production
-remains at 4096. Use the explicit model/chunk override only for the selective
-performance lane.
+Base RadixArk with chunk 4096 remains an explicit control. Its earlier
+chunk-7680 regression does not contradict the new default because the
+launcher now selects the attention-selective checkpoint rather than applying
+7680 globally to base RadixArk.
 
 The exhaustive NVFP4 optimization run was marked complete. A new performance
 branch begins from an explicit request or a newly measured gap. The historical
@@ -192,6 +191,10 @@ work has frozen the desktop.
 - Native-Windows Gemma residual normalization writes the existing bit-exact
   JIT result directly into caller-owned `x`; do not reintroduce its former
   temporary allocation and copy.
+- Hybrid Marlin keeps target gate/up weights in Cutlass layout for prefill,
+  relayouts them in place after the final prefill forward, and uses Marlin only
+  for at most four tokens. Preserve the canonical bit-exact relayout,
+  single-scratch reuse, final-chunk handoff, and explicit Cutlass fallback.
 - Preserve upstream and non-Windows behavior behind narrow native-Windows
   dispatch gates. Keep experiments opt-in and launcher defaults production
   safe.

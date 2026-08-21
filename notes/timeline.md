@@ -468,7 +468,7 @@ code changes, or process state matter.
   objective remains open because short generation averaged 98.029 tok/s.
   Signed commit `afd5606077` retains the default-off native route.
 - Static draft top-k 32 reduced mean acceptance from 2.217279 to 2.173943 and
-  was rejected; top-k 20 remains selected.
+  was rejected; top-k 20 remained selected at that stage.
 - Greedy draft top-k 1 also failed: exact short generation was 97.900 tok/s
   and greedy acceptance averaged 2.107020, so broad q support remains useful.
 - Draft top-k 16 averaged 2.205710 acceptance versus k20's 2.217279. With
@@ -500,6 +500,37 @@ code changes, or process state matter.
   97.730 tok/s on exact16 with the control digest, so graph composition remains
   rejected. Native XQA structural sweeps found only sub-microsecond valid
   changes; a faster single-K-buffer build was nondeterministic and removed.
+- Exact-q/hidden capture then proved q20 contains the target at all six
+  required exact16 oracle positions, but blocked PCA-linear rank heads failed
+  minority validation. No learned proposal was retained.
+- Native CUDA direct construction of greedy one-hot q became a real additive
+  win: **122.352 -> 123.559 tok/s** matched long generation, **123.831** on an
+  independent restart. Exact16 reached only **99.173**, so the original
+  benchmark target remains open rather than being redefined.
+- All 32 target FP4 tactics and CUTLASS PDL were then screened. PDL-off
+  regressed; bit-exact qkvz/down tactic replacements moved real generation
+  only **+0.114%** and were rejected as noise. Original source/cache returned.
+
+### Hybrid Marlin becomes the Windows default
+
+- Native SM120 Marlin initially improved exact16 generation to 114.820 tok/s
+  but regressed full prefill to 1984.193 tok/s. A coalesced in-place layout
+  converter then made Cutlass-prefill/Marlin-decode switching practical and
+  matched the canonical repacker bit-for-bit.
+- Projection and layer isolation found that all 64 target gate/up projections
+  preserve the useful exact trajectory; full-target, draft-only, and partial
+  layer masks were slower or required more verify rounds.
+- The accepted exact result is **3078.058 prompt / 114.617 generation tok/s**,
+  **64.651152 s TTFT**, and **64.782022 s E2E**. It completed exact `199016`
+  with `finish_reason=length` and beat all four prior record values.
+- A clean no-argument launcher restart independently reached
+  **3052.437/114.053**, preserved exact capacity, captured all three graph
+  phases, passed arithmetic/tools/tool continuation/model surface/OpenCode2,
+  and left 4,338 MiB free after cache flush.
+- The user accepted the all-four-metric improvement for normal use. Signed
+  source commit `03ba3d2e27` promotes the selective checkpoint, chunk 7680,
+  native draft-k1 q, and gate/up hybrid Marlin as Windows launcher defaults.
+  The 3100/120 milestone remains the next record target, not a deployment gate.
 
 ## Supersession map
 
@@ -509,10 +540,10 @@ Use these results when older “final” checkpoints conflict:
 |---|---|---|
 | Fixed `6213/512` | `171.263 tok/s` safe five-run mean | `167.776`, `162.726`, `159.973`, `156.968`, `135.167`, `86.016` |
 | Real sampled `6213/512` | `122.712 tok/s` ten-run mean | `121.075`, `117.794`, `110.750`, `98.126`, `96.110` |
-| Near-limit `199000/16` record | `3048.086` prompt, `112.499` generation tok/s on selective target NVFP4 + chunk 7680 + direct Gemma output + selected large-EXTEND FP4 tactics; qualified production remains `2608.263/102.358` | `3016.444/112.355`, `2838.980/107.253`, `2570.356`, `2429.153`, `2423.812`, `2200.563` |
+| Near-limit `199000/16` record | `3078.058` prompt, `114.617` generation tok/s on launcher-default selective target NVFP4 + chunk 7680 + native draft-k1 q + gate/up hybrid Marlin | `3048.086/112.499`, `3016.444/112.355`, `2838.980/107.253`, `2570.356`, `2429.153`, `2423.812`, `2200.563` |
 | Production capacity | `200000` context and token pools | rejected `232000` operating-margin experiment |
 | Speculation geometry | 2 steps / 3 draft tokens | 3 steps / 4 draft tokens |
 | Target verification | TRT-LLM MHA/XQA | FlashInfer-prefill verify route |
 | Draft extension | CUDA graph captured | eager draft extension |
-| Draft-q alignment | top-k 20 inside the single multi-step CUDA graph | eager/per-depth aligned proposal path |
+| Draft-q alignment | top-k one with native direct one-hot q inside the single multi-step CUDA graph | top-k 20 aligned proposal path and eager/per-depth alignment |
 | Tree mode | opt-in exact target-only/SWOR infrastructure; linear production default | current-q M8/M12/depth/topology-only candidates |

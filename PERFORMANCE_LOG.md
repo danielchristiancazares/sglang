@@ -54,6 +54,9 @@
 | PERF-027 repaired exact `199000+16` TTFT | 67.229581 s PERF-028 fused arm | **66.622932 s** | **-0.606649 s / -0.902%** | same exact five-request window; all `199016`, `finish_reason=length` | 2026-08-20 21:58 PDT |
 | PERF-027 repaired exact `199000+512` support | 2974.600 prompt / 116.583 generation tok/s PERF-028 fused arm | **3001.344 prompt / 115.225 generation tok/s** | +0.899% prompt; decode within current variance | three exact requests; restored `cac0c6...a2092` digest | 2026-08-20 22:03 PDT |
 | PERF-029 compiled-semantics exact `199000+512` | 115.225 tok/s adjacent PERF-027 window | 116.192 tok/s | +0.966 / +0.839% client-observed | three exact requests, but 233 profiled device cycles retained a 16.045 ms median versus 16.058 ms control | 2026-08-20 22:30 PDT |
+| PERF-062 accepted exact `199000+16` record | 3048.086 prompt / 112.499 generation tok/s | **3078.058 / 114.617 tok/s** | **+29.972 / +0.983% prompt; +2.118 / +1.883% generation** | launcher-default selective checkpoint, chunk 7680, native draft-k1 q, gate/up hybrid Marlin | 2026-08-21 13:48 PDT |
+| PERF-062 accepted TTFT/E2E | 65.286869 / 65.420204 s | **64.651152 / 64.782022 s** | **-0.635717 / -0.638182 s** | same exact request, exact `199016`, `finish_reason=length` | 2026-08-21 13:48 PDT |
+| PERF-062 independent no-override launch | 3048.086 / 112.499 tok/s prior record | **3052.437 / 114.053 tok/s** | all four prior metrics beaten again | `.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1`, process-selected seed | 2026-08-21 13:48 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
 
@@ -657,6 +660,11 @@ tree throughput can be ranked for production.
 | PERF-052 | Reopen M4 under greedy k1 proposal law. | Existing 3-step/4-row configuration | Rejected | Exact16 still required seven verify cycles and emitted 2.285714 tokens/cycle; the extra target row/draft step cannot improve the discrete gate. |
 | PERF-053 | Reopen the retained device-resident cycle under greedy k1. | Composite draft-extend/next-draft CUDA graph | Rejected | Exact199K+16 generation was 97.730 tok/s with the control digest, inside and slightly below the 98.478 tok/s control window. |
 | PERF-054 | Tune SM120 XQA structural constants. | FlashInfer native CUDA XQA mainloop | Rejected | Valid V-buffer/V-tile variants saved at most 0.960 us/call; wider K with one buffer was nondeterministic, two buffers exceeded shared memory, row-max 0 was slower, and CTA-x 2 was invalid. |
+| PERF-055 | Rotate stock NVFP4 KV with the native Hadamard kernel. | Native Hadamard plus existing NVFP4/XQA | Rejected | Rotation left synthetic attention error effectively unchanged (~0.1018 relative L2), while native NVFP4 XQA's measured ceiling was only 0.520 ms/cycle before transforms and failed semantics. |
+| PERF-056 | Learn a hidden-conditioned rank correction for greedy q20. | Default-off exact-q/hidden diagnostic and offline blocked fitting | Diagnostic retained; model rejected | Exact q20 support contained every required exact16 target token and a perfect oracle finishes in six cycles, but the first PCA-linear rank head had 0% locked minority accuracy and did not beat draft argmax. |
+| PERF-059 | Emit greedy draft-k1 q directly with native CUDA. | Native Windows argmax/one-hot q producer | Promoted additive win in `03ba3d2e27` | Proposal construction fell 73-87 -> 3.7-3.9 us. Matched long generation improved 122.352 -> 123.559 tok/s (+0.987%); independent restart averaged 123.831. |
+| PERF-061 | Retune all exact target FP4 tactics and disable PDL. | Six SM120 target GEMM families | Rejected | PDL-off regressed weighted shape timing; exact tactic pair projected 0.361 ms but moved real long generation only 123.831 -> 123.972 tok/s (+0.114%), inside noise. |
+| PERF-062 | Use Cutlass for prefill and in-place Marlin for target gate/up decode. | 64 target gate/up projections plus native draft-k1 q | Promoted launcher default in `03ba3d2e27` | Accepted exact score **3078.058/114.617**, TTFT **64.651152 s**, E2E **64.782022 s**; independent no-override launch **3052.437/114.053**. Both beat all four prior record metrics. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1279,3 +1287,65 @@ tree throughput can be ranked for production.
 - Deterministic row-max method 0 was slower and changed numerics. CTA-x 2 cannot
   represent the four-warps-per-GEMM1 group. Every candidate cache was removed;
   installed source and the control module were restored.
+
+### 2026-08-21 09:13 PDT - PERF-059 native draft-k1 delta proposal
+
+- Replaced the aligned draft-k1 softmax, dense top-k renormalization, and
+  categorical draw with a default-off two-launch CUDA argmax plus exact
+  caller-owned one-hot q producer. The native boundary measured
+  **3.659/3.901 us** for M1/M3 versus **86.635/73.155 us** for aligned q.
+- Four CUDA cases plus three shape subtests cover stable ties, NaNs, additive
+  state, full Qwen vocabulary, and mutable graph replay. Thirteen proposal
+  dispatch tests pass.
+- Adjacent A-B-A long-context windows:
+  - initial control was externally contended: **119.274 tok/s** mean;
+  - candidate B: **123.559 tok/s** mean over
+    `123.406,123.428,123.418,123.769,123.776`;
+  - closing control A2: **122.352 tok/s** mean over
+    `122.028,122.382,122.610,122.564,122.175`.
+  Candidate B improves the matched A2 mean by **1.208 tok/s / 0.987%** with
+  identical `cac0c6...a2092` output.
+- An independent candidate restart measured
+  `123.711,123.711,123.874,123.934,123.924`, mean **123.831 tok/s**.
+  Every candidate request completed exact `199512`; prompt means were
+  **3191.592/3196.061 tok/s**, TTFT **62.351/62.264 s**, and E2E
+  **66.487/66.391 s** across the two windows.
+- Exact16 remained a seven-cycle diagnostic at **99.173 tok/s** with exact
+  `199016` and the established digest. The original BENCHMARK.md target remains
+  open; the temporary idea of redefining the scoreboard around long generation
+  was rejected as goalpost movement.
+- Preserved reasoning returned `703`; one exact multiply tool call parsed;
+  image/audio remained false; standalone OpenCode2 returned `READY`; cache
+  flush reported 4,775 MiB free.
+
+### 2026-08-21 13:48 PDT - PERF-062 promoted gate/up hybrid
+
+- Enabled the repository's Marlin W4A16 kernel on SM120 by replacing the
+  MSVC-hostile nested `else-if` template chain with independent predicates and
+  adding a native NVFP4 wrapper that does not depend on the optional AOT
+  `sgl_kernel` Python package.
+- Added a coalesced native in-place Cutlass-to-Marlin relayout. It matches the
+  canonical Marlin repacker bit-for-bit, round-trips to the original Cutlass
+  bytes, and projects **26.056 ms** to relayout all measured target families.
+  The promoted route narrows this to all 64 gate/up projections and reuses one
+  **85 MiB** scratch buffer.
+- Full-target Marlin improved exact16 generation to **114.820 tok/s** but
+  collapsed prompt to **1984.193 tok/s**. Draft-only Marlin stayed seven-cycle
+  limited at **99.770**. All-target gate/up Marlin retained the useful output
+  trajectory without the other projection costs and set the accepted record:
+  **3078.058 prompt / 114.617 generation tok/s**, **64.651152 s TTFT**,
+  **64.782022 s E2E**, exact `199016`, `finish_reason=length`.
+- A clean no-argument launcher restart independently reached **3052.437 prompt
+  / 114.053 generation tok/s**, **65.193816 s TTFT**, and **65.325334 s E2E**
+  with a process-selected seed. It again beat every prior record metric in one
+  exact request and reproduced output SHA-256
+  `9a0e20749e2930a697fefdd3bdd7863a067abe4d9860e6d1e7d9b80a62668b37`.
+- The default server returned sampled arithmetic `703`, exactly one parsed
+  `multiply({"a":37,"b":19})` call, preserved reasoning through the tool-result
+  continuation, non-thinking `READY`, image/audio false, and visible
+  standalone OpenCode2 `READY`. All target/draft graph phases captured; cache
+  flush left **4,338 MiB** free.
+- The user accepted the all-four-metric improvement as production. Commit
+  `03ba3d2e27` makes the selective checkpoint, chunk 7680, native draft-k1 q,
+  large-EXTEND tuning, and gate/up hybrid Marlin the normal Windows launcher
+  path. The higher 3100/120 milestone remains future work.

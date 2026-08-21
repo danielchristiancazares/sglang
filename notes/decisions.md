@@ -4,32 +4,33 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-21 06:10 PDT.
+**Reconciled through:** 2026-08-21 13:48 PDT.
 
 ## Selected production choices
 
 | Decision | Selected choice | Durable evidence |
 |---|---|---|
-| Checkpoint | RadixArk Qwen3.8-27B NVFP4 | Restored coherent reasoning and tools; remained the fastest qualified real-sampled line |
+| Checkpoint | Attention-selective RadixArk Qwen3.8-27B NVFP4 | Launcher-default exact-200K record; preserved coherent reasoning, tools, OpenCode2, and 4,338 MiB post-flush free |
 | Capacity | Real 200K target and draft pools | Exact `199016` passed repeatedly; 232K reached 98 MiB free before cache flush and was rejected for operating margin |
-| Primary performance scoreboard | Exact `199000+16` near-limit request | Current record is **3048.086 prompt / 112.499 generation tok/s** on selective target NVFP4 with selected large-EXTEND FP4 tactics; a new record must exceed both and complete exact `199016` |
+| Primary performance scoreboard | Exact `199000+16` near-limit request | Accepted record is **3078.058 prompt / 114.617 generation tok/s**, **64.651152 s TTFT**, and **64.782022 s E2E**; exact `199016` remains required |
 | Next performance milestone | **3100 prompt / 120 generation tok/s**, TTFT **<=64.20 s**, E2E **<=64.35 s** | The two time limits are derived from the throughput thresholds on exact `199000+16`; all four must pass in one eligible request |
 | Model surface | Language-only with Qwen3 reasoning and Qwen3 Coder tools | Preserves required behavior and VRAM; image/audio remain disabled |
 | FlashInfer | Clean native-Windows port of 0.6.17 | Passed JIT/kernel tests, fixed long-prefill correctness, and satisfies the SGLang version contract |
-| Prefill | FlashInfer, production chunk size 4096 | Base RadixArk stays safe at exact capacity; global 7680 regressed prompt and fell to 200 MiB free |
-| Selective long-context profile | `AttnNVFP4`, chunk size 7680, explicit override | With selected large-EXTEND FP4 tactics, exact `199000+16` reached **3048.086/112.499** and `199000+512` generation averaged **118.389** without changing production defaults |
+| Prefill | FlashInfer, launcher-default chunk size 7680 | Qualified on the attention-selective checkpoint; base RadixArk/chunk 4096 remains an explicit control |
+| Default long-context profile | `AttnNVFP4`, chunk size 7680 | Exact `199000+16` reached **3078.058/114.617**; an independent no-override launch reached **3052.437/114.053** |
 | Target verify/decode | TRT-LLM MHA/XQA | Qualified real throughput and exact 200K capacity; compact unread mask removes redundant generic work |
 | Draft decode | TRT-LLM MHA/XQA | Controlled gain over Triton draft decode; semantics and long ladder passed |
 | Draft extend | Captured `DRAFT_EXTEND_V2` graph | Removed an eager dispatch wall and contributed to the later two-step winner |
 | Linear attention | Triton GDN with ReplaySSM | Correct Qwen recurrent-state handling in the selected linear speculative topology |
 | Draft KV | FP8 E4M3 | Reduced memory and improved the selected topology while preserving behavior |
 | Speculation geometry | 2 steps, 3 draft tokens, EAGLE top-k 1 | Qualified **122.712 tok/s** real mean and **171.263 tok/s** fixed mean |
-| Proposal alignment | Draft top-k 20, captured inside one multi-step CUDA graph | Preserves exact q for rejection, improves acceptance, and avoids Python between draft depths |
+| Proposal alignment | Draft top-k one with native CUDA direct one-hot q | Exact q remains rejection-correct; removes softmax/dense renormalization/categorical proposal work and is enabled by the Windows launcher |
 | Chain metadata | Native C++/CUDA fixed-chain path with distinct per-cycle outputs | 4.227x isolated metadata speedup while preserving asynchronous output lifetimes |
 | Sampling | FlashInfer | Native CUDA renormalization controls the speculative target path; fallback sampling remains available |
 | Native elementwise/norm | C++/CUDA SiLU, RMSNorm, Gemma RMSNorm, fused Gemma residual-add norm, direct Gemma residual output, and qualified sigmoid-multiply dispatch | Both Gemma paths are bit-exact; the fused residual-add norm improved adjacent exact long generation from 115.194 to 116.583 tok/s |
 | Eager MLP activation quantization | Exact native SwiGLU-to-NVFP4 producer outside `torch.compile`; preserve the former compiled M3 path | All-finite-BF16, production-shape, graph, and tuple-consumer gates pass. Exact prompt improved **0.914%** versus PERF-028 with both deterministic digests restored |
-| GEMM tuning | FP4 autotune; skip FP8 GEMM autotune | FP4 tactics improved decode; selective large-EXTEND tuning is expert-opt-in and promotes only exercised target file hits |
+| GEMM tuning | FP4 autotune plus large EXTEND; skip FP8 GEMM autotune | Selected target file hits improve long prefill; launcher enables the retained path |
+| Gate/up decode | In-place Cutlass-prefill/Marlin-decode layout for all 64 target gate/up projections | Canonical repack parity and round-trip tests pass; exact record beats all prior metrics while reusing one 85 MiB scratch buffer |
 | Selective tactic cache | Keep the independently selected 20,928-byte cache | SHA-256 `8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`; fresh selection regressed long generation and requires requalification |
 | Workspace | 128 MiB | Wins decode and long prefill; 64 MiB fails required graph allocation |
 | Compile mode | `default`, with established partial fallbacks | Five-run fixed-work win over other compile/fallback arrangements |
@@ -40,19 +41,17 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Geometry funding gate | Complete lattice; conservative lower >=215 TPS; strictly above measured frontier | Family rejection uses an impossible target-aware upper <=200 TPS; selected-tree gaps fail closed |
 | Graph-tail work | Closed at the 0.75 ms admission gate | Two independent windows produced 1,471 CUDA-event records; best repeatable recoverable p10 was 0.658355 ms |
 | Target attribution | Exact per-shape M/N/K plus overlap-aware exposure | M3 primary GEMMs occupy 12.360 ms on the terminal stream; aggregate residency alone overcounts alternate-stream overlap |
-| Selective target NVFP4 | Retain as the experimental performance record | Exact `199000+16` reached **3048.086 prompt / 112.499 generation tok/s**; production defaults remain base RadixArk |
+| Selective target NVFP4 | Launcher-default production checkpoint | User accepted the all-four-metric record; default relaunch and behavior/client gates passed |
 | MiaAI-Lab vLLM recipe | Matched `199000+16` reproduction remains an information gate | Same checkpoint/GPU uses MTP-3, TurboQuant 4-bit KV, and patched full-graph K+1 verify; published ~160 TPS lacks raw workload evidence |
 
 ## Primary performance record
 
 The root [`../BENCHMARK.md`](../BENCHMARK.md) scoreboard governs optimization
 ranking. The selective target-NVFP4 checkpoint completed exact `199000+16` at
-**3048.086 prompt tok/s**, **112.499 generation tok/s**, **65.286869 s TTFT**,
-and **65.420204 s** end to end. A deterministic selected-cache relaunch
-averaged **3047.309 prompt tok/s** over five exact requests and
-**118.389 generation tok/s** over three exact `199000+512` requests. This is
-the record to beat; production qualification remains separate from the
-single-run scoreboard.
+**3078.058 prompt tok/s**, **114.617 generation tok/s**, **64.651152 s TTFT**,
+and **64.782022 s** end to end. An independent launcher-default relaunch
+reached **3052.437/114.053**, **65.193816 s TTFT**, and **65.325334 s E2E**.
+Both exact requests beat every prior record metric. This is the record to beat.
 
 The next milestone is **3100 prompt / 120 generation tok/s**, with TTFT
 **<=64.20 s** and end-to-end time **<=64.35 s** in the same eligible request.
@@ -101,19 +100,23 @@ The next milestone is **3100 prompt / 120 generation tok/s**, with TTFT
 | MTP dual norm/concat | Rejected below funding | Exact native two-CTA fusion saved only 1.248 us at M1 and 2.080 us at M3 through the dependent FC |
 | Sparse top-p after finite top-k | Retain default-off native Windows opt-in in `7cb4ed0796`; keep AIR production default | Exact AIR pivot with 15 CUDA + 6 integration tests and repeatable cycle win; predecessor standalone long generation averaged only 111.559 tok/s |
 | Page-aligned FlashInfer prefix prefill | Retain default-off in `afd5606077`; production promotion pending | Bit-exact 25-shape ladder improved 5.270%; five exact prompts averaged 3209.728 tok/s with every prompt/TTFT/E2E gate passing |
-| Draft proposal top-k 32 | Rejected; keep 20 | Five-probe acceptance fell 2.217279 -> 2.173943 and latency worsened |
+| Draft proposal top-k 32 | Rejected against the historical k20 route | Five-probe acceptance fell 2.217279 -> 2.173943 and latency worsened |
 | Greedy draft proposal top-k 1 early screen | Superseded by PERF-050 | The single exact sample and three 6K probes understated the later exact199K+512 k1 gain |
-| Draft proposal top-k 16 | Rejected; keep 20 | Five-probe acceptance averaged 2.205710 versus 2.217279 at k20; k1/k8/k16/k32 now close static support sizing |
+| Draft proposal top-k 16 | Rejected against the historical k20 route | Five-probe acceptance averaged 2.205710 versus 2.217279 at k20 |
 | Proposal-only top-p 1.0 | Retain default-off in `6b963eed05` | After fixing all proposal-owner routes, AIR top-p fell 3 -> 1 launch/cycle; matched mean/median/p90 improved 0.194/0.185/0.149 ms and acceptance rose slightly |
 | Proposal additive-penalty scale | Rejected for current workload | Correctly routed scales 0.75 and 0.0 reproduced identical proposal/output sequences |
 | ReplaySSM commit overlap | Rejected | 186.8 us fold overlap expanded draft graph 8 by 176.4 us; serial fold+extend ~1.234 ms beat overlapped ~1.237 ms |
 | Static proposal gamma/rank/token calibration | Rejected | Two branch-exact corpora showed trajectory-dependent mismatch; maximin gain only 0.000133 and rank/token fits regressed held-out chronology |
 | P/q diagnostic queue | Increase bounded capacity 8 -> 64 in `4d6782121e` | Eight entries crashed at 151 cycles; bounded 64 completed a 239-record request without ordinary-path impact |
-| Greedy draft top-k 1 | Retain specialized long-window candidate; do not replace sampled k20 default | Exact199K+512 improved 116.549 -> 123.049 with identical digest, but exact16 remains ~98.5 tok/s over seven long-context cycles |
+| Greedy draft top-k 1 | Promoted with native delta q and hybrid target numerics | Exact199K+512 improved 116.549 -> 123.049 before native q; the final gate/up hybrid then set the accepted exact16 record |
 | XQA SM count / PDL | Keep all SMs and default PDL | Lower SM counts changed output for negligible savings; PDL on/off was timing-neutral |
 | M4 with greedy k1 | Rejected | Exact16 still required seven cycles; extra row/step adds cost without reducing the gate |
 | Device-resident cycle with greedy k1 | Rejected | Exact16 reached 97.730 tok/s with the control digest, below the adjacent 98.478 tok/s mean |
 | SM120 XQA structural constants | Keep restored FlashInfer control | Valid V buffering/tiling saved <=0.960 us; single-K-buffer output was nondeterministic and two buffers exceeded shared memory |
+| Native draft-k1 delta q | Retain default-off additive win | Exact q construction fell to 3.7-3.9 us; matched long generation improved 122.352 -> 123.559 tok/s and independent restart reached 123.831 |
+| Hidden rank classifier | Rejected; retain proof-bearing diagnostic only | q20 support gives a six-cycle oracle, but blocked minority-rank validation was 0-25% and locked exact16 corrections failed |
+| Compressed target KV | Closed as exact16 solution | Native NVFP4 XQA ceiling is only 0.520 ms/cycle before overhead and the format fails semantics |
+| Exact target FP4 tactic overrides / PDL | Keep selected cache and PDL | All-tactic sweep was bit-exact, but the best synthetic pair moved real generation only +0.114%; global PDL-off regressed |
 | Gate/up custom epilogue | Closed as a small EVT change | Selected tactics are swap-AB DP and need a custom half-height collective; stock EVT cannot pair/halve coordinates |
 | FlashInfer paged-only prefill | Rejected | Exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token generation changed **106.467 -> 104.117**; deterministic output also changed |
 | Global chunk-7680 default | Rejected | Base RadixArk exact prompt fell to **2226.770 tok/s** and only 200 MiB remained before follow-up probes |
