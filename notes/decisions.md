@@ -100,6 +100,10 @@ The next milestone is **3100 prompt / 120 generation tok/s**, with TTFT
 | M3 NVFP4 tile geometry | Keep selected swap-AB CTA-N 32 family | CTA-M 64 violates the 128-row scale TMA atom; CTA-N 32 is the minimum supported epilogue/LDSM width |
 | MTP dual norm/concat | Rejected below funding | Exact native two-CTA fusion saved only 1.248 us at M1 and 2.080 us at M3 through the dependent FC |
 | Sparse top-p after finite top-k | Retain default-off native Windows opt-in in `7cb4ed0796`; keep AIR production default | Exact AIR pivot with 15 CUDA + 6 integration tests and repeatable cycle win; predecessor standalone long generation averaged only 111.559 tok/s |
+| Page-aligned FlashInfer prefix prefill | Retain default-off in `afd5606077`; production promotion pending | Bit-exact 25-shape ladder improved 5.270%; five exact prompts averaged 3209.728 tok/s with every prompt/TTFT/E2E gate passing |
+| Draft proposal top-k 32 | Rejected; keep 20 | Five-probe acceptance fell 2.217279 -> 2.173943 and latency worsened |
+| Greedy draft proposal top-k 1 | Rejected; keep 20 | Exact generation stayed at 97.900 tok/s and three greedy acceptance probes averaged only 2.107020 |
+| Draft proposal top-k 16 | Rejected; keep 20 | Five-probe acceptance averaged 2.205710 versus 2.217279 at k20; k1/k8/k16/k32 now close static support sizing |
 | Gate/up custom epilogue | Closed as a small EVT change | Selected tactics are swap-AB DP and need a custom half-height collective; stock EVT cannot pair/halve coordinates |
 | FlashInfer paged-only prefill | Rejected | Exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token generation changed **106.467 -> 104.117**; deterministic output also changed |
 | Global chunk-7680 default | Rejected | Base RadixArk exact prompt fell to **2226.770 tok/s** and only 200 MiB remained before follow-up probes |

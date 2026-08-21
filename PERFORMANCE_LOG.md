@@ -38,6 +38,10 @@
 | PERF-024 deterministic exact prompt window | 3016.444 tok/s record | **3047.309 tok/s five-run mean** | **+30.865 / +1.023%** | restored 20,928-byte selected cache; 110 target configs promoted into process cache | 2026-08-20 18:17 PDT |
 | PERF-024 exact `199000+512` long generation | 109.683 tok/s prior qualified mean | **118.389 tok/s three-run mean** | **+8.706 / +7.937%** | persisted-cache relaunch; exact counts and stable digest | 2026-08-20 18:17 PDT |
 | PERF-024 real sampled `6213/512` support | 117.940 tok/s fresh matched baseline | **126.252 tok/s five-run mean** | **+8.312 / +7.048%** | sampled production profile on the persisted-cache relaunch | 2026-08-20 18:17 PDT |
+| PERF-042 exact `199000+16` prompt window | 3048.086 tok/s record | **3209.728 mean / 3205.270 worst / 3216.299 best** | **+161.642 / +5.303% mean** | page-aligned FlashInfer prefix prefill; five cache-flushed exact scores | 2026-08-21 03:50 PDT |
+| PERF-042 exact `199000+16` TTFT window | 65.286869 s record | **61.999103 s mean / 62.085254 s worst** | **-3.287766 s / -5.036% mean** | same five exact requests; every request below 64.20 s | 2026-08-21 03:50 PDT |
+| PERF-042 exact `199000+16` E2E window | 65.420204 s record | **62.153173 s mean / 62.240542 s worst** | **-3.267031 s / -4.994% mean** | same five exact requests; every request below 64.35 s | 2026-08-21 03:50 PDT |
+| PERF-042 exact `199000+16` short generation | 112.499 tok/s record | 98.029 mean / 86.371 worst / 112.151 best | -14.470 / -12.862% mean; noisy 15-interval metric | same five exact requests; generation target still open | 2026-08-21 03:50 PDT |
 | Current-source exact `199000+16` prompt baseline | 3048.086 tok/s record | **2937.410 tok/s five-run mean** | -110.676 / -3.631% | selected cache, chunk 7680, seed 615388882, two exact warmups then five cache-flushed scores | 2026-08-20 19:21 PDT |
 | Current-source exact `199000+16` generation baseline | 112.499 tok/s record | **93.539 tok/s five-run mean** | -18.960 / -16.854% | same exact requests; only 15 post-first-token intervals | 2026-08-20 19:21 PDT |
 | Current-source exact `199000+16` TTFT baseline | 65.286869 s record | **67.749929 s five-run mean** | +2.463060 s / +3.772% slower | same exact requests | 2026-08-20 19:21 PDT |
@@ -640,6 +644,10 @@ tree throughput can be ranked for production.
 | PERF-039 | Fuse the two MTP Gemma norms and concatenation before the BF16 fusion projection. | Native SM120 two-CTA producer | Rejected below funding | Bit-exact through the dependent FC. M1 saved 1.248 us and M3 saved 2.080 us; combined draft-decode/draft-extend value is only about 0.0033 ms/cycle. The prototype was removed. |
 | PERF-040 | Fuse the SM120 gate/up GEMM epilogue with compiled SwiGLU and NVFP4 packing. | Custom CUTLASS collective epilogue | Closed as a small change | Stock EVT cannot pair/halve output coordinates. Selected tactics are swap-AB DP, so even the proposed non-swap staged prototype cannot replace production; a distinct half-height collective is required. |
 | PERF-041 | Replace dense AIR apply after top-k 20 with an exact-pivot sparse-support apply. | Native CUDA sampling transform; default-off Windows gate | Retained in `7cb4ed0796`; client gate failed | 15 CUDA plus 6 integration tests pass. Top-k+top-p fell 109.12 -> 78.12 us at M1 and 121.17 -> 86.72 us at M3. Final-source cycle median was 16.001 ms with control-identical output/acceptance; predecessor long generation averaged only 111.559 tok/s. |
+| PERF-042 | Plan aligned ordinary-prefix FlashInfer prefill with the physical page size instead of page 1. | Native CUDA page-table builder plus FlashInfer page-64 dispatch | Retained in `afd5606077`; generation target open | All 25 exact-request shapes were bit-exact; eight focused/fast-plan tests and adversarial review pass. Five exact prompts averaged 3209.728 tok/s with every prompt/TTFT/E2E gate passing. |
+| PERF-043 | Widen aligned draft proposal support from top-k 20 to 32. | Existing launcher/configuration | Rejected | Five-probe acceptance fell 2.217279 -> 2.173943 tokens/verify and mean latency increased; added q support diluted useful target overlap. |
+| PERF-044 | Collapse draft q to top-k 1 for the greedy exact scoreboard. | Existing launcher/configuration | Rejected | First exact score remained 97.900 generation tok/s; three greedy acceptance probes averaged only 2.107020 tokens/verify. |
+| PERF-045 | Narrow aligned draft proposal support from top-k 20 to 16. | Existing launcher/configuration | Rejected | Five-probe acceptance averaged 2.205710, below k20's 2.217279, with slightly worse mean latency. Static proposal-support sizing is closed. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1086,3 +1094,45 @@ tree throughput can be ranked for production.
   was **2.194869**. Retain default-off as additive compute work, not a promoted
   client record.
 - Commit: signed `7cb4ed0796` (`perf: add exact sparse top-p renormalization`).
+
+### 2026-08-21 03:50 PDT - PERF-042 page-aligned prefix prefill
+
+- Native page-table construction plus FlashInfer page-64 planning was bit-exact
+  at all 25 exact-request prefix shapes. Aggregate paged attention improved
+  **2940.132 -> 2785.184 ms/layer**, with another **77.074 -> 3.263 us**
+  metadata reduction at the 192K prefix.
+- Five exact `199000+16` prompt scores were
+  `3216.299, 3209.808, 3208.212, 3209.050, 3205.270 tok/s`, mean
+  **3209.728**. TTFT averaged **61.999103 s** and E2E **62.153173 s**;
+  every sample cleared all prompt and wall-time thresholds.
+- All requests completed exact `199016` with the established deterministic
+  output digest. Short generation averaged only **98.029 tok/s**, so the
+  generation target remains open and PERF-042 is not a complete scoreboard
+  promotion yet.
+- Regression review found and repaired stale page metadata, decode-child
+  ownership, MXFP8 sidecar admission, and fail-loud mapping gaps. Eight
+  focused/fast-plan tests and fresh re-disproofs found no remaining material
+  behavioral regression risk.
+- Commit: signed `afd5606077` (`perf: use physical pages for aligned prefill`).
+
+### 2026-08-21 03:55 PDT - PERF-043 draft top-k 32 rejected
+
+- With page-aligned prefill held fixed, changed only aligned draft sampling
+  top-k from 20 to 32.
+- Five 512-token probes moved acceptance **2.217279 -> 2.173943** and worsened
+  mean client latency. Static support widening admits more q mass outside the
+  useful target overlap and is closed unchanged.
+
+### 2026-08-21 04:03 PDT - PERF-044 greedy draft top-k 1 rejected
+
+- Held page-aligned prefill fixed and changed only draft q top-k from 20 to 1.
+- Exact `199000+16` generation remained **97.900 tok/s**. Three 512-token
+  greedy-mode probes averaged only **2.107020** emitted tokens/verify, so
+  collapsing q did not improve target overlap and is closed.
+
+### 2026-08-21 04:12 PDT - PERF-045 draft top-k 16 rejected
+
+- Held page-aligned prefill fixed and changed only draft q top-k from 20 to 16.
+- Five sampled-profile acceptance probes averaged **2.205710**, below the
+  adjacent k20 mean **2.217279**, with slightly worse mean latency. Together
+  with the earlier k1/k8/k32 losses, this closes static support sizing.
