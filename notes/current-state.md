@@ -1,7 +1,7 @@
 # Current state
 
-**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
-23:34 PDT.
+**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-21
+00:17 PDT.
 
 **Qualified production source line:** commit
 `7f5af878da7b8dc43063f31e554dfc69cee5d510`
@@ -139,6 +139,13 @@ both deterministic digests. PERF-027 deliberately bypasses
 `torch.compiler.is_compiling()`: Inductor removes the eager BF16 SiLU rounding
 boundary, so the compiled M3 target graph retains its former function until a
 separately exact compiled-semantics producer qualifies.
+
+PERF-035 adds a third retained, default-off selective optimization:
+FlashInfer FP16 QK reduction for ordinary paged prefill only. It is bit-exact
+on the dominant 192K-prefix shape and improved the adjacent exact prompt mean
+**2985.317 -> 3005.592 tok/s** and TTFT
+**66.661888 -> 66.212604 s**. Target verification, draft graphs, long decode,
+and production defaults remain unchanged.
 
 The winning selective profile remains `AttnNVFP4`, chunk 7680, M3, and the
 bit-exact Windows Gemma residual-norm direct-output path. PERF-024 additionally

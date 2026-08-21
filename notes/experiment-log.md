@@ -4125,3 +4125,55 @@ mean 13.929045  17.125658 446.051        39.730
   `perf034-page32-server-20260820-2318.log`,
   `perf034-page32-exact-20260820-2322.log`, and
   `perf034-page32-long-20260820-2329.log`.
+
+### 2026-08-20 23:40 PDT - PERF-035 FP16 QK reduction passes exact-shape admission
+
+- Reproduced the dominant paged-prefix kernel in isolation at Q=7,000,
+  KV=192,000, 32 query heads, 16 FP8-E4M3 KV heads, dimension 128, logical
+  page size 1, and the selected 128 MiB workspace.
+- FlashInfer `use_fp16_qk_reduction=True` was bit-exact for both BF16 output and
+  LSE on the fixed random corpus. Five-sample medians improved
+  **109.321281 -> 108.171715 ms** (1.052%).
+- Added default-off
+  `SGLANG_OPT_FLASHINFER_PREFILL_FP16_QK_REDUCTION`. It reaches only ordinary
+  paged prefill (`spec_info is None`); target verification and the sync-free
+  draft graph retain FP32 QK reduction. The fast graph planner explicitly
+  rejects a precision switch on its cached module.
+- Python compilation, `git diff --check`, and the two existing
+  fast-prefill-plan CUDA tests passed. Next gate is the exact selective server
+  with page 64 and both deterministic digests.
+- The first launch exposed an integration error before graph capture:
+  `call_begin_forward` is a method on `FlashInferIndicesUpdaterPrefill`, so the
+  option must be read through `self.attn_backend`. The process exited cleanly;
+  the corrected access compiled successfully.
+- Candidate startup allocated both exact 200K pools, promoted 110 target
+  tactics, and captured target verify/draft decode/draft extend in
+  **14.94/1.05/0.84 s**. Five exact `199000+16` scores after two warmups:
+  - prompt `3021.513, 2994.717, 3034.849, 2992.053, 2984.829` tok/s,
+    mean **3005.592**;
+  - TTFT mean **66.212604 s**; E2E mean **66.379962 s**;
+  - all exact `199016`, `finish_reason=length`, digest
+    `cdf5bb57...f647d9`.
+- Three candidate exact `199000+512` requests measured prompt
+  `3000.680, 3004.423, 3003.056` tok/s (mean **3003.053**) and generation
+  `111.162, 112.609, 115.921` tok/s (mean **113.231**), with exact long digest
+  `cac0c6...a2092`.
+- Adjacent env-off control, same source and selected cache:
+  - short prompt `3001.086, 2969.155, 2965.490, 3010.093, 2980.761`,
+    mean **2985.317**;
+  - TTFT/E2E means **66.661888/66.834958 s**;
+  - long prompt/generation means **2958.955/113.407 tok/s** over three exact
+    requests.
+- Attribution: candidate improves adjacent prompt **20.275 tok/s / 0.679%**
+  and TTFT **0.449285 s / 0.674%**. Long decode differs by -0.155%, confirming
+  the option stays outside generation. Counts, finishes, fragments, and both
+  deterministic digests remained stable.
+- Stopped candidate tree `10444/41180 -> 53240 -> 52680 -> 53896`, then
+  control tree `44992/48440 -> 51728 -> 21532 -> 57268`, leaf-first. Port and
+  compiler cleanup passed after each.
+- Artifacts: `perf035-fp16qk-server-fixed-20260820-2344.log`,
+  `perf035-fp16qk-exact-20260820-2346.log`,
+  `perf035-fp16qk-long-20260820-2355.log`,
+  `perf035-control-server-20260821-0000.log`,
+  `perf035-control-exact-20260821-0002.log`, and
+  `perf035-control-long-20260821-0012.log`.

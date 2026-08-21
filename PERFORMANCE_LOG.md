@@ -633,6 +633,7 @@ tree throughput can be ranked for production.
 | PERF-032 | Coalesce the final 7680+7000 prefill pair into one 14680-token forward. | Scheduler tail geometry and Mamba branching checkpoint | Rejected | Exact completion fell to 1917.509 prompt tok/s and 103.780505 s TTFT with a changed digest. The larger ragged-current pass erased the saved dispatch. |
 | PERF-033 | Fuse full-attention sigmoid gating directly into the NVFP4 `o_proj` tuple. | PDL-safe native gate/quant producer | Rejected at isolated admission | Exact and 37% faster at M7680, but M3 saved only 0.427 us/layer (0.007 ms/replay) and total exact-prefill projection was about 21 ms. No model wiring was retained. |
 | PERF-034 | Tune global KV page size for the paged-prefix attention wall. | Page sizes 128 and 32 | Rejected | Page 128 floored pools to 199,936 tokens. Page 32 retained exact pools but does not reach prefill's page-size-1 token-index wrapper and reduced long generation to 112.576 tok/s. |
+| PERF-035 | Use FlashInfer FP16 QK reduction only for ordinary paged prefill. | Paged-prefix plan precision mode | Retained expert opt-in | Exact 192K-prefix kernel improved 109.321 -> 108.172 ms. Adjacent exact prompt improved 2985.317 -> 3005.592 tok/s and TTFT 66.662 -> 66.213 s; long decode was neutral. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -967,3 +968,22 @@ tree throughput can be ranked for production.
   with page size 1 and per-token slot IDs, so the storage-pool page setting
   does not change the dominant paged-prefix kernel. Page 32 mainly changes
   XQA/cache geometry and regressed decode. Page 64 remains selected.
+
+### 2026-08-21 00:17 PDT - PERF-035 FP16 QK reduction retained
+
+- At the exact Q=7000/KV=192000 paged-prefix shape, FP16 QK reduction preserved
+  BF16 output and LSE bit-for-bit while improving median kernel time
+  **109.321 -> 108.172 ms**.
+- Added a default-off expert environment gate reaching only ordinary paged
+  prefill. Speculative target verification and the graph-stable fast planner
+  retain their captured FP32 reduction module.
+- Candidate five-run exact prompt mean was **3005.592 tok/s** with
+  **66.212604/66.379962 s** TTFT/E2E. The adjacent env-off control averaged
+  **2985.317 tok/s** and **66.661888/66.834958 s**. This is a repeatable
+  **+20.275 tok/s / +0.679%** and **-0.449285 s / -0.674%** TTFT movement,
+  aligned with the isolated kernel delta.
+- Three candidate/control exact `199000+512` windows averaged
+  **3003.053/113.231** versus **2958.955/113.407** prompt/generation tok/s.
+  Decode is neutral as expected; both short and long digests remained exact.
+- Decision: retain as an explicit selective-profile optimization. Production
+  defaults and target/decode graphs remain unchanged.
