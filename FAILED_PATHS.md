@@ -748,3 +748,23 @@
   selected ragged/paged kernel shapes while eliminating host/model dispatch.
 - Related commit or revert: all tail option, sizing, scheduling, and tests were
   removed.
+
+## PERF-F049 - Full-attention sigmoid gate to NVFP4 tuple
+
+- Hypothesis: fusing the 16 attention-output gates with activation quantization
+  would remove an exposed gate/quant boundary from target verify and prefill.
+- Scope: BF16 width 4096, M1/M3/M7000/M7680, native Windows SM120.
+- Attempted change: PDL-safe precise sigmoid-multiply plus native E4M3/E2M1
+  packing with deterministic padding; no model wiring.
+- Benchmark evidence: staged-to-fused medians were `2.731 -> 2.304 us` at M3
+  and `135.402 -> 85.124 us` at M7680.
+- Correctness evidence: **9 CUDA tests** passed, covering production shapes,
+  all finite BF16 values, graph replay, fullgraph, and ModelOpt consumption.
+- Failure mode: only 16 target layers use the boundary. Projected M3 saving is
+  0.0068 ms/replay and exact-prefill saving is about 20.9 ms.
+- Why not to retry unchanged: both projections are below the 0.05 ms target
+  cycle admission floor and far below the roughly one-second prompt gap.
+- Reopen only if: the fusion expands across an adjacent attention kernel or
+  removes at least 0.05 ms of measured full-cycle exposure.
+- Related commit or revert: all kernel, wrapper, test, and benchmark files were
+  removed before model integration.

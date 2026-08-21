@@ -4047,3 +4047,23 @@ mean 13.929045  17.125658 446.051        39.730
   30,611 MiB free.
 - Removed the environment descriptor, buffer sizing, scheduler logic, and
   tests. Artifact: `perf032-tail-server-20260820-2259.log`.
+
+### 2026-08-20 23:07 PDT - PERF-033 sigmoid-gate fusion fails the funding floor
+
+- The current target trace attributes 16 `sigmoid_and_mul` kernels per replay,
+  0.54 ms aggregate residency but only 0.04 ms exclusive observed wall; much
+  of their apparent duration is PDL wait on attention.
+- Added an isolated precise sigmoid-multiply-to-NVFP4 JIT producer with the
+  same BF16 rounding, final FTZ boundary, native scale/value packing,
+  deterministic padding, and PDL ordering as the staged route.
+- Exact M1/M3/M7000/M7680, an all-finite-BF16 sweep, mutable graph replay,
+  nested fullgraph, and a captured ModelOpt tuple chain passed: **9 tests**.
+- Registered benchmark medians, staged versus fused:
+  - M1: **2.6496 -> 1.9744 us**
+  - M3: **2.7309 -> 2.3040 us**
+  - M7000: **117.5517 -> 77.9445 us**
+  - M7680: **135.4016 -> 85.1238 us**
+- Sixteen M3 layers save only 0.0068 ms per replay. Sixteen layers over the 26
+  exact-prefill passes save about 20.9 ms. These are not fundable against the
+  measured cycle and request variance, so no model integration or server
+  launch ran. Removed every experimental file.
