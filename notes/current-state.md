@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
-22:31 PDT.
+22:49 PDT.
 
 **Qualified production source line:** commit
 `7f5af878da7b8dc43063f31e554dfc69cee5d510`
@@ -320,6 +320,10 @@ distribution, and cost topology:
 - a separately exact compiled-semantics producer, whose isolated M3 boundary
   improved 70.848 -> 25.152 us while the profiled full-cycle median remained
   neutral at 16.045 ms versus 16.058 ms control;
+- explicit FlashInfer paged-prefix split sizes 4096/8192, which each required
+  2.265 GB temporary storage from the qualified 128 MiB workspace;
+- packed GDN target-verify split removal, because the selected Qwen width
+  already takes zero-copy Q/K/V aliases and ReplaySSM accepts their strides;
 - global chunk-7680 promotion, which regressed the base checkpoint and
   transiently reduced headroom to 200 MiB;
 - chunk 7808, which regressed the selective prompt mean to 2909.350 tok/s;
