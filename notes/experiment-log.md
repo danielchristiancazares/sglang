@@ -4314,3 +4314,140 @@ mean 13.929045  17.125658 446.051        39.730
   `FD04A7E133DC41056829D86A9E5DBD7D53FD6051DFE38978B9CE2BAFFE23C65F`)
   and `perf039-mtp-dual-norm-2cta-20260821-0225.log` (SHA-256
   `EFF09AA9EA36EF77390310111AF8C956C427C7EC31E18BE8862BBB4431C28183`).
+
+### 2026-08-21 02:40 PDT - PERF-040 full gate/up epilogue requires a new swap-AB collective
+
+- A read-only native CUTLASS review found that the SM120 block-scaled mainloop
+  is reusable, but the stock coordinate-preserving EVT cannot pair gate/up
+  accumulators, halve the output dimension, and generate scales for the
+  half-width tensor. A production fusion needs a custom collective epilogue
+  with exact BF16 staging plus TensorRT-LLM-compatible E4M3/E2M1 conversion.
+- The selected target gate/up tactics make the first proposed DP/non-swap
+  prototype ineligible. The recorded `2560x34816` tactics are `12/12/4` at
+  M1/M2/M4. FlashInfer orders each four-entry tile group as
+  swap-AB DP, non-swap DP, swap-AB Stream-K, non-swap Stream-K, so all three
+  selected entries are swap-AB DP. Gate/up pairing therefore lives on the
+  swapped GEMM M axis and needs a different half-height store design.
+- Decision: do not disguise this as a small EVT extension. Reopen only as a
+  staged custom-collective project after another measured boundary cannot fund
+  the target.
+
+### 2026-08-21 05:00 PDT - PERF-041 sparse top-p retained as an additive device-cycle win
+
+- The exact M3 trace attributed about **0.52 ms/cycle** to probability
+  transforms and rejection. Because top-k 20 runs before top-p, every top-p
+  input has sparse support while FlashInfer AIR still scans all 248,320
+  vocabulary entries through radix and apply passes.
+- Added a repository-native CUDA top-p producer behind default-off
+  `SGLANG_OPT_SPARSE_TOP_P_RENORM`. It runs only on native-Windows CUDA when
+  the host-known finite top-k bound is at most 32. Env-off, non-Windows,
+  non-CUDA, full-vocabulary, and wider-top-k paths retain FlashInfer.
+- The final kernel reuses FlashInfer's AIR init and three radix passes to obtain
+  the exact pivot for every boundary. It replaces only AIR's two-pass apply:
+  one scan records sparse `(index,value)` coordinates while reproducing AIR's
+  per-thread sums and 1024-thread CUB reduction, then updates only nonzeros.
+  Exact cutoff ties wider than 32 use AIR's dense store shape with the same
+  pivot and normalization.
+- Fifteen CUDA tests pass: four seeds at top-p 0.8/0.95, mutable graph replay,
+  adversarial boundaries immediately below/equal/above prefix masses for
+  support sizes 2-32, and production-vocabulary uniform/mixed tie overflow.
+  The target/draft graph integration suite also passes six tests.
+  Registered production-shape top-k+top-p medians were:
+  - M1: **109.1222 -> 78.1152 us**;
+  - M3: **121.1696 -> 86.7222 us**.
+- The first one-pass-pivot prototype supplied adjacent A-B-A full-cycle
+  evidence:
+  - candidate A1, 230 cycles: **16.910410 mean / 16.953609 median /
+    18.411668 p90 ms**;
+  - env-off control B, 234 cycles: **17.332105 / 17.321564 /
+    18.673213 ms**;
+  - independent candidate A2, 234 cycles: **16.302143 / 16.001501 /
+    17.372488 ms**.
+  Both candidate arms beat control mean, median, and p90. A2 and control had
+  identical output SHA-256 `aa6f3c83...8324`, acceptance
+  **2.188034**, histogram `[72,47,115]`, and 234 verification cycles.
+- The regression-reviewed final AIR-threshold source independently profiled
+  234 cycles at **16.090642 mean / 16.000558 median / 16.265734 p90 ms**,
+  again with control-identical output, acceptance, histogram, and cycle count.
+  Its trace contains 706 sparse applies, 706 AIR init launches, and 2,118 AIR
+  radix launches (three top-p calls and nine radix launches per cycle); AIR's
+  dense apply is absent. Sparse apply plus pivot work costs about
+  **0.175 ms/cycle**, roughly 0.10 ms below the prior AIR path.
+- Both candidate launches allocated exact 200K target/draft pools and captured
+  target, draft-decode, and draft-extend graphs. Seven exact `199000+16`
+  measurements all completed exact `199016`. Treating the first two as
+  external warmups, the five scored prompts were
+  `3003.699, 2978.012, 3037.976, 2961.838, 3020.744` tok/s, mean
+  **3000.454**; TTFT/E2E means were **66.328941/66.481154 s**.
+- Standalone client promotion failed. Three exact `199000+512` requests
+  measured generation `101.238, 125.757, 107.682` tok/s, mean
+  **111.559**, worst **101.238**, and prompt mean **2947.235**. Five native
+  acceptance probes averaged only **2.194869** emitted tokens/cycle. The
+  exact probability transform cannot improve proposal quality, so the device
+  win is retained as an additive opt-in rather than a new benchmark record.
+- On final AIR-threshold source, an independent cache-flushed
+  `199000+16` request completed exact `199016` at **3050.866 prompt /
+  110.092 short-generation tok/s**, **65.227372 s TTFT**, and
+  **65.363621 s E2E**. This clears capacity and raises no new record.
+- Server launch used the executable launcher's resolved arguments through
+  `D:\sglang\.venv\Scripts\python.exe -m sglang.launch_server` because the
+  relocated `sglang.exe` trampoline failed before startup. Candidate and
+  control trees were stopped leaf-first; all verified PIDs exited, port 30000
+  is free, compiler workers are absent, and the GPU returned to ordinary
+  display residency.
+- Key artifacts:
+  - exact kernel probe `perf041-sparse-top-p-onepass-20260821-0305.log`,
+    SHA-256
+    `7A1564B5407CBCF59733273FAB06DBC49CACC83BE448A40C0E0B8F84F8186644`;
+  - A1/control/A2 traces SHA-256
+    `81D2206B...3A8A`, `500A993B...152`, and `28947132...F65`;
+  - A2 manifest SHA-256
+    `66C7B85BF4680994E5DD2303E617BC07C490D33DAEB0F061DE8B5811B0801A51`;
+  - exact/long/acceptance logs SHA-256
+    `16D3BA62...75DC`, `4531EABA...9FFB`, and `D712308E...6F3C`.
+  - final trace/manifest/triage SHA-256
+    `35C51441...5800`, `0032F837...2268`, and `3A8E58DC...E221`;
+  - final exact-capacity log SHA-256
+    `517C5B6C45686B8119999D71E755891B7D9888D63BA75A87FCC44F79721FBE18`.
+- Untracked `ROADMAP.md`, `docs/NATIVE_TENSOR_VIEW_ABI.md`, `native/`, and
+  concurrent PDB/XML artifacts are user-owned and were not read, modified,
+  staged, or removed.
+
+### 2026-08-21 06:10 PDT - PERF-041 regression review repairs universal parity
+
+- Adversarial review disproved the first implementation's assumption that
+  requested top-k bounds actual support: FlashInfer retains every cutoff tie.
+  It also found serial pivot sums could disagree with AIR exactly at prefix
+  boundaries. The NaN overflow sentinel and custom pivot selector were removed.
+- Final source invokes FlashInfer's own AIR init/radix device kernels, then
+  replaces only the dense apply. Rows with support at most 32 use sparse
+  coordinate stores; wider tied support uses the exact dense store in the same
+  kernel. The expert env is cached once per process and no kernel-registry
+  entry is exposed while disabled.
+- Production-vocabulary prefix-boundary and full-vocabulary tie-overflow tests
+  now pass, as do enabled target-p and aligned-q graph replay. Final totals are
+  **15 CUDA tests + 6 integration tests**.
+- Final-source live evidence is recorded in the PERF-041 entry above:
+  **16.090642/16.000558 ms mean/median** over 234 cycles with exact
+  control-matched output and acceptance, plus exact `199016` capacity at
+  **3050.866 prompt tok/s**.
+- The tests and benchmark were moved to the canonical registered sampling
+  paths before commit. The post-move run passed all **21** focused tests; the
+  registered benchmark reproduced M1 **111.861 -> 78.038 us** and M3
+  **121.247 -> 86.925 us** for FlashInfer versus the sparse apply.
+- A fresh numerical disprover found no surviving AIR threshold, apply,
+  cutoff-tie, bound, RNG, or serving-route defect. The lifetime disprover
+  caught that the first forced-gate aligned-q test still bypassed the enclosing
+  Windows branch on Linux. The repaired test forces that branch, asserts the
+  sparse op ran, mutates replay inputs, and checks the caller-owned stable q
+  buffer; the policy-gate test is now host-independent. Fresh re-disproof found
+  no remaining graph-ownership or CI-ratchet defect, and all 21 tests pass.
+- Signed commit `7cb4ed0796c922d7f544cb152eb652844bb04fa2`
+  (`perf: add exact sparse top-p renormalization`) contains only the native
+  kernel, thin dispatch, routing, benchmark, and regression tests.
+- Final static validation passed Python compilation, CUDA `clang-format`,
+  ASCII inspection, and `git diff --check`.
+- The final verified server tree
+  `34008/36344 -> 24624 -> 35416 -> 38332 -> 3796` was stopped leaf-first.
+  Every PID is absent, port 30000 is free, compiler workers are absent, and the
+  RTX 5090 returned to 1,120 MiB display residency.

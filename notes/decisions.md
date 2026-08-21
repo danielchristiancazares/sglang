@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-21 02:25 PDT.
+**Reconciled through:** 2026-08-21 06:10 PDT.
 
 ## Selected production choices
 
@@ -99,6 +99,8 @@ The next milestone is **3100 prompt / 120 generation tok/s**, with TTFT
 | Gemma norm-to-NVFP4 | Rejected at dependent boundary | Bit-exact native fusion improved the isolated launch, but norm+quant+gate/up GEMM moved 0.096704 -> 0.097152 ms/layer because PDL already hides quantization |
 | M3 NVFP4 tile geometry | Keep selected swap-AB CTA-N 32 family | CTA-M 64 violates the 128-row scale TMA atom; CTA-N 32 is the minimum supported epilogue/LDSM width |
 | MTP dual norm/concat | Rejected below funding | Exact native two-CTA fusion saved only 1.248 us at M1 and 2.080 us at M3 through the dependent FC |
+| Sparse top-p after finite top-k | Retain default-off native Windows opt-in in `7cb4ed0796`; keep AIR production default | Exact AIR pivot with 15 CUDA + 6 integration tests and repeatable cycle win; predecessor standalone long generation averaged only 111.559 tok/s |
+| Gate/up custom epilogue | Closed as a small EVT change | Selected tactics are swap-AB DP and need a custom half-height collective; stock EVT cannot pair/halve coordinates |
 | FlashInfer paged-only prefill | Rejected | Exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token generation changed **106.467 -> 104.117**; deterministic output also changed |
 | Global chunk-7680 default | Rejected | Base RadixArk exact prompt fell to **2226.770 tok/s** and only 200 MiB remained before follow-up probes |
 | Selective chunk 7808 | Rejected | Exact-200K prompt averaged **2909.350 tok/s**, a stable cliff below the 7680 winner |

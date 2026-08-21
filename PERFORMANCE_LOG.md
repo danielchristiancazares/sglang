@@ -638,6 +638,8 @@ tree throughput can be ranked for production.
 | PERF-037 | Fuse residual-add/Gemma RMSNorm directly into the following NVFP4 activation tuple. | Native SM120 dual-output norm/quant producer | Rejected; boundary-neutral | Bit-exact at M1/M3/M7000/M7680. The real captured norm+quant+gate/up-GEMM boundary moved 0.096704 -> 0.097152 ms/layer, projecting -0.0287 ms over 64 layers. PDL already hides the separate quantizer. The prototype was removed. |
 | PERF-038 | Specialize the dominant M3 NVFP4 GEMM below CTA-M 128. | Native SM120 CUTLASS 64x32x256 cooperative/ping-pong schedules | Closed at compile-time architecture gate | Cooperative GEMM requires CTA-M >=128; ping-pong still requires the fixed 128-row NVFP4 scale TMA atom. Qualified M3 tactics already swap A/B and use the minimum supported CTA-N 32. No kernel launched. |
 | PERF-039 | Fuse the two MTP Gemma norms and concatenation before the BF16 fusion projection. | Native SM120 two-CTA producer | Rejected below funding | Bit-exact through the dependent FC. M1 saved 1.248 us and M3 saved 2.080 us; combined draft-decode/draft-extend value is only about 0.0033 ms/cycle. The prototype was removed. |
+| PERF-040 | Fuse the SM120 gate/up GEMM epilogue with compiled SwiGLU and NVFP4 packing. | Custom CUTLASS collective epilogue | Closed as a small change | Stock EVT cannot pair/halve output coordinates. Selected tactics are swap-AB DP, so even the proposed non-swap staged prototype cannot replace production; a distinct half-height collective is required. |
+| PERF-041 | Replace dense AIR apply after top-k 20 with an exact-pivot sparse-support apply. | Native CUDA sampling transform; default-off Windows gate | Retained in `7cb4ed0796`; client gate failed | 15 CUDA plus 6 integration tests pass. Top-k+top-p fell 109.12 -> 78.12 us at M1 and 121.17 -> 86.72 us at M3. Final-source cycle median was 16.001 ms with control-identical output/acceptance; predecessor long generation averaged only 111.559 tok/s. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1056,3 +1058,31 @@ tree throughput can be ranked for production.
   **2.080 us at M3**. The combined speculative-cycle ceiling is about
   **0.0033 ms**, far below the 0.25 ms funding floor.
 - Removed the prototype and exact JIT cache before model wiring.
+
+### 2026-08-21 02:40 PDT - PERF-040 selected swap-AB epilogue blocks a small fusion
+
+- CUTLASS's stock EVT cannot access paired accumulator coordinates or store an
+  N/2 result. The selected gate/up tactics are all swap-AB DP, moving the
+  paired dimension to GEMM M and invalidating the proposed non-swap prototype.
+- A full solution is a custom collective epilogue with tactic-specific weight
+  interleave, half-height output mapping, exact BF16 staging, and exact
+  TensorRT-LLM NVFP4 conversion. No implementation was started.
+
+### 2026-08-21 05:00 PDT - PERF-041 sparse top-p device win retained
+
+- Final exact-pivot top-k+top-p medians improved
+  **109.122 -> 78.115 us** at M1 and **121.170 -> 86.722 us** at M3.
+  Fifteen CUDA tests plus six target/draft graph integration tests cover
+  graph replay, AIR prefix boundaries, tie overflow, and q ownership.
+- Full-cycle A-B-A means were **16.910 / 17.332 / 16.302 ms** and medians
+  **16.954 / 17.322 / 16.002 ms** for candidate/control/candidate. Both
+  candidate arms improved p90; the independent A2 arm exactly matched control
+  output and acceptance.
+- Final-source follow-up measured **16.090642 mean / 16.000558 median /
+  16.265734 p90 ms** over 234 cycles with the same output/acceptance evidence.
+  It retains AIR's exact pivot passes and removes only the dense apply.
+- Exact short prompt mean was **3000.454 tok/s**. Exact long generation was
+  `101.238, 125.757, 107.682` tok/s, mean **111.559**; native acceptance mean
+  was **2.194869**. Retain default-off as additive compute work, not a promoted
+  client record.
+- Commit: signed `7cb4ed0796` (`perf: add exact sparse top-p renormalization`).

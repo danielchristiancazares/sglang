@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-21
-02:25 PDT.
+06:10 PDT.
 
 **Qualified production source line:** commit
 `7f5af878da7b8dc43063f31e554dfc69cee5d510`
@@ -171,12 +171,19 @@ two-CTA producer was bit-exact through the dependent FC but saved only
 **1.248 us at M1** and **2.080 us at M3**, about **0.0033 ms** over both draft
 phases. It was removed before routing.
 
-The next funded decode candidate is a repository-native SM120 CUTLASS
-gate/up-GEMM epilogue that emits the compiled-semantics SwiGLU NVFP4 tuple
-consumed by the unchanged down projection. It must replace, not extend, the
-Python/CuTe reference implementation; Python remains only a thin custom-op
-binding and dispatch surface. Isolated admission requires at least **0.30 ms**
-across all 64 distinct target MLP boundaries before a full-cycle server gate.
+PERF-040 closes the gate/up epilogue as a small extension: selected tactics are
+swap-AB DP, while stock CUTLASS EVT cannot pair accumulators or halve the
+output. A future implementation needs a distinct custom collective.
+
+PERF-041 is retained in signed commit `7cb4ed0796` as a default-off native
+sparse top-p producer. It is exact under the selected finite top-k contract,
+including AIR boundary and cutoff-tie semantics. The first A-B-A improved the
+**17.322 ms** control median to
+**16.954/16.002 ms**; final regression-reviewed source independently reached
+**16.000558 ms** with identical output and acceptance. The predecessor
+one-pass arm did not promote client throughput: exact long generation averaged
+**111.559 tok/s** with **2.194869** mean acceptance. Continue stacking
+acceptance-neutral native wins; AIR remains the production default.
 
 The winning selective profile remains `AttnNVFP4`, chunk 7680, M3, and the
 bit-exact Windows Gemma residual-norm direct-output path. PERF-024 additionally
