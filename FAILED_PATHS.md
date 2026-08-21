@@ -1009,3 +1009,39 @@
 - Reopen only if: a root-only, confidence-gated, or learned calibration policy
   demonstrates held-out overlap gain.
 - Related commit or revert: configuration-only; top-k 20 remains selected.
+
+## PERF-F061 - Vacuous proposal-only top-p 1.0 routing
+
+- Hypothesis: retaining all q top-k-20 tokens would improve overlap and
+  skipping two q top-p transforms would reduce the M3 cycle.
+- Scope: page-aligned selective M3 server, target top-p unchanged at 0.95,
+  temporary proposal-only q top-p override 0.95 -> 1.0.
+- Attempted change: cached the override on `MultiLayerEagleWorkerV2`.
+- Benchmark evidence: the apparent candidate/control cycle means were
+  16.098454/16.108184 ms, but both arms ran the default live path.
+- Correctness evidence: graph integration and exact capacity passed.
+- Failure mode: the active worker is `EAGLEWorkerV2`; compatibility `getattr`
+  in the runner resolved no override, making the experiment vacuous.
+- Why not to retry unchanged: it does not reach production.
+- Reopen only if: the override is cached on the actual worker and a trace proves
+  q top-p kernels are absent.
+- Related commit or revert: temporary source was removed; no commit.
+
+## PERF-F062 - Proposal additive-penalty scalar
+
+- Hypothesis: the draft head might implicitly over-apply presence/additive
+  penalties, so scaling q-only penalties could improve p/q overlap.
+- Scope: page-aligned M3, target penalties unchanged, proposal scales 0.75 and
+  0.0.
+- Attempted change: correctly cached the scalar on the live worker and scaled
+  the graph-stable additive row before proposal q construction.
+- Benchmark evidence: scale 0.75 reproduced all five control proposal/output
+  sequences exactly. Scale 0.0 reproduced the identical first 512-token
+  sequence and **2.216450** emitted length.
+- Correctness evidence: every probe completed 512 tokens with thinking.
+- Failure mode: this workload's proposal path has no decision-level leverage
+  through the captured additive row.
+- Why not to retry unchanged: even removing the row entirely changed nothing.
+- Reopen only if: an authoritative p/q capture shows a nonzero additive row and
+  coins near overlap boundaries for another workload.
+- Related commit or revert: temporary source removed; no commit.

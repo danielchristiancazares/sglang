@@ -201,6 +201,12 @@ Static draft top-k 32 was immediately rejected after acceptance fell
 generation remained **97.900 tok/s** and direct greedy acceptance averaged
 only **2.107020**. Draft top-k 16 also lost at **2.205710** versus k20
 **2.217279**; k1/k8/k16/k32 close the static support-size family.
+After repairing all proposal-owner routes, proposal-only top-p 1.0 is retained
+default-off in signed commit `6b963eed05`. It removes both q top-p transforms, improving matched
+M3 mean/median/p90 by **0.194/0.185/0.149 ms** and raising five-probe
+acceptance slightly to **2.229702**. Exact short generation still reached only
+**87.402 tok/s**, so the target remains open. Proposal penalty scales 0.75 and
+0.0 reproduced identical proposal/output sequences, closing that scalar.
 
 The winning selective profile remains `AttnNVFP4`, chunk 7680, M3, and the
 bit-exact Windows Gemma residual-norm direct-output path. PERF-024 additionally

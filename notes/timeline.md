@@ -474,6 +474,13 @@ code changes, or process state matter.
 - Draft top-k 16 averaged 2.205710 acceptance versus k20's 2.217279. With
   k1/k8/k16/k32 all losing, further proposal work requires conditional or
   learned calibration rather than another scalar support size.
+- The first proposal-only top-p 1.0 probe missed live `EAGLEWorkerV2`, so both
+  profiled arms were controls. After routing through both actual proposal
+  owners, AIR top-p fell from three to one launch/cycle and matched cycle
+  mean/median/p90 improved by 0.194/0.185/0.149 ms; the default-off win was
+  retained in signed commit `6b963eed05`.
+- Correctly routed proposal penalty scales 0.75 and 0.0 reproduced identical
+  proposal/output sequences; additive-penalty calibration was removed.
 
 ## Supersession map
 
