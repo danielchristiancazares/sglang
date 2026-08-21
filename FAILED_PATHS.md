@@ -811,3 +811,31 @@
   24-head/4-head/256-dimension precision economics.
 - Related commit or revert: the provisional PERF-035 code was removed in a
   corrective follow-up; FP32 remains selected.
+
+## PERF-F052 - FlashInfer paged-prefix KV MMA tile reduction
+
+- Hypothesis: reducing the traced FP8/head-dimension-256 paged-prefix kernel
+  from `NUM_MMA_KV=4` to 2 would improve occupancy and shorten the dominant
+  exact-prefill wall.
+- Scope: all 25 exact-request paged-prefix shapes, BF16 Q, FP8-E4M3 K/V, 24
+  query heads, 4 KV heads, dimension 256, logical page size 1.
+- Attempted change: a narrow native dispatcher cap for CTA-Q 64 in
+  `BatchPrefillWithPagedKVCacheDispatched`; CTA-Q 16/32/128 were screened
+  separately.
+- Benchmark evidence: the correctly routed candidate regressed the aggregate
+  from **3013.932 to 3414.968 ms/layer** (**+13.306%**). CTA-Q 16 reached
+  **4154.807 ms/layer**; CTA-Q 32 and 128 were invalid trait combinations.
+- Correctness evidence: the candidate completed every shape but changed the
+  aggregate output and LSE digests. The restored CTA-Q-64 control retained
+  `d9ad4f3e...992d6` output and `2b20c9f2...ebc9` LSE.
+- Failure mode: the smaller KV tile performs more iteration/reduction work and
+  loses substantially on the active SM120 kernel; its different reduction
+  order also changes BF16 output.
+- Why not to retry unchanged: the deterministic full ladder shows a 13.3%
+  kernel regression before server overlap or request variance.
+- Reopen only if: a materially different FA2 implementation, mainloop, or
+  accumulator schedule changes the active tile economics.
+- Related commit or revert: both external header copies were restored to
+  SHA-256
+  `2E5927BDC0D36DDB393CB4FAB68C2E958D65D5B4B0085C969F7CFA777ECDFB5B`;
+  the experimental generated module was deleted.

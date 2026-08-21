@@ -634,6 +634,7 @@ tree throughput can be ranked for production.
 | PERF-033 | Fuse full-attention sigmoid gating directly into the NVFP4 `o_proj` tuple. | PDL-safe native gate/quant producer | Rejected at isolated admission | Exact and 37% faster at M7680, but M3 saved only 0.427 us/layer (0.007 ms/replay) and total exact-prefill projection was about 21 ms. No model wiring was retained. |
 | PERF-034 | Tune global KV page size for the paged-prefix attention wall. | Page sizes 128 and 32 | Rejected | Page 128 floored pools to 199,936 tokens. Page 32 retained exact pools but does not reach prefill's page-size-1 token-index wrapper and reduced long generation to 112.576 tok/s. |
 | PERF-035 | Use FlashInfer FP16 QK reduction only for ordinary paged prefill. | Paged-prefix plan precision mode | Rejected as noise | Initial server A-B moved +0.679%, but the exact 25-prefix ladder was 163.705 ms slower across 16 layers. The opt-in and tests were removed. |
+| PERF-036 | Reduce the native FA2 paged-prefix KV MMA tile for FP8 KV/head dimension 256. | FlashInfer `BatchPrefillWithPagedKVCacheDispatched` | Rejected | The correctly routed `NUM_MMA_KV=2` kernel regressed the exact ladder from 3013.932 to 3414.968 ms/layer (+13.306%) and changed output/LSE digests. CTA-Q 16 also lost; CTA-Q 32/128 are invalid. Restored CTA-Q 64 and `NUM_MMA_KV=4`. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1002,3 +1003,18 @@ tree throughput can be ranked for production.
   lacks a kernel mechanism on the true workload. Removed the environment
   descriptor, backend routing, and test change. FP32 QK reduction remains
   selected.
+
+### 2026-08-21 01:11 PDT - PERF-036 native paged-prefix tile family rejected
+
+- Source-provenance review found that the first `NUM_MMA_KV=2` experiment
+  changed the single-prefill dispatcher, not the batch-paged dispatcher that
+  owns the 78.1%-share exact-prefix kernel. Its apparent
+  **3013.932 -> 2977.011 ms/layer** movement is noise and is not credited.
+- After moving the cap exclusively to
+  `BatchPrefillWithPagedKVCacheDispatched`, the same 25-shape ladder regressed
+  to **3414.968 ms/layer** (**+13.306%**) and changed both output and LSE
+  digests. CTA-Q 16 measured **4154.807 ms/layer**; CTA-Q 32/128 are invalid
+  for the active FP8/head-dimension-256 traits.
+- Restored the maintained and installed FlashInfer headers byte-for-byte,
+  removed the generated candidate module, and retained CTA-Q 64 with
+  `NUM_MMA_KV=4`. No full server gate was warranted.

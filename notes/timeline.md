@@ -431,6 +431,12 @@ code changes, or process state matter.
 - FlashInfer FP16 QK reduction initially moved adjacent server means by +0.679%,
   but a corrected exact 24Q/4KV/256-dimension prefix ladder measured it
   **163.705 ms slower** across 16 layers. The provisional opt-in was removed.
+- Native FA2 tile screening then closed the practical dispatcher family for
+  the same paged-prefix wall. CTA-Q 16 was much slower, CTA-Q 32/128 were
+  invalid, and the correctly routed CTA-Q-64 `NUM_MMA_KV=2` kernel regressed
+  the exact ladder **13.306%** and changed output/LSE digests. The dependency
+  header and generated cache were restored before pivoting back to a
+  repository-native SM120 decode fusion.
 - Retained in `5ea3b734b0`. The headline record remains PERF-024; these
   additive changes are the active source for the next optimization.
 
