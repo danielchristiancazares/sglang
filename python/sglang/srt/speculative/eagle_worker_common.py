@@ -340,6 +340,7 @@ def build_eagle_verify_input(
     draft_tokens: torch.Tensor,
     draft_probs: Optional[torch.Tensor],
     diagnostic_draft_logits: Optional[torch.Tensor] = None,
+    diagnostic_draft_hidden_states: Optional[torch.Tensor] = None,
     *,
     target_worker: TpModelWorker,
     topk: int,
@@ -421,6 +422,7 @@ def build_eagle_verify_input(
         seq_lens_cpu=None,
         draft_probs=draft_probs,
         diagnostic_draft_logits=diagnostic_draft_logits,
+        diagnostic_draft_hidden_states=diagnostic_draft_hidden_states,
     )
 
 

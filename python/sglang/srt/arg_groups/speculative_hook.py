@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import sys
 from typing import TYPE_CHECKING, Optional
 
 from sglang.srt.arg_groups.choices import DRAFT_ATTENTION_BACKEND_CHOICES
@@ -23,6 +24,30 @@ if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_topk1_delta_proposal(server_args: ServerArgs, enabled: bool) -> None:
+    if not enabled:
+        return
+    from sglang.srt.arg_groups.overrides import resolved_view
+
+    view = resolved_view(server_args)
+    speculative_algorithm = (view.speculative_algorithm or "").upper()
+    if (
+        sys.platform != "win32"
+        or view.device != "cuda"
+        or speculative_algorithm not in ("NEXTN", "EAGLE", "EAGLE3")
+        or not view.speculative_use_rejection_sampling
+        or server_args.speculative_draft_sampling_top_k != 1
+        or view.enable_multi_layer_eagle
+        or server_args.speculative_device_resident_cycle
+    ):
+        raise ValueError(
+            "SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL requires native-Windows "
+            "single-layer CUDA EAGLE/NEXTN rejection sampling with "
+            "--speculative-draft-sampling-top-k 1 and without the "
+            "device-resident cycle."
+        )
 
 
 def _disable_overlap_schedule_for_cpu(server_args: ServerArgs) -> None:
@@ -82,6 +107,12 @@ def _resolve_speculative_algorithm_alias(
 
 def handle_speculative_decoding(server_args: ServerArgs) -> None:
     cfg = resolving_view(server_args)
+    from sglang.srt.environ import envs
+
+    _validate_topk1_delta_proposal(
+        server_args,
+        envs.SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL.get(),
+    )
     if (
         cfg.speculative_draft_model_path is not None
         and cfg.speculative_draft_model_revision is None

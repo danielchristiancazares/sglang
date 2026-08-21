@@ -260,7 +260,7 @@ bool is_valid_config(
 
 #define _GET_IF(                                                                                                       \
     W_TYPE, THREAD_M_BLOCKS, THREAD_N_BLOCKS, THREAD_K_BLOCKS, M_BLOCK_SIZE_8, GROUP_BLOCKS, NUM_THREADS, IS_ZP_FLOAT) \
-  else if (                                                                                                            \
+  if (                                                                                                                 \
       q_type == W_TYPE && thread_m_blocks == THREAD_M_BLOCKS && thread_n_blocks == THREAD_N_BLOCKS &&                  \
       thread_k_blocks == THREAD_K_BLOCKS && m_block_size_8 == M_BLOCK_SIZE_8 && group_blocks == GROUP_BLOCKS &&        \
       num_threads == NUM_THREADS && is_zp_float == IS_ZP_FLOAT) {                                                      \
@@ -1000,6 +1000,41 @@ void gptq_marlin_gemm(
       use_atomic_add,
       use_fp32_reduce,
       is_zp_float);
+}
+
+template <typename scalar_t>
+void nvfp4_marlin_gemm(
+    tvm::ffi::TensorView a,
+    tvm::ffi::TensorView b_q_weight,
+    tvm::ffi::TensorView b_scales,
+    tvm::ffi::TensorView global_scale,
+    tvm::ffi::TensorView b_zeros,
+    tvm::ffi::TensorView g_idx,
+    tvm::ffi::TensorView perm,
+    tvm::ffi::TensorView c,
+    tvm::ffi::TensorView c_tmp,
+    tvm::ffi::TensorView a_tmp,
+    tvm::ffi::TensorView workspace,
+    bool is_k_full,
+    bool use_atomic_add,
+    bool use_fp32_reduce) {
+  gptq_marlin_gemm<scalar_t>(
+      a,
+      b_q_weight,
+      b_scales,
+      global_scale,
+      b_zeros,
+      g_idx,
+      perm,
+      c,
+      c_tmp,
+      a_tmp,
+      workspace,
+      host::kFE2M1f.id(),
+      is_k_full,
+      use_atomic_add,
+      use_fp32_reduce,
+      false);
 }
 
 }  // namespace sglang
