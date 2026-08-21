@@ -839,3 +839,28 @@
   SHA-256
   `2E5927BDC0D36DDB393CB4FAB68C2E958D65D5B4B0085C969F7CFA777ECDFB5B`;
   the experimental generated module was deleted.
+
+## PERF-F053 - Gemma residual norm to NVFP4 activation tuple
+
+- Hypothesis: emitting exact NVFP4 values/scales from the selected fused
+  residual-add/Gemma-RMSNorm kernel would remove the quantization launch before
+  each target projection and save at least 0.30 ms over 64 layers.
+- Scope: BF16 width 5120 at M1/M3/M7000/M7680, exact E4M3/E2M1 packing, then
+  the real M3 `5120 -> 34816` NVFP4 gate/up GEMM.
+- Attempted change: temporary repository-native SM120 CUDA dual-output
+  producer; Python was only a thin custom-op binding. No model dispatch was
+  changed.
+- Benchmark evidence: isolated M3 staged/fused medians were
+  **0.040000/0.027296 ms**. With the dependent gate/up GEMM, 51-sample medians
+  were **0.096704/0.097152 ms**, a **0.000448 ms/layer regression**.
+- Correctness evidence: normalized BF16 input, updated residual, packed values,
+  and all scale bytes were bit-exact at every production shape.
+- Failure mode: programmatic dependent launch already overlaps the standalone
+  quantizer with GEMM startup, so isolated launch removal does not shorten the
+  full boundary.
+- Why not to retry unchanged: the exact dependent-boundary benchmark projects
+  **-0.028672 ms** across 64 layers, below zero and far below admission.
+- Reopen only if: the fusion expands across the GEMM mainloop/epilogue or a
+  later dependency changes PDL overlap at this boundary.
+- Related commit or revert: all prototype source was removed and the exact JIT
+  cache directory was deleted before model wiring.

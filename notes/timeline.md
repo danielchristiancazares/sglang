@@ -437,6 +437,11 @@ code changes, or process state matter.
   the exact ladder **13.306%** and changed output/LSE digests. The dependency
   header and generated cache were restored before pivoting back to a
   repository-native SM120 decode fusion.
+- An exact native residual-norm-to-NVFP4 producer improved its isolated M3
+  launch but was neutral at the dependent projection boundary:
+  **0.096704 ms staged vs 0.097152 ms fused** per layer. Existing PDL already
+  hides activation quantization behind gate/up GEMM startup; the prototype
+  closed before model wiring.
 - Retained in `5ea3b734b0`. The headline record remains PERF-024; these
   additive changes are the active source for the next optimization.
 
