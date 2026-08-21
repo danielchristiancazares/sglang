@@ -4451,3 +4451,169 @@ mean 13.929045  17.125658 446.051        39.730
   `34008/36344 -> 24624 -> 35416 -> 38332 -> 3796` was stopped leaf-first.
   Every PID is absent, port 30000 is free, compiler workers are absent, and the
   RTX 5090 returned to 1,120 MiB display residency.
+
+### 2026-08-21 03:25 PDT - PERF-042 logical page-64 prefill passes isolated admission
+
+- Began from signed `3c931538210d8446be982bf0464d8eab3832704b`.
+  The only pre-existing worktree state was the concurrent ABI ledger entry and
+  user-owned `ROADMAP.md`, `docs/NATIVE_TENSOR_VIEW_ABI.md`, and `native/`.
+- Source tracing found that the exact 199K ordinary EXTEND path uses a physical
+  64-token NHD KV pool but hardcodes FlashInfer's logical prefill page size to
+  one, materializing one token-table entry per cached token. This mechanism is
+  distinct from the rejected global page-size sweep, which changed allocator
+  geometry while the prefill wrapper remained page-1.
+- Built a session-local A-B-A ladder over identical BF16 queries and the same
+  underlying FP8-E4M3 K/V storage. The first smoke accidentally compared
+  page-1 slots beginning at 1 against page-64 storage beginning after the
+  64-token dummy page; it correctly failed parity and was discarded. After
+  making both tables skip the same dummy page, output and LSE matched bit for
+  bit at every exact shape.
+- Full seven-sample-per-arm medians across prefixes `7680..184320` with
+  `Q=7680`, plus prefix `192000` with `Q=7000`, measured:
+  - page-1 A1 sum: **2940.219736 ms/layer**;
+  - page-64 candidate: **2785.184319 ms/layer**;
+  - page-1 A2 sum: **2940.043736 ms/layer**;
+  - page-1 control mean: **2940.131736 ms/layer**;
+  - candidate delta: **-154.947417 ms/layer / -5.270084%**;
+  - projected 16-layer delta: **-2479.158676 ms**.
+- Artifact
+  `perf042-logical-page64-ladder-20260821-0325.log` has SHA-256
+  `F03D27631CC95D478569A824043294F1C4BAEE3A9DE90EDF78F8A0B0672FA409`.
+  Harness `perf042_flashinfer_logical_page_ladder.py` has SHA-256
+  `8A38241F3882E4ED13E8AEA82DE044D618C0123D9A537F426F8320FA2FA8FF8C`.
+- Implemented a default-off
+  `SGLANG_OPT_FLASHINFER_PAGE_ALIGNED_PREFILL` route. A thin Python dispatcher
+  uses a native CUDA page-table builder, passes logical page size 64 only for
+  batch-one aligned ordinary ragged-prefix EXTEND, and views the existing flat
+  NHD K/V buffers by physical page. Unaligned and unsupported calls retain the
+  page-1 path; unsupported pool/configuration combinations fail explicitly
+  when the expert gate is requested.
+- Five focused CUDA tests pass: scattered physical pages, mutable graph replay,
+  page-1/page-64 attention output/LSE parity, and aligned-route plus unaligned
+  fallback/disabled metadata. The registered metadata benchmark measured native page-64
+  versus existing Triton page-1 at **1.175 vs 3.838 us** for 7,680 cached
+  tokens and, after fail-loud validation, **3.777 vs 77.066 us** for 192,000.
+- Next: launch the selective checkpoint at chunk 7680 with only the page-aligned
+  expert gate added, confirm resolved args/graphs/endpoint, then run the exact
+  warmup and scoreboard/capacity sequence before any promotion decision.
+
+### 2026-08-21 03:50 PDT - PERF-042 exact prompt and timing target cleared
+
+- Launched the selective checkpoint with the exact qualified 200K/M3/chunk-7680
+  arguments and only `SGLANG_OPT_FLASHINFER_PAGE_ALIGNED_PREFILL=1` added;
+  sparse top-p remained off and draft top-k remained 20. `/server_info`
+  resolved model `AttnNVFP4`, chunk 7680, page 64, 200000 total tokens,
+  FlashInfer prefill, TRT-LLM decode, two steps, and three draft tokens.
+  `/model_info` reported image/audio understanding false. Startup captured
+  target verify, draft decode, and draft extend with 4.60 GiB available.
+- The server tree was `32852 -> 35984 -> {35384,19976}` under the detached
+  launcher. Before launch the RTX 5090 used 1,151 MiB with 31,037 MiB free;
+  after exact scoring it used 29,608 MiB with 2,580 MiB free.
+- One exact warmup plus five cache-flushed scored `199000+16` requests all
+  completed `199016`, `finish_reason=length`, and deterministic output SHA-256
+  `cdf5bb57...47d9`. Prompt samples were
+  `3216.299, 3209.808, 3208.212, 3209.050, 3205.270 tok/s`, mean
+  **3209.728**. TTFT samples were
+  `61.872355, 61.997478, 62.028314, 62.012114, 62.085254 s`, mean
+  **61.999103**. E2E samples were
+  `62.046023, 62.150982, 62.182455, 62.145862, 62.240542 s`, mean
+  **62.153173**. Every prompt, TTFT, and E2E sample clears the target.
+- Short generation was `86.371, 97.717, 97.314, 112.151, 96.594 tok/s`,
+  mean **98.029**, so the four-target objective is not yet complete.
+- Five ordinary k20 acceptance probes measured
+  `2.178723, 2.178723, 2.295964, 2.226087, 2.206897`, mean
+  **2.217279** tokens/verify.
+- Evidence SHA-256:
+  first exact invocation `0FFB2B5...A68F`, four-run window
+  `11C341B5...D6CF`, and k20 acceptance `21F3AF97...8A5C`.
+- Stopped exact leaves `35384/19976`, listener `35984`, and parent `32852`
+  leaf-first. Every PID is absent, port 30000 is free, and the GPU returned to
+  1,092 MiB display residency.
+
+### 2026-08-21 03:55 PDT - PERF-043 static draft top-k 32 rejected
+
+- Relaunched the same page-aligned selective server with only
+  `--speculative-draft-sampling-top-k 20 -> 32`. All three speculative graph
+  phases captured and the endpoint became healthy with 4.60 GiB available.
+- Five acceptance samples were
+  `2.188034, 2.245614, 2.206897, 2.031746, 2.197425`, mean
+  **2.173943**, below the adjacent k20 mean **2.217279**. Mean 512-token
+  latency also worsened. Static widening is rejected.
+- Artifact `perf043-page64-acceptance-k32-20260821-0355.log` has SHA-256
+  `9D5B67B3199595BD2552FE470519F787846683AAEA00714703C3D3AFB0C057C1`.
+- Stopped verified leaves `24332/31340`, listener `22468`, and parent `26464`.
+  All PIDs are absent, port 30000 is free, and the GPU returned to 1,092 MiB.
+
+### 2026-08-21 04:03 PDT - PERF-044 greedy draft top-k 1 rejected
+
+- Relaunched page-aligned prefill with only
+  `--speculative-draft-sampling-top-k 1`. All three graph phases captured with
+  4.60 GiB available.
+- One exact warmup plus score returned exact `199016`, the established
+  `cdf5bb57...47d9` digest, **3215.538 prompt / 97.900 generation tok/s**,
+  **61.887001 s TTFT**, and **62.040219 s E2E**. Prompt/time remained strong,
+  but generation did not improve.
+- Three greedy-mode acceptance probes measured
+  `2.115702, 2.106996, 2.098361`, mean **2.107020**. Collapsing q to draft
+  argmax loses useful overlap and is rejected.
+- Evidence SHA-256: exact score `D795FC79...9E85`; greedy acceptance
+  `0ED58E15...F561`.
+- Stopped leaves `49744/48312`, listener `55888`, and parent `20920`.
+  Every PID is absent, port 30000 is free, and the GPU returned to 1,092 MiB.
+
+### 2026-08-21 04:12 PDT - PERF-045 draft top-k 16 rejected
+
+- Relaunched the same page-aligned selective server with only draft top-k 16.
+  All three graphs captured with 4.60 GiB available.
+- Five acceptance samples were
+  `2.265487, 2.235808, 2.197425, 2.169492, 2.160338`, mean
+  **2.205710**, below k20 **2.217279**. Mean client latency also worsened
+  slightly. Static k16 is rejected, closing k1/k8/k16/k32 support sizing.
+- Artifact `perf045-page64-acceptance-k16-20260821-0411.log` has SHA-256
+  `2F02B967E732C4DD1750E73D428D89B561B3C388EDC52BC639305EB994D5CBF7`.
+- Stopped leaves `27464/22348`, listener `38996`, and parent `49560`.
+  Every PID is absent, port 30000 is free, and GPU residency returned to
+  1,092 MiB.
+
+### 2026-08-21 04:22 PDT - PERF-042 regression repairs and exact requalification
+
+- Adversarial review found three material gaps in the first page-aligned
+  implementation: aligned prefill could leave `last_page_len=64` for later
+  page-1 spec/decode plans; decode-only FlashInfer-derived children could own a
+  prefill option; and rank-3 MXFP8 buffers could pass admission while their
+  scale sidecars were ignored. A mapping review also required fail-loud
+  physical-slot alignment and bounds rather than silent integer flooring.
+- Repaired source now resets shared last-page metadata before every enabled
+  prefill/decode plan, scopes admission to the actual FlashInfer prefill child,
+  requires matching paged allocator geometry, PLAIN access, non-MXFP8
+  contiguous NHD storage without sidecars, and DCP one. The native CUDA kernel
+  asserts nonnegative page-aligned slots and physical-page bounds.
+- Six page-table/routing tests plus the two existing fast-plan tests pass.
+  New transitions cover aligned to spec, decode, and unaligned fallback, plus
+  the disabled page-1 path. A real paged allocator covers reserved/reordered
+  pages, and a subprocess proves misaligned graph replay fails on-device. The
+  final metadata benchmark remains
+  **1.181 vs 3.859 us** at 7,680 and **3.777 vs 77.066 us** at 192,000.
+- The repaired source relaunched with explicit log:
+  `FlashInfer page-aligned prefill enabled: page_size=64,
+  physical_pages=3126`. All three speculative graph phases captured.
+- One exact warmup plus score completed `199016`,
+  `finish_reason=length`, established digest `cdf5bb57...47d9`,
+  **3212.868 prompt / 86.118 short-generation tok/s**,
+  **61.938435 s TTFT**, and **62.112615 s E2E**.
+- Repaired server/exact artifacts have SHA-256
+  `249E24374D97AAD4D4D528A1017847AD9DD08940DDC6C6C148A3B03919F42805`
+  and
+  `ABE8D2DFE87319127030BDF10827596BEAFB288414FDAD0C1B969C574F049A52`.
+- Stopped leaves `38876/39628`, listener `39920`, and parent `13724`.
+  All PIDs are absent, port 30000 is free, and the GPU returned to 1,092 MiB.
+- Fresh claim-by-claim re-disproof found no remaining material regression:
+  default-off effective behavior stays page-1 without JIT; allocator-backed
+  mapping and fail-loud replay are ratcheted; all admitted in-tree storage is
+  contiguous sidecar-free PLAIN NHD; page-table ownership survives plan/run;
+  and spec/decode/unaligned/PDMux fallback state is isolated. The added
+  `PrefillMetadata.logical_page_size=1` field is an intentional internal
+  observation-surface change with no cross-file consumer.
+- Signed commit `afd5606077aca4a90b4fd3a5162e21bce4f3919b`
+  (`perf: use physical pages for aligned prefill`) contains only the native
+  CUDA table builder, thin binding/dispatch, expert gate, tests, and benchmark.

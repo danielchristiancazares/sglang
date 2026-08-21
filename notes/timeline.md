@@ -461,6 +461,19 @@ code changes, or process state matter.
   benchmark, and regression coverage.
 - The earlier eager-fusion line remains in `5ea3b734b0`; the active source now
   includes `7cb4ed0796`. The headline record remains PERF-024.
+- Page-aligned ordinary-prefix FlashInfer prefill then reused the physical
+  64-token KV pages instead of a token-granular page table. The exact 25-shape
+  ladder was bit-exact and 5.270% faster; five exact prompt scores averaged
+  **3209.728 tok/s**, with every prompt/TTFT/E2E gate passing. The combined
+  objective remains open because short generation averaged 98.029 tok/s.
+  Signed commit `afd5606077` retains the default-off native route.
+- Static draft top-k 32 reduced mean acceptance from 2.217279 to 2.173943 and
+  was rejected; top-k 20 remains selected.
+- Greedy draft top-k 1 also failed: exact short generation was 97.900 tok/s
+  and greedy acceptance averaged 2.107020, so broad q support remains useful.
+- Draft top-k 16 averaged 2.205710 acceptance versus k20's 2.217279. With
+  k1/k8/k16/k32 all losing, further proposal work requires conditional or
+  learned calibration rather than another scalar support size.
 
 ## Supersession map
 

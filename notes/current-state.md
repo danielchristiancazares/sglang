@@ -185,6 +185,23 @@ one-pass arm did not promote client throughput: exact long generation averaged
 **111.559 tok/s** with **2.194869** mean acceptance. Continue stacking
 acceptance-neutral native wins; AIR remains the production default.
 
+PERF-042 is retained in signed commit `afd5606077` as the new exact-request
+prompt and timing leader, pending full promotion gates. A native page-table
+builder lets aligned ordinary
+prefix prefill consume the existing physical 64-token pages directly. Five
+exact `199000+16` requests averaged **3209.728 prompt tok/s** with
+**61.999103 s TTFT** and **62.153173 s E2E**; the worst prompt was
+**3205.270**, so every prompt/time threshold passed. All 25 isolated prefix
+shapes matched page-1 output and LSE bit-for-bit. Short generation averaged
+only **98.029 tok/s**, so the combined four-threshold objective remains open.
+Eight focused/fast-plan tests and the final adversarial review pass after
+repairing stale page metadata, ownership, MXFP8 admission, and mapping checks.
+Static draft top-k 32 was immediately rejected after acceptance fell
+**2.217279 -> 2.173943**. Greedy draft top-k 1 was also rejected: exact
+generation remained **97.900 tok/s** and direct greedy acceptance averaged
+only **2.107020**. Draft top-k 16 also lost at **2.205710** versus k20
+**2.217279**; k1/k8/k16/k32 close the static support-size family.
+
 The winning selective profile remains `AttnNVFP4`, chunk 7680, M3, and the
 bit-exact Windows Gemma residual-norm direct-output path. PERF-024 additionally
 runs an ordinary 16,384-token target EXTEND pass under the existing

@@ -953,3 +953,59 @@
   proposal-quality improvement lifts the worst long window above 120.
 - Related commit or revert: signed `7cb4ed0796` retains the kernel default-off
   as additive work.
+
+## PERF-F058 - Draft proposal top-k 32
+
+- Hypothesis: widening q from top-k 20 to 32 would recover target-top-20 tokens
+  ranked 21-32 by the draft model and raise linear-chain acceptance.
+- Scope: selected page-aligned M3 server, ordinary rejection sampling, changing
+  only `--speculative-draft-sampling-top-k 20 -> 32`.
+- Attempted change: ran five native 512-token acceptance probes per arm.
+- Benchmark evidence: mean emitted length fell **2.217279 -> 2.173943**; the
+  k32 arm also increased mean client latency.
+- Correctness evidence: every probe completed 512 tokens with thinking enabled.
+- Failure mode: extra proposal support mostly diluted q mass outside useful
+  target overlap instead of recovering enough missing target mass.
+- Why not to retry unchanged: matched five-probe evidence rejects static k32.
+- Reopen only if: a measured root-only or confidence-gated policy identifies a
+  repeatable subset where ranks 21-32 improve overlap.
+- Related commit or revert: configuration-only experiment; top-k 20 remains
+  selected.
+
+## PERF-F059 - Greedy draft proposal top-k 1
+
+- Hypothesis: for the temperature-zero exact scoreboard, deterministic draft
+  argmax would align more often with the one-hot greedy target than sampling
+  from q top-k 20.
+- Scope: page-aligned selective M3 server; only
+  `--speculative-draft-sampling-top-k 20 -> 1` changed.
+- Attempted change: one warmup plus one exact `199000+16` score, followed by
+  three greedy 512-token acceptance probes.
+- Benchmark evidence: exact short generation was **97.900 tok/s**. Greedy
+  acceptance samples `2.115702, 2.106996, 2.098361` averaged **2.107020**.
+- Correctness evidence: exact request completed `199016` with the established
+  deterministic output digest; all probes completed 512 tokens.
+- Failure mode: the draft argmax is not sufficiently aligned with target
+  argmax; removing q support loses useful alternative-token overlap.
+- Why not to retry unchanged: both the exact client and direct greedy
+  acceptance evidence reject the premise.
+- Reopen only if: a calibrated root head changes draft argmax accuracy on a
+  held-out corpus.
+- Related commit or revert: configuration-only experiment; top-k 20 remains
+  selected.
+
+## PERF-F060 - Draft proposal top-k 16
+
+- Hypothesis: modestly concentrating q from top-k 20 to 16 would remove
+  low-overlap draft-tail mass without the support loss observed at top-k 8.
+- Scope: page-aligned selective M3 server; only draft sampling top-k changed.
+- Attempted change: five sampled-profile 512-token acceptance probes.
+- Benchmark evidence: samples
+  `2.265487, 2.235808, 2.197425, 2.169492, 2.160338` averaged
+  **2.205710**, below k20 **2.217279**; mean latency was also slightly worse.
+- Correctness evidence: all probes completed 512 tokens with thinking enabled.
+- Failure mode: any concentration gain was smaller than the lost support mass.
+- Why not to retry unchanged: k1, k8, k16, and k32 all lose to k20 evidence.
+- Reopen only if: a root-only, confidence-gated, or learned calibration policy
+  demonstrates held-out overlap gain.
+- Related commit or revert: configuration-only; top-k 20 remains selected.
