@@ -648,6 +648,8 @@ tree throughput can be ranked for production.
 | PERF-043 | Widen aligned draft proposal support from top-k 20 to 32. | Existing launcher/configuration | Rejected | Five-probe acceptance fell 2.217279 -> 2.173943 tokens/verify and mean latency increased; added q support diluted useful target overlap. |
 | PERF-044 | Collapse draft q to top-k 1 for the greedy exact scoreboard. | Existing launcher/configuration | Rejected | First exact score remained 97.900 generation tok/s; three greedy acceptance probes averaged only 2.107020 tokens/verify. |
 | PERF-045 | Narrow aligned draft proposal support from top-k 20 to 16. | Existing launcher/configuration | Rejected | Five-probe acceptance averaged 2.205710, below k20's 2.217279, with slightly worse mean latency. Static proposal-support sizing is closed. |
+| PERF-046 | Override proposal-only top-p to 1.0 and skip q top-p renormalization. | Default-off graph and post-extend dispatch | Retained in `6b963eed05`; generation target open | After repairing routing across all proposal owners, AIR top-p fell from three to one launch/cycle. M3 mean/median/p90 improved 0.194/0.185/0.149 ms; acceptance rose slightly to 2.229702. |
+| PERF-047 | Scale proposal-only additive penalties. | Temporary default-off graph dispatch | Rejected as no-op on workload | Correctly routed scales 0.75 and 0.0 reproduced the exact same proposal/output trajectory; the active workload exposed no leverage through this additive row. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1136,3 +1138,43 @@ tree throughput can be ranked for production.
 - Five sampled-profile acceptance probes averaged **2.205710**, below the
   adjacent k20 mean **2.217279**, with slightly worse mean latency. Together
   with the earlier k1/k8/k32 losses, this closes static support sizing.
+
+### 2026-08-21 04:42 PDT - PERF-046 proposal top-p 1.0 probe was vacuous
+
+- The override was cached only on `MultiLayerEagleWorkerV2`; the live worker
+  was `EAGLEWorkerV2`, so the runner's compatibility default retained normal
+  top-p. The alleged candidate and matched control were both controls.
+- Their cycle difference (**0.010/0.002 ms mean/median**) is noise evidence,
+  not a mechanism result. Proposal-only top-p 1.0 remains unmeasured until
+  routed through the live worker. Removed all temporary source changes.
+
+### 2026-08-21 05:12 PDT - PERF-046 fully routed proposal top-p 1.0 retained
+
+- Routed the override through both actual owners: captured
+  `EAGLEDraftCudaGraphRunner` proposals and worker-owned post-extend proposals.
+  The final trace reduced AIR top-p from about three to one launch/cycle.
+- Matched M3 control/candidate cycle:
+  - mean **16.108184 -> 15.913862 ms** (-0.194322 ms);
+  - median **16.044640 -> 15.859291 ms** (-0.185350 ms);
+  - p90 **16.247111 -> 16.097856 ms** (-0.149255 ms).
+- Five acceptance probes averaged **2.229702** versus k20/top-p0.95
+  **2.217279**, while mean 512-token latency improved about 1.6%. Exact
+  capacity/digest passed at **3214.278 prompt / 87.402 short-generation
+  tok/s**, **61.911255 s TTFT**, and **62.082877 s E2E**.
+- Retain default-off as an additive generation-cycle win; it does not solve the
+  120 tok/s exact short-generation target alone.
+- Seventeen focused graph/device-cycle/runner tests pass. Claim-by-claim
+  re-disproof found no material exactness, routing, RNG, lifetime, ownership,
+  mutation, or synchronization regression.
+- Commit: signed `6b963eed05` (`perf: skip full-support draft top-p`).
+
+### 2026-08-21 05:02 PDT - PERF-047 proposal penalty scale has no workload effect
+
+- Added one cached proposal-only additive-penalty scalar to both worker
+  implementations and scaled the graph-stable additive row before q.
+- Correctly routed scale 0.75 reproduced the exact same five sampled proposal,
+  output, acceptance, and histogram sequences as the preceding control.
+  Scale 0.0 reproduced the same first 512-token sequence:
+  **2.216450** emitted length and identical output SHA-256.
+- The workload therefore exposes no acceptance leverage through this row;
+  temporary source was removed.

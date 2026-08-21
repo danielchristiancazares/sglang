@@ -4617,3 +4617,89 @@ mean 13.929045  17.125658 446.051        39.730
 - Signed commit `afd5606077aca4a90b4fd3a5162e21bce4f3919b`
   (`perf: use physical pages for aligned prefill`) contains only the native
   CUDA table builder, thin binding/dispatch, expert gate, tests, and benchmark.
+
+### 2026-08-21 04:42 PDT - PERF-046 proposal top-p 1.0 probe was vacuous
+
+- Added a temporary default-off proposal-only top-p override, but cached it
+  only on `MultiLayerEagleWorkerV2`. The live profile reports
+  `sglang.srt.speculative.eagle_worker_v2.EAGLEWorkerV2`; its compatibility
+  default retained normal q top-p, so no candidate mechanism executed.
+- Five sampled acceptance probes were
+  `2.216450, 2.235808, 2.197425, 2.169492, 2.285714`, mean
+  **2.220978**, indistinguishable from k20 **2.217279**. Exact `199000+16`
+  completed at **3213.575 prompt / 97.005 generation tok/s**,
+  **61.924794 s TTFT**, and **62.079425 s E2E**, with the established digest.
+- The nominal candidate M3 profile (236 cycles) measured
+  **16.098454 mean / 16.043013 median / 16.303694 p90 ms**. Fresh matched
+  control (222 cycles) measured
+  **16.108184 / 16.044640 / 16.247111 ms**. Saving only
+  **0.009730/0.001627 ms** mean/median while worsening p90. Both arms were
+  controls; this quantifies noise only and does not reject a correctly routed
+  q top-p override.
+- Candidate/control trace SHA-256:
+  `67E0880A...310` and `694EBC70...CA8`; manifest SHA-256:
+  `597AE4FC...ADA2` and `E2C2A7B4...C6E0`.
+  Acceptance/exact logs have SHA-256 `D23452EB...B8D5C` and
+  `C059B8EB...BB09D`.
+- Removed every temporary source change. Stopped candidate tree
+  `30100 -> 33980 -> {39316,39584}` and control tree
+  `33816 -> 46112 -> {29200,56348}` leaf-first. All PIDs are absent, port
+  30000 is free, and the GPU returned to 1,092 MiB display residency.
+
+### 2026-08-21 05:02 PDT - PERF-047 proposal penalty scale is a no-op
+
+- Added a temporary proposal-only additive-penalty scalar to both
+  `EAGLEWorkerV2` and `MultiLayerEagleWorkerV2`. The live runner scaled the
+  graph-stable additive row without changing target p or rejection.
+- Scale 0.75 reproduced the exact five sequences previously seen in the
+  vacuous control: identical output hashes, histograms, verification counts,
+  and acceptance values. Scale 0.0 reproduced the identical first measured
+  sequence at **2.216450** emitted length.
+- Artifacts `perf047-page64-acceptance-penalty075-routed-20260821-0451.log`
+  and `perf047-page64-acceptance-penalty0-20260821-0502.log` have SHA-256
+  `A1BE44B241C7C726DA79D1B3C5AEF83DB22636305080CAA065B1DE1FD464326B`
+  and `3103BA0F07866A2EDB2A755F4AAEB3C3928CBF6E366B392F0397C0CBD3881DB5`.
+- Removed every temporary source change. Stopped the 0.75 and 0.0 trees
+  leaf-first; all PIDs are absent, port 30000 is free, and the GPU returned to
+  ordinary display residency.
+
+### 2026-08-21 05:12 PDT - PERF-046 fully routed proposal top-p 1.0 passes cycle gate
+
+- A second routing audit found the captured proposal owner is
+  `EAGLEDraftCudaGraphRunner`, while post-extend q belongs to
+  `EagleDraftWorker._sample_next_draft_proposal`. Routed the cached,
+  validated override through both. A focused regression test now proves graph
+  and post-extend owners both skip q top-p without mutating the original
+  sampling-info object.
+- The final trace contains 230 AIR apply/init launches and 690 radix launches
+  over 228 scored cycles (one target-p call and three radix passes per cycle),
+  down from about three AIR calls per cycle in control.
+- Final candidate M3 cycle was **15.913862 mean / 15.859291 median /
+  16.097856 p90 ms** over 228 cycles. Fresh matched control was
+  **16.108184 / 16.044640 / 16.247111 ms** over 222 cycles, for improvements
+  of **0.194322 / 0.185350 / 0.149255 ms**.
+- Five candidate acceptance samples were
+  `2.245614, 2.245614, 2.245614, 2.115702, 2.295964`, mean
+  **2.229702**, versus adjacent control **2.217279**. Mean 512-token latency
+  improved from about 4.124 s to **4.059 s**.
+- Exact `199000+16` completed `199016`, established digest
+  `cdf5bb57...47d9`, **3214.278 prompt / 87.402 generation tok/s**,
+  **61.911255 s TTFT**, and **62.082877 s E2E**.
+- Candidate trace/manifest SHA-256:
+  `8AF16D07...C5A9` / `52C361C3...35A9`; trace summary
+  `1F7F3B36...52DA`; acceptance/exact logs
+  `F1EBD11C...E9E9` / `F0947CCA...8EB4`; server log
+  `378E635E...DE42`.
+- Stopped the final tree `33960 -> 29968 -> {33124,51604}` leaf-first. All
+  PIDs are absent, port 30000 is free, and GPU residency returned to 1,092 MiB.
+- Final routing covers EAGLE graph/eager/prefill/post-extend and multi-layer
+  single-CG/per-step/eager/prefill owners. The option is rejection-only,
+  accepts only the measured value 1.0, preserves STANDALONE/missing-field
+  identity, and materializes all-ones top-p for generic non-CUDA builders.
+- Seventeen focused graph/device-cycle/runner tests pass. Fresh adversarial
+  re-disproof found no remaining target-marginal, q/token identity, proposal
+  RNG draw-count, default routing, CUDA-graph lifetime, source mutation,
+  asynchronous ownership, or host-sync defect.
+- Signed commit `6b963eed056e7516eaf233501a271afe039a70d3`
+  (`perf: skip full-support draft top-p`) contains the expert gate, complete
+  proposal routing, and regression tests.

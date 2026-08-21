@@ -104,6 +104,8 @@ The next milestone is **3100 prompt / 120 generation tok/s**, with TTFT
 | Draft proposal top-k 32 | Rejected; keep 20 | Five-probe acceptance fell 2.217279 -> 2.173943 and latency worsened |
 | Greedy draft proposal top-k 1 | Rejected; keep 20 | Exact generation stayed at 97.900 tok/s and three greedy acceptance probes averaged only 2.107020 |
 | Draft proposal top-k 16 | Rejected; keep 20 | Five-probe acceptance averaged 2.205710 versus 2.217279 at k20; k1/k8/k16/k32 now close static support sizing |
+| Proposal-only top-p 1.0 | Retain default-off in `6b963eed05` | After fixing all proposal-owner routes, AIR top-p fell 3 -> 1 launch/cycle; matched mean/median/p90 improved 0.194/0.185/0.149 ms and acceptance rose slightly |
+| Proposal additive-penalty scale | Rejected for current workload | Correctly routed scales 0.75 and 0.0 reproduced identical proposal/output sequences |
 | Gate/up custom epilogue | Closed as a small EVT change | Selected tactics are swap-AB DP and need a custom half-height collective; stock EVT cannot pair/halve coordinates |
 | FlashInfer paged-only prefill | Rejected | Exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token generation changed **106.467 -> 104.117**; deterministic output also changed |
 | Global chunk-7680 default | Rejected | Base RadixArk exact prompt fell to **2226.770 tok/s** and only 200 MiB remained before follow-up probes |
