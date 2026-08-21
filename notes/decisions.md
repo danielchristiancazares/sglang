@@ -182,6 +182,22 @@ could address target KV in the wrong unified-pool space or bypass multi-layer
 front compaction. Isolated repair coverage passes; full-model requalification
 has not.
 
+### Apple Silicon experimental lane
+
+| Candidate | Status | Why |
+|---|---|---|
+| Bartowski Qwen3.8-27B IQ2_XXS checkpoint | Retained playground | Immutable artifact is locally behavior-capable after the GGUF USER_DEFINED tokenizer repair; full scoreboard, capacity, and OpenCode2 qualification remain open |
+| Compact heterogeneous merged GGUF storage on MPS | Retained | Signed `13bea403d6` removes 40 packed copies / 478.125 MiB per forward, improves adjacent `128+32` generation **3.1858 -> 3.309 tok/s**, lowers reported weights **10.03 -> 9.03 GB**, and preserves the exact digest |
+| Pinned llama.cpp build 10547 IQ2 route | Rejected as record route | Exact five-run `12+256` aggregate is **14.661356 tok/s**, 21.943% below the Apple record; retain only as a dependency/kernel oracle |
+| Thresholded MLX quantized-query tiling | Retained opt-in | Large synthetic quantized prefill improves time and peak allocation while the 1 GiB threshold preserves the exact 5K path; maximum-context qualification remains open |
+| Always-on MLX quantized-query tiling | Rejected | Exact 5K prompt throughput regressed while only larger score shapes benefited |
+
+The current funded native step is an IQ2_XXS batch-one/batch-prefill Metal
+geometry that reuses grid/sign/auxiliary decode work across output rows. The
+separate long-context route still requires a pinned MLX dependency with the
+quantized-GQA tail correction, an explicit cache limit, and a completed
+capacity ladder.
+
 ## Protected boundaries
 
 - Preserve the user's worktree and unrelated `sglang.bundle`.
@@ -199,7 +215,8 @@ has not.
 
 ## Reopening criteria
 
-The exhaustive optimization goal is complete. A closed branch reopens when an
+The exhaustive native-Windows NVFP4 goal is complete. The Apple Silicon lane
+is active under the newer explicit request. A closed branch reopens when an
 explicit user request or materially new evidence changes its governing
 assumption:
 
