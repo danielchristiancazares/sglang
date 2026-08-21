@@ -911,3 +911,45 @@
   wider draft topology multiplies this boundary.
 - Related commit or revert: all prototype source and the exact JIT cache were
   removed before model routing.
+
+## PERF-F056 - Stock-EVT gate/up GEMM-SwiGLU-NVFP4 fusion
+
+- Hypothesis: replacing FlashInfer's BF16 linear-combination epilogue with an
+  activation/block-scale EVT would fuse the dominant gate/up boundary.
+- Scope: selected M3 SM120 NVFP4 gate/up tactics and exact compiled SwiGLU
+  arithmetic.
+- Attempted change: none; external CUTLASS source and selected tactic
+  reachability were the admission gate.
+- Benchmark evidence: selected `2560x34816` tactics are `12/12/4`; all map to
+  swap-AB DP under FlashInfer's four-config-per-tile ordering.
+- Correctness evidence: source inspection only.
+- Failure mode: standard EVT is coordinate-preserving and cannot pair two
+  accumulators or halve the output. Swap-AB moves gate/up pairing to GEMM M,
+  requiring an independent half-height store design.
+- Why not to retry unchanged: this is a custom collective epilogue project,
+  not a fusion-functor or tactic edit.
+- Reopen only if: a staged swap-AB collective first proves exact BF16 paired
+  output and retains the selected mainloop economics.
+- Related commit or revert: no source change.
+
+## PERF-F057 - Sparse top-p as a standalone generation winner
+
+- Hypothesis: removing dense AIR top-p would independently raise exact
+  long-generation throughput above 120 tok/s.
+- Scope: native-Windows top-k 20/top-p 0.95, exact `199000+512`, unchanged
+  proposal and rejection RNG.
+- Attempted change: exact native sparse-support top-p behind a default-off
+  expert environment gate.
+- Benchmark evidence: A-B-A device cycles improved, but long generation was
+  `101.238, 125.757, 107.682` tok/s, mean **111.559** and worst **101.238**.
+- Correctness evidence: 15 CUDA and 6 target/draft integration tests; final
+  A2/control trace output, acceptance histogram, and cycle count matched
+  exactly; exact capacity passed.
+- Failure mode: the transform reduces cycle cost but cannot raise stochastic
+  acceptance. The measured acceptance mean was only **2.194869**.
+- Why not to retry unchanged: standalone client throughput remains below the
+  milestone despite a real compute win.
+- Reopen only if: stacked acceptance-neutral wins or a separately qualified
+  proposal-quality improvement lifts the worst long window above 120.
+- Related commit or revert: signed `7cb4ed0796` retains the kernel default-off
+  as additive work.

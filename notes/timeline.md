@@ -449,8 +449,18 @@ code changes, or process state matter.
 - An occupancy-preserving native MTP dual-norm/concat producer was exact
   through its BF16 FC but saved only 1.248 us at M1 and 2.080 us at M3, about
   0.0033 ms across both draft phases. It closed before routing.
-- Retained in `5ea3b734b0`. The headline record remains PERF-024; these
-  additive changes are the active source for the next optimization.
+- The proposed gate/up GEMM epilogue proved to require a custom swap-AB
+  collective rather than a stock EVT functor and was deferred.
+- Native sparse top-p retained AIR's exact radix pivot and replaced its dense
+  apply after top-k 20. Fifteen CUDA plus six integration tests passed;
+  A-B-A target-cycle medians improved 16.954/17.322/16.002 ms, and final
+  reviewed source independently reached 16.001 ms with identical output and
+  acceptance. Predecessor long generation still averaged only 111.559 tok/s
+  under 2.194869 mean acceptance, so the kernel remains a default-off additive
+  win rather than a new record. Signed commit `7cb4ed0796` retains the kernel,
+  benchmark, and regression coverage.
+- The earlier eager-fusion line remains in `5ea3b734b0`; the active source now
+  includes `7cb4ed0796`. The headline record remains PERF-024.
 
 ## Supersession map
 
