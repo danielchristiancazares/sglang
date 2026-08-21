@@ -74,10 +74,10 @@ def tiled_quantized_scaled_dot_product_attention(
         tile_queries = queries[..., start:end, :]
         if outputs:
             # MLX may schedule independent lazy branches together and reserve
-            # every score matrix at once.  Carry a zero-valued dependency from
-            # the preceding tile so their large temporaries have disjoint
-            # lifetimes while the small tile outputs remain concatenable.
-            tile_queries = tile_queries + mx.sum(outputs[-1][..., -1:, :]) * 0
+            # every score matrix at once.  Serialize each branch through the
+            # graph's dependency primitive so their large temporaries have
+            # disjoint lifetimes without changing query values.
+            tile_queries = mx.depends(tile_queries, outputs[-1])
         tile_mask = _quantized_query_tile_mask(
             mask,
             start=start,
