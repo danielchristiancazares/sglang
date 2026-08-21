@@ -189,6 +189,7 @@ def fast_prefill_plan(
     q_data_type: Union[str, torch.dtype] = "float16",
     kv_data_type: Optional[Union[str, torch.dtype]] = None,
     o_data_type: Optional[Union[str, torch.dtype]] = None,
+    use_fp16_qk_reduction: bool = False,
     non_blocking: bool = True,
     fixed_split_size: Optional[int] = None,
     prefix_len_ptr: Optional[torch.Tensor] = None,
@@ -222,6 +223,10 @@ def fast_prefill_plan(
     assert (
         getattr(self, "_cached_module", None) is not None
     ), "fast_prefill_plan requires _cached_module from a prior real plan() (capture)"
+    assert not use_fp16_qk_reduction, (
+        "fast_prefill_plan reuses the module selected during capture and does "
+        "not support changing QK reduction precision"
+    )
 
     if head_dim_vo is None:
         head_dim_vo = head_dim_qk
@@ -408,6 +413,9 @@ class FlashInferAttnBackend(AttentionBackend):
         self.prefill_split_tile_size = None
         self.decode_split_tile_size = None
         self.disable_cuda_graph_kv_split = False
+        self.prefill_use_fp16_qk_reduction = (
+            envs.SGLANG_OPT_FLASHINFER_PREFILL_FP16_QK_REDUCTION.get()
+        )
         if self.enable_deterministic:
             self.decode_use_tensor_cores = True
             self.prefill_split_tile_size = get_int_env_var(
@@ -2205,6 +2213,10 @@ class FlashInferIndicesUpdaterPrefill:
             1,
             q_data_type=self.q_data_type,
             kv_data_type=self.data_type,
+            use_fp16_qk_reduction=(
+                self.attn_backend.prefill_use_fp16_qk_reduction
+                and spec_info is None
+            ),
             custom_mask=use_custom_mask,
             non_blocking=True,
             fixed_split_size=fixed_split_size,

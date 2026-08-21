@@ -908,6 +908,7 @@ class Envs:
     SGLANG_SM120_FLASHMLA_BACKEND = EnvStr("flashinfer")
     SGLANG_FLASHINFER_PREFILL_SPLIT_TILE_SIZE = EnvInt(4096)
     SGLANG_FLASHINFER_DECODE_SPLIT_TILE_SIZE = EnvInt(2048)
+    SGLANG_OPT_FLASHINFER_PREFILL_FP16_QK_REDUCTION = EnvBool(False)
     SGLANG_FLASHINFER_AUTOTUNE_CACHE = EnvBool(True)
     # Also autotune one EXTEND-shaped dummy at max_prefill_tokens during
     # warmup. Opt-in: the extra forward needs transient activation headroom

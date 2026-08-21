@@ -133,7 +133,7 @@ class TestFastPrefillPlan(CustomTestCase):
         self._real_plan(w)
         return self._forward(w)
 
-    def _out_fast(self, *, kv_indices=None):
+    def _out_fast(self, *, kv_indices=None, fp16_reduction=False):
         """Same attention, planned via the host-known fast path. One real plan()
         first populates `_cached_module` (mirrors capture), then fast_prefill_plan
         re-plans from host metadata."""
@@ -154,6 +154,7 @@ class TestFastPrefillPlan(CustomTestCase):
             causal=True,
             q_data_type=DTYPE,
             kv_data_type=DTYPE,
+            use_fp16_qk_reduction=fp16_reduction,
             qo_indptr_host=self.qo_indptr_host,
             kv_indptr_host=self.kv_indptr_host,
             kv_lens_host=self.kv_lens_host,
@@ -161,6 +162,13 @@ class TestFastPrefillPlan(CustomTestCase):
             max_kv_len=self.max_kv_len,
         )
         return self._forward(w)
+
+    def test_fast_plan_rejects_precision_switch(self):
+        with self.assertRaisesRegex(
+            AssertionError,
+            "does not support changing QK reduction precision",
+        ):
+            self._out_fast(fp16_reduction=True)
 
     def test_fast_plan_matches_upstream(self):
         # Two genuinely independent plan paths over identical q/kv must produce

@@ -428,6 +428,9 @@ code changes, or process state matter.
 - Page 128 failed exact pool capacity and page 32 regressed long generation.
   FlashInfer prefill already uses per-token indices with logical page size 1,
   so global storage-page tuning cannot address the 78.1% paged-prefix wall.
+- FlashInfer FP16 QK reduction then proved bit-exact on the real 192K-prefix
+  shape. The default-off ordinary-prefill gate improved adjacent exact prompt
+  **2985.317 -> 3005.592 tok/s** and TTFT by **0.449 s**, with neutral decode.
 - Retained in `5ea3b734b0`. The headline record remains PERF-024; these
   additive changes are the active source for the next optimization.
 
