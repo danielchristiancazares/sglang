@@ -864,3 +864,27 @@
   later dependency changes PDL overlap at this boundary.
 - Related commit or revert: all prototype source was removed and the exact JIT
   cache directory was deleted before model wiring.
+
+## PERF-F054 - Sub-128-row SM120 NVFP4 GEMM tile
+
+- Hypothesis: reducing the dominant M3 NVFP4 CTA from `128x32x256` to
+  `64x32x256` would cut padded token-row work and shorten the exposed GEMM
+  family.
+- Scope: repository-native CUTLASS, M=3, K=5120, N=34816, existing packed
+  values/scales, static persistent scheduler, PDL enabled.
+- Attempted change: temporary cooperative and ping-pong JIT specializations
+  using the bundled FlashInfer/CUTLASS headers.
+- Benchmark evidence: none; both variants failed compile-time architectural
+  contracts before a kernel launch.
+- Correctness evidence: no output was produced.
+- Failure mode: cooperative SM120 GEMM requires CTA-M >=128. Ping-pong permits
+  a 64-row MMA tile, but NVFP4's TMA scale layout is a fixed 128-row swizzled
+  atom and cannot map onto CTA-M 64. The existing M3 tactic already swaps A/B
+  and uses the minimum supported CTA-N 32.
+- Why not to retry unchanged: no legal smaller tile exists in the current
+  mainloop/epilogue family; adding another tactic cannot bypass its static
+  layout requirements.
+- Reopen only if: a new mainloop supports non-TMA scale loads, a smaller scale
+  atom, or a CTA-N-16 epilogue/LDSM contract.
+- Related commit or revert: all prototype source and exact failed-build cache
+  directories were removed.

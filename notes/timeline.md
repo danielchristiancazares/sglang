@@ -442,6 +442,10 @@ code changes, or process state matter.
   **0.096704 ms staged vs 0.097152 ms fused** per layer. Existing PDL already
   hides activation quantization behind gate/up GEMM startup; the prototype
   closed before model wiring.
+- A native 64-row M3 NVFP4 GEMM prototype then hit CUTLASS's architectural
+  floor: cooperative scheduling requires CTA-M 128, while ping-pong cannot map
+  the fixed 128-row scale TMA atom. FlashInfer already swaps A/B and uses the
+  minimum supported CTA-N 32, closing plain tile specialization.
 - Retained in `5ea3b734b0`. The headline record remains PERF-024; these
   additive changes are the active source for the next optimization.
 

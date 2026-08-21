@@ -4270,3 +4270,25 @@ mean 13.929045  17.125658 446.051        39.730
   `53C8FCB1EB67F930B3BC5C30F7E227B9A03FEB415119919D1B60BC73ABC8DDD4`)
   and `perf037-gemma-norm-nvfp4-boundary-20260821-0140.log` (SHA-256
   `71356F5F50F46552CE41E2CD7739411512F51624253AEAB9A6B679082D48F8E8`).
+
+### 2026-08-21 02:05 PDT - PERF-038 sub-128-row NVFP4 CTA is structurally unavailable
+
+- The latest exact M3 trace showed the dominant SM120 NVFP4 kernel using a
+  `128x32x256` CTA. Built a temporary repository-native CUTLASS wrapper to
+  test whether CTA-M 64 could reduce padding for the three-token target shape.
+- The cooperative schedule failed its compile-time contract:
+  `Cooperative kernel requires Tile Size to be greater than or equal to 128
+  along the M-dimension.` Switching to the bundled SM120 NVFP4 ping-pong
+  schedule removed that assertion but failed the scale-factor TMA contract:
+  `TMA requires CTA_Tile and SLayout top-level size equivalence`.
+- Source reconciliation explains both failures. NVFP4 activation scales use a
+  fixed 128-row swizzled atom, so the native TMA path cannot tile M below 128.
+  For M3, the qualified FlashInfer tactics already use `swap_ab`, placing the
+  three token rows on the GEMM N axis with CTA-N 32. CTA-N 32 is the minimum
+  supported SM120 epilogue/LDSM width; CTA-N 16 is unavailable.
+- No CUDA kernel launched and no output/performance claim was made. Removed the
+  native wrapper, thin binding, and exact failed-build JIT cache directory.
+- Artifacts: `perf038-nvfp4-ctam64-20260821-0200.log` (SHA-256
+  `2EE14F51F04741817EC47A7F90AC0AD1E67D94717DCA29149E6176A31A814FAA`)
+  and `perf038-nvfp4-ctam64-pingpong-20260821-0205.log` (SHA-256
+  `048B472D59246338E05BFFE4028A4DDF2A5D9CCED2DC08F74A0D27D17756A87C`).

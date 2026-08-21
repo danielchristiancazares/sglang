@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-21
-01:40 PDT.
+02:05 PDT.
 
 **Qualified production source line:** commit
 `7f5af878da7b8dc43063f31e554dfc69cee5d510`
@@ -160,6 +160,11 @@ norm+quant+gate/up-GEMM boundary moved **0.096704 -> 0.097152 ms/layer**.
 FlashInfer's existing PDL chain already hides the quantizer behind GEMM
 startup; the prototype and its exact JIT cache were removed before model
 wiring.
+
+PERF-038 closes plain sub-128-row SM120 NVFP4 tiling. Cooperative CUTLASS
+requires CTA-M >=128; ping-pong accepts a 64-row MMA but cannot map NVFP4's
+fixed 128-row scale-factor TMA atom. The selected M3 tactic already swaps A/B
+and uses CTA-N 32, the minimum supported epilogue/LDSM width.
 
 The next funded decode candidate is a repository-native SM120 CUTLASS
 gate/up-GEMM epilogue that emits the compiled-semantics SwiGLU NVFP4 tuple
