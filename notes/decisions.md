@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-20 12:29 PDT.
+**Reconciled through:** 2026-08-20 18:26 PDT.
 
 ## Selected production choices
 
@@ -12,12 +12,12 @@ remain in [`experiment-log.md`](experiment-log.md).
 |---|---|---|
 | Checkpoint | RadixArk Qwen3.8-27B NVFP4 | Restored coherent reasoning and tools; remained the fastest qualified real-sampled line |
 | Capacity | Real 200K target and draft pools | Exact `199016` passed repeatedly; 232K reached 98 MiB free before cache flush and was rejected for operating margin |
-| Primary performance scoreboard | Exact `199000+16` near-limit request | Current record is **3016.444 prompt / 112.355 generation tok/s** on selective target NVFP4; a new record must exceed both and complete exact `199016` |
-| Performance milestone | **3000 prompt / 110 generation tok/s achieved** | Winning run completed exact `199016` at 65.971714 s TTFT / 66.105219 s E2E; independent restart reached **3013.736/112.012** |
+| Primary performance scoreboard | Exact `199000+16` near-limit request | Current record is **3048.086 prompt / 112.499 generation tok/s** on selective target NVFP4 with selected large-EXTEND FP4 tactics; a new record must exceed both and complete exact `199016` |
+| Performance milestone | **3000 prompt / 110 generation tok/s exceeded** | Winning request completed exact `199016` at 65.286869 s TTFT / 65.420204 s E2E; deterministic selected-cache prompt mean is **3047.309** |
 | Model surface | Language-only with Qwen3 reasoning and Qwen3 Coder tools | Preserves required behavior and VRAM; image/audio remain disabled |
 | FlashInfer | Clean native-Windows port of 0.6.17 | Passed JIT/kernel tests, fixed long-prefill correctness, and satisfies the SGLang version contract |
 | Prefill | FlashInfer, production chunk size 4096 | Base RadixArk stays safe at exact capacity; global 7680 regressed prompt and fell to 200 MiB free |
-| Selective long-context profile | `AttnNVFP4`, chunk size 7680, explicit override | With direct Gemma output, exact `199000+16` reached **3016.444/112.355** without changing production chunk defaults |
+| Selective long-context profile | `AttnNVFP4`, chunk size 7680, explicit override | With selected large-EXTEND FP4 tactics, exact `199000+16` reached **3048.086/112.499** and `199000+512` generation averaged **118.389** without changing production defaults |
 | Target verify/decode | TRT-LLM MHA/XQA | Qualified real throughput and exact 200K capacity; compact unread mask removes redundant generic work |
 | Draft decode | TRT-LLM MHA/XQA | Controlled gain over Triton draft decode; semantics and long ladder passed |
 | Draft extend | Captured `DRAFT_EXTEND_V2` graph | Removed an eager dispatch wall and contributed to the later two-step winner |
@@ -28,7 +28,8 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Chain metadata | Native C++/CUDA fixed-chain path with distinct per-cycle outputs | 4.227x isolated metadata speedup while preserving asynchronous output lifetimes |
 | Sampling | FlashInfer | Native CUDA renormalization controls the speculative target path; fallback sampling remains available |
 | Native elementwise/norm | C++/CUDA SiLU, RMSNorm, Gemma RMSNorm, direct Gemma residual output, and qualified sigmoid-multiply dispatch | Direct output is bit-exact, removes a temporary/copy, and helped set the new exact-200K record |
-| GEMM tuning | FP4 autotune; skip FP8 GEMM autotune | FP4 tactics improved decode; FP8 tactics regressed decode and prefill |
+| GEMM tuning | FP4 autotune; skip FP8 GEMM autotune | FP4 tactics improved decode; selective large-EXTEND tuning is expert-opt-in and promotes only exercised target file hits |
+| Selective tactic cache | Keep the independently selected 20,928-byte cache | SHA-256 `8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`; fresh selection regressed long generation and requires requalification |
 | Workspace | 128 MiB | Wins decode and long prefill; 64 MiB fails required graph allocation |
 | Compile mode | `default`, with established partial fallbacks | Five-run fixed-work win over other compile/fallback arrangements |
 | Scheduling | Receive interval 4; stream interval 4; incremental output | Measured fixed-work wins while retaining client streaming behavior |
@@ -38,16 +39,19 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Geometry funding gate | Complete lattice; conservative lower >=215 TPS; strictly above measured frontier | Family rejection uses an impossible target-aware upper <=200 TPS; selected-tree gaps fail closed |
 | Graph-tail work | Closed at the 0.75 ms admission gate | Two independent windows produced 1,471 CUDA-event records; best repeatable recoverable p10 was 0.658355 ms |
 | Target attribution | Exact per-shape M/N/K plus overlap-aware exposure | M3 primary GEMMs occupy 12.360 ms on the terminal stream; aggregate residency alone overcounts alternate-stream overlap |
-| Selective target NVFP4 | Retain as the experimental performance record | Exact `199000+16` reached **3016.444 prompt / 112.355 generation tok/s**; production defaults remain base RadixArk |
+| Selective target NVFP4 | Retain as the experimental performance record | Exact `199000+16` reached **3048.086 prompt / 112.499 generation tok/s**; production defaults remain base RadixArk |
 | MiaAI-Lab vLLM recipe | Matched `199000+16` reproduction remains an information gate | Same checkpoint/GPU uses MTP-3, TurboQuant 4-bit KV, and patched full-graph K+1 verify; published ~160 TPS lacks raw workload evidence |
 
 ## Primary performance record
 
 The root [`../BENCHMARK.md`](../BENCHMARK.md) scoreboard governs optimization
 ranking. The selective target-NVFP4 checkpoint completed exact `199000+16` at
-**3016.444 prompt tok/s**, **112.355 generation tok/s**, **65.971714 s TTFT**,
-and **66.105219 s** end to end. This is the record to beat; production qualification
-remains a separate decision from the single-run scoreboard.
+**3048.086 prompt tok/s**, **112.499 generation tok/s**, **65.286869 s TTFT**,
+and **65.420204 s** end to end. A deterministic selected-cache relaunch
+averaged **3047.309 prompt tok/s** over five exact requests and
+**118.389 generation tok/s** over three exact `199000+512` requests. This is
+the record to beat; production qualification remains separate from the
+single-run scoreboard.
 
 The first milestone of **3000 prompt / 110 generation tok/s** is complete.
 
@@ -117,6 +121,7 @@ production performance status stays closed unless the cost topology changes.
 | Workspace 64 MiB | Rejected | Deterministic graph-capture buffer overflow; 128 MiB is the floor |
 | FP8-only autotune | Rejected | Lost decode and long prefill while reducing headroom |
 | Full FP4+FP8 autotune | Rejected | Inferior to FP4-only tuning and regressed large prefill |
+| Fresh large-EXTEND profiling on every launch | Rejected | Exact prompt remained strong at **3043.747**, but independently selected tactics reduced long generation to **101.162 tok/s**; retain the qualified cache instead |
 | 232K production context/pool | Rejected | Exact `231000+16` passed, but only 98 MiB remained before cache flush |
 | NVML polling or keepalive | Rejected | Apparent gains failed to persist; WDDM client traffic explained the variance |
 

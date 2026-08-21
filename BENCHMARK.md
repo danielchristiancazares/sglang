@@ -204,17 +204,19 @@ inside the real 200,000-token context and token pools**.
 
 | Metric | Current record |
 |---|---:|
-| Prompt processing | **3,016.444 tok/s** |
-| Generation | **112.355 tok/s** |
-| Time to first token | **65.971714 s** |
-| End-to-end time | **66.105219 s** |
+| Prompt processing | **3,048.086 tok/s** |
+| Generation | **112.499 tok/s** |
+| Time to first token | **65.286869 s** |
+| End-to-end time | **65.420204 s** |
 | Tokens completed | **199,016** |
 
 This record was measured on the selective target-NVFP4 checkpoint
 `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` with the
 width-three NEXTN topology, chunk size 7680, and the bit-exact native-Windows
-Gemma residual-norm direct-output path. The request completed successfully
-with `finish_reason=length` and retained the established digest.
+Gemma residual-norm direct-output path. The target's ordinary 16,384-token
+EXTEND pass used the selected FlashInfer FP4 tactics described below. The
+request completed successfully with `finish_reason=length` and exact
+`199000+16` usage.
 
 ## Achieved target
 
@@ -233,33 +235,46 @@ independent server launch also cleared both throughput targets at
 
 ## Qualification windows
 
-Eight exact `199000+16` samples across two independent server launches all
-cleared 3,000 prompt tok/s:
+An independent retune produced exact prompt samples
+`3051.345, 3048.538, 3048.086, 3042.488, 3044.105 tok/s`, mean
+**3046.912**. Its third request set the same-request record above.
 
-| Window/run | Prompt tok/s | Generation tok/s | TTFT | E2E |
-|---|---:|---:|---:|---:|
-| 1/1 | **3,016.444** | **112.355** | 65.971714 s | 66.105219 s |
-| 1/2 | 3,013.834 | 97.506 | 66.028859 s | 66.182696 s |
-| 1/3 | 3,013.975 | **112.534** | 66.025761 s | 66.159054 s |
-| 2/1 | 3,014.657 | 96.531 | 66.010835 s | 66.166226 s |
-| 2/2 | 3,009.496 | 86.114 | 66.124024 s | 66.298210 s |
-| 2/3 | 3,012.204 | 98.100 | 66.064592 s | 66.217497 s |
-| 2/4 | **3,013.736** | **112.012** | 66.031008 s | 66.164923 s |
-| 2/5 | 3,011.489 | 79.442 | 66.080266 s | 66.269082 s |
+A separate launch restored that selected cache and promoted only the 110
+file-backed tactics exercised by the target EXTEND pass into FlashInfer's
+runner-keyed process cache. Its exact prompt samples were
+`3050.570, 3048.607, 3044.288, 3045.422, 3047.659 tok/s`, mean
+**3047.309**. All ten exact requests completed `199000+16`; the selected
+tactic family retained digest
+`cdf5bb57b88deaa7515abaedf36406d10494599fce2e23eeaa400461d9f647d9`.
 
-Prompt averaged **3,013.229 tok/s** across all eight. The 16-token generation
-metric remains cycle-quantized; three samples cleared 110 tok/s. Two exact
-`199000+512` support runs averaged **3,013.443 prompt / 109.683 generation
-tok/s** and peaked at 111.094 generation tok/s. Two sampled `6213/512`
-windows averaged **144.535** and **138.621 tok/s**.
+The 16-token generation field measures only 15 post-first-token intervals and
+remains speculative-cycle/SSE-quantized. Longer exact support is the stable
+generation check:
+
+| Evidence | Prompt tok/s | Generation tok/s | Workload |
+|---|---:|---:|---|
+| Independent retune, 3-run mean | **3,046.677** | **117.853** | exact `199000+512` |
+| Persisted-cache relaunch, 3-run mean | **3,047.754** | **118.389** | exact `199000+512` |
+| Persisted-cache relaunch, 5-run mean | 12,684.511 | **126.252** | sampled `6213+512`, end to end |
+
+Every long request completed exact `199000+512` with digest
+`cac0c6e4fab3115102a9a0c4163e4465068fba30cb09f0bb5556c7021e4a2092`.
+Five native acceptance probes averaged 2.217256 accepted tokens per verify.
 
 Launch this opt-in profile with:
 
 ```powershell
+$env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND = "1"
 .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 `
   -ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4 `
-  -ChunkedPrefillSize 7680
+  -ChunkedPrefillSize 7680 `
+  -RandomSeed 615388882
 ```
+
+The selected native-Windows SM120 cache is 20,928 bytes with SHA-256
+`8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`.
+The opt-in may profile missing entries on a fresh machine; a different tactic
+selection requires full requalification rather than inheriting these numbers.
 
 Do not make 7680 the global launcher default. Base RadixArk regressed to
 2,226.770 prompt tok/s on exact `199000+16` and fell to 200 MiB free before
@@ -291,7 +306,7 @@ counts, finish reason, resolved launcher arguments, GPU/process environment,
 and cache treatment.
 
 An overall record must complete exactly **199,016 tokens** and beat both
-**3,016.444 prompt tok/s** and **112.355 generation tok/s** under the matched
+**3,048.086 prompt tok/s** and **112.499 generation tok/s** under the matched
 contract. Lower TTFT and end-to-end time are supporting wins.
 
 Detailed qualification rules and historical evidence remain in
