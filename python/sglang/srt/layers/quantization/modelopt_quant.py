@@ -1736,7 +1736,21 @@ class ModelOptFp4LinearMethod(LinearMethodBase):
         # Store original output size before any padding
         layer.output_size_per_partition = layer.weight.shape[0]
 
-        if get_fp4_gemm_runner_backend().is_marlin():
+        fp4_backend = get_fp4_gemm_runner_backend()
+        if fp4_backend.is_hybrid_marlin():
+            if self.quant_config.group_size != 16:
+                raise ValueError(
+                    f"Hybrid NVFP4 Marlin requires group_size=16, got {self.quant_config.group_size}."
+                )
+            from sglang.srt.layers.quantization.nvfp4_hybrid_marlin import (
+                prepare_nvfp4_layer_for_hybrid_marlin,
+            )
+
+            prepare_nvfp4_layer_for_hybrid_marlin(
+                layer,
+                weight_global_scale=weight_scale_2,
+            )
+        elif fp4_backend.is_marlin():
             if self.quant_config.group_size != 16:
                 raise ValueError(
                     f"NVFP4 Marlin requires group_size=16, got {self.quant_config.group_size}."
@@ -1899,7 +1913,31 @@ class ModelOptFp4LinearMethod(LinearMethodBase):
         x: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if get_fp4_gemm_runner_backend().is_marlin():
+        fp4_backend = get_fp4_gemm_runner_backend()
+        if fp4_backend.is_hybrid_marlin():
+            from sglang.srt.layers.quantization.nvfp4_hybrid_marlin import (
+                use_hybrid_marlin_for_num_tokens,
+            )
+
+            use_marlin = (
+                getattr(layer, "_nvfp4_hybrid_marlin_active", False)
+                and isinstance(x, torch.Tensor)
+                and use_hybrid_marlin_for_num_tokens(
+                    x.numel() // x.shape[-1]
+                )
+            )
+            if use_marlin:
+                return apply_fp4_marlin_linear(
+                    input=x,
+                    weight=layer.weight_marlin,
+                    weight_scale=layer.weight_scale_marlin,
+                    weight_global_scale=layer.weight_global_scale_marlin,
+                    workspace=layer.workspace_marlin,
+                    size_n=layer.output_size_per_partition,
+                    size_k=layer.input_size_per_partition,
+                    bias=bias,
+                )
+        elif fp4_backend.is_marlin():
             return apply_fp4_marlin_linear(
                 input=x,
                 weight=layer.weight,

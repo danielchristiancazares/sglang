@@ -673,9 +673,25 @@ class ModelRunner:
             is_hybrid_swa=self.is_hybrid_swa,
         )
         self.maybe_apply_post_load_model_transforms()
+        self.init_nvfp4_hybrid_marlin_manager()
         self.maybe_init_lora_manager()
         self.maybe_enable_batch_invariant_mode()
         self.configure_kv_cache_dtype()
+
+    def init_nvfp4_hybrid_marlin_manager(self):
+        from sglang.srt.layers.quantization.fp4_utils import (
+            get_fp4_gemm_runner_backend,
+        )
+        from sglang.srt.layers.quantization.nvfp4_hybrid_marlin import (
+            Nvfp4HybridMarlinManager,
+        )
+
+        self.nvfp4_hybrid_marlin_manager = Nvfp4HybridMarlinManager(
+            model=self.model,
+            device=self.device,
+            is_draft_worker=self.is_draft_worker,
+            enabled=get_fp4_gemm_runner_backend().is_hybrid_marlin(),
+        )
 
     def init_memory_saver_adapter(self):
         self.memory_saver_adapter = TorchMemorySaverAdapter.create(
@@ -1564,6 +1580,7 @@ class ModelRunner:
                 forward_batch,
             ) as recorder_outputs,
         ):
+            self.nvfp4_hybrid_marlin_manager.prepare_for_forward(forward_batch)
             output = self._forward_raw(
                 forward_batch,
                 pp_proxy_tensors,
@@ -1578,6 +1595,7 @@ class ModelRunner:
                     reinit_attn_backend,
                     split_forward_count,
                 )
+            self.nvfp4_hybrid_marlin_manager.finish_forward(forward_batch)
         output.expert_distribution_metrics = recorder_outputs.get("metrics")
 
         no_copy_to_cpu = not get_schedule().disable_overlap_schedule

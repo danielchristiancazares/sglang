@@ -417,6 +417,36 @@ def sample_draft_proposal(
         topk_p, topk_index = draw(probs)
         return probs, topk_p, topk_index
 
+    if draft_sampling_top_k == 1 and getattr(
+        sampling_info, "use_topk1_delta_proposal", False
+    ):
+        if races is not None or sampling_seed is not None:
+            raise ValueError(
+                "Native top-k1 delta proposal does not consume proposal RNG"
+            )
+        from sglang.kernels.ops.speculative.draft_topk1_delta import (
+            draft_topk1_delta,
+        )
+
+        additive = None
+        logit_bias = None
+        if sampling_info is not None:
+            additive = sampling_info.acc_additive_penalties
+            logit_bias = sampling_info.logit_bias
+            if additive is not None:
+                additive = _match_draft_rows(
+                    additive,
+                    next_token_logits.shape[0],
+                    allow_singleton_broadcast=True,
+                )
+            if logit_bias is not None:
+                logit_bias = _match_draft_rows(
+                    logit_bias,
+                    next_token_logits.shape[0],
+                    allow_singleton_broadcast=True,
+                )
+        return draft_topk1_delta(next_token_logits, additive, logit_bias)
+
     probs = build_aligned_draft_probs(
         next_token_logits,
         sampling_info_or_temperatures,

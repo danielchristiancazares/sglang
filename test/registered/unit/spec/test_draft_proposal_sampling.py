@@ -10,6 +10,9 @@ from sglang.srt.speculative.eagle_utils import (
     parse_swor_topology,
     select_swor_topology_step,
 )
+from sglang.srt.arg_groups.speculative_hook import (
+    _validate_topk1_delta_proposal,
+)
 
 from sglang.srt.speculative.spec_utils import (
     discount_tree_node_scores_,
@@ -17,6 +20,7 @@ from sglang.srt.speculative.spec_utils import (
     renorm_draft_probs,
     sample_draft_proposal,
 )
+from sglang.srt.speculative.eagle_worker_v2 import EagleDraftWorker
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
@@ -30,6 +34,58 @@ def _argmax_sample(probs: torch.Tensor, num_samples: int = 1):
 
 
 class TestDraftProposalSampling(CustomTestCase):
+    def test_missing_delta_stamp_preserves_subclass_default(self):
+        worker = SimpleNamespace(draft_sampling_top_p=None)
+        sampling_info = object()
+
+        result = EagleDraftWorker._proposal_sampling_info(worker, sampling_info)
+
+        self.assertIs(result, sampling_info)
+
+    def test_topk1_delta_startup_validation_fails_closed(self):
+        valid = SimpleNamespace(
+            device="cuda",
+            speculative_algorithm="EAGLE",
+            speculative_use_rejection_sampling=True,
+            speculative_draft_sampling_top_k=1,
+            enable_multi_layer_eagle=False,
+            speculative_device_resident_cycle=False,
+            _resolved_overrides=[],
+        )
+        with patch("sglang.srt.arg_groups.speculative_hook.sys.platform", "win32"):
+            _validate_topk1_delta_proposal(valid, True)
+            for field, value in (
+                ("device", "cpu"),
+                ("speculative_algorithm", "STANDALONE"),
+                ("speculative_use_rejection_sampling", False),
+                ("speculative_draft_sampling_top_k", 20),
+                ("enable_multi_layer_eagle", True),
+                ("speculative_device_resident_cycle", True),
+            ):
+                invalid = SimpleNamespace(**vars(valid))
+                setattr(invalid, field, value)
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    _validate_topk1_delta_proposal(invalid, True)
+
+    def test_topk1_delta_rejects_resolved_multi_layer_eagle(self):
+        args = SimpleNamespace(
+            device="cuda",
+            speculative_algorithm="NEXTN",
+            speculative_use_rejection_sampling=True,
+            speculative_draft_sampling_top_k=1,
+            enable_multi_layer_eagle=False,
+            speculative_device_resident_cycle=False,
+            _resolved_overrides=[
+                ("model", {"enable_multi_layer_eagle": True})
+            ],
+        )
+
+        with (
+            patch("sglang.srt.arg_groups.speculative_hook.sys.platform", "win32"),
+            self.assertRaises(ValueError),
+        ):
+            _validate_topk1_delta_proposal(args, True)
+
     def test_default_swor_topology_and_q_rows(self):
         topology = default_swor_topology("cpu")
         self.assertEqual(topology.parent_by_node, (-1, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 9))
@@ -192,6 +248,59 @@ class TestDraftProposalSampling(CustomTestCase):
 
         with self.assertRaisesRegex(ValueError, "draft_sampling_top_k"):
             sample_draft_proposal(logits, sampling_info, draft_sampling_top_k=5)
+
+    @patch(
+        "sglang.kernels.ops.speculative.draft_topk1_delta.draft_topk1_delta"
+    )
+    def test_topk1_delta_routes_exact_additive_q(self, native_delta):
+        logits = torch.tensor([[4.0, 3.0, 2.0]], dtype=torch.float32)
+        additive = torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float32)
+        logit_bias = torch.tensor([[0.0, 0.0, 3.0]], dtype=torch.float32)
+        sampling_info = SimpleNamespace(
+            temperatures=torch.ones((1, 1), dtype=torch.float32),
+            top_ps=torch.ones(1, dtype=torch.float32),
+            acc_additive_penalties=additive,
+            logit_bias=logit_bias,
+            need_top_p_sampling=False,
+            use_topk1_delta_proposal=True,
+        )
+        expected_q = torch.tensor([[0.0, 0.0, 1.0]], dtype=torch.float32)
+        expected_p = torch.ones((1, 1), dtype=torch.float32)
+        expected_index = torch.tensor([[2]], dtype=torch.int64)
+        native_delta.return_value = (expected_q, expected_p, expected_index)
+
+        q, q_x, token = sample_draft_proposal(
+            logits, sampling_info, draft_sampling_top_k=1
+        )
+
+        torch.testing.assert_close(q, expected_q)
+        torch.testing.assert_close(q_x, expected_p)
+        torch.testing.assert_close(token, expected_index)
+        native_delta.assert_called_once()
+        call_logits, call_additive, call_logit_bias = native_delta.call_args.args
+        self.assertIs(call_logits, logits)
+        self.assertIs(call_additive, additive)
+        self.assertIs(call_logit_bias, logit_bias)
+
+    def test_topk1_delta_rejects_explicit_proposal_rng(self):
+        logits = torch.tensor([[4.0, 3.0, 2.0]], dtype=torch.float32)
+        sampling_info = SimpleNamespace(
+            temperatures=torch.ones((1, 1), dtype=torch.float32),
+            top_ps=torch.ones(1, dtype=torch.float32),
+            acc_additive_penalties=None,
+            logit_bias=None,
+            need_top_p_sampling=False,
+            use_topk1_delta_proposal=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "does not consume proposal RNG"):
+            sample_draft_proposal(
+                logits,
+                sampling_info,
+                draft_sampling_top_k=1,
+                sampling_seed=torch.tensor([1]),
+                sampling_offset=torch.tensor([0]),
+            )
 
 
 if __name__ == "__main__":

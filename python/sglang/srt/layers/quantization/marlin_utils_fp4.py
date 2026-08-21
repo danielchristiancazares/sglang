@@ -117,7 +117,7 @@ def apply_fp4_marlin_linear(
         g_idx=None,
         perm=None,
         workspace=workspace,
-        b_q_type=scalar_types.float4_e2m1f,
+        b_q_type=None,
         size_m=reshaped_x.size(0),
         size_n=padded_size_n,
         size_k=padded_size_k,

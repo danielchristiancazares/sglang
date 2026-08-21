@@ -33,6 +33,8 @@ class EagleVerifyInput(SpecInput):
     # Diagnostic-only raw draft logits aligned to internal verifier nodes.
     # Ordinary inference leaves this unset and pays no storage/copy cost.
     diagnostic_draft_logits: torch.Tensor = None
+    # Diagnostic-only proposal hidden rows aligned with diagnostic_draft_logits.
+    diagnostic_draft_hidden_states: torch.Tensor = None
     # Diagnostic payload populated immediately before verifier RNG.
     pq_capture: object = None
     # Oracle-only CUDA overlap grid, populated immediately before SWOR mutates p.

@@ -22,7 +22,10 @@ def _jit_gptq_marlin_module(dtype: torch.dtype) -> Module:
         "gptq_marlin",
         *args,
         cuda_files=["gemm/marlin/gptq_marlin.cuh"],
-        cuda_wrappers=[("gptq_marlin_gemm", f"gptq_marlin_gemm<{args}>")],
+        cuda_wrappers=[
+            ("gptq_marlin_gemm", f"gptq_marlin_gemm<{args}>"),
+            ("nvfp4_marlin_gemm", f"nvfp4_marlin_gemm<{args}>"),
+        ],
     )
 
 
@@ -43,7 +46,7 @@ def gptq_marlin_gemm(
     g_idx: Optional[torch.Tensor],
     perm: Optional[torch.Tensor],
     workspace: torch.Tensor,
-    b_q_type: ScalarType,
+    b_q_type: Optional[ScalarType],
     size_m: int,
     size_n: int,
     size_k: int,
@@ -95,23 +98,41 @@ def gptq_marlin_gemm(
     perm_t = _or_empty(perm, device, torch.int32)
 
     module = _jit_gptq_marlin_module(a.dtype)
-    module.gptq_marlin_gemm(
-        a,
-        b_q_weight,
-        b_scales,
-        global_scale_t,
-        b_zeros_t,
-        g_idx_t,
-        perm_t,
-        c,
-        c_tmp,
-        a_tmp,
-        workspace,
-        b_q_type.id,
-        is_k_full,
-        use_atomic_add,
-        use_fp32_reduce,
-        is_zp_float,
-    )
+    if b_q_type is None:
+        module.nvfp4_marlin_gemm(
+            a,
+            b_q_weight,
+            b_scales,
+            global_scale_t,
+            b_zeros_t,
+            g_idx_t,
+            perm_t,
+            c,
+            c_tmp,
+            a_tmp,
+            workspace,
+            is_k_full,
+            use_atomic_add,
+            use_fp32_reduce,
+        )
+    else:
+        module.gptq_marlin_gemm(
+            a,
+            b_q_weight,
+            b_scales,
+            global_scale_t,
+            b_zeros_t,
+            g_idx_t,
+            perm_t,
+            c,
+            c_tmp,
+            a_tmp,
+            workspace,
+            b_q_type.id,
+            is_k_full,
+            use_atomic_add,
+            use_fp32_reduce,
+            is_zp_float,
+        )
 
     return c

@@ -3,18 +3,19 @@
 Starts the native NVFP4 Qwen3.8-27B checkpoint through Windows SGLang.
 
 .DESCRIPTION
-The measured defaults select the qualified RadixArk checkpoint, an exact 200K
-token pool, FlashInfer prefill, TRT-LLM/XQA target and draft decode, its
-two-step bundled MTP head, FP4-only FlashInfer autotuning, FlashInfer
-sampling, FP8 draft KV, the minimum safe 128 MiB workspace, and partial torch
-compilation.
+The measured defaults select the native-Windows exact-200K record profile:
+the selective target-NVFP4 RadixArk checkpoint, 7,680-token prefill chunks,
+Cutlass prefill plus Marlin gate/up decode, native draft-k1 proposal
+construction, TRT-LLM/XQA target and draft decode, FP4-only FlashInfer
+autotuning, FlashInfer sampling, FP8 draft KV, the minimum safe 128 MiB
+workspace, and partial torch compilation.
 The checkpoint is loaded as a standalone language model, preserving VRAM that
 the unused vision encoder would otherwise consume.
 #>
 
 [CmdletBinding()]
 param(
-    [string] $ModelPath = (Join-Path $env:USERPROFILE 'models\Qwen3.8-27B-NVFP4-RadixArk'),
+    [string] $ModelPath = (Join-Path $env:USERPROFILE 'models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4'),
     [string] $ServedModelName = 'qwen3.8-27b',
     [string] $ListenAddress = '127.0.0.1',
     [ValidateRange(1, 65535)]
@@ -38,7 +39,7 @@ param(
     [ValidateSet('float32', 'bfloat16', 'float16')]
     [string] $MambaSsmDtype = 'float32',
     [ValidateRange(256, 16384)]
-    [int] $ChunkedPrefillSize = 4096,
+    [int] $ChunkedPrefillSize = 7680,
     [ValidateRange(1, 64)]
     [int] $TritonAttentionNumKvSplits = 16,
     [ValidateRange(1, 16)]
@@ -73,8 +74,8 @@ param(
     [string] $LinearAttentionPrefillBackend = 'triton',
     [ValidateSet('triton', 'flashinfer', 'cutedsl')]
     [string] $LinearAttentionVerifyBackend = 'triton',
-    [ValidateSet('auto', 'flashinfer_cutlass', 'flashinfer_cudnn')]
-    [string] $Fp4GemmBackend = 'flashinfer_cutlass',
+    [ValidateSet('auto', 'flashinfer_cutlass', 'flashinfer_cudnn', 'hybrid_marlin', 'marlin')]
+    [string] $Fp4GemmBackend = 'hybrid_marlin',
     [ValidateRange(0, 8)]
     [int] $SpeculativeNumSteps = 2,
     [ValidateRange(1, 16)]
@@ -83,8 +84,8 @@ param(
     [int] $SpeculativeEagleTopK = 1,
     [switch] $SpeculativeUseRejectionSampling = $true,
     [switch] $SpeculativeDeviceResidentCycle,
-    [ValidateSet(0, 4, 8, 16, 20, 32, 64)]
-    [int] $SpeculativeDraftSamplingTopK = 20,
+    [ValidateSet(0, 1, 4, 8, 16, 20, 32, 64)]
+    [int] $SpeculativeDraftSamplingTopK = 1,
     [switch] $SpeculativeAlignTreeScoring,
     [ValidateSet('target_only', 'swor')]
     [string] $SpeculativeTreeSamplingMode = 'target_only',
@@ -102,6 +103,8 @@ param(
     [switch] $SpeculativeAdaptive,
     [string] $SpeculativeAdaptiveConfig = '',
     [switch] $EnableFlashInferAutotune = $true,
+    [switch] $EnableFlashInferAutotuneExtend = $true,
+    [switch] $EnableTopK1DeltaProposal = $true,
     [string[]] $FlashInferAutotuneSkipOps = @('fp8_gemm'),
     [ValidateSet('default', 'max-autotune-no-cudagraphs')]
     [string] $TorchCompileMode = 'default',
@@ -270,6 +273,10 @@ $HadFlashInferWorkspaceSize = Test-Path Env:SGLANG_FLASHINFER_WORKSPACE_SIZE
 $PreviousFlashInferWorkspaceSize = $env:SGLANG_FLASHINFER_WORKSPACE_SIZE
 $HadSimulateAcceptedLength = Test-Path Env:SGLANG_SIMULATE_ACC_LEN
 $PreviousSimulateAcceptedLength = $env:SGLANG_SIMULATE_ACC_LEN
+$HadFlashInferAutotuneExtend = Test-Path Env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND
+$PreviousFlashInferAutotuneExtend = $env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND
+$HadTopK1DeltaProposal = Test-Path Env:SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL
+$PreviousTopK1DeltaProposal = $env:SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL
 
 try {
     if (-not $DisableTorchCompile) {
@@ -281,6 +288,12 @@ try {
     }
     if ($SimulateAcceptedLength -gt 0) {
         $env:SGLANG_SIMULATE_ACC_LEN = $SimulateAcceptedLength
+    }
+    if ($EnableFlashInferAutotuneExtend) {
+        $env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND = '1'
+    }
+    if ($EnableTopK1DeltaProposal) {
+        $env:SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL = '1'
     }
     & $SGLang @ServeArgs
     $ExitCode = $LASTEXITCODE
@@ -303,6 +316,20 @@ finally {
     }
     else {
         Remove-Item Env:SGLANG_SIMULATE_ACC_LEN -ErrorAction SilentlyContinue
+    }
+    if ($HadFlashInferAutotuneExtend) {
+        $env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND =
+            $PreviousFlashInferAutotuneExtend
+    }
+    else {
+        Remove-Item Env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND -ErrorAction SilentlyContinue
+    }
+    if ($HadTopK1DeltaProposal) {
+        $env:SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL =
+            $PreviousTopK1DeltaProposal
+    }
+    else {
+        Remove-Item Env:SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL -ErrorAction SilentlyContinue
     }
 }
 

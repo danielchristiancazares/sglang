@@ -1334,46 +1334,6 @@ def eagle_sample(
                 "does not produce one (draft_probs missing or vocab-mismatched)."
             )
 
-        if pq_capture_path is not None:
-            from sglang.srt.compilation.torch_compile_decoration import (
-                resolve_torch_compile_mode,
-            )
-            from sglang.srt.runtime_context import get_flags
-            from sglang.srt.speculative.pq_diagnostic import (
-                make_branch_pq_capture,
-            )
-
-            raw_draft_logits = verify_input.diagnostic_draft_logits
-            if raw_target_logits is None or raw_draft_logits is None:
-                raise RuntimeError(
-                    "p/q capture requires retained raw target and draft logits"
-                )
-            raw_draft_logits = raw_draft_logits.reshape(
-                -1, raw_draft_logits.shape[-1]
-            )
-            compile_enabled = bool(get_flags().capture.enable_torch_compile)
-            verify_input.pq_capture = make_branch_pq_capture(
-                output_path=pq_capture_path,
-                max_cycles=getattr(
-                    get_spec(), "speculative_pq_capture_max_cycles", 256
-                ),
-                batch=batch,
-                raw_target_logits=raw_target_logits,
-                raw_draft_logits=raw_draft_logits,
-                node_tokens=verify_input.draft_token,
-                retrieve_next_token=verify_input.retrieve_next_token,
-                retrieve_next_sibling=verify_input.retrieve_next_sibling,
-                draft_sampling_top_k=getattr(
-                    get_spec(), "speculative_draft_sampling_top_k"
-                ),
-                active_worker=(
-                    "sglang.srt.speculative.eagle_worker_v2.EAGLEWorkerV2"
-                ),
-                torch_compile_enabled=compile_enabled,
-                torch_compile_mode=resolve_torch_compile_mode(compile_enabled),
-                speculative_algorithm=str(get_spec().speculative_algorithm),
-            )
-
         if use_tree_swor and getattr(
             get_spec(), "speculative_swor_collect_overlap_stats", False
         ):
@@ -1422,6 +1382,61 @@ def eagle_sample(
             deterministic=True,
         )
 
+    if pq_capture_path is not None:
+        from sglang.srt.compilation.torch_compile_decoration import (
+            resolve_torch_compile_mode,
+        )
+        from sglang.srt.runtime_context import get_flags
+        from sglang.srt.speculative.pq_diagnostic import make_branch_pq_capture
+
+        raw_draft_logits = verify_input.diagnostic_draft_logits
+        draft_hidden_states = verify_input.diagnostic_draft_hidden_states
+        target_hidden_states = logits_output.hidden_states
+        if raw_target_logits is None or raw_draft_logits is None:
+            raise RuntimeError(
+                "p/q capture requires retained raw target and draft logits"
+            )
+        raw_draft_logits = raw_draft_logits.reshape(
+            -1, raw_draft_logits.shape[-1]
+        )
+        if draft_hidden_states is not None:
+            draft_hidden_states = draft_hidden_states.reshape(
+                -1, draft_hidden_states.shape[-1]
+            )
+        if target_hidden_states is None:
+            raise RuntimeError("p/q hidden capture requires target hidden states")
+        target_hidden_states = target_hidden_states.reshape(
+            -1, target_hidden_states.shape[-1]
+        )
+        exact_draft_probs = verify_input.draft_probs
+        if exact_draft_probs is not None:
+            exact_draft_probs = exact_draft_probs.reshape(
+                -1, exact_draft_probs.shape[-1]
+            )
+        compile_enabled = bool(get_flags().capture.enable_torch_compile)
+        verify_input.pq_capture = make_branch_pq_capture(
+            output_path=pq_capture_path,
+            max_cycles=getattr(
+                get_spec(), "speculative_pq_capture_max_cycles", 256
+            ),
+            batch=batch,
+            raw_target_logits=raw_target_logits,
+            raw_draft_logits=raw_draft_logits,
+            exact_draft_probs=exact_draft_probs,
+            draft_hidden_states=draft_hidden_states,
+            target_hidden_states=target_hidden_states,
+            node_tokens=verify_input.draft_token,
+            retrieve_next_token=verify_input.retrieve_next_token,
+            retrieve_next_sibling=verify_input.retrieve_next_sibling,
+            draft_sampling_top_k=getattr(
+                get_spec(), "speculative_draft_sampling_top_k"
+            ),
+            active_worker="sglang.srt.speculative.eagle_worker_v2.EAGLEWorkerV2",
+            torch_compile_enabled=compile_enabled,
+            torch_compile_mode=resolve_torch_compile_mode(compile_enabled),
+            speculative_algorithm=str(get_spec().speculative_algorithm),
+        )
+
     # Sync the verify decision across TP ranks: small per-rank differences in the
     # tensors feeding this point can make one rank accept a different number of
     # drafts, which desynchronizes the committed seq_lens and deadlocks the next
@@ -1433,7 +1448,6 @@ def eagle_sample(
         tp_group.broadcast(predict, src=0)
         tp_group.broadcast(accept_index, src=0)
         tp_group.broadcast(num_correct_drafts, src=0)
-
     if SIMULATE_ACC_LEN > 0:
         # Do simulation. The helper builds (and returns) a replacement
         # accept_index of width spec_steps + 1, so pass max_tree_depth - 1
@@ -1468,6 +1482,8 @@ def eagle_sample(
             bs=bs,
             spec_steps=verify_input.max_tree_depth - 1,
         )
+    if verify_input.pq_capture is not None:
+        verify_input.pq_capture.accept_lens = num_correct_drafts + 1
 
     # `num_correct_drafts` stays drafts-only inside this function; the returned
     # tensor includes the trailing/bonus token via out-of-place +1 so the

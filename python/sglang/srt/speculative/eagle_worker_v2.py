@@ -185,6 +185,30 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         self.draft_sampling_top_k = getattr(
             server_args, "speculative_draft_sampling_top_k", None
         )
+        self.use_topk1_delta_proposal = (
+            envs.SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL.get()
+        )
+        if self.use_topk1_delta_proposal:
+            if (
+                not server_args.speculative_use_rejection_sampling
+                or self.draft_sampling_top_k != 1
+                or server_args.enable_multi_layer_eagle
+                or server_args.speculative_device_resident_cycle
+                or not _is_cuda
+                or sys.platform != "win32"
+            ):
+                raise ValueError(
+                    "SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL requires native-Windows "
+                    "single-layer CUDA rejection sampling with "
+                    "--speculative-draft-sampling-top-k 1 and without the "
+                    "device-resident cycle"
+                )
+            from sglang.kernels.ops.speculative.draft_topk1_delta import (
+                preload_draft_topk1_delta,
+            )
+
+            preload_draft_topk1_delta()
+            logger.info("Native top-k1 delta proposal is enabled.")
         self.draft_sampling_top_p = (
             envs.SGLANG_OPT_SPEC_DRAFT_TOP_P.get()
             if server_args.speculative_use_rejection_sampling
@@ -225,6 +249,7 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         )
         self.pq_capture_enabled = self.pq_capture_path is not None
         self._diagnostic_draft_logits = None
+        self._diagnostic_draft_hidden_states = None
         if get_spec().speculative_use_rejection_sampling:
             assert self.topk == 1, "Chain speculative sampling supports only topk=1"
         if self.use_tree_swor:
@@ -728,6 +753,11 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             diagnostic_draft_logits=(
                 self._diagnostic_draft_logits if self.pq_capture_enabled else None
             ),
+            diagnostic_draft_hidden_states=(
+                self._diagnostic_draft_hidden_states
+                if self.pq_capture_enabled
+                else None
+            ),
             target_worker=self.target_worker,
             topk=self.topk,
             num_steps=self.speculative_num_steps,
@@ -770,6 +800,7 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             draft_probs_list = [spec_info.draft_probs.unsqueeze(1)]
             swor_token_blocks = []
         diagnostic_logits_blocks = None
+        diagnostic_hidden_blocks = None
         if self.pq_capture_enabled:
             if spec_info.diagnostic_draft_logits is None:
                 raise RuntimeError(
@@ -780,6 +811,15 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                 if self.use_tree_swor
                 else [spec_info.diagnostic_draft_logits]
             )
+            if (
+                get_spec().speculative_use_rejection_sampling
+                and self.topk == 1
+            ):
+                if spec_info.hidden_states is None:
+                    raise RuntimeError(
+                        "p/q hidden capture is missing the root proposal hidden row"
+                    )
+                diagnostic_hidden_blocks = [spec_info.hidden_states]
 
         topk1_chain_fits = (
             self.topk == 1
@@ -875,6 +915,12 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                         if self.use_tree_swor
                         else logits_output.next_token_logits
                     )
+                if diagnostic_hidden_blocks is not None:
+                    if logits_output.hidden_states is None:
+                        raise RuntimeError(
+                            "p/q hidden capture is missing an inner proposal hidden row"
+                        )
+                    diagnostic_hidden_blocks.append(logits_output.hidden_states)
                 if get_spec().speculative_use_rejection_sampling:
                     sampling_offset = (
                         self._device_cycle_sampling_offsets[i + 1 : i + 2]
@@ -939,6 +985,10 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             if diagnostic_logits_blocks is not None:
                 self._diagnostic_draft_logits = torch.stack(
                     diagnostic_logits_blocks, dim=1
+                )
+            if diagnostic_hidden_blocks is not None:
+                self._diagnostic_draft_hidden_states = torch.stack(
+                    diagnostic_hidden_blocks, dim=1
                 )
 
         if self.use_tree_swor:
@@ -1164,9 +1214,17 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         return None, topk_p, topk_index
 
     def _proposal_sampling_info(self, sampling_info):
-        if getattr(self, "draft_sampling_top_p", None) != 1.0:
+        if (
+            getattr(self, "draft_sampling_top_p", None) != 1.0
+            and not getattr(self, "use_topk1_delta_proposal", False)
+        ):
             return sampling_info
         proposal_sampling_info = copy.copy(sampling_info)
+        proposal_sampling_info.use_topk1_delta_proposal = (
+            getattr(self, "use_topk1_delta_proposal", False)
+        )
+        if getattr(self, "draft_sampling_top_p", None) != 1.0:
+            return proposal_sampling_info
         proposal_sampling_info.need_top_p_sampling = False
         if (
             sys.platform != "win32"

@@ -1119,6 +1119,9 @@ class Envs:
     SGLANG_ENABLE_OVERLAP_PLAN_STREAM = EnvBool(False)
     # Proposal-only top-p override for aligned speculative rejection sampling.
     SGLANG_OPT_SPEC_DRAFT_TOP_P = EnvFloat(None)
+    # Build deterministic one-hot q directly when aligned draft top-k is one.
+    # The expert opt-in intentionally skips the categorical proposal RNG draw.
+    SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL = EnvBool(False)
     # Use the native sparse-support top-p renormalizer after finite top-k.
     # Expert A/B knob; unsupported or wider top-k batches keep FlashInfer AIR.
     SGLANG_OPT_SPARSE_TOP_P_RENORM = EnvBool(False)

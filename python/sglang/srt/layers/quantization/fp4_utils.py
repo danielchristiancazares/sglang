@@ -98,6 +98,7 @@ class Fp4GemmRunnerBackend(Enum):
     FLASHINFER_CUTEDSL = "flashinfer_cutedsl"
     FLASHINFER_CUTLASS = "flashinfer_cutlass"
     FLASHINFER_TRTLLM = "flashinfer_trtllm"
+    HYBRID_MARLIN = "hybrid_marlin"
     MARLIN = "marlin"
 
     def is_auto(self) -> bool:
@@ -107,7 +108,10 @@ class Fp4GemmRunnerBackend(Enum):
         return self == Fp4GemmRunnerBackend.FLASHINFER_CUDNN
 
     def is_flashinfer_cutlass(self) -> bool:
-        return self == Fp4GemmRunnerBackend.FLASHINFER_CUTLASS
+        return self in (
+            Fp4GemmRunnerBackend.FLASHINFER_CUTLASS,
+            Fp4GemmRunnerBackend.HYBRID_MARLIN,
+        )
 
     def is_flashinfer_trtllm(self) -> bool:
         return self == Fp4GemmRunnerBackend.FLASHINFER_TRTLLM
@@ -116,7 +120,13 @@ class Fp4GemmRunnerBackend(Enum):
         return self == Fp4GemmRunnerBackend.FLASHINFER_CUTEDSL
 
     def is_marlin(self) -> bool:
-        return self == Fp4GemmRunnerBackend.MARLIN
+        return self in (
+            Fp4GemmRunnerBackend.MARLIN,
+            Fp4GemmRunnerBackend.HYBRID_MARLIN,
+        )
+
+    def is_hybrid_marlin(self) -> bool:
+        return self == Fp4GemmRunnerBackend.HYBRID_MARLIN
 
     def is_flashinfer(self) -> bool:
         return self.value.startswith("flashinfer_")
@@ -133,6 +143,8 @@ class Fp4GemmRunnerBackend(Enum):
         """
         if self == Fp4GemmRunnerBackend.FLASHINFER_CUTEDSL:
             return "cute-dsl"
+        if self == Fp4GemmRunnerBackend.HYBRID_MARLIN:
+            return "cutlass"
         if self.value.startswith("flashinfer_"):
             return self.value.removeprefix("flashinfer_")
         else:
