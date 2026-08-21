@@ -208,6 +208,20 @@ acceptance slightly to **2.229702**. Exact short generation still reached only
 **87.402 tok/s**, so the target remains open. Proposal penalty scales 0.75 and
 0.0 reproduced identical proposal/output sequences, closing that scalar.
 
+PERF-048 ReplaySSM commit overlap is rejected. Although **186.819/189.478 us**
+of fold time overlapped draft extend, the draft-extend graph expanded
+**1.060552 -> 1.237001 ms** from bandwidth contention. Serial fold+extend was
+about **1.234266 ms**, slightly below the overlapped span; the apparent
+full-cycle gain was noise. PERF-046 remains the selected generation line.
+
+PERF-049 closes static proposal calibration. Two branch-exact chronological
+p/q corpora found a large support ceiling (**2.737586**) but no generalizing
+gamma, rank, or token correction; the maximin expected-length gain was only
+**0.000133** and learned weights regressed held-out chronology. The opt-in
+capture queue was repaired from eight to bounded 64 entries after the first
+capture backpressured; the second request completed 239 records.
+Signed commit `4d6782121e` retains the bounded diagnostic queue repair.
+
 The winning selective profile remains `AttnNVFP4`, chunk 7680, M3, and the
 bit-exact Windows Gemma residual-norm direct-output path. PERF-024 additionally
 runs an ordinary 16,384-token target EXTEND pass under the existing

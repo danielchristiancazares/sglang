@@ -481,6 +481,15 @@ code changes, or process state matter.
   retained in signed commit `6b963eed05`.
 - Correctly routed proposal penalty scales 0.75 and 0.0 reproduced identical
   proposal/output sequences; additive-penalty calibration was removed.
+- Target ReplaySSM commit then moved to a dedicated side stream overlapping
+  draft extend, with a forward-stream rejoin before scheduler return. Direct
+  interval analysis showed 186.8 us hidden fold but 176.4 us graph expansion;
+  the combined boundary was neutral/slower, so the source was removed.
+- Two branch-exact p/q captures then ruled out static gamma, rank, and token
+  calibration: all learned corrections overfit early chronology and regressed
+  later states. The diagnostic queue was raised from eight to bounded 64 after
+  the first writer backpressured; the independent 239-record capture passed,
+  and signed commit `4d6782121e` retained the repair.
 
 ## Supersession map
 
