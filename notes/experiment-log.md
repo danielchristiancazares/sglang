@@ -4177,3 +4177,30 @@ mean 13.929045  17.125658 446.051        39.730
   `perf035-control-server-20260821-0000.log`,
   `perf035-control-exact-20260821-0002.log`, and
   `perf035-control-long-20260821-0012.log`.
+
+### 2026-08-21 00:24 PDT - exact prefix ladder reverses PERF-035
+
+- Audited the checkpoint dimensions after the provisional retention:
+  full-attention uses **24 query heads, 4 KV heads, head dimension 256**. The
+  initial isolated 32/16/128 shape had equal total widths but a different GQA
+  and tile configuration.
+- Ran a bit-exact isolated A/B at every paged-prefix call in the exact request:
+  prefixes `7680..184320` with Q=7680, then prefix 192000 with Q=7000.
+  Each shape used BF16 Q, FP8-E4M3 K/V, logical page size 1, and the 128 MiB
+  workspace. Every output and LSE matched.
+- Aggregate per-layer medians:
+  - FP32 QK reduction: **2964.761431 ms**
+  - FP16 QK reduction: **2974.992971 ms**
+  - FP16 delta: **+10.231541 ms per layer / +163.704651 ms across 16 layers**
+- Individual shape deltas varied from -8.681 to +11.940 ms, confirming that a
+  single favorable prefix is not representative. The five-request server A-B
+  delta was within this environmental/shape noise.
+- Removed all PERF-035 source and test changes. The commit that provisionally
+  retained it remains in history for auditability; this corrective change
+  restores the pre-existing FP32 path. Artifact:
+  `perf035-prefill-ladder-20260821-0020.log`.
+- Probed FlashInfer's alternative cuDNN paged backend as a potential larger
+  replacement. The installed native-Windows build reports cuDNN frontend
+  unavailable; its cubin fallback fails to compile under MSVC/CUDA and only
+  admits head dimensions 128 or 192, while this model uses 256. That route is
+  unavailable for the selected shape.
