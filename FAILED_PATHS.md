@@ -888,3 +888,26 @@
   atom, or a CTA-N-16 epilogue/LDSM contract.
 - Related commit or revert: all prototype source and exact failed-build cache
   directories were removed.
+
+## PERF-F055 - MTP dual Gemma norm and concat fusion
+
+- Hypothesis: combining both MTP pre-FC Gemma norms and `torch.cat` in one
+  native producer would materially reduce draft-decode and draft-extend graph
+  spans.
+- Scope: BF16 hidden width 5120, M1/M3, dependent `10240 -> 5120` BF16 FC,
+  mutable captured output.
+- Attempted change: a temporary native SM120 kernel. The admitted design kept
+  two 320-thread CTAs per row in one launch and wrote directly to the
+  concatenated output.
+- Benchmark evidence: 101-sample dependent-boundary medians improved
+  **0.065824 -> 0.064576 ms** at M1 and **0.052128 -> 0.050048 ms** at M3.
+- Correctness evidence: concatenated BF16 values and dependent FC outputs were
+  bit-exact at both shapes.
+- Failure mode: the existing norms, concat, and FC are already compact inside
+  the captured graphs. Launch/copy removal exposes only 1-2 us per invocation.
+- Why not to retry unchanged: one M1 plus one M3 use saves about
+  **0.0033 ms/cycle**, two orders below the active decode funding floor.
+- Reopen only if: the fusion expands across the FC mainloop or a materially
+  wider draft topology multiplies this boundary.
+- Related commit or revert: all prototype source and the exact JIT cache were
+  removed before model routing.

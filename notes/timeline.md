@@ -446,6 +446,9 @@ code changes, or process state matter.
   floor: cooperative scheduling requires CTA-M 128, while ping-pong cannot map
   the fixed 128-row scale TMA atom. FlashInfer already swaps A/B and uses the
   minimum supported CTA-N 32, closing plain tile specialization.
+- An occupancy-preserving native MTP dual-norm/concat producer was exact
+  through its BF16 FC but saved only 1.248 us at M1 and 2.080 us at M3, about
+  0.0033 ms across both draft phases. It closed before routing.
 - Retained in `5ea3b734b0`. The headline record remains PERF-024; these
   additive changes are the active source for the next optimization.
 

@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-21
-02:05 PDT.
+02:25 PDT.
 
 **Qualified production source line:** commit
 `7f5af878da7b8dc43063f31e554dfc69cee5d510`
@@ -165,6 +165,11 @@ PERF-038 closes plain sub-128-row SM120 NVFP4 tiling. Cooperative CUTLASS
 requires CTA-M >=128; ping-pong accepts a 64-row MMA but cannot map NVFP4's
 fixed 128-row scale-factor TMA atom. The selected M3 tactic already swaps A/B
 and uses CTA-N 32, the minimum supported epilogue/LDSM width.
+
+PERF-039 closes MTP dual-norm/concat fusion. An occupancy-preserving native
+two-CTA producer was bit-exact through the dependent FC but saved only
+**1.248 us at M1** and **2.080 us at M3**, about **0.0033 ms** over both draft
+phases. It was removed before routing.
 
 The next funded decode candidate is a repository-native SM120 CUTLASS
 gate/up-GEMM epilogue that emits the compiled-semantics SwiGLU NVFP4 tuple

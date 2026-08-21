@@ -4292,3 +4292,25 @@ mean 13.929045  17.125658 446.051        39.730
   `2EE14F51F04741817EC47A7F90AC0AD1E67D94717DCA29149E6176A31A814FAA`)
   and `perf038-nvfp4-ctam64-pingpong-20260821-0205.log` (SHA-256
   `048B472D59246338E05BFFE4028A4DDF2A5D9CCED2DC08F74A0D27D17756A87C`).
+
+### 2026-08-21 02:25 PDT - PERF-039 MTP dual norm/concat below funding
+
+- Built a native BF16 SM120 producer for the MTP boundary
+  `GemmaRMSNorm(embedding) + GemmaRMSNorm(target hidden) + concat`. The first
+  one-CTA design used 640 threads and regressed M1 by **8.064 us** because it
+  reduced occupancy versus two 320-thread norm CTAs.
+- Reworked the kernel to launch two 320-thread CTAs per row in one graph node,
+  preserving each norm's selected geometry while writing directly into the
+  `[M,10240]` fusion-projection input. Both concatenated BF16 values and the
+  dependent `10240 -> 5120` BF16 FC output matched bit-for-bit.
+- Across 101 captured samples through the dependent FC, M1 improved
+  **0.065824 -> 0.064576 ms** (**1.248 us**) and M3 improved
+  **0.052128 -> 0.050048 ms** (**2.080 us**). One draft-decode plus one
+  draft-extend invocation can therefore save only about **0.0033 ms/cycle**,
+  two orders of magnitude below the 0.25 ms decode funding floor.
+- Removed the native prototype, thin binding, and exact JIT cache without
+  changing MTP routing or launching a server.
+- Artifacts: `perf039-mtp-dual-norm-20260821-0220.log` (SHA-256
+  `FD04A7E133DC41056829D86A9E5DBD7D53FD6051DFE38978B9CE2BAFFE23C65F`)
+  and `perf039-mtp-dual-norm-2cta-20260821-0225.log` (SHA-256
+  `EFF09AA9EA36EF77390310111AF8C956C427C7EC31E18BE8862BBB4431C28183`).
