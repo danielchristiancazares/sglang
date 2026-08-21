@@ -99,6 +99,16 @@ if _is_cpu:
 logger = logging.getLogger(__name__)
 
 
+@torch.compiler.assume_constant_result
+@functools.cache
+def use_sparse_top_p_renorm() -> bool:
+    return (
+        _is_cuda
+        and sys.platform == "win32"
+        and envs.SGLANG_OPT_SPARSE_TOP_P_RENORM.get()
+    )
+
+
 def resolve_num_tokens_per_req(
     *,
     phase: Literal["draft_decode", "draft_extend", "target_verify"],
@@ -289,7 +299,16 @@ def build_aligned_draft_probs(
                 probs.shape[0],
                 allow_singleton_broadcast=False,
             )
-            probs = top_p_renorm_prob(probs, top_ps)
+            if (
+                use_sparse_top_p_renorm() and draft_sampling_top_k <= 32
+            ):
+                from sglang.kernels.ops.sampling.sparse_top_p_renorm import (
+                    sparse_top_p_renorm,
+                )
+
+                probs = sparse_top_p_renorm(probs, top_ps)
+            else:
+                probs = top_p_renorm_prob(probs, top_ps)
         return probs
 
     sparse_logits, sparse_indices = torch.topk(

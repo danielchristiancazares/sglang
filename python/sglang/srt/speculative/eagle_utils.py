@@ -1099,6 +1099,28 @@ def _verify_coins(
     return coins, coins_for_final_sampling
 
 
+def _renorm_target_probs_top_p(
+    target_probs: torch.Tensor,
+    sampling_info: SamplingBatchInfo,
+    draft_token_num: int,
+    top_p_renorm_prob,
+) -> torch.Tensor:
+    expanded_top_ps = torch.repeat_interleave(
+        sampling_info.top_ps,
+        draft_token_num,
+        dim=0,
+    )
+    from sglang.srt.speculative.spec_utils import use_sparse_top_p_renorm
+
+    if use_sparse_top_p_renorm() and 0 < sampling_info.max_top_k <= 32:
+        from sglang.kernels.ops.sampling.sparse_top_p_renorm import (
+            sparse_top_p_renorm,
+        )
+
+        return sparse_top_p_renorm(target_probs, expanded_top_ps)
+    return top_p_renorm_prob(target_probs, expanded_top_ps)
+
+
 def eagle_sample(
     verify_input: EagleVerifyInput,
     batch: ScheduleBatch,
@@ -1283,11 +1305,11 @@ def eagle_sample(
             )  # (bs * num_draft_tokens, vocab_size)
             maybe_detect_nan(target_probs, "v2 verify: target_probs after top_k_renorm")
         if sampling_info.need_top_p_sampling:
-            target_probs = top_p_renorm_prob(
+            target_probs = _renorm_target_probs_top_p(
                 target_probs,
-                torch.repeat_interleave(
-                    sampling_info.top_ps, verify_input.draft_token_num, dim=0
-                ),
+                sampling_info,
+                verify_input.draft_token_num,
+                top_p_renorm_prob,
             )
             maybe_detect_nan(target_probs, "v2 verify: target_probs after top_p_renorm")
         target_probs = target_probs.reshape(bs, verify_input.draft_token_num, -1)

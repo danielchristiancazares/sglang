@@ -9,11 +9,19 @@ from unittest.mock import patch
 import torch
 from flashinfer.sampling import top_k_renorm_prob, top_p_renorm_prob
 
+from sglang.kernels.ops.sampling.sparse_top_p_renorm import (
+    sparse_top_p_renorm,
+)
+from sglang.srt.environ import envs
 from sglang.srt.model_executor.cuda_graph_composite import CudaGraphChildSequence
+from sglang.srt.speculative.eagle_utils import _renorm_target_probs_top_p
 from sglang.srt.speculative.multi_layer_eagle_draft_extend_cuda_graph_runner import (
     MultiLayerEagleDraftExtendCudaGraphRunner,
 )
-from sglang.srt.speculative.spec_utils import sample_draft_proposal
+from sglang.srt.speculative.spec_utils import (
+    sample_draft_proposal,
+    use_sparse_top_p_renorm,
+)
 from sglang.test.test_utils import CustomTestCase
 
 
@@ -123,7 +131,7 @@ class TestDraftProposalFlashInfer(CustomTestCase):
         torch.testing.assert_close(q.sum(dim=-1), torch.ones(2, device="cuda"))
         torch.testing.assert_close(q_x, q.gather(1, token), rtol=0, atol=0)
 
-    def test_aligned_q_is_captured_inside_single_graph(self):
+    def _check_aligned_q_is_captured_inside_single_graph(self):
         vocab_size = 8192
         generator = torch.Generator(device="cuda").manual_seed(2701)
         logits = torch.randn(
@@ -182,6 +190,105 @@ class TestDraftProposalFlashInfer(CustomTestCase):
         torch.testing.assert_close(
             ret.topk_p, draft_probs[:, 0].gather(1, ret.topk_index), rtol=0, atol=0
         )
+
+    def test_aligned_q_is_captured_inside_single_graph(self):
+        self._check_aligned_q_is_captured_inside_single_graph()
+
+    def test_sparse_top_p_aligned_q_is_captured_inside_single_graph(self):
+        with (
+            patch(
+                "sglang.srt.speculative.spec_utils.sys",
+                SimpleNamespace(platform="win32"),
+            ),
+            patch(
+                "sglang.srt.speculative.spec_utils.use_sparse_top_p_renorm",
+                return_value=True,
+            ),
+            patch(
+                "sglang.kernels.ops.sampling.sparse_top_p_renorm.sparse_top_p_renorm",
+                wraps=sparse_top_p_renorm,
+            ) as sparse_mock,
+        ):
+            self._check_aligned_q_is_captured_inside_single_graph()
+        sparse_mock.assert_called()
+
+    def test_sparse_top_p_cached_windows_gate(self):
+        use_sparse_top_p_renorm.cache_clear()
+        try:
+            with (
+                patch(
+                    "sglang.srt.speculative.spec_utils._is_cuda",
+                    True,
+                ),
+                patch(
+                    "sglang.srt.speculative.spec_utils.sys",
+                    SimpleNamespace(platform="win32"),
+                ),
+                envs.SGLANG_OPT_SPARSE_TOP_P_RENORM.override(True),
+            ):
+                self.assertTrue(use_sparse_top_p_renorm())
+        finally:
+            use_sparse_top_p_renorm.cache_clear()
+
+    @patch(
+        "sglang.srt.speculative.spec_utils.use_sparse_top_p_renorm",
+        return_value=True,
+    )
+    def test_sparse_top_p_target_rows_expand_and_replay(self, _gate):
+        generator = torch.Generator(device="cuda").manual_seed(3701)
+        request_count = 2
+        draft_token_num = 3
+        vocab_size = 8192
+        logits = torch.randn(
+            (request_count * draft_token_num, vocab_size),
+            dtype=torch.float32,
+            device="cuda",
+            generator=generator,
+        )
+        initial_probs = top_k_renorm_prob(torch.softmax(logits, dim=-1), 20)
+        static_probs = initial_probs.clone()
+        sampling_info = SimpleNamespace(
+            top_ps=torch.tensor([0.85, 0.95], device="cuda"),
+            max_top_k=20,
+        )
+
+        def candidate():
+            return _renorm_target_probs_top_p(
+                static_probs,
+                sampling_info,
+                draft_token_num,
+                top_p_renorm_prob,
+            )
+
+        candidate()
+        static_probs.copy_(initial_probs)
+        torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = candidate()
+
+        for seed, top_ps in ((3702, (0.8, 0.9)), (3703, (0.9, 0.98))):
+            generator.manual_seed(seed)
+            logits = torch.randn(
+                static_probs.shape,
+                dtype=torch.float32,
+                device="cuda",
+                generator=generator,
+            )
+            probs = top_k_renorm_prob(torch.softmax(logits, dim=-1), 20)
+            sampling_info.top_ps.copy_(
+                torch.tensor(top_ps, dtype=torch.float32, device="cuda")
+            )
+            static_probs.copy_(probs)
+            graph.replay()
+            expected = top_p_renorm_prob(
+                probs,
+                torch.repeat_interleave(
+                    sampling_info.top_ps,
+                    draft_token_num,
+                ),
+            )
+            torch.testing.assert_close(output, expected, rtol=0, atol=0)
 
 
 if __name__ == "__main__":

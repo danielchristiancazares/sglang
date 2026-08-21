@@ -1115,6 +1115,9 @@ class Envs:
     # Speculative decoding
     # ===================================================================
     SGLANG_ENABLE_OVERLAP_PLAN_STREAM = EnvBool(False)
+    # Use the native sparse-support top-p renormalizer after finite top-k.
+    # Expert A/B knob; unsupported or wider top-k batches keep FlashInfer AIR.
+    SGLANG_OPT_SPARSE_TOP_P_RENORM = EnvBool(False)
     # A/B: keep the DFLASH draft greedy head eager (not folded in-graph).
     SGLANG_DFLASH_EAGER_DRAFT_SAMPLER = EnvBool(False)
     SGLANG_RAGGED_VERIFY_MODE = EnvStr("static")
