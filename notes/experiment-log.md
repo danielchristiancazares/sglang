@@ -4703,3 +4703,88 @@ mean 13.929045  17.125658 446.051        39.730
 - Signed commit `6b963eed056e7516eaf233501a271afe039a70d3`
   (`perf: skip full-support draft top-p`) contains the expert gate, complete
   proposal routing, and regression tests.
+
+### 2026-08-21 06:18 PDT - PERF-048 ReplaySSM commit overlap rejected after direct attribution
+
+- Production configuration from immutable model config is 48 GDN layers,
+  48 value heads, 16 key heads, K/V dimensions 128, four state slots, and
+  three-step raw ring. The existing fold benchmark measured batch-one
+  **222.6 us** without track writes and **334.2 us** with tracking
+  (artifact SHA-256 `47344BBB...38B8`).
+- Added default-off `SGLANG_OPT_OVERLAP_REPLAYSSM_COMMIT`. After target
+  sampling, the forward stream publishes all commit inputs to a dedicated
+  side stream; that stream waits verify, performs fold plus conv rollback, and
+  the forward stream rejoins after draft extend but before worker return.
+  Ephemeral commit inputs are `record_stream`-protected.
+- The first launch failed during startup warmup because stream construction was
+  accidentally placed on inner `EagleDraftWorker`; `EAGLEWorkerV2.verify`
+  correctly raised missing attribute. No measurement was made; the process
+  exited cleanly with code 15. Moved ownership to outer `EAGLEWorkerV2`.
+- Repaired server captured every graph and became healthy. Candidate trace
+  contains 229 `gdn_replayssm_exact_fold_kernel` launches averaging
+  **189.478 us**.
+- PERF-046 control/candidate M3 cycle:
+  - mean **15.913862 -> 15.755353 ms** (-0.158508);
+  - median **15.859291 -> 15.721147 ms** (-0.138144);
+  - p90 **16.097856 -> 15.889537 ms** (-0.208319).
+- Five candidate 512-token probes exactly matched PERF-046's output SHA-256,
+  histogram, verify count, and acceptance sequence
+  `2.245614, 2.245614, 2.245614, 2.115702, 2.295964`.
+  Mean latency improved **4.059 -> 4.037 s**.
+- Exact `199000+16` completed `199016`, established digest
+  `cdf5bb57...47d9`, **3212.629 prompt / 87.555 generation tok/s**,
+  **61.943034 s TTFT**, and **62.114355 s E2E**.
+- Evidence SHA-256: trace `D2BB34F7...EA5`, manifest
+  `F215AFAB...A9C9`, trace summary `1ECF8F10...41A2`, acceptance
+  `5FA9E4DA...B50A`, exact `5B75F69F...5874`, server log
+  `91A86CC6...CE9D`.
+- Stopped leaves `26116/42384`, listener `27312`, and parent `30192`
+  leaf-first. Every PID is absent, port 30000 is free, and GPU residency
+  returned to 1,092 MiB.
+- A fresh overlap-evidence review required flanking control and actual interval
+  intersection. C control reproduced A at
+  **15.922452 mean / 15.867868 median / 16.123397 p90 ms** over 228 cycles
+  with the identical profiled output/acceptance.
+- Session analyzer grouped graph replays and intersected every fold interval.
+  Candidate fold averaged **189.478 us**; **186.819 us** overlapped graph 8,
+  leaving **2.659 us** exposed. However graph 8 expanded from control
+  **1.060552 ms** to candidate **1.237001 ms**. Control serial
+  fold (**173.714 us**) plus graph 8 is **1.234266 ms**, slightly faster than
+  the overlapped span. The apparent full-cycle movement is environmental noise,
+  not recoverable overlap.
+- C-control trace/manifest SHA-256: `2F2A8019...4EBB` /
+  `D36F6866...6A43`. Candidate/control interval reports:
+  `3B9BEFD8...E22B` / `47F5703A...47D1`.
+- Removed all PERF-048 source changes. The final worktree returned to
+  documentation plus concurrent user-owned ABI material.
+
+### 2026-08-21 06:50 PDT - PERF-049 p/q capture closes static calibration
+
+- Launched page-aligned k20/top-p0.95 EAGLEWorkerV2 with the built-in
+  `--speculative-pq-capture-path` diagnostic and a 256-cycle bound.
+- The first request wrote **151** complete JSONL records, then the eight-item
+  background queue filled faster than CPU branch-distribution replay and
+  raised `RuntimeError: p/q capture writer queue is full`. The server exited;
+  the flushed records remained valid. Capture SHA-256:
+  `D30A6362F1F58F97E0467280E3D0283908ADB214D7FCD40A0B3B45B5C3886F96`.
+- Raised only the opt-in writer queue to `min(max_cycles, 64)`. Eight focused
+  CPU tests pass, including the bounded capacity ratchet. The second launch
+  completed one 512-token request and sealed **239** records (warmup plus 231
+  scored cycles) without backpressure. Capture SHA-256:
+  `6BC94D0742F8675DC2F96AEB9A94DF1A160401848AB55ACC2266490A4124EA4C`.
+- Offline chronological analysis computed exact overlap from captured finite
+  p/q supports. Second-corpus baseline expected length was **2.187060** and the
+  within-support ceiling **2.737586**. Train-optimal gamma `(0.95,1.10)`
+  validated below baseline; maximin `(1.0,1.05)` improved the worse half only
+  **0.000133**. Learned q-rank and token weights validated at
+  **2.121759/2.124150** versus **2.128776** baseline.
+- The first corpus independently selected identity as its maximin gamma.
+  Static gamma/rank/token calibration is closed; mismatch is
+  context/trajectory-dependent. Final analysis/harness SHA-256:
+  `2CF5E3D5...A5B6` / `04BF7509...B29E`.
+- Stopped the second capture tree `39084 -> 48788 -> {16460,27768}`
+  leaf-first. All PIDs are absent, port 30000 is free, and GPU residency
+  returned to 1,092 MiB.
+- Signed commit `4d6782121e3763b07cbf29f20b13c84f0da23575`
+  (`fix: prevent p-q capture backpressure`) contains only the bounded queue
+  repair and its eight-test ratchet.

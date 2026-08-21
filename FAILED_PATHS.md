@@ -1045,3 +1045,52 @@
 - Reopen only if: an authoritative p/q capture shows a nonzero additive row and
   coins near overlap boundaries for another workload.
 - Related commit or revert: temporary source removed; no commit.
+
+## PERF-F063 - ReplaySSM commit overlap
+
+- Hypothesis: hide the target ReplaySSM fold/conv rollback under the independent
+  draft-extend graph.
+- Scope: page-aligned + proposal-top-p-one M3 line; default-off target-state
+  side stream with a forward-stream rejoin before scheduler return.
+- Attempted change: side stream waited on verify, consumed record-stream
+  protected inputs, ran fold/conv commit, and overlapped draft extend.
+- Benchmark evidence: production fold microbenchmark measured 222.6 us
+  (334.2 us with tracking); live fold averaged 189.478 us. A/B/C cycle
+  mean/median/p90 were
+  `15.913862/15.859291/16.097856`,
+  `15.755353/15.721147/15.889537`, and
+  `15.922452/15.867868/16.123397 ms`.
+- Correctness evidence: five output hashes, histograms, verify counts, and
+  acceptance lengths matched exactly; exact `199016` digest/capacity passed.
+- Failure mode: interval attribution showed **186.819 us** fold overlap but
+  draft-extend graph 8 expanded **1.060552 -> 1.237001 ms**. Serial
+  fold+extend was ~1.234266 ms versus ~1.237001 ms overlapped; bandwidth
+  contention erased the hidden work.
+- Why not to retry unchanged: the measured dependent boundary is neutral/slower
+  despite complete fold overlap.
+- Reopen only if: fold traffic is reduced materially or draft extend no longer
+  competes for the same memory bandwidth.
+- Related commit or revert: temporary source removed; no commit.
+
+## PERF-F064 - Static proposal gamma/rank/token calibration
+
+- Hypothesis: branch-exact p/q records would reveal a stable scalar, rank, or
+  token bias that raises linear-chain overlap toward 2.34 emitted tokens.
+- Scope: two chronological batch-one sampled-profile corpora from the active
+  EAGLEWorkerV2 k20/top-p0.95 path (151 and 239 records).
+- Attempted change: offline per-depth gamma grid, learned q-rank weights, and
+  minimum-count token weights with chronological train/validation splits.
+- Benchmark evidence: second corpus baseline expected length was **2.187060**
+  with support ceiling **2.737586**. Best train gamma overfit; maximin gamma
+  `(1.0,1.05)` improved the worse half only **0.000133**. Rank/token validation
+  fell to **2.121759/2.124150** from **2.128776**.
+- Correctness evidence: records are branch-exact post-transform p/q with
+  complete finite supports; independent capture reproduced the conclusion.
+- Failure mode: mismatch is context/trajectory-dependent; static corrections
+  fit the early high-overlap phase and regress later states.
+- Why not to retry unchanged: two corpora and held-out chronology reject every
+  static family tested.
+- Reopen only if: calibration consumes context/hidden features and clears a
+  held-out conservative expected-length gain of at least 0.05.
+- Related commit or revert: no serving calibration retained; diagnostic queue
+  repair retained separately.

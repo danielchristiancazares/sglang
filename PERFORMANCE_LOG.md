@@ -650,6 +650,8 @@ tree throughput can be ranked for production.
 | PERF-045 | Narrow aligned draft proposal support from top-k 20 to 16. | Existing launcher/configuration | Rejected | Five-probe acceptance averaged 2.205710, below k20's 2.217279, with slightly worse mean latency. Static proposal-support sizing is closed. |
 | PERF-046 | Override proposal-only top-p to 1.0 and skip q top-p renormalization. | Default-off graph and post-extend dispatch | Retained in `6b963eed05`; generation target open | After repairing routing across all proposal owners, AIR top-p fell from three to one launch/cycle. M3 mean/median/p90 improved 0.194/0.185/0.149 ms; acceptance rose slightly to 2.229702. |
 | PERF-047 | Scale proposal-only additive penalties. | Temporary default-off graph dispatch | Rejected as no-op on workload | Correctly routed scales 0.75 and 0.0 reproduced the exact same proposal/output trajectory; the active workload exposed no leverage through this additive row. |
+| PERF-048 | Overlap target ReplaySSM fold/conv commit with independent draft extend. | Default-off CUDA side stream with forward-stream rejoin | Rejected after interval attribution | 186.8/189.5 us fold overlapped graph 8, but graph 8 expanded 1.061 -> 1.237 ms from contention. Serial fold+extend was ~1.234 ms versus ~1.237 ms overlapped; apparent cycle gain was noise. |
+| PERF-049 | Learn static root/depth proposal calibration from branch-exact p/q capture. | Existing diagnostic plus offline gamma/rank/token fitting | Static calibration rejected; queue fixed in `4d6782121e` | Two chronological corpora (151 and 239 records) found maximin gamma at identity/negligible +0.00013 expected length; rank/token fits regressed held-out data. Queue capacity 8 -> bounded 64 prevents diagnostic backpressure. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1178,3 +1180,42 @@ tree throughput can be ranked for production.
   **2.216450** emitted length and identical output SHA-256.
 - The workload therefore exposes no acceptance leverage through this row;
   temporary source was removed.
+
+### 2026-08-21 06:18 PDT - PERF-048 ReplaySSM commit overlap rejected
+
+- Production-shape isolated fold measured **222.6 us** without tracking and
+  **334.2 us** with tracking. The live traced fold averaged **189.478 us**.
+- Enqueued target ReplaySSM fold/conv rollback on a dedicated side stream after
+  verify, overlapped it with draft extend, and rejoined the forward stream
+  before returning to the scheduler.
+- Versus PERF-046, M3 cycle mean/median/p90 improved
+  **15.913862/15.859291/16.097856 ->
+  15.755353/15.721147/15.889537 ms**, saving
+  **0.158508/0.138144/0.208319 ms**.
+- Flanking C control reproduced A at **15.922452/15.867868/16.123397 ms**.
+  Interval analysis found the candidate hid **186.819 of 189.478 us** fold
+  under graph 8, but graph 8 expanded **1.060552 -> 1.237001 ms**. The serial
+  fold+graph span was about **1.234266 ms**, versus **1.237001 ms** overlapped.
+  The side stream is neutral/slightly worse; full-cycle B movement is noise.
+- All five output/acceptance trajectories and exact capacity matched, ruling
+  out gross skipped work but not changing the performance conclusion.
+- Removed the overlap source. PERF-046 remains the selected additive cycle line.
+
+### 2026-08-21 06:50 PDT - PERF-049 static p/q calibration closed
+
+- First branch-exact capture produced 151 complete records before the
+  diagnostic's eight-item writer queue filled and crashed the opt-in server.
+- Raised the bounded queue to `min(max_cycles, 64)`; eight unit tests pass.
+  A second independent request completed and sealed 239 records without
+  backpressure.
+- Chronological train/validation analysis found:
+  - support ceiling **2.737586**, proving proposal-model improvement remains
+    theoretically valuable;
+  - maximin gamma `(1.0, 1.05)` improves worst-half expected length only
+    **0.000133**;
+  - rank calibration validation **2.121759** versus baseline **2.128776**;
+  - token calibration validation **2.124150**, also below baseline.
+- Static gamma/rank/token corrections are rejected. Future proposal work needs
+  context-dependent calibration or a learned hidden adapter.
+- Commit: signed `4d6782121e` (`fix: prevent p-q capture backpressure`) retains
+  only the bounded diagnostic queue repair and test.
