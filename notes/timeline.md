@@ -606,6 +606,21 @@ code changes, or process state matter.
   physical rows; the next narrow change routes incompatible tensors to the
   already established cache-write plus SDPA fallback.
 
+### Torch-native decode admits long BF16 pools safely
+
+- Signed `b2b8ab4af8` makes fused native MPS decode conditional on the
+  binding's actual FP32, NHD, contiguous-cache, head-dimension, and 7,936-row
+  contract. The dispatcher owns both native admission and the existing
+  cache-write plus SDPA fallback.
+- BF16 with 32,769 physical rows and FP32 with 7,937 rows failed before the
+  change. Both now complete with zero observed error. FP32 at exactly 7,936
+  rows stays fused and agrees within `2.5331974e-07`.
+- Source-level prefill and decode blockers are cleared. The next rung is a
+  controlled 32K BF16 full-model capacity launch followed by the measured
+  13,635-token process-scoped OpenCode request. Fixed-memory native GQA remains
+  funded afterward because the fallback enables capacity rather than solving
+  long-history decode cost.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
