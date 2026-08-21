@@ -1454,3 +1454,35 @@
   prompt plus output headroom, then completes the same process-scoped request.
 - Related commit or revert: no source change; PERF-A008 is the current native
   context-enabling candidate.
+
+## PERF-FA050 - Unchanged 4K native-IQ2 prefill under the 300-second watchdog
+
+- Hypothesis: the retained partial-extend correction made the existing generic
+  quantized projection route fast enough to complete one 4,096-token outer
+  chunk under the scheduler's default diagnostic watchdog.
+- Scope: committed native-MPS IQ2 server, FP32 compute, BF16 KV, exact 32,768
+  context/token pool, one request, 4,096-token prefill chunk, and ordinary
+  rejection sampling.
+- Attempted change: no source change. Started a clean exact-capacity launch,
+  flushed its cache, and submitted exact `4096+2` with an 1,800-second client
+  timeout.
+- Benchmark evidence: the scheduler watchdog fired after the single forward
+  remained active for 300 seconds. The request returned no token. A completed
+  `128+32` prompt on the same launch measured 6.963 prompt tok/s, whose
+  unchanged per-token rate predicts roughly 588 seconds for 4,096 tokens.
+- Correctness evidence: the server reached ready state, reported image/audio
+  false, and completed the sampled short gate with exact counts and separate
+  reasoning. At timeout 28,672 of 32,768 token slots remained available;
+  memory and thermal diagnostics were healthy.
+- Failure mode: this request is censored by the watchdog, so it establishes
+  only that the unchanged path is below 13.65 prompt tok/s at this shape.
+  An independent actual-tensor sweep shows the current batch-eight IQ2 kernel
+  traverses/dequantizes each packed matrix once per eight prompt rows.
+- Why not to retry unchanged: completed short-prompt scaling already predicts
+  a watchdog crossing, and the quantized projection sweep identifies a
+  lower-level candidate with a direct matched benchmark.
+- Reopen only if: PERF-A014 materially improves actual large-batch projections
+  or a synchronized full-forward profile demonstrates a different dominant
+  mechanism; then rerun with diagnostic ownership and an appropriate bound.
+- Related commit or revert: no source change; full evidence is in the
+  2026-08-21 00:36 and 00:41 experiment-log entries.

@@ -461,8 +461,22 @@ decode probes failed at BF16/32,769 rows and FP32/7,937 rows. Both now reach
 the cache-write plus SDPA fallback with zero observed error, while the fused
 FP32/7,936 boundary remains active with maximum error `2.5331974e-07`. The
 next gate is one controlled 32K BF16 full-model launch through capacity and
-the measured 13,635-token OpenCode prompt. A bounded native long-context GQA
-kernel remains the subsequent throughput candidate.
+the measured 13,635-token OpenCode prompt. The first controlled 32K/BF16
+launch reached ready state with exact 32,768-token pools and completed sampled
+`128+32` at **6.963 prompt / 6.772 generation tok/s**. Its exact `4096+2`
+request crossed the scheduler's 300-second watchdog without returning a token;
+that censored result is consistent with the completed short-prompt rate and
+does not establish a hang.
+
+The next native bottleneck is large-batch quantized projection. On the actual
+IQ2_XXS `blk.8.ffn_gate.weight` (`17408x5120`), synchronized medians at batch
+128/512/1024/2048/4096 were **65.359958/250.314041/493.479750/983.834750/
+1967.899583 ms**. Current host dispatch uses the batch-eight kernel above four
+rows, so a 4,096-row projection launches 512 groups that each traverse and
+dequantize the packed matrix. PERF-A014 will preserve the selected small-batch
+decode paths and qualify a shared-dequant simdgroup matrix-matrix route for
+large prefills. A bounded native long-context GQA kernel remains the subsequent
+decode-throughput candidate.
 
 The MLX long-context lane also retains adaptive quantized-prefill query tiling
 behind `SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE`. Its 1 GiB automatic threshold
