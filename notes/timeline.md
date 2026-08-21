@@ -412,6 +412,10 @@ code changes, or process state matter.
   averaged **2987.275 prompt tok/s**, **0.914%** above the adjacent PERF-028
   arm, with TTFT improved by **0.606649 s**. Three exact long requests restored
   their digest and averaged **3001.344 prompt / 115.225 generation tok/s**.
+- A separately exact compiled-semantics producer reduced isolated M3 launch
+  time from 70.848 to 25.152 us, but 233 full-cycle samples retained a
+  **16.045 ms** median versus **16.058 ms** control. Its +0.839% long-client
+  movement was noise; the experiment was removed.
 - Retained in `5ea3b734b0`. The headline record remains PERF-024; these
   additive changes are the active source for the next optimization.
 

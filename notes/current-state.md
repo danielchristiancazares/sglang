@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
-22:04 PDT.
+22:31 PDT.
 
 **Qualified production source line:** commit
 `7f5af878da7b8dc43063f31e554dfc69cee5d510`
@@ -317,6 +317,9 @@ distribution, and cost topology:
 - selecting the eager-exact SwiGLU-to-NVFP4 producer inside the compiled M3
   target graph, which changed the deterministic output because Inductor's
   one-rounding function differs from eager prefill;
+- a separately exact compiled-semantics producer, whose isolated M3 boundary
+  improved 70.848 -> 25.152 us while the profiled full-cycle median remained
+  neutral at 16.045 ms versus 16.058 ms control;
 - global chunk-7680 promotion, which regressed the base checkpoint and
   transiently reduced headroom to 200 MiB;
 - chunk 7808, which regressed the selective prompt mean to 2909.350 tok/s;

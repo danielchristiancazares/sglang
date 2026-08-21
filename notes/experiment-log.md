@@ -3882,3 +3882,77 @@ mean 13.929045  17.125658 446.051        39.730
   the prequantized tuple, while compile tracing must retain the native
   activation path. The expanded Qwen3.5 ModelOpt suite passed **10 tests**;
   Python compilation and `git diff --check` passed.
+
+### 2026-08-20 22:13 PDT - PERF-029 compiled-semantics producer passes isolated gates
+
+- Probed FlashInfer's native expert SwiGLU-to-NVFP4 kernel as a candidate for
+  the established Inductor M3 function. With `B=1`, a valid-row-count mask,
+  and caller-owned zeroed scale storage, its packed and complete swizzled scale
+  bytes matched the compiled `F.silu(gate) * up` plus `fp4_quantize` oracle
+  exactly at M1 and M3.
+- The public expert API is not directly usable: it exposes grouped-GEMM views
+  and leaves padded scale positions uninitialized. Its M3 packed bytes were
+  exact, but the returned scale storage differed outside the written offsets.
+  The raw caller-owned-buffer entry proved the arithmetic itself is exact.
+- Added a separate fast-math specialization to the retained dense native
+  producer. It uses the expert kernel's one-final-rounding `__expf` contract,
+  writes every padding byte deterministically, and retains the existing PDL
+  wait/trigger boundary. The eager two-rounding module remains separately
+  compiled without fast math.
+- Isolated M1 medians were **67.904 us compiled staged**, **15.200 us raw
+  expert**, and **25.184 us PDL-safe dense custom**. M3 medians were
+  **70.848, 15.104, and 25.152 us**, respectively. The retained custom form
+  removes about **45.7 us per target MLP** while preserving the dense tuple.
+  Artifact:
+  `perf027-compiled-custom-20260820-2235.log`.
+- Wired only compile tracing to the compiled-semantics producer; eager prefill
+  retains PERF-027. Focused coverage now includes compiled M1/M3 byte equality,
+  mutable graph replay, nested fullgraph compilation, and a compiled captured
+  producer-to-ModelOpt tuple chain. Results: **16 native CUDA tests** and
+  **10 Qwen3.5 ModelOpt CPU tests** passed; Python compilation and
+  `git diff --check` passed.
+- This is not yet retained. The next gate is a selective full-model launch
+  requiring the old short and long deterministic digests, unchanged 200K
+  pools, successful graph capture, a shorter target graph/cycle, and a
+  repeatable generation gain.
+
+### 2026-08-20 22:31 PDT - PERF-029 removed after full-cycle attribution
+
+- The selective server resolved both 200K pools, promoted the same 110 target
+  tactic entries, and captured target verify, draft decode, and draft extend
+  in **17.37, 1.14, and 0.90 s**. Target graph memory usage fell to 0.04 GB;
+  `/health` and the language-only model surface passed.
+- After two exact warmups, five cache-flushed `199000+16` scores produced:
+  - prompt `2962.354, 2913.028, 2987.034, 2951.224, 2945.581` tok/s,
+    mean **2951.844**, CV **0.911%**;
+  - short generation `94.156, 92.580, 102.402, 98.039, 101.088` tok/s,
+    mean **97.653**;
+  - TTFT/E2E means **67.419972/67.573812 s**.
+  Every request completed exact `199016` and retained digest
+  `cdf5bb57b88deaa7515abaedf36406d10494599fce2e23eeaa400461d9f647d9`.
+- Three exact `199000+512` requests measured prompt
+  `2961.809, 3017.342, 2972.733` tok/s (mean **2983.961**) and generation
+  `116.146, 113.944, 118.485` tok/s (mean **116.192**, CV **1.954%**).
+  All completed exact `199512` and retained digest
+  `cac0c6e4fab3115102a9a0c4163e4465068fba30cb09f0bb5556c7021e4a2092`.
+- Profiled the ordinary M3 server with `bench_target_verify_width.py` over 512
+  sampled output tokens. Acceptance was 2.197425 over 233 verification cycles.
+  Full target-start-to-target-start samples measured **16.389343 ms mean,
+  16.044576 ms median, 15.628654 ms minimum**, and 20.934177 ms maximum.
+  The median is effectively identical to the existing **16.058328 ms** M3
+  control, so the isolated 45.7 us-per-layer launch result did not become
+  serialized full-cycle work.
+- The adjacent long client mean moved +0.839%, while short prompt/TTFT moved in
+  the opposite direction. With a neutral device cycle and current WDDM
+  variation, this is statistical noise rather than a retained gain.
+- Re-resolved and stopped only the verified tree rooted at PID 12000:
+  worker leaves `5068/45972`, listener `33244`, parent Python `26544`, console
+  `56132`, then launcher PowerShell `12000`. All known PIDs exited, port 30000
+  was free, compiler workers were absent, and the GPU returned to 1,748 MiB
+  display residency with 30,440 MiB free.
+- Removed the compiled-semantics module, Qwen routing, and added tests. PERF-027
+  eager fusion remains the active source. Artifacts:
+  `perf029-server-20260820-2215.log`,
+  `perf029-exact200k-20260820-2216.log`,
+  `perf029-long-20260820-2225.log`, and
+  `target_width_m3-20260820-223006`.
