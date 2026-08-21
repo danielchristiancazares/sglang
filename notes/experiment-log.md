@@ -3449,3 +3449,17 @@ mean 13.929045  17.125658 446.051        39.730
   `7f5af878da7b8dc43063f31e554dfc69cee5d510`
   (`perf: retain large-extend FlashInfer tactics`). The pre-existing
   `BENCHMARK.md` edits and `HANDOFF.md` deletion were not staged.
+
+### 2026-08-20 18:45 PDT - compact Windows scoreboard and next target selected
+
+- Simplified the root Windows scoreboard to the four user-selected outputs:
+  prompt throughput, generation throughput, TTFT, and end-to-end time. Removed
+  surrounding qualification-window, cache, digest, and secondary-workload
+  result numbers from the compact section; detailed evidence remains in this
+  ledger and `notes/benchmark-contract.md`.
+- Set the next exact `199000+16` target to **3100 prompt / 120 generation
+  tok/s**, **<=64.20 s TTFT**, and **<=64.35 s** end to end in the same
+  eligible request. The time limits are derived from
+  `199000 / 3100 = 64.1935` plus 15 post-first-token intervals at 120 tok/s.
+  Exact `199016` completion and `finish_reason=length` remain pass/fail gates,
+  not a fifth performance target.

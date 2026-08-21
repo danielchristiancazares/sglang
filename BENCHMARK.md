@@ -1,63 +1,43 @@
-# Qwen3.8-27B Apple Silicon Benchmark Incumbent
+# Apple Silicon 32K Decode Benchmark
 
-This file is the **current winning snapshot**, not a benchmark diary. Replace
-an incumbent only when a reproducible run is faster for the same workload and
-still passes the capability gates below. Keep failed and superseded trials out
-of this file.
+This is the primary performance scoreboard for the Apple Silicon
+Qwen3.8-27B serving lane. The numbers that matter are measured on the warmed
+fixed-decode workload: **12 prompt tokens plus 256 generated tokens** through
+the Rust server with greedy sampling and one running request.
 
-## Current winner
+## Current record
 
-| Metric | Best hit | Five-run result | Workload |
-|---|---:|---:|---|
-| Steady server decode | **19.58 tok/s** | typically 19.42–19.58 tok/s | 12 prompt tokens, 256 generated tokens |
-| End-to-end generation | **18.821 tok/s** | **18.783 tok/s aggregate** | 12 prompt tokens, 256 generated tokens, including request and prefill overhead |
-| Cold long prefill | **85.763 tok/s** | one capacity-path probe | 5,000 prompt tokens, 1 generated token, 58.300 s end to end |
-| Direct engine reference | **20.458 tok/s** | one short reference probe | `mlx-lm`, 58 prompt tokens, 27 generated tokens |
+| Metric | Current record |
+|---|---:|
+| Steady server decode | **19.58 tok/s** |
+| End-to-end generation | **18.820713 tok/s** |
+| Time to first token | **Unknown** |
+| End-to-end time | **13.602035 s** |
+| Five-run aggregate generation | **18.782925 tok/s** |
 
-The production-serving number is **19.58 tok/s steady decode**. The
-request-observed number is **18.821 tok/s best / 18.783 tok/s five-run
-aggregate**.
-The direct-engine result is a ceiling reference with a shorter workload and is
-not a server promotion result.
+The five request-observed generation samples were
+`18.761785, 18.772786, 18.820713, 18.774448, 18.784999 tok/s`, with a
+**13.629400 s** mean end-to-end time. The direct `mlx-lm` engine result of
+**20.458 tok/s** used a different `58+27` workload and remains a ceiling
+reference rather than a server record.
 
-### Five-run samples
+This record was measured on an Apple M1 Max with 32 GPU cores and 32 GB of
+unified memory using the full text side of Qwen3.8-27B.
 
-Fixed output length: 256 tokens.
+| Area | Record profile |
+|---|---|
+| OS and hardware | macOS 26.6.1; M1 Max, 10 CPU cores, 32 GPU cores, 32 GB unified memory |
+| Checkpoint | `mlx-community/Qwen3.8-27B-4bit` snapshot `3e6447f082e89cc7f0bc6e5441afd38dfce760ff` |
+| Runtime | Python 3.11.15, MLX 0.32.0, mlx-lm 0.31.3, repository-pinned Rust 1.92 |
+| Control plane | In-process Axum/Tokio Rust server with native OpenAI chat, template, reasoning, tool-call, and streaming paths |
+| Source | SGLang base `e577394a9bb7e86a0f8b34c3575ee02d899d2915` plus the Apple Silicon worktree |
+| Capacity and KV | 32,768-token context and pool; BF16 attention KV across 16 full-attention layers, approximately 2.0 GB at 32K |
+| Cache and concurrency | Unified FULL radix plus recurrent auxiliary-state caching; one running request |
+| Prefill | 4,096-token chunks; headless text trunk enabled for discarded chunks |
+| Sampling and graphs | Native MLX sampling; benchmark temperature 0; optional Metal RoPE and CUDA graph backends disabled |
+| Memory policy | `SGLANG_MLX_CLEAR_CACHE_STEPS=0`; 25.0 GB wired-memory limit |
 
-| Run | End-to-end time | Output throughput |
-|---:|---:|---:|
-| 1 | 13.644757 s | 18.761785 tok/s |
-| 2 | 13.636761 s | 18.772786 tok/s |
-| 3 | **13.602035 s** | **18.820713 tok/s** |
-| 4 | 13.635554 s | 18.774448 tok/s |
-| 5 | 13.627895 s | 18.784999 tok/s |
-| Aggregate | **13.629400 s mean** | **18.782925 tok/s** |
-
-## Winning configuration
-
-- **Machine:** Apple M1 Max, 10 CPU cores, 32 GPU cores, 32 GB unified memory
-- **OS:** macOS 26.6.1
-- **Model:** full text side of Qwen3.8-27B, MLX affine 4-bit/group-size 64
-- **Checkpoint:** `mlx-community/Qwen3.8-27B-4bit`
-- **Snapshot:** `3e6447f082e89cc7f0bc6e5441afd38dfce760ff`
-- **Python:** 3.11.15
-- **MLX:** 0.32.0
-- **mlx-lm:** 0.31.3
-- **Rust:** 1.92, repository-pinned toolchain
-- **Control plane:** in-process Axum/Tokio Rust server with native OpenAI chat,
-  template, reasoning, tool-call, and streaming paths
-- **SGLang base:** `e577394a9bb7e86a0f8b34c3575ee02d899d2915` plus the current Apple-Silicon worktree
-- **Context allocation:** 32,768 tokens
-- **Attention KV:** BF16, 16 full-attention layers, approximately 2.0 GB at 32K
-- **Concurrency:** one running request
-- **Radix cache:** unified FULL + recurrent auxiliary-state components
-- **Chunked prefill:** 4,096 tokens; headless text trunk enabled for discarded chunks
-- **Sampling:** native MLX sampling enabled; benchmark uses greedy temperature 0
-- **Optional Metal RoPE:** disabled in the winner
-- **MLX buffer-cache clearing:** disabled (`SGLANG_MLX_CLEAR_CACHE_STEPS=0`)
-- **Wired-memory limit:** 25.0 GB
-
-Resolved launch shape:
+Launch this profile with:
 
 ```bash
 env \
@@ -84,7 +64,9 @@ env \
   --port 30000
 ```
 
-Fixed decode-control request, run five consecutive times after server warmup:
+## Benchmark command
+
+Run this fixed decode request five consecutive times after server warmup:
 
 ```bash
 curl -sS -o /dev/null -w '%{time_total}\n' \
@@ -93,7 +75,13 @@ curl -sS -o /dev/null -w '%{time_total}\n' \
   -d '{"text":"Write a dense sequence of short Python identifiers separated by spaces.","sampling_params":{"temperature":0,"max_new_tokens":256,"ignore_eos":true}}'
 ```
 
-## Maximum-context incumbent
+A target result must complete all five fixed-length requests, exceed both
+**18.782925 tok/s** aggregate generation and **18.820713 tok/s** best-hit
+generation, and preserve every capability gate below. Long prefill,
+maximum-context capacity, and direct-engine results remain independent records
+because they measure different workloads.
+
+## Maximum-context record
 
 The independent capacity winner advertises the full **262,144-token** native
 context with affine q4 attention KV. Its cache grows geometrically from 4,096
@@ -123,7 +111,7 @@ Verified exact-token capacity rungs under this profile:
 | 16,384 | 1 | 204.230414 s | **80.223115 tok/s** |
 | 32,768 | 1 | 425.299138 s | **77.046947 tok/s** |
 
-## Speculative decoding profile (flag-gated, off in the speed winner)
+## Opt-in speculative profile
 
 `--mlx-mtp-path <mtp.safetensors>` loads the Qwen3.8 multi-token-prediction
 head (`Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed`, q4-quantized at load)
@@ -160,7 +148,7 @@ stats (`mtp[...]` lines) for further tuning.
 
 The fixed decode control and both incumbents above run with the flag OFF and
 are unaffected. Promotion of this profile into the speed winner would
-require the five-run control with the flag ON to clear the rule below plus
+require the five-run control with the flag ON to clear the rule above plus
 all capability gates; the control prompt sits at breakeven, so the flag
 stays opt-in for agent workloads.
 
@@ -181,16 +169,9 @@ stays opt-in for agent workloads.
 - A 5,000-token, two-chunk prefill completes; an identical follow-up reports a
   4,096-token device-cache hit.
 
-## Promotion rule
-
-For this fixed decode control, promote only when all five consecutive runs
-complete, aggregate output throughput exceeds **18.782925 tok/s**, the best hit
-exceeds **18.820713 tok/s**, and every capability gate still passes. Record long
-prefill and context-capacity winners independently because they measure a
-different part of the system.
-
 The broader inherited workload and acceptance definitions remain in
 [`notes/benchmark-contract.md`](notes/benchmark-contract.md).
+
 ---
 
 # Native-Windows 200K Context Benchmark
@@ -200,7 +181,7 @@ Qwen3.8-27B serving lane. The numbers that matter are measured at the exact
 near-limit context workload: **199,000 prompt tokens plus 16 generated tokens
 inside the real 200,000-token context and token pools**.
 
-## Record to beat
+## Current record
 
 | Metric | Current record |
 |---|---:|
@@ -208,43 +189,29 @@ inside the real 200,000-token context and token pools**.
 | Generation | **112.499 tok/s** |
 | Time to first token | **65.286869 s** |
 | End-to-end time | **65.420204 s** |
-| Tokens completed | **199,016** |
+
+## Next target
+
+| Metric | Next target |
+|---|---:|
+| Prompt processing | **>= 3,100 tok/s** |
+| Generation | **>= 120 tok/s** |
+| Time to first token | **<= 64.20 s** |
+| End-to-end time | **<= 64.35 s** |
+
+The two time targets are tied directly to the throughput targets on this exact
+request: `199000 / 3100 = 64.1935` seconds to first token, followed by 15
+measured decode intervals at 120 tok/s for approximately 64.32 seconds end to
+end. Exact completion of `199016` tokens with `finish_reason=length` remains an
+eligibility gate, not a fifth performance target.
 
 This record was measured on the selective target-NVFP4 checkpoint
 `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` with the
 width-three NEXTN topology, chunk size 7680, and the bit-exact native-Windows
 Gemma residual-norm direct-output path. The target's ordinary 16,384-token
-EXTEND pass used the selected FlashInfer FP4 tactics described below. The
-request completed successfully with `finish_reason=length` and exact
-`199000+16` usage.
-
-## Qualification windows
-
-An independent retune produced exact prompt samples
-`3051.345, 3048.538, 3048.086, 3042.488, 3044.105 tok/s`, mean
-**3046.912**. Its third request set the same-request record above.
-
-A separate launch restored that selected cache and promoted only the 110
-file-backed tactics exercised by the target EXTEND pass into FlashInfer's
-runner-keyed process cache. Its exact prompt samples were
-`3050.570, 3048.607, 3044.288, 3045.422, 3047.659 tok/s`, mean
-**3047.309**. All ten exact requests completed `199000+16`; the selected
-tactic family retained digest
-`cdf5bb57b88deaa7515abaedf36406d10494599fce2e23eeaa400461d9f647d9`.
-
-The 16-token generation field measures only 15 post-first-token intervals and
-remains speculative-cycle/SSE-quantized. Longer exact support is the stable
-generation check:
-
-| Evidence | Prompt tok/s | Generation tok/s | Workload |
-|---|---:|---:|---|
-| Independent retune, 3-run mean | **3,046.677** | **117.853** | exact `199000+512` |
-| Persisted-cache relaunch, 3-run mean | **3,047.754** | **118.389** | exact `199000+512` |
-| Persisted-cache relaunch, 5-run mean | 12,684.511 | **126.252** | sampled `6213+512`, end to end |
-
-Every long request completed exact `199000+512` with digest
-`cac0c6e4fab3115102a9a0c4163e4465068fba30cb09f0bb5556c7021e4a2092`.
-Five native acceptance probes averaged 2.217256 accepted tokens per verify.
+EXTEND pass used the selected FlashInfer FP4 tactics recorded in the detailed
+contract. The request completed successfully with `finish_reason=length` and
+exact `199000+16` usage.
 
 Launch this opt-in profile with:
 
@@ -256,14 +223,12 @@ $env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND = "1"
   -RandomSeed 615388882
 ```
 
-The selected native-Windows SM120 cache is 20,928 bytes with SHA-256
-`8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`.
 The opt-in may profile missing entries on a fresh machine; a different tactic
-selection requires full requalification rather than inheriting these numbers.
+selection requires full requalification.
 
 Do not make 7680 the global launcher default. Base RadixArk regressed to
-2,226.770 prompt tok/s on exact `199000+16` and fell to 200 MiB free before
-follow-up probes. Its production default remains 4096.
+lower prompt throughput and unsafe operating headroom under that setting. Its
+production default remains 4096.
 
 The qualified baseline uses `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk`
 and the real 200K production configuration.
@@ -280,9 +245,9 @@ Record prompt throughput, generation throughput, TTFT, end-to-end time, token
 counts, finish reason, resolved launcher arguments, GPU/process environment,
 and cache treatment.
 
-An overall record must complete exactly **199,016 tokens** and beat both
-**3,048.086 prompt tok/s** and **112.499 generation tok/s** under the matched
-contract. Lower TTFT and end-to-end time are supporting wins.
+A target result must clear all four thresholds in the same exact request.
+Because generation spans only 15 post-first-token intervals, it also requires
+the repeated matched evidence defined by the detailed contract below.
 
 Detailed qualification rules and historical evidence remain in
 [`notes/benchmark-contract.md`](notes/benchmark-contract.md) and
