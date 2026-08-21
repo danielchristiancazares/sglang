@@ -218,21 +218,6 @@ EXTEND pass used the selected FlashInfer FP4 tactics described below. The
 request completed successfully with `finish_reason=length` and exact
 `199000+16` usage.
 
-## Achieved target
-
-| Metric | Milestone |
-|---|---:|
-| Prompt processing | **3,000 tok/s** |
-| Generation | **110 tok/s** |
-| Time to first token | **<= 66.33 s** |
-| End-to-end time | **<= 66.5 s** |
-| Tokens completed | **199,016** |
-
-The current record clears every milestone value in one exact request. A second
-independent server launch also cleared both throughput targets at
-**3,013.736 prompt / 112.012 generation tok/s**, with 66.031008 s TTFT and
-66.164923 s end to end.
-
 ## Qualification windows
 
 An independent retune produced exact prompt samples
@@ -280,18 +265,8 @@ Do not make 7680 the global launcher default. Base RadixArk regressed to
 2,226.770 prompt tok/s on exact `199000+16` and fell to 200 MiB free before
 follow-up probes. Its production default remains 4096.
 
-## Qualified production baseline
-
-| Metric | Qualified baseline |
-|---|---:|
-| Prompt processing | **2,608.263 tok/s** |
-| Generation | **102.358 tok/s** |
-| End-to-end time | **76.442544 s** |
-| Tokens completed | **199,016** |
-
-The qualified baseline uses
-`C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk` and the real 200K
-production configuration.
+The qualified baseline uses `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk`
+and the real 200K production configuration.
 
 ## Benchmark command
 
