@@ -570,3 +570,33 @@
   sparse-vocabulary head changes the amount of weight data read.
 - Related commit or revert: implementation and test removed before commit;
   trace/manifest retained as evidence.
+
+## PERF-F042 - FlashInfer TRT-LLM dense FP4 on SM120
+
+- Hypothesis: the already-implemented FlashInfer TRT-LLM dense FP4 backend
+  would reduce the selected checkpoint's dominant NVFP4 GEMM wall relative to
+  the qualified CUTLASS backend.
+- Scope: `ModelOptFp4LinearMethod`, FlashInfer `mm_fp4`, and the
+  `flashinfer_trtllm` dense-linear backend on the native-Windows RTX 5090.
+- Attempted change: no source change. Ran the real layer-path focused test
+  `test_nvfp4_linear_backends.py::TestNvFp4LinearBackends::test_flashinfer_trtllm`
+  through `scripts/windows/invoke_cuda_pytest.ps1`.
+- Benchmark evidence: no valid kernel timing was possible. FlashInfer rejected
+  all three test shapes, `(64,256,512)`, `(5,160,336)`, and
+  `(128,1024,1024)`, before execution with
+  `BackendSupportedError: mm_fp4 does not support backend 'trtllm' with
+  capability 120`.
+- Correctness evidence: the focused path reached real checkpoint-format weight
+  loading, TRT-LLM weight shuffling, activation quantization, and
+  `ModelOptFp4LinearMethod.apply`; it failed at FlashInfer's explicit backend
+  capability check before producing output.
+- Failure mode: FlashInfer `0.6.17` does not expose its dense TRT-LLM FP4 GEMM
+  for SM120. Core SGLang support and B200 coverage do not make the backend
+  available on the RTX 5090.
+- Why not to retry unchanged: bypassing the explicit dependency capability
+  gate would not establish a compiled or correct SM120 kernel, and a full
+  server launch would fail at the same call.
+- Reopen only if: a later FlashInfer build explicitly supports dense
+  `mm_fp4(..., backend="trtllm")` on capability 120 and the focused numerics
+  plus CUDA-graph replay test passes before a server launch.
+- Related commit or revert: no implementation change; evidence-only update.

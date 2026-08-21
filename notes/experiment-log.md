@@ -3463,3 +3463,92 @@ mean 13.929045  17.125658 446.051        39.730
   `199000 / 3100 = 64.1935` plus 15 post-first-token intervals at 120 tok/s.
   Exact `199016` completion and `finish_reason=length` remain pass/fail gates,
   not a fifth performance target.
+
+### 2026-08-20 19:21 PDT - new optimization lane baseline established
+
+- Began the explicit autonomous target of clearing all four root-scoreboard
+  thresholds in one exact request: prompt **>=3100 tok/s**, generation
+  **>=120 tok/s**, TTFT **<=64.20 s**, and E2E **<=64.35 s**, with exact
+  `199016` usage and `finish_reason=length`. The validation loop is a matched
+  current-source baseline, one reachable variable at a time, five consecutive
+  scores plus supporting correctness/capacity evidence, and an independent
+  promotion window.
+- Worktree before launch was clean on `main` at
+  `cb11475a4e0c68cfe542f66a919b468f205392f0`, one commit ahead of
+  `origin/main`. Port 30000 was free, no SGLang/CUDA/compiler worker was
+  active, and the RTX 5090 was at ordinary display residency: driver `610.88`,
+  786 MiB used, 31,402 MiB free, 30 C.
+- Exact launch:
+  `$env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND='1';`
+  `.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1`
+  `-ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4`
+  `-ChunkedPrefillSize 7680 -RandomSeed 615388882`.
+  Resolved arguments retained real 200,000 context and target/draft token
+  pools, one request, page 64, FlashInfer prefill/sampling, TRT-LLM MHA target
+  and draft decode, M3 linear rejection sampling, aligned draft top-k 20,
+  FP8 E4M3 draft KV, FP32 ReplaySSM state, torch compile `default`, scheduler
+  and stream intervals 4, and every tree/SWOR/adaptive/simulation/device-cycle
+  control inactive.
+- Startup promoted exactly **110** selected target FP4 configs into the
+  process cache. Target verify, draft decode, and draft extend graph captures
+  completed in **20.09, 1.25, and 0.96 s**. `/health` returned 200 and
+  `/model_info` reported image/audio understanding false. Listener PID
+  `44656` descended through Python `49796`, `sglang.exe` `53928`, and launcher
+  PowerShell `38844`; re-resolve the live tree before stopping it.
+- Runtime versions were Python `3.13.14`, PyTorch `2.13.0+cu130`, CUDA runtime
+  `13.0`, Triton `3.7.1`, and FlashInfer `0.6.17`. Before the benchmark the
+  server occupied 27,224 MiB with 4,964 MiB free. WDDM clients included
+  Chrome, Edge WebView, iCloud, Windows shell/display processes, and the server
+  Python process.
+- The first collection wrapper failed before any request because it attempted
+  to assign PowerShell's read-only `$PID` variable. The corrected wrapper
+  immediately retried without changing server state.
+- Benchmark command for the first score was
+  `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py`
+  `--input-tokens 199000 --output-tokens 16 --warmup-runs 2`
+  `--warmup-output-tokens 16 --timeout 600`; the next four added
+  `--skip-warmup`. This produced two full exact-shape warmups followed by five
+  cache-flushed scored requests.
+- Prompt samples:
+  `2905.351, 2927.990, 2957.401, 2936.653, 2959.654 tok/s`; mean
+  **2937.410**, median **2936.653**, CV **0.683%**. Generation samples:
+  `94.098, 90.935, 105.232, 87.540, 89.888 tok/s`; mean **93.539**, median
+  **90.935**, CV **6.644%**.
+- TTFT samples:
+  `68.494311, 67.964704, 67.288805, 67.764230, 67.237593 s`; mean
+  **67.749929 s**. E2E samples:
+  `68.653720, 68.129658, 67.431347, 67.935580, 67.404467 s`; mean
+  **67.910954 s**.
+- Every score completed exact `199000+16`, returned
+  `finish_reason=length`, kept thinking enabled, and retained digest
+  `cdf5bb57b88deaa7515abaedf36406d10494599fce2e23eeaa400461d9f647d9`.
+  This is the reproducible current-environment baseline, not a replacement for
+  the qualified **3048.086/112.499** record.
+- Raw artifact:
+  `C:\Users\Daniel\.copilot\session-state\fd2e8d01-e225-4b48-9ab3-4d118100a4a9\files\baseline-exact200k-20260820-1910.log`.
+
+### 2026-08-20 19:24 PDT - dense TRT-LLM FP4 rejected by the SM120 capability gate
+
+- Stopped the baseline server leaf-first after re-resolving its exact tree:
+  CUDA/detokenizer leaves `24316/31188`, listener `44656`, Python parent
+  `49796`, launcher shim `53928`, console `56548`, and PowerShell `38844`.
+  All known PIDs exited, port 30000 was free, compiler workers were absent,
+  and the GPU returned to 1,126 MiB display residency with 31,062 MiB free.
+- Inspected the core route before changing the launcher. SGLang's
+  `Fp4GemmRunnerBackend`, `ModelOptFp4LinearMethod` weight shuffling, and
+  `fp4_gemm` dispatch all support the user-facing `flashinfer_trtllm` value.
+  The Windows launcher omits it from the FP4 `ValidateSet`, and existing dense
+  backend CI runs on B200 rather than SM120.
+- Ran:
+  `.\scripts\windows\invoke_cuda_pytest.ps1`
+  `test\registered\unit\layers\quantization\test_nvfp4_linear_backends.py::`
+  `TestNvFp4LinearBackends::test_flashinfer_trtllm -q`.
+- All three real-layer subtest shapes reached FlashInfer and failed before
+  kernel execution with
+  `BackendSupportedError: mm_fp4 does not support backend 'trtllm' with
+  capability 120`. The shapes were `(64,256,512)`, `(5,160,336)`, and
+  `(128,1024,1024)`.
+- No launcher or runtime source was changed. Close this candidate for
+  FlashInfer `0.6.17` on the RTX 5090; reopen only when the dependency
+  explicitly supports dense TRT-LLM FP4 on capability 120 and the focused
+  numerics plus graph-replay gate passes.

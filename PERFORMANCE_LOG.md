@@ -38,6 +38,10 @@
 | PERF-024 deterministic exact prompt window | 3016.444 tok/s record | **3047.309 tok/s five-run mean** | **+30.865 / +1.023%** | restored 20,928-byte selected cache; 110 target configs promoted into process cache | 2026-08-20 18:17 PDT |
 | PERF-024 exact `199000+512` long generation | 109.683 tok/s prior qualified mean | **118.389 tok/s three-run mean** | **+8.706 / +7.937%** | persisted-cache relaunch; exact counts and stable digest | 2026-08-20 18:17 PDT |
 | PERF-024 real sampled `6213/512` support | 117.940 tok/s fresh matched baseline | **126.252 tok/s five-run mean** | **+8.312 / +7.048%** | sampled production profile on the persisted-cache relaunch | 2026-08-20 18:17 PDT |
+| Current-source exact `199000+16` prompt baseline | 3048.086 tok/s record | **2937.410 tok/s five-run mean** | -110.676 / -3.631% | selected cache, chunk 7680, seed 615388882, two exact warmups then five cache-flushed scores | 2026-08-20 19:21 PDT |
+| Current-source exact `199000+16` generation baseline | 112.499 tok/s record | **93.539 tok/s five-run mean** | -18.960 / -16.854% | same exact requests; only 15 post-first-token intervals | 2026-08-20 19:21 PDT |
+| Current-source exact `199000+16` TTFT baseline | 65.286869 s record | **67.749929 s five-run mean** | +2.463060 s / +3.772% slower | same exact requests | 2026-08-20 19:21 PDT |
+| Current-source exact `199000+16` E2E baseline | 65.420204 s record | **67.910954 s five-run mean** | +2.490750 s / +3.807% slower | same exact requests | 2026-08-20 19:21 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
 
@@ -611,7 +615,7 @@ tree throughput can be ranked for production.
 | PERF-022 | Remove the temporary/copy from native-Windows Gemma residual normalization. | Windows `GemmaRMSNorm` dispatch using existing JIT output buffer | Retained | Bit-exact; 22-24% isolated reduction; former exact `199000+16` record **3016.444/112.355**, independent confirmation **3013.736/112.012**. |
 | PERF-023 | Re-establish the current-source exact-200K baseline before changing code. | Selective checkpoint, chunk 7680, exact benchmark and live environment | Complete | Five exact scores averaged **2871.358/90.459** with exact digest; current environment did not reproduce the historical record. |
 | PERF-024 | Autotune target ordinary-EXTEND FP4 tactics at the real 7680/7000 prefill shapes without losing them to later draft contexts. | FlashInfer autotune runner and speculative target prefill | Retained expert opt-in; qualified record | Same-request record **3048.086/112.499**; persisted-cache exact prompt mean **3047.309** and long-generation mean **118.389**. Defaults remain unchanged. |
-| PERF-025 | Evaluate the already-implemented FlashInfer TRT-LLM dense FP4 backend on native-Windows SM120. | `ModelOptFp4LinearMethod`, FP4 backend selector, launcher | Survey | Core source and B200 tests expose `flashinfer_trtllm`, while the Windows launcher omits it. Must prove installed 0.6.17 capability, SM120 parity, M3/M7680 timing, and memory. |
+| PERF-025 | Evaluate the already-implemented FlashInfer TRT-LLM dense FP4 backend on native-Windows SM120. | `ModelOptFp4LinearMethod`, FP4 backend selector, launcher | Blocked by installed backend | The real layer-path test reaches FlashInfer and fails all three shapes with `mm_fp4 does not support backend 'trtllm' with capability 120`; see `PERF-F042`. |
 | PERF-026 | Specialize greedy EAGLE draft proposals and retain a sparse exact sampled p/q path. | EAGLE draft graphs, proposal buffers, rejection sampling | Survey | Temperature-zero target verification is greedy while the draft still samples stochastic top-k 20. Any change must preserve exact q(X), RNG, graph replay, and asynchronous output lifetimes. |
 | PERF-027 | Fuse Qwen SwiGLU output directly into byte-identical NVFP4 activation/scales for `down_proj`. | Native CUDA activation/quant producer and FP4 linear tuple input | Survey | Removes 64 BF16 intermediate write/read pairs per target pass; first gate is byte-identical packed output at M1/M3/M7000/M7680 and a whole-chain win. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
@@ -694,3 +698,59 @@ tree throughput can be ranked for production.
 - Steady evidence: warmed scheduler windows measured `72.80`, `72.31`, `72.83`, `72.51`, `72.49`, and `72.15 TPS`.
 - Correctness evidence: the Q4_0/Q4_1/Q5_K/Q6_K GGUF reference suite passed at batch 24 and 17 output rows. Q5_K maximum absolute/relative error was `1.60933e-06` / `3.81316e-07`; Q6_K was `1.07288e-06` / `3.36184e-07`. Native fused-op, GDN, attention, speculative-control, and speculative-state tests also passed.
 - Decision: target achieved with repeatable end-to-end margin; retain both exact-batch-24 kernels.
+
+### 2026-08-20 19:21 PDT - PERF-BASELINE-025 exact-200K current-source control
+
+- Change: measurement only from clean `main` at
+  `cb11475a4e0c68cfe542f66a919b468f205392f0`. Launched the selective
+  `AttnNVFP4` checkpoint with chunk 7680, seed `615388882`, real 200K pools,
+  ordinary M3 rejection sampling, and
+  `SGLANG_FLASHINFER_AUTOTUNE_EXTEND=1`. Startup promoted the selected 110
+  target FP4 file-cache configs and captured target verify, draft decode, and
+  draft extend graphs.
+- Environment: native Windows RTX 5090, driver `610.88`, Python `3.13.14`,
+  PyTorch `2.13.0+cu130`, CUDA runtime `13.0`, Triton `3.7.1`, and FlashInfer
+  `0.6.17`. Before measurement the server occupied 27,224 MiB with 4,964 MiB
+  free. Chrome, Edge WebView, iCloud, Windows shell/display clients, and the
+  server Python process were resident WDDM clients.
+- Warmup/cache policy: two full exact-shape warmups preceded five scored
+  requests. Every scored invocation flushed the cache and completed exact
+  `199000+16` with `finish_reason=length`.
+- Prompt samples were
+  `2905.351, 2927.990, 2957.401, 2936.653, 2959.654 tok/s`; mean
+  **2937.410**, median **2936.653**, CV **0.683%**.
+- Generation samples were
+  `94.098, 90.935, 105.232, 87.540, 89.888 tok/s`; mean **93.539**, median
+  **90.935**, CV **6.644%**. TTFT samples were
+  `68.494311, 67.964704, 67.288805, 67.764230, 67.237593 s`; mean
+  **67.749929 s**. E2E samples were
+  `68.653720, 68.129658, 67.431347, 67.935580, 67.404467 s`; mean
+  **67.910954 s**.
+- Correctness evidence: all five requests returned `199000` prompt tokens,
+  `16` completion tokens, `199016` total, thinking enabled, and stable output
+  digest
+  `cdf5bb57b88deaa7515abaedf36406d10494599fce2e23eeaa400461d9f647d9`.
+- Decision: accept this as the reproducible current-environment control. It
+  does not supersede the qualified `3048.086/112.499` record. Candidate
+  attribution must use an adjacent A-B-A comparison because this environment
+  is 3.631% below the prompt record.
+- Artifact:
+  `C:\Users\Daniel\.copilot\session-state\fd2e8d01-e225-4b48-9ab3-4d118100a4a9\files\baseline-exact200k-20260820-1910.log`.
+
+### 2026-08-20 19:24 PDT - PERF-025 TRT-LLM dense FP4 capability gate
+
+- Change: no source change. Exercised the existing real dense-linear
+  `flashinfer_trtllm` path on the RTX 5090 before exposing it through the
+  Windows launcher.
+- Benchmark evidence: no timing qualified. FlashInfer `0.6.17` rejected
+  shapes `(64,256,512)`, `(5,160,336)`, and `(128,1024,1024)` with
+  `BackendSupportedError: mm_fp4 does not support backend 'trtllm' with
+  capability 120`.
+- Correctness evidence: the focused test reached checkpoint-format loading,
+  TRT-LLM weight shuffle, activation quantization, and the real
+  `ModelOptFp4LinearMethod.apply` call. The dependency rejected the backend
+  before producing output.
+- Decision: close on the installed native-Windows stack. Do not add the
+  launcher choice or attempt a server launch until FlashInfer explicitly
+  supports dense TRT-LLM FP4 on SM120.
+- Commit: pending evidence-only checkpoint.
