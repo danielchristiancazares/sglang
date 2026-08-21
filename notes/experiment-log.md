@@ -6284,3 +6284,104 @@ mean 13.929045  17.125658 446.051        39.730
   13,635-token process-scoped OpenCode request. PERF-A008 remains funded to
   replace the safe fallback with bounded long-history native decode once this
   capacity gate passes.
+
+### 2026-08-21 00:36 PDT - 32K BF16 server boots; 4K prefill hits watchdog
+
+- Began from clean signed `HEAD=dca3ef330f41994b8cebbe8a6acea40eee6dd974`,
+  branch ahead of `origin/main` by 16. The first launch attempt added
+  `--language-model-only` and failed during argument resolution before any
+  model process or Metal work: the flag accepts the conditional-generation
+  architecture but this GGUF already resolves to the text-only
+  `Qwen3_5ForCausalLM`. It was removed; the live `/model_info` gate remains
+  the language-only authority.
+- The successful exact launch command was:
+
+  ```text
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-IQ2_XXS.gguf --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 --kv-cache-dtype bfloat16 --context-length 32768 --max-total-tokens 32768 --max-running-requests 1 --chunked-prefill-size 4096 --max-prefill-tokens 8192 --disable-radix-cache --disable-overlap-schedule --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+- Resolved state matched: MPS torch-native attention, PyTorch sampling, FP32
+  model compute, BF16 KV, context/pool 32,768, page one, chunk 4,096, prefill
+  cap 8,192, one request, radix and overlap disabled, graphs disabled, and
+  Qwen3/Qwen3 Coder parsers. Weight loading took 24.71 seconds and reported
+  9.03 GB. The 32,768-token BF16 KV pool reported exactly 1.00 GB K plus
+  1.00 GB V; the one-slot Mamba pool reported 0.29 GB. Startup reported
+  19.97 GB available. Root/listener PID `76515` owned port 30000 with tracker,
+  scheduler, and detokenizer `76526/76527/76528`.
+- `/health` returned 200. `/server_info` reported ready, exact context and
+  pool 32,768, `max_req_input_len=32762`, BF16 KV, 2.0 GB KV residency, and
+  the same resolved flags. `/model_info` reported `qwen3_5_text`, causal LM,
+  generation enabled, and image/audio understanding false.
+- One required-sampling exact `128+32` request completed after a warmup with
+  **6.963 prompt / 6.772 generation tok/s**, **18.383999 s TTFT**, and
+  **22.961379 s** end to end. It returned exact counts, length finish, and
+  nonempty separate reasoning. This proves full-model BF16 decode fallback;
+  its short-context decode is 18.35% below the prior FP32 fused restart mean
+  of 8.2942 tok/s, so the bounded native GQA replacement remains funded.
+- The next isolated gate used client PID `76604` and exact command:
+
+  ```text
+  .venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 4096 --output-tokens 2 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup --timeout 1800
+  ```
+
+  The request started after two successful cache flushes. A single 4,096-token
+  prefill forward remained active for 300 seconds, then the scheduler watchdog
+  fired. No token was returned. This is a compute-duration failure at the
+  selected outer chunk, before any long-pool decode result.
+- At timeout, the token pool had all 32,768 slots with 28,672 still available.
+  System memory reported 54% free, no throttled pages, and macOS recorded no
+  thermal or performance warning. This rules out a pool-capacity or thermal
+  failure. The server's registered diagnostics waited 60 seconds and then
+  killed only its verified tree; the client received `RemoteDisconnected`.
+  PIDs `76515/76526/76527/76528/76604` are absent, port 30000 is free, and no
+  compiler/client/server remains. Immediate post-cleanup memory reported 58%
+  free; allow unified-memory residency to settle before another GPU launch.
+- Next: measure candidate-only prefill at 1,024 and 2,048 outer chunks with a
+  raised diagnostic watchdog, identify whether quantized projection or SDPA
+  owns the duration, and select a safe chunk before attempting the 13,635-token
+  OpenCode gate. Do not spend a long-context run on the 4,096 chunk under the
+  current 300-second watchdog.
+
+### 2026-08-21 00:41 PDT - Actual IQ2 projection exposes large-batch rereads
+
+- Rechecked the cleaned host before each isolated Metal process: port 30000
+  remained free, no SGLang/client/compiler process was live, memory returned
+  to 92% free, and macOS recorded no thermal or performance warning.
+- Measured the retained production tensor `blk.8.ffn_gate.weight`, GGUF
+  IQ2_XXS, shape `17408x5120`, through the current `quant_matmul` dispatch.
+  Each batch size used one warmup and three synchronized samples in a fresh
+  process:
+
+  ```text
+  batch 128:   63.664333,65.359958,72.036583 ms; median 65.359958; 0.492 GiB/s
+  batch 512:   249.495042,261.477875,250.314041 ms; median 250.314041; 0.257 GiB/s
+  batch 1024:  493.479750,494.005667,489.589250 ms; median 493.479750; 0.218 GiB/s
+  batch 2048:  983.670958,986.179500,983.834750 ms; median 983.834750; 0.196 GiB/s
+  batch 4096:  1969.751250,1967.899583,1960.376125 ms; median 1967.899583; 0.186 GiB/s
+  ```
+
+  The exact command form was:
+
+  ```text
+  .venv/bin/python benchmark/mac/bench_mps_gguf_quant.py /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 --tensor blk.8.ffn_gate.weight --batch-size N --warmup 1 --iterations 3
+  ```
+
+- Source inspection confirms that every batch above eight selects the generic
+  `BatchTile=8` kernel. A 4,096-row projection therefore creates 512 batch
+  groups, and each group traverses and dequantizes the complete packed matrix.
+  The checkpoint contains 280 IQ2_XXS tensors among 866 tensors. The measured
+  per-row cost settles near 0.480 ms from batch 1,024 through 4,096 while the
+  benchmark's one-read effective bandwidth falls from 0.492 to 0.186 GiB/s.
+- The server's 300-second event is a censored request rather than a complete
+  prefill timing. The accepted 128-token prompt result already projects to
+  roughly 583-588 seconds at unchanged per-token cost, so reaching the
+  watchdog is expected. The actual-tensor sweep independently establishes the
+  repeated packed-weight/dequantization mechanism; synchronized full-forward
+  timing remains required before assigning its exact share of request time.
+- PERF-A014 is the next implementation candidate: retain the selected
+  batch-one/four/eight decode kernels, then route sufficiently large batches
+  through a native simdgroup matrix-matrix kernel that stages each quantized
+  weight tile once for 32 activation rows. The pinned llama.cpp Metal kernel
+  at `749f688f` is the implementation oracle and is already covered by the
+  repository's ggml MIT notice. First gates are actual-format CPU parity,
+  row/batch tails, and matched actual-tensor A/B before another server launch.
