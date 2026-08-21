@@ -19,6 +19,7 @@ import functools
 import hashlib
 import json
 import logging
+import types
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
@@ -247,7 +248,80 @@ def _drop_diverged_autotune_cache(
 
 
 @contextlib.contextmanager
-def flashinfer_autotune_context(model_runner: ModelRunner, *, run_lm_head: bool):
+def _promote_flashinfer_file_cache_hits():
+    """Keep file-backed tactics alive after later autotune contexts.
+
+    FlashInfer's file config table is process-global and replaced whenever a
+    different cache file is opened. Speculative draft graph capture therefore
+    clears target configs loaded during warmup. Promote only configs exercised
+    by this forward into the runner-keyed process cache, which is not cleared.
+    """
+    from flashinfer.autotuner import AutoTuner
+
+    tuner = AutoTuner.get()
+    had_instance_override = "search_cache" in tuner.__dict__
+    previous_override = tuner.__dict__.get("search_cache")
+    original_search_cache = tuner.search_cache
+    promoted = 0
+
+    def search_cache(
+        _self,
+        custom_op,
+        runners,
+        input_shapes,
+        tuning_config,
+        inputs=None,
+    ):
+        nonlocal promoted
+        result = original_search_cache(
+            custom_op,
+            runners,
+            input_shapes,
+            tuning_config,
+            inputs=inputs,
+        )
+        is_hit, runner_id, tactic, stored_profile = result
+        if is_hit and stored_profile is None:
+            runner = runners[runner_id]
+            cache_key = tuner._get_cache_key(
+                custom_op,
+                runner,
+                input_shapes,
+                tuning_config,
+                runner.get_cache_key_extras(inputs) if inputs is not None else (),
+            )
+            with tuner._lock:
+                file_config = tuner._file_configs.get(cache_key.file_key)
+                if cache_key not in tuner.profiling_cache and file_config == (
+                    runner.__class__.__name__,
+                    tactic,
+                ):
+                    tuner.profiling_cache[cache_key] = (tactic, None)
+                    promoted += 1
+        return result
+
+    tuner.search_cache = types.MethodType(search_cache, tuner)
+    try:
+        yield
+    finally:
+        if had_instance_override:
+            tuner.search_cache = previous_override
+        else:
+            del tuner.search_cache
+        if promoted:
+            logger.info(
+                "Promoted %d FlashInfer file-cache configs into the process cache.",
+                promoted,
+            )
+
+
+@contextlib.contextmanager
+def flashinfer_autotune_context(
+    model_runner: ModelRunner,
+    *,
+    run_lm_head: bool,
+    promote_file_cache_hits: bool = False,
+):
     # The gate below decides on the same inputs load_configs does.
     from flashinfer.autotuner import _collect_metadata, autotune
 
@@ -277,6 +351,11 @@ def flashinfer_autotune_context(model_runner: ModelRunner, *, run_lm_head: bool)
         from sglang.srt.layers.logits_processor import autotune_dummy_run_mode
 
         skip_ops = get_flashinfer_autotune_skip_ops(mr)
+        promotion_ctx = (
+            _promote_flashinfer_file_cache_hits()
+            if promote_file_cache_hits
+            else contextlib.nullcontext()
+        )
         with (
             _autotune_process_group(sync_group),
             autotune(
@@ -284,6 +363,7 @@ def flashinfer_autotune_context(model_runner: ModelRunner, *, run_lm_head: bool)
                 cache=str(autotune_cache),
                 skip_ops=skip_ops,
             ),
+            promotion_ctx,
             autotune_dummy_run_mode(run_lm_head=run_lm_head),
         ):
             yield
@@ -292,10 +372,18 @@ def flashinfer_autotune_context(model_runner: ModelRunner, *, run_lm_head: bool)
 
 
 def run_flashinfer_autotune_forward(
-    model_runner: ModelRunner, forward_fn: Callable[[], None], *, run_lm_head: bool
+    model_runner: ModelRunner,
+    forward_fn: Callable[[], None],
+    *,
+    run_lm_head: bool,
+    promote_file_cache_hits: bool = False,
 ) -> None:
     """Run flashinfer autotune forward."""
-    with flashinfer_autotune_context(model_runner, run_lm_head=run_lm_head):
+    with flashinfer_autotune_context(
+        model_runner,
+        run_lm_head=run_lm_head,
+        promote_file_cache_hits=promote_file_cache_hits,
+    ):
         forward_fn()
     # Tactic profiling creates short-lived workspaces for every candidate.
     # Return their cached blocks before CUDA graph capture measures headroom;
@@ -356,14 +444,7 @@ def maybe_flashinfer_autotune_extend(
     num_tokens = max_prefill_buffer_tokens() or get_schedule().max_prefill_tokens
     if num_tokens <= (decode_num_tokens or 0):
         return  # decode-shaped autotune already covered these buckets
-    is_pd_prefill_target = (
-        get_disagg().disaggregation_mode == "prefill" and not mr.is_draft_worker
-    )
-    if not mr.is_generation or (
-        mr.spec_algorithm.is_speculative() and not is_pd_prefill_target
-    ):
-        # Ordinary speculative runners force TARGET_VERIFY; PD prefill targets
-        # have no draft-side state and preserve the requested EXTEND mode.
+    if not mr.is_generation or mr.is_draft_worker:
         return
     # Multimodal generation wrappers can still run this text-only EXTEND dummy;
     # an incompatible model should fail the explicit opt-in visibly.
@@ -380,33 +461,41 @@ def maybe_flashinfer_autotune_extend(
     batch_size = (num_tokens + per_req - 1) // per_req
     num_tokens = batch_size * per_req
 
-    buffers = runner._alloc_dummy_decode_buffers(
-        batch_size,
-        num_tokens_per_req=per_req,
-        allocate_logits_buffer=False,
-    )
-    canary_run_ctx = (
-        c.with_active_single_forward_manager(0)
-        if (c := mr.canary_manager) is not None
-        else empty_context()
-    )
-
-    forward_fn = functools.partial(
-        runner._dummy_run,
-        batch_size=batch_size,
-        buffers=buffers,
-        run_ctx=canary_run_ctx,
-        forward_mode_override=ForwardMode.EXTEND,
-        extend_num_tokens_per_req=num_tokens_per_req,
-    )
-
-    log_info_on_rank0(
-        logger,
-        f"FlashInfer autotune: extra EXTEND pass at {num_tokens} tokens "
-        f"({batch_size} seqs x {per_req} tokens).",
-    )
+    buffers = None
+    forward_fn = None
     try:
-        run_flashinfer_autotune_forward(mr, forward_fn, run_lm_head=False)
+        buffers = runner._alloc_dummy_decode_buffers(
+            batch_size,
+            num_tokens_per_req=per_req,
+            allocate_logits_buffer=False,
+        )
+        canary_run_ctx = (
+            c.with_active_single_forward_manager(0)
+            if (c := mr.canary_manager) is not None
+            else empty_context()
+        )
+
+        forward_fn = functools.partial(
+            runner._dummy_run,
+            batch_size=batch_size,
+            buffers=buffers,
+            run_ctx=canary_run_ctx,
+            forward_mode_override=ForwardMode.EXTEND,
+            extend_num_tokens_per_req=num_tokens_per_req,
+            allow_speculative_target_extend=mr.spec_algorithm.is_speculative(),
+        )
+
+        log_info_on_rank0(
+            logger,
+            f"FlashInfer autotune: extra EXTEND pass at {num_tokens} tokens "
+            f"({batch_size} seqs x {per_req} tokens).",
+        )
+        run_flashinfer_autotune_forward(
+            mr,
+            forward_fn,
+            run_lm_head=False,
+            promote_file_cache_hits=mr.spec_algorithm.is_speculative(),
+        )
     except torch.OutOfMemoryError:
         if _autotune_tactic_sync_group(mr.tp_group) is not None:
             # Tuning is collective: this rank has stopped reducing while its
