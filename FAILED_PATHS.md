@@ -1006,7 +1006,9 @@
 - Why not to retry unchanged: k1, k8, k16, and k32 all lose to k20 evidence.
 - Reopen only if: a root-only, confidence-gated, or learned calibration policy
   demonstrates held-out overlap gain.
-- Related commit or revert: configuration-only; top-k 20 remains selected.
+- Related commit or revert: configuration-only; top-k 20 remained selected at
+  that stage. PERF-062 later promoted native top-k one with different target
+  numerics.
 
 ## PERF-F061 - Vacuous proposal-only top-p 1.0 routing
 
@@ -1169,3 +1171,115 @@
 - Related commit or revert: all candidate modules were removed; installed
   `mha.cu` was restored to SHA-256
   `097203B6DCD37A04A2DC99F2174D397409E8F17D0AE0F3E16F4B754C8059218D`.
+
+## PERF-F069 - Hidden-conditioned proposal rank head
+
+- Hypothesis: proposal-aligned MTP hidden state could predict which q20 rank
+  matches the greedy target and reduce exact16 from seven verify cycles to six.
+- Scope: exact-q, draft-hidden, greedy-target labels at exact 199K context,
+  separated by proposal role and chronological blocks.
+- Attempted change: extended the default-off p/q diagnostic, captured 251
+  exact-context cycles / 428 trainable rows, then fit PCA-linear rank heads
+  across several ranks and class-weight schedules.
+- Benchmark evidence: q20 contained **250/251** root target tokens and every
+  observed correct-path inner target. The support oracle emits three tokens at
+  exact16 committed positions `0,3,6,9,12,15`, proving a six-cycle ceiling.
+- Correctness evidence: captures store exact verifier q, BF16 hidden payloads,
+  greedy target rank, and realized device acceptance through the existing
+  pinned asynchronous D2H lifetime.
+- Failure mode: selected heads overfit training minority ranks. Role-zero
+  validation/test minority accuracy was **0%**; the locked exact16 rank-1 and
+  rank-2 roots remained misclassified. Role-one validation minority accuracy
+  reached only **25%** and also missed the locked first inner correction.
+- Follow-up target-hidden residual, q-shape tree, nearest-neighbor, and RBF
+  kernel models all failed the same locked positions. The actual target-hidden
+  teacher predicted them correctly (93-100% held-out rank accuracy), proving
+  the LM-head reference was sound; learned draft-to-target mappings did not
+  generalize.
+- Why not to retry unchanged: linear hidden classification does not
+  generalize beyond chronology despite perfect support headroom.
+- Reopen only if: a target-hidden low-rank residual adapter or materially larger
+  held-out corpus predicts the locked minority ranks without position leakage.
+- Related commit or revert: no learned serving policy retained; the default-off
+  proof-bearing diagnostic and backpressure repair remain useful.
+
+## PERF-F070 - Compressed target KV as the remaining exact16 solution
+
+- Hypothesis: a TurboQuant-style or rotated NVFP4 cache could cut enough XQA
+  time to close the exact16 generation gap.
+- Scope: exact SM120 XQA FP8 versus native NVFP4 at B1/Q3/QH24/KVH4/D256,
+  page64, sequence 199000.
+- Attempted change: measured nine alternating 101-call blocks and screened
+  native Hadamard rotation before stock NVFP4 quantization.
+- Benchmark evidence: FP8 median was **271.584 us**, NVFP4 **239.072 us**,
+  only **0.520 ms/cycle** across 16 layers before transform/store overhead.
+- Correctness evidence: stock NVFP4 previously corrupted reasoning/tools.
+  Rotation left synthetic relative-L2 attention error effectively unchanged
+  (**0.101824 -> 0.101624**).
+- Failure mode: the full byte-reduction ceiling supplies only a fraction of
+  the roughly 2 ms cycle need and fails the semantic boundary.
+- Why not to retry unchanged: gentler FP8-K/4-bit-V saves fewer bytes; the
+  stronger format already establishes the upper bound.
+- Reopen only if: another candidate first removes a verify cycle and leaves a
+  measured residual gap below the codec's independently proven net gain.
+- Related commit or revert: no serving codec retained.
+
+## PERF-F071 - Retune exact SM120 FP4 tactics and disable PDL
+
+- Hypothesis: stale M4 file-cache tactics or unproductive CUTLASS PDL were
+  stretching the exposed target NVFP4 family.
+- Scope: all six exact target shapes, selected tactics, production occurrence
+  counts, and the page64/delta-k1 selective server.
+- Attempted change: swept all 32 precompiled tactics with bitwise-output
+  filtering; separately rebuilt the SM120 module with PDL disabled; then
+  changed only qkvz `12->4` and down `4->0` in a backed-up local tactic cache.
+- Benchmark evidence: synthetic exact tactics projected **0.361 ms/cycle**.
+  Global PDL-off regressed weighted shape time **6.373 -> 6.448 ms** and the
+  flanking control was **6.469 ms**. The real tactic candidate averaged
+  **123.972 tok/s** versus delta-only **123.831**, just +0.114%.
+- Correctness evidence: all 32 tactics were bit-identical for the six saved
+  shape outputs; every real request kept the established long digest.
+- Failure mode: the isolated same-weight projection does not predict the
+  captured distinct-layer target graph, and the real movement is noise-sized.
+- Why not to retry unchanged: both PDL and the exact tactic pair were screened
+  through flanking controls and real serving.
+- Reopen only if: a current trace proves a specific layer-family span moves by
+  at least 0.15 ms under a new mainloop, not merely a different stock tactic.
+- Related commit or revert: installed FlashInfer header restored to SHA-256
+  `A70A47370ED14EE8F88B4D93E54547DB6A23891AF2451F78CA1159DE0EDA312C`;
+  original tactic cache restored to `BF50B56C...692E`.
+
+## PERF-F072 - Full-target, draft-only, and partial-layer Marlin routes
+
+- Hypothesis: weight-only Marlin would reduce enough small-M target or draft
+  GEMM work to clear the exact16 generation target while Cutlass retained
+  large prefill.
+- Scope: selective checkpoint, exact `199000+16`, native draft-k1 proposal,
+  in-place layout switching, and target projection/layer masks.
+- Attempted change: screened full-target Marlin, draft-only Marlin, all target
+  gate/up projections, layer halves/quarters, and cross-quarter masks. Added
+  temporary CPU-side acceptance-length logging at the existing asynchronous
+  result boundary; it was removed before promotion.
+- Benchmark evidence: full-target Marlin reached **114.820 generation tok/s**
+  but only **1984.193 prompt tok/s**. Draft-only stayed seven-cycle limited at
+  **99.770**. Gate/up-only set the accepted **3078.058/114.617** record.
+  Partial masks were non-monotonic: layers 32-63 returned the old 99.531 class;
+  16-31 fell to 87.159; `0-7,16-23` used seven rounds at 114.503; other
+  cross-quarter masks required eight or nine rounds.
+- Correctness evidence: native relayout matches the canonical repacker
+  bit-for-bit and round-trips exactly. Every full request completed `199016`
+  with `finish_reason=length`; the promoted all-gate/up route passed reasoning,
+  tools, tool continuation, model surface, and OpenCode2.
+- Failure mode: full Marlin is unsuitable for large-M prefill, draft-only does
+  not change the target acceptance trajectory, and partial target masks change
+  floating-point reductions non-monotonically without reducing below the
+  accepted route's seven verify rounds.
+- Why not to retry unchanged: every projection family and representative layer
+  mask was isolated with exact acceptance evidence. Narrowing did not produce a
+  six-round request or exceed the all-gate/up record.
+- Reopen only if: a new proposal law makes acceptance robust to target numeric
+  perturbations or a Marlin mainloop improvement raises the accepted route
+  above the 120 generation target without sacrificing prompt.
+- Related commit or revert: only all 64 target gate/up projections remain in
+  `03ba3d2e27`; draft-only, arbitrary shape/layer masks, and debug logging were
+  removed.

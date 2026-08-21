@@ -4867,8 +4867,172 @@ mean 13.929045  17.125658 446.051        39.730
   route needs TurboQuant's actual Lloyd-Max key centroids/norm correction or
   the less aggressive FP8-K/uniform-4-bit-V layout, followed by real-activation
   and semantic gates.
+- The exact199K execution ceiling is also bounded. Nine alternating 101-call
+  blocks measured FP8 XQA at **271.584 us median** and native NVFP4 XQA at
+  **239.072 us**, a **1.136x** speedup. Across 16 full-attention layers this is
+  only about **0.520 ms/cycle** before any Q/K/V transform or store overhead.
+  A gentler FP8-K/4-bit-V format has a still smaller byte-saving ceiling, so
+  compressed KV cannot independently supply the roughly 2 ms cycle cut.
 - Script SHA-256
   `315BDC74B5519863D7A23FD45A89FD2DC65A5D91BBFAF527484278C8DCEFDA5E`;
   output SHA-256
   `BD454E1C07113F94807F18A2AE892BBF557D9D0F84EEC1118C4846E2C3F097D3`.
+  Ceiling script/output SHA-256:
+  `799C3A36A2162A651529845DAA63733E750FC848132C3D3745257D26EC125D94` /
+  `8E724947B14A7C5312ECDFAF2808E1A6632406EFB5B2DDBF66126671B10982DF`.
   The script is a session artifact only; no serving source changed.
+
+### 2026-08-21 09:20 PDT - PERF-056/059 proposal evidence and native delta win
+
+- Work began at signed HEAD `f216e7e6fd395b645aafc0d67752ad854a0b3d16`
+  with user-owned `ROADMAP.md`, `docs/NATIVE_TENSOR_VIEW_ABI.md`, `native/`,
+  and the later dormant-ABI ledger entry preserved and unstaged.
+- Extended the default-off branch p/q diagnostic to retain verifier-exact q,
+  proposal-aligned BF16 draft hidden rows, greedy target ranks, target hidden
+  teacher rows, scheduler output-length provenance, and realized device accept
+  lengths through the existing pinned asynchronous D2H result-copy path.
+  Writer submission now reserves `max_cycles` under a lock and blocks only the
+  diagnostic request when its bounded 64-item queue fills, rather than
+  crashing the scheduler. Eleven focused tests pass.
+- Ten exact16 q20 requests plus one exact199K+512 request produced 251
+  exact-context cycles and 428 trainable correct-path hidden rows. Root target
+  q support was **250/251**; every observed correct-path inner target was in q.
+  The exact16 support oracle emits three tokens at committed positions
+  `0,3,6,9,12,15` and therefore proves a six-cycle candidate is possible.
+- PCA-linear hidden rank heads were trained on later chronology while locking
+  the first exact16 positions. Role-zero validation/test minority accuracy was
+  **0%** and missed both locked rank-1/rank-2 roots. Role-one validation
+  minority accuracy reached **25%** and missed the locked first inner
+  correction. No learned proposal policy was retained.
+- A target-hidden teacher capture initially filled the 64-entry JSON writer
+  queue because base64 hidden serialization was slower than decode. The
+  scheduler failed loudly; this directly motivated the blocking bounded-writer
+  repair above. No ordinary path uses the diagnostic.
+- Screened compressed target KV independently. Exact XQA FP8 median was
+  **271.584 us** versus native NVFP4 **239.072 us**, only **0.520 ms/cycle**
+  across 16 layers before transforms/store. Native Hadamard rotation left
+  synthetic relative-L2 attention error effectively unchanged
+  (`0.101824 -> 0.101624`). Compressed KV remains closed as an exact16 route.
+- Implemented default-off `SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL`: a native
+  two-launch CUDA reducer zeros caller-owned q, computes stable argmax over
+  logits plus the exact additive row, and writes one-hot q / q(X) / token.
+  Default-off routing is unchanged. The module is preloaded before graph
+  capture and accepts only native-Windows CUDA rejection sampling with draft
+  top-k one.
+- Latest microbenchmark:
+  - M1 native **3.655 us** versus aligned q **72.134 us**;
+  - M3 native **3.904 us** versus aligned q **73.142 us**.
+  Four CUDA tests plus three shape subtests cover full Qwen vocab, stable ties,
+  NaN, additive state, and mutable graph replay. Thirteen dispatch tests pass.
+- Matched long-context evidence:
+  - candidate B:
+    `123.406,123.428,123.418,123.769,123.776`, mean **123.559 tok/s**;
+  - closing control A2:
+    `122.028,122.382,122.610,122.564,122.175`, mean **122.352 tok/s**;
+  - candidate delta: **+1.208 tok/s / +0.987%** with identical
+    `cac0c6...a2092` output.
+- Independent candidate restart:
+  `123.711,123.711,123.874,123.934,123.924`, mean **123.831 tok/s**;
+  prompt mean **3196.061 tok/s**, TTFT **62.264154 s**, E2E **66.390751 s**.
+  Every request completed exact `199512` and reproduced the same output digest.
+- Exact16 remained seven-cycle limited at **3199.175 prompt / 99.173 generation
+  tok/s**, **62.203533 s TTFT**, **62.354783 s E2E**, exact `199016`, and
+  output SHA-256 `cdf5bb57...f647d9`. The root BENCHMARK.md target remains open.
+  A temporary idea to redefine the benchmark around the long request was
+  explicitly reverted as unacceptable goalpost movement.
+- Behavior and integration passed on the independent candidate: sampled
+  reasoning returned `703`; exactly one
+  `multiply({"a":37,"b":19})` call parsed with `finish_reason=tool_calls`;
+  image/audio were false; standalone OpenCode2 returned visible `READY`;
+  post-flush GPU free memory was **4,775 MiB**.
+- Selected artifact SHA-256:
+  microbenchmark `2AB1D347...27A3`, candidate B `D2171916...AE5B`, closing
+  control `107F3045...DADC`, independent candidate `6CF613D4...7453`,
+  exact16 `E661DE27...34CE`, behavior `49EB1321...54AE`, OpenCode2
+  `D75F5478...4324`, and acceptance `EF44EB05...4CF59`.
+- Stopped every verified server leaf-first. Port 30000 and compiler workers are
+  clear; GPU residency returned to 1,187 MiB.
+
+### 2026-08-21 13:48 PDT - PERF-062 gate/up hybrid accepted as Windows default
+
+- Continued from signed source HEAD
+  `f216e7e6fd395b645aafc0d67752ad854a0b3d16`. Preserved user-owned
+  `ROADMAP.md`, `docs/NATIVE_TENSOR_VIEW_ABI.md`, `native/`, and the dormant
+  ABI ledger entry below. The final source was committed as signed commit
+  `03ba3d2e27` (`perf: promote native Windows decode path`).
+- Repaired the draft-k1 and diagnostic adversarial findings before promotion:
+  all-NaN rows now select stable token zero instead of trapping the CUDA
+  context; batch rows use grid-x rather than the 65,535-limited grid-y;
+  model-resolved multi-layer EAGLE fails closed through `resolved_view`; writer
+  construction/runtime failures leave a terminal path tombstone and cannot
+  reset the process capture limit. Focused validation finished **44 passed +
+  15 subtests** on CPU/config and **12 passed + 6 subtests** on the
+  self-contained CUDA JIT path.
+- Enabled native Marlin NVFP4 on SM120. The Windows host compile failure came
+  from the generated deeply nested `else-if` template chain; independent
+  predicates compile without changing selected kernels. A native NVFP4 wrapper
+  removes the optional AOT `sgl_kernel` Python dependency from the JIT route.
+- Screened global Marlin with:
+  `serve_qwen38_27b_nvfp4_5090.ps1 -ModelPath ...-AttnNVFP4
+  -ChunkedPrefillSize 7680 -RandomSeed 615388882 -Fp4GemmBackend marlin
+  -SpeculativeDraftSamplingTopK 1`, plus the native delta environment.
+  Exact `199000+16` reached **1984.193 prompt / 114.820 generation tok/s**,
+  **100.292646 s TTFT**, **100.423285 s E2E**. It proved the small-M benefit
+  but rejected global W4A16 for prefill.
+- Added a native coalesced in-place Cutlass/Marlin relayout. It transposes the
+  raw row-major packed weight, calls the canonical shared-memory Marlin
+  repacker, and has an exact inverse. Parity/round-trip tests pass. Median
+  projected relayout time across the measured target families was **26.056 ms
+  forward / 23.002 ms reverse**; one reusable 85 MiB scratch buffer avoids
+  duplicating 13.5 GiB of target weights.
+- Target-family isolation:
+  - all eligible target projections: **3077.381/114.580**, TTFT
+    **64.665370 s**, E2E **64.796283 s**;
+  - draft-only Marlin: **3078.200/99.770**, seven-cycle class;
+  - target MLP gate/up+down: **3075.883/114.066**;
+  - all 64 target gate/up projections: accepted record
+    **3078.058/114.617**, TTFT **64.651152 s**, E2E **64.782022 s**, exact
+    `199016`, `finish_reason=length`, output SHA-256
+    `9a0e20749e2930a697fefdd3bdd7863a067abe4d9860e6d1e7d9b80a62668b37`.
+- Partial gate/up masks were non-monotonic and not retained: layers 32-63
+  reached 99.531; 0-31 reached 114.045; 0-15 reached 99.880; 16-31 reached
+  87.159; `8-31` used eight rounds at 96.643; `0-7,16-23` used seven rounds at
+  114.503; `0-7,24-31` used nine rounds at 85.542; `8-23` used eight rounds
+  at 92.637. Temporary layer masks and acceptance logging were removed.
+- The user rejected benchmark-only/opt-in framing and explicitly accepted the
+  profile for normal use. The launcher defaults now select:
+  `Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4`, chunk 7680,
+  `--fp4-gemm-backend hybrid_marlin`, draft top-k one, native delta proposal,
+  and large ordinary EXTEND autotuning. Base RadixArk/chunk 4096 and the older
+  Cutlass/top-k20 path remain available through explicit overrides.
+- Final production-default command was exactly:
+  `.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1`.
+  It resolved a process-selected seed `313221457`, exact 200K pools, target
+  verify + draft decode + draft extend graphs, 64 hybrid gate/up layers, and
+  the intended language-only surface. The default exact request independently
+  reached **3052.437 prompt / 114.053 generation tok/s**, **65.193816 s
+  TTFT**, and **65.325334 s E2E**, again beating all four prior record metrics
+  in one request with the accepted digest.
+- Default-process behavior gates:
+  - sampled arithmetic returned final `703` with preserved reasoning;
+  - exactly one `multiply({"a":37,"b":19})` call and
+    `finish_reason=tool_calls`;
+  - preserved tool-result continuation returned final `703`;
+  - non-thinking chat returned visible `READY` with zero reasoning tokens;
+  - `/model_info` reported image/audio false;
+  - standalone OpenCode2 with the process-scoped provider overlay returned
+    visible `READY`.
+- Evidence SHA-256:
+  - accepted record `perf067-hybrid-gateup-exact16-20260821.log`:
+    `C65E9ABE43CBF866FCE1910BDAE6EFC9E736525FA4E98FD29EFE0C7290679389`;
+  - default exact `perf077-default-exact16-20260821.log`:
+    `DC69933BA91324B35E58A044B98990950E9BBF481667A19C1262958EE1DC072A`;
+  - arithmetic/tool/continuation/non-thinking/OpenCode2:
+    `9C8170CE...108D`, `DBAB067E...76A4`, `23103C74...548`,
+    `AE695792...F03`, `08C44422...AF3`.
+- The accepted server remains intentionally live for the user. Listener
+  `127.0.0.1:30000` is owned by Python PID `56364`, parent PID `20092`, with
+  the resolved default command. Cache flush succeeded; the RTX 5090 reported
+  27,850 MiB used, **4,338 MiB free**, 2% utilization, and 33 C. Do not stop
+  this tree unless explicitly replacing or shutting down the production
+  server.

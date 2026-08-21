@@ -185,10 +185,10 @@ inside the real 200,000-token context and token pools**.
 
 | Metric | Current record |
 |---|---:|
-| Prompt processing | **3,048.086 tok/s** |
-| Generation | **112.499 tok/s** |
-| Time to first token | **65.286869 s** |
-| End-to-end time | **65.420204 s** |
+| Prompt processing | **3,078.058 tok/s** |
+| Generation | **114.617 tok/s** |
+| Time to first token | **64.651152 s** |
+| End-to-end time | **64.782022 s** |
 
 ## Next target
 
@@ -205,33 +205,27 @@ measured decode intervals at 120 tok/s for approximately 64.32 seconds end to
 end. Exact completion of `199016` tokens with `finish_reason=length` remains an
 eligibility gate, not a fifth performance target.
 
-This record was measured on the selective target-NVFP4 checkpoint
+This record was measured on the native-Windows launcher configuration with
+benchmark seed `615388882`: the selective target-NVFP4 checkpoint
 `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` with the
-width-three NEXTN topology, chunk size 7680, and the bit-exact native-Windows
-Gemma residual-norm direct-output path. The target's ordinary 16,384-token
-EXTEND pass used the selected FlashInfer FP4 tactics recorded in the detailed
-contract. The request completed successfully with `finish_reason=length` and
-exact `199000+16` usage.
+width-three NEXTN topology, chunk size 7680, native draft-k1 proposal
+construction, and in-place Cutlass-prefill/Marlin-decode gate/up weights.
+The target's ordinary 16,384-token EXTEND pass used the selected FlashInfer
+FP4 tactics recorded in the detailed contract. The request completed with
+`finish_reason=length`, exact `199000+16` usage, and output SHA-256
+`9a0e20749e2930a697fefdd3bdd7863a067abe4d9860e6d1e7d9b80a62668b37`.
 
-Launch this opt-in profile with:
+Launch the accepted profile with:
 
 ```powershell
-$env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND = "1"
-.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 `
-  -ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4 `
-  -ChunkedPrefillSize 7680 `
-  -RandomSeed 615388882
+.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1
 ```
 
-The opt-in may profile missing entries on a fresh machine; a different tactic
-selection requires full requalification.
-
-Do not make 7680 the global launcher default. Base RadixArk regressed to
-lower prompt throughput and unsafe operating headroom under that setting. Its
-production default remains 4096.
-
-The qualified baseline uses `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk`
-and the real 200K production configuration.
+An independent no-override relaunch with a process-selected seed reached
+**3,052.437 prompt / 114.053 generation tok/s**, **65.193816 s TTFT**, and
+**65.325334 s** end to end. It also beat all four prior record values in one
+exact request. Base RadixArk and the older Cutlass/top-k20 route remain
+available through explicit launcher overrides for controls.
 
 ## Benchmark command
 

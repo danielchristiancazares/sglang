@@ -5,15 +5,16 @@ Qwen3.8 production line. A comparable result records the request shape, server
 mode, cache treatment, sampling profile, graph state, GPU environment, and
 resolved launcher arguments.
 
-**Reconciled through:** 2026-08-20 18:45 PDT.
+**Reconciled through:** 2026-08-21 13:48 PDT.
 
 ## Primary performance scoreboard
 
 The user-selected headline workload is the exact near-limit `199000+16`
 request in the real 200K context and token pools. The current record to beat is
-the selective target-NVFP4 checkpoint at **3048.086 prompt tok/s** and
-**112.499 generation tok/s**, with **65.286869 s TTFT**, **65.420204 s** end to end,
-exactly `199016` completed tokens, and `finish_reason=length`.
+the launcher-default selective target-NVFP4 checkpoint at **3078.058 prompt
+tok/s** and **114.617 generation tok/s**, with **64.651152 s TTFT**,
+**64.782022 s** end to end, exactly `199016` completed tokens, and
+`finish_reason=length`.
 
 The next compact-scoreboard target is **3100 prompt / 120 generation tok/s**,
 with **TTFT <=64.20 s** and **end-to-end time <=64.35 s** in the same exact
@@ -34,10 +35,10 @@ evidence of a regression or win. Pair this headline request with
 verification-cycle counts, a longer decode/acceptance window, and an A-B-A
 control.
 
-The record profile uses the selective checkpoint with explicit
-`-ChunkedPrefillSize 7680` plus the bit-exact native-Windows Gemma
-residual-norm direct-output path. Keep the production launcher chunk default
-at 4096; base RadixArk regressed and lost operating headroom at 7680.
+The record profile is the Windows launcher default: selective checkpoint,
+chunk 7680, native draft-k1 one-hot q, selected large-EXTEND tactics, and
+in-place Cutlass-prefill/Marlin-decode gate/up weights. Base RadixArk/chunk
+4096 remains an explicit comparison control.
 
 ## Qualified reference
 
@@ -48,6 +49,8 @@ at 4096; base RadixArk regressed and lost operating headroom at 7680.
 | Fixed output digest | `9d850fbf7217c585190b3eff9003bf2223907f0d4b59c5b11ddbaf56bc70af9c` |
 | Native two-step acceptance | **2.318174** five-probe mean |
 | Exact capacity `199000+16` | `199016` total; **2608.263 prompt**, **102.358 generation tok/s** |
+| Accepted exact record `199000+16` | `199016` total; **3078.058 prompt**, **114.617 generation tok/s**, **64.651152 s TTFT**, **64.782022 s E2E** |
+| Independent default relaunch | `199016` total; **3052.437 prompt**, **114.053 generation tok/s** |
 | Production pool | Context `200000`; target/draft token pools `200000` |
 
 Remeasure the reference after changes to source, checkpoint, dependencies,
@@ -63,7 +66,7 @@ The qualified run used:
 - CUDA runtime 13.0 with CUDA toolkit 13.3.33;
 - Triton Windows `3.7.1.post27`;
 - the clean Windows FlashInfer `0.6.17` port;
-- the RadixArk Qwen3.8-27B NVFP4 checkpoint;
+- the attention-selective RadixArk Qwen3.8-27B NVFP4 checkpoint;
 - `.venv` launchers from this checkout;
 - one server request at a time.
 

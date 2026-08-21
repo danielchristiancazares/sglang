@@ -1,28 +1,21 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-21
-06:10 PDT.
+13:48 PDT.
 
 **Qualified production source line:** commit
-`7f5af878da7b8dc43063f31e554dfc69cee5d510`
-(`perf: retain large-extend FlashInfer tactics`). The selected optimization is
-expert-opt-in; the base RadixArk, 4096-token chunk, and exact 200K launcher
-defaults were requalified unchanged after the commit's source was tested.
-
-**Latest retained selective-performance source:** commit
-`5ea3b734b0` (`perf: fuse eager Windows SwiGLU NVFP4`). It includes the
-bit-exact fused Gemma residual norm from `e09e43171d` and adds an eager-only
-SwiGLU-to-NVFP4 producer. The explicit selective checkpoint/chunk-7680 profile
-passed exact capacity and deterministic-output gates. Production-default
-behavior/client requalification is deferred until the active target is
-cleared, so the qualified production source line above remains unchanged.
+`03ba3d2e27` (`perf: promote native Windows decode path`). The default
+launcher now selects the attention-selective checkpoint, chunk 7680, native
+draft-k1 proposal construction, and Cutlass-prefill/Marlin-decode gate/up
+weights. It passed exact capacity, graph, reasoning, tools, language-only,
+OpenCode2, and post-flush headroom gates.
 
 ## Qualified production configuration
 
 The accepted configuration is native-Windows SGLang serving
-`C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk` on the RTX 5090. It
-provides a real 200,000-token target/draft pool, preserved reasoning, parsed
-tools, and a language-only model surface.
+`C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` on the RTX
+5090. It provides a real 200,000-token target/draft pool, preserved reasoning,
+parsed tools, and a language-only model surface.
 
 | Area | Selected value |
 |---|---|
@@ -33,13 +26,12 @@ tools, and a language-only model surface.
 | Draft attention | TRT-LLM MHA/XQA; captured draft decode and `DRAFT_EXTEND_V2` graphs |
 | Linear attention | Triton GDN with ReplaySSM speculative-state handling |
 | Speculation | NEXTN linear rejection sampling; 2 steps; 3 draft tokens; EAGLE top-k 1 |
-| Proposal distribution | Aligned draft top-k 20 inside the single multi-step CUDA graph |
+| Proposal distribution | Draft top-k one with native CUDA direct one-hot q inside the single multi-step CUDA graph |
 | KV | Checkpoint-selected target KV; FP8 E4M3 draft KV; page size 64 |
 | Sampling | FlashInfer, including native-Windows CUDA renormalization on the speculative path |
-| Prefill | 4096-token chunks |
+| Prefill | 7680-token chunks |
 | Mamba | 4 slots; `extra_buffer_lazy`; FP32 state |
-| GEMM tuning | FlashInfer CUTLASS FP4; autotune enabled; FP8 GEMM autotune skipped |
-| Selective large-EXTEND tuning | Off by default; `SGLANG_FLASHINFER_AUTOTUNE_EXTEND=1` on the explicit AttnNVFP4/chunk-7680 profile |
+| GEMM tuning | FlashInfer CUTLASS FP4 prefill plus in-place Marlin gate/up decode; autotune and large-EXTEND tuning enabled; FP8 GEMM autotune skipped |
 | Compile/graphs | Torch compile mode `default`; batch-one full decode graphs |
 | Scheduling/streaming | Scheduler receive interval 4; stream interval 4; incremental output |
 | Workspace | 128 MiB FlashInfer workspace, the measured functional floor |
@@ -59,14 +51,15 @@ executable source of truth.
 | Safe fixed work, exact `6213/512`, accepted length 3 | **171.263 tok/s** five-run mean; all runs retained the established digest |
 | Native acceptance | Five-probe mean **2.318174** emitted/accepted tokens per verification |
 | Near-limit capacity, exact `199000+16` | **2608.263 prompt tok/s**, **102.358 generation tok/s**, `199016` total |
-| Primary exact `199000+16` record | **3048.086 prompt / 112.499 generation tok/s**, TTFT **65.286869 s**, E2E **65.420204 s** |
+| Primary exact `199000+16` record | **3078.058 prompt / 114.617 generation tok/s**, TTFT **64.651152 s**, E2E **64.782022 s** |
+| No-override default relaunch | **3052.437 prompt / 114.053 generation tok/s**, TTFT **65.193816 s**, E2E **65.325334 s** |
 | Selected-cache exact prompt window | **3047.309 tok/s** five-run mean; every request exact `199016` |
 | Selected-cache long generation | **118.389 tok/s** three-run mean at exact `199000+512` |
 | Current eager-fusion prompt window | **2987.275 tok/s** five-run mean in the drifted current environment; **0.914%** above the adjacent PERF-028 arm with the established digest restored |
 | Current eager-fusion long support | **3001.344 prompt / 115.225 generation tok/s** over three exact `199000+512` requests; established digest restored |
 | Behavior | Coherent preserved thinking; correct `703`; exactly one `multiply({"a":37,"b":19})` tool call |
 | Surface | Image and audio understanding reported false |
-| Final production relaunch | Defaults unchanged; exact `199016`, all three graphs, OpenCode2, and **2,222 MiB** post-flush free |
+| Final production relaunch | Promoted defaults; exact `199016`, all three graphs, arithmetic/tools/OpenCode2, and **4,338 MiB** post-flush free |
 
 The real promotion used seed `783025237` to make matched investigations easier,
 while ordinary production semantics retain stochastic rejection sampling. The
@@ -120,15 +113,17 @@ remain unchanged.
 ## Active performance handoff
 
 The user designated the exact `199000+16` request in the real 200K pools as the
-primary performance scoreboard. PERF-024 sets the record on the selective
-target-NVFP4 checkpoint at **3048.086 prompt / 112.499 generation tok/s**,
-with **65.286869 s TTFT**, **65.420204 s** end to end, exact `199016` tokens,
+primary performance scoreboard. PERF-062 sets the accepted record on the
+promoted launcher defaults at **3078.058 prompt / 114.617 generation tok/s**,
+with **64.651152 s TTFT**, **64.782022 s** end to end, exact `199016` tokens,
 and `finish_reason=length`. Root [`../BENCHMARK.md`](../BENCHMARK.md) is the
 compact authority.
 
 The next target is **3100 prompt / 120 generation tok/s**, **<=64.20 s TTFT**,
 and **<=64.35 s** end to end in one eligible exact request. The timing limits
-are mathematically tied to the two throughput thresholds.
+are mathematically tied to the two throughput thresholds. The user explicitly
+accepted the current all-four-metric record as production; the higher milestone
+remains future work.
 
 PERF-028 and PERF-027 are now retained additive changes on the active source
 line. PERF-028 fuses residual-add plus Gemma norm and improved adjacent exact
@@ -237,10 +232,38 @@ and V-tile variants saved at most **0.960 us/call**; the apparently faster
 single-K-buffer build was nondeterministic. Installed FlashInfer source and
 the exact control JIT module are restored.
 
-The winning selective profile remains `AttnNVFP4`, chunk 7680, M3, and the
-bit-exact Windows Gemma residual-norm direct-output path. PERF-024 additionally
-runs an ordinary 16,384-token target EXTEND pass under the existing
-`SGLANG_FLASHINFER_AUTOTUNE_EXTEND=1` expert opt-in. An independent retune
+PERF-059 retains a default-off native CUDA draft-k1 delta producer. It reduces
+proposal construction from **73-87 us to 3.7-3.9 us** and improved matched
+exact199K+512 generation **122.352 -> 123.559 tok/s**; an independent restart
+averaged **123.831 tok/s**, with identical output and all behavior gates.
+Exact16 improved only to **99.173 tok/s** and remains seven-cycle limited, so
+the root benchmark target is still open.
+
+PERF-056 proves q20 support is not the exact16 blocker: every required target
+token is present and a perfect rank oracle completes in six cycles. The first
+hidden-conditioned PCA-linear rank heads failed locked minority validation and
+are rejected. Target-hidden residual, q-tree, KNN, and RBF follow-ups also
+failed the locked ranks despite an accurate target-hidden teacher. The
+default-off diagnostic now preserves exact q, hidden
+payloads, target ranks, and realized accept length with bounded backpressure.
+
+PERF-061 closes stock target-FP4 tactic and PDL changes. Global PDL-off
+regressed. Bit-exact qkvz/down tactic changes projected 0.361 ms synthetically
+but moved real long generation only **123.831 -> 123.972 tok/s**, inside noise.
+
+PERF-062 promotes the native-Windows gate/up hybrid. A coalesced native
+Cutlass-to-Marlin relayout matches the canonical repacker bit-for-bit and
+reuses one 85 MiB scratch buffer across 64 target gate/up projections. The
+accepted exact request reached **3078.058 prompt / 114.617 generation tok/s**,
+**64.651152 s TTFT**, and **64.782022 s E2E**, beating all four prior record
+metrics. A no-override launcher restart independently beat the old record at
+**3052.437/114.053**, preserved exact `199016`, and passed every behavior and
+client gate. The user accepted this profile as the launcher default; the
+3100/120 milestone remains a future target rather than a promotion blocker.
+
+The selected default remains `AttnNVFP4`, chunk 7680, M3, and the bit-exact
+Windows Gemma residual-norm direct-output path. Large ordinary EXTEND
+autotuning is now enabled by the launcher. The earlier independent retune
 produced exact prompt samples
 `3051.345, 3048.538, 3048.086, 3042.488, 3044.105`, mean **3046.912**.
 
@@ -272,18 +295,10 @@ The branch began from a five-run current-source control of **2871.358 prompt /
 1.023% above the prior 3016.444 record. The benchmark client fails before
 sending a request unless prompt calibration equals the requested count exactly.
 
-The qualified RadixArk production baseline remains **2608.263 prompt tok/s**
-and **102.358 generation tok/s** on the same exact workload. A current
-launcher-default gate after PERF-024 reached **2648.283/88.187**, exact
-capacity, arithmetic/tools, model surface, standalone OpenCode2, and
-2,222 MiB post-flush free. Its short generation result is retained as
-cycle-quantized gate evidence, not a replacement baseline. The selective
-checkpoint remains the performance record profile rather than the production
-default.
-
-The earlier 200-TPS short-context objective and 215-TPS geometry funding floor
-remain historical diagnostic context. Production defaults and the qualified
-122.712 TPS `6213/512` line remain unchanged.
+Base RadixArk at chunk 4096 remains the historical production control at
+**2608.263 prompt / 102.358 generation tok/s** on the same exact workload.
+The earlier 122.712 tok/s `6213/512` and 200-TPS geometry objectives remain
+historical diagnostic context, not the current launcher defaults.
 
 Asynchronous CUDA-event timing collected 1,471 transition records over two
 independent real-sampling windows. The best repeatable graph-tail opportunity
@@ -329,10 +344,11 @@ exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token
 generation changed **106.467 -> 104.117 tok/s**. The default ragged-current
 plus paged-prefix merge remains selected.
 
-Chunk 7680 is selective-profile-only. Applying it to the launcher's default
-base RadixArk checkpoint reduced exact prompt throughput to **2226.770 tok/s**
-and left only 200 MiB free before follow-up probes. The production launcher
-therefore remains at chunk 4096.
+Applying chunk 7680 to base RadixArk reduced exact prompt throughput to
+**2226.770 tok/s** and left only 200 MiB free before follow-up probes. The new
+production launcher avoids that failed combination by selecting the
+attention-selective checkpoint; base RadixArk remains paired with chunk 4096
+when used as a control.
 
 Current measured geometries fail the path-length oracle before proposal
 quality is considered. M3's depth-two maximum is 154.270 TPS at mean cycle
