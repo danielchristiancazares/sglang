@@ -630,6 +630,7 @@ tree throughput can be ranked for production.
 | PERF-029 | Match the compiled M3 SiLU arithmetic while fusing activation and NVFP4 packing. | Separate fast-math native producer inside target `torch.compile` | Rejected; graph-neutral | Byte-exact and 70.848 -> 25.152 us in isolated launch timing, but full-cycle median was 16.045 ms versus the 16.058 ms control and long generation remained inside variance. The experiment was removed. |
 | PERF-030 | Tune FlashInfer paged-prefix fixed split size without changing ragged-current attention. | Existing prefill split descriptor outside deterministic mode | Rejected; workspace overflow | Split sizes 4096 and 8192 each requested 2,264,924,160 bytes from the qualified 128 MiB workspace on the first exact warmup. No score was produced; the opt-in was removed. |
 | PERF-031 | Remove target-verify GDN Q/K/V split materialization. | Post-convolution QKV handoff into ReplaySSM | Closed by source gate | Qwen3.8 `qkv_dim=10240` already exceeds the 8192 materialization threshold and uses zero-copy strided aliases accepted by ReplaySSM. There is no split kernel to remove. |
+| PERF-032 | Coalesce the final 7680+7000 prefill pair into one 14680-token forward. | Scheduler tail geometry and Mamba branching checkpoint | Rejected | Exact completion fell to 1917.509 prompt tok/s and 103.780505 s TTFT with a changed digest. The larger ragged-current pass erased the saved dispatch. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -919,3 +920,18 @@ tree throughput can be ranked for production.
   8,192 fused-materialization limit; `torch.split`/`view` create zero-copy
   aliases with token stride 10,240, which ReplaySSM already accepts. No
   production change is funded.
+
+### 2026-08-20 23:01 PDT - PERF-032 tail coalescing rejected
+
+- Added a default-off tail ceiling that planned exact 199K as
+  `24 * 7680 + 14680`, preserving the eliminated 192,000-token Mamba
+  checkpoint through the existing branching tracker. CPU scheduling and
+  derived-buffer tests passed.
+- Both 200K pools and all graphs passed. After one exact warmup, the scored
+  request completed exact `199016` but reached only **1917.509 prompt tok/s**,
+  **48.657 short generation tok/s**, **103.780505 s TTFT**, and
+  **104.088783 s E2E**. Digest changed to `8e1d884c...43d42a`.
+- The saved forward moved the former paged-prefix interaction into a
+  14,680-token ragged-current causal pass. Its much worse kernel regime and
+  changed reduction boundary overwhelmed dispatch savings. The full
+  implementation and tests were removed.
