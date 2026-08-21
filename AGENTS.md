@@ -1,4 +1,8 @@
-# Agent guide for this checkout
+# AGENTS.md
+
+Do NOT add new Python code. Anything new must be in C++ or CUDA.
+
+# Read First
 
 This checkout carries a native-Windows Qwen3.8-27B performance and serving
 lane alongside upstream SGLang. These instructions apply repository-wide.

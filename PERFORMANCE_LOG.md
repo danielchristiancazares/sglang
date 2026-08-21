@@ -631,6 +631,7 @@ tree throughput can be ranked for production.
 | PERF-030 | Tune FlashInfer paged-prefix fixed split size without changing ragged-current attention. | Existing prefill split descriptor outside deterministic mode | Rejected; workspace overflow | Split sizes 4096 and 8192 each requested 2,264,924,160 bytes from the qualified 128 MiB workspace on the first exact warmup. No score was produced; the opt-in was removed. |
 | PERF-031 | Remove target-verify GDN Q/K/V split materialization. | Post-convolution QKV handoff into ReplaySSM | Closed by source gate | Qwen3.8 `qkv_dim=10240` already exceeds the 8192 materialization threshold and uses zero-copy strided aliases accepted by ReplaySSM. There is no split kernel to remove. |
 | PERF-032 | Coalesce the final 7680+7000 prefill pair into one 14680-token forward. | Scheduler tail geometry and Mamba branching checkpoint | Rejected | Exact completion fell to 1917.509 prompt tok/s and 103.780505 s TTFT with a changed digest. The larger ragged-current pass erased the saved dispatch. |
+| PERF-033 | Fuse full-attention sigmoid gating directly into the NVFP4 `o_proj` tuple. | PDL-safe native gate/quant producer | Rejected at isolated admission | Exact and 37% faster at M7680, but M3 saved only 0.427 us/layer (0.007 ms/replay) and total exact-prefill projection was about 21 ms. No model wiring was retained. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -935,3 +936,19 @@ tree throughput can be ranked for production.
   14,680-token ragged-current causal pass. Its much worse kernel regime and
   changed reduction boundary overwhelmed dispatch savings. The full
   implementation and tests were removed.
+
+### 2026-08-20 23:07 PDT - PERF-033 exact gate-to-NVFP4 fusion below admission
+
+- Built a precise native producer matching the selected BF16 sigmoid-gate
+  rounding and FlashInfer NVFP4 bytes, including final-subnormal FTZ
+  canonicalization and deterministic scale padding. Production shapes,
+  all-finite BF16, graph replay, fullgraph, and ModelOpt tuple consumption
+  passed **9 CUDA tests**.
+- Registered benchmark results, staged versus fused:
+  M1 `2.650 -> 1.974 us`, M3 `2.731 -> 2.304 us`,
+  M7000 `117.552 -> 77.945 us`, and M7680 `135.402 -> 85.124 us`.
+- The target graph has only 16 full-attention layers, so the M3 saving projects
+  to **0.0068 ms per replay**. Across 26 exact-prefill passes, the large-shape
+  projection is only about **20.9 ms**. Both are below the admission scale
+  needed to separate from current noise. No model code was wired; all
+  experimental files were removed.

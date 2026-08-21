@@ -422,6 +422,9 @@ code changes, or process state matter.
 - Coalescing the final two prefill passes preserved exact capacity but moved
   work into a 14,680-token ragged causal kernel, collapsing prompt throughput
   to 1,917.509 tok/s and changing output. The scheduler experiment was removed.
+- An exact attention-gate-to-NVFP4 kernel improved isolated large shapes by
+  37%, but only 16 layers use it; projected target and exact-prefill savings
+  were 0.0068 ms and 20.9 ms. It closed before model wiring.
 - Retained in `5ea3b734b0`. The headline record remains PERF-024; these
   additive changes are the active source for the next optimization.
 
