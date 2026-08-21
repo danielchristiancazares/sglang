@@ -104,7 +104,13 @@ if _is_cuda or _is_xpu or _is_musa:
     if sys.platform == "win32":
 
         from sglang.kernels.ops.layernorm.norm import (
+            gemma_fused_add_rmsnorm as _jit_gemma_fused_add_rmsnorm,
+        )
+        from sglang.kernels.ops.layernorm.norm import (
             gemma_rmsnorm as _jit_gemma_rmsnorm,
+        )
+        from sglang.kernels.ops.layernorm.norm import (
+            is_supported_jit_gemma_fused_add_rmsnorm,
         )
         from sglang.kernels.ops.layernorm.norm import rmsnorm as _jit_rmsnorm
 
@@ -132,8 +138,11 @@ if _is_cuda or _is_xpu or _is_musa:
             x.copy_(rmsnorm(residual, weight, epsilon))
 
         def gemma_fused_add_rmsnorm(x, residual, weight, epsilon):
-            residual.add_(x)
-            _jit_gemma_rmsnorm(residual, weight, x, epsilon)
+            if is_supported_jit_gemma_fused_add_rmsnorm(x.size(-1), x.dtype):
+                _jit_gemma_fused_add_rmsnorm(x, residual, weight, epsilon)
+            else:
+                residual.add_(x)
+                _jit_gemma_rmsnorm(residual, weight, x, epsilon)
 
     else:
         from sgl_kernel import (

@@ -67,6 +67,34 @@ def _jit_rmsnorm_module(hidden_size: int, dtype: torch.dtype) -> Module:
     )
 
 
+def is_supported_jit_gemma_fused_add_rmsnorm(
+    hidden_size: int, dtype: torch.dtype
+) -> bool:
+    return (
+        dtype in (torch.float16, torch.bfloat16)
+        and _rmsnorm_kernel_class(hidden_size) == "RMSNormHalfKernel"
+        and _is_supported_rmsnorm_hidden_size(hidden_size)
+    )
+
+
+@cache_once
+def _jit_gemma_fused_add_rmsnorm_module(
+    hidden_size: int, dtype: torch.dtype
+) -> Module:
+    args = make_cpp_args(hidden_size, is_arch_support_pdl(), dtype)
+    return load_jit(
+        "gemma_fused_add_rmsnorm",
+        *args,
+        cuda_files=["elementwise/rmsnorm.cuh"],
+        cuda_wrappers=[
+            (
+                "gemma_fused_add_rmsnorm",
+                f"GemmaFusedAddRMSNormHalfKernel<{args}>::run",
+            )
+        ],
+    )
+
+
 def is_supported_jit_fused_add_rmsnorm_hidden_size(hidden_size: int) -> bool:
     return hidden_size > 0 and hidden_size % 16 == 0 and hidden_size <= 8192
 
@@ -164,6 +192,33 @@ def gemma_rmsnorm(
     eps: float = 1e-6,
 ) -> None:
     rmsnorm(input, weight, out, eps, weight_offset=1.0)
+
+
+@register_custom_op(mutates_args=["input", "residual"])
+def _gemma_fused_add_rmsnorm_inplace(
+    input: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float,
+) -> None:
+    hidden_size = input.size(-1)
+    if not is_supported_jit_gemma_fused_add_rmsnorm(hidden_size, input.dtype):
+        raise RuntimeError(
+            "jit gemma fused add rmsnorm: unsupported "
+            f"hidden_size={hidden_size}, dtype={input.dtype}"
+        )
+    module = _jit_gemma_fused_add_rmsnorm_module(hidden_size, input.dtype)
+    module.gemma_fused_add_rmsnorm(input, residual, weight, eps)
+
+
+@debug_kernel_api
+def gemma_fused_add_rmsnorm(
+    input: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float = 1e-6,
+) -> None:
+    _gemma_fused_add_rmsnorm_inplace(input, residual, weight, eps)
 
 
 @debug_kernel_api

@@ -178,7 +178,7 @@ def test_qwen35_gemma_rmsnorm_weight_offset(batch_size: int) -> None:
         torch.testing.assert_close(output, expected, atol=1e-2, rtol=1e-2)
 
 
-@pytest.mark.parametrize("batch_size", [1, 3])
+@pytest.mark.parametrize("batch_size", [1, 3, 7000, 7680])
 def test_qwen35_gemma_fused_add_rmsnorm_exact(batch_size: int) -> None:
     if sys.platform != "win32" or torch.cuda.get_device_capability()[0] < 12:
         pytest.skip("Native Windows SM120 dispatch only")
@@ -217,6 +217,59 @@ def test_qwen35_gemma_fused_add_rmsnorm_exact(batch_size: int) -> None:
     torch.testing.assert_close(
         actual_residual, expected_residual, atol=0.0, rtol=0.0
     )
+
+
+@pytest.mark.parametrize("batch_size", [1, 3])
+def test_qwen35_jit_gemma_fused_add_rmsnorm_graph_replay(batch_size: int) -> None:
+    if sys.platform != "win32" or torch.cuda.get_device_capability()[0] < 12:
+        pytest.skip("Native Windows SM120 dispatch only")
+
+    from sglang.kernels.ops.layernorm.norm import (
+        gemma_fused_add_rmsnorm,
+        gemma_rmsnorm,
+    )
+
+    torch.manual_seed(3)
+    hidden_size = 5120
+    static_input = torch.randn(
+        batch_size, hidden_size, device=DEVICE, dtype=torch.bfloat16
+    )
+    static_residual = torch.randn_like(static_input)
+    weight = torch.randn(hidden_size, device=DEVICE, dtype=torch.bfloat16)
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        gemma_fused_add_rmsnorm(
+            static_input,
+            static_residual,
+            weight,
+            EPS,
+        )
+
+    for seed in (4, 5):
+        torch.manual_seed(seed)
+        input_value = torch.randn_like(static_input)
+        residual_value = torch.randn_like(static_residual)
+        expected_residual = residual_value.clone()
+        expected_residual.add_(input_value)
+        expected_input = torch.empty_like(input_value)
+        gemma_rmsnorm(
+            expected_residual,
+            weight,
+            out=expected_input,
+            eps=EPS,
+        )
+
+        static_input.copy_(input_value)
+        static_residual.copy_(residual_value)
+        graph.replay()
+
+        torch.testing.assert_close(
+            static_input, expected_input, atol=0.0, rtol=0.0
+        )
+        torch.testing.assert_close(
+            static_residual, expected_residual, atol=0.0, rtol=0.0
+        )
 
 
 if __name__ == "__main__":
