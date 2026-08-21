@@ -389,18 +389,23 @@ opt-in MLX quantized-prefill query tiling mechanism. Signed follow-up
 which preserves query values and avoids arithmetic dependency propagation.
 Signed commit `8879ed3d01` registers GGUF USER_DEFINED vocabulary entries as
 ordinary added tokens while keeping CONTROL entries special.
+Signed commit `13bea403d6` stores heterogeneous merged GGUF shards in one
+compact MPS allocation and passes storage-offset views directly to Metal,
+while preserving the padded CUDA/non-MPS path.
 Host cleanup leaves this artifact as the only Hugging Face model cache and no
 MTPLX model cache. A broader cache cleanup also removed the first retained
 copy, so the same immutable revision was downloaded again and its byte size
 and SHA-256 were reverified. SGLang, Codex-runtime, uv, and other rebuildable
 user caches are cold. The data volume had 267 GiB free after restoration.
 
-The current generic IQ2 `128+32` deterministic window averages **6.956 prompt /
-3.189 generation tok/s**, **18.400854 s TTFT**, and **28.121441 s E2E** over
-five cache-flushed runs. Packed weight loading reports **10.03 GB**; the Mamba
-and KV allocations bring the accounted runtime total to about **10.44 GB**.
-`vmmap` reports a 12.4 GiB scheduler physical footprint and 15.0 GiB peak after
-serving. A fresh representative IQ2_XXS `17408x5120` baseline measures
+The current generic IQ2 `128+32` deterministic window averages **7.0224 prompt /
+3.309 generation tok/s**, **18.229377 s TTFT**, and **27.597721 s E2E** over
+five cache-flushed runs. The immediately adjacent padded control was
+**6.979/3.1858 tok/s**, so compact mixed-shard storage improved prompt
+**0.622%**, generation **3.867%**, and E2E **1.685%** with an identical output
+digest. Packed weight loading now reports **9.03 GB**, down from 10.03 GB;
+Mamba and KV allocations add about 0.41 GB. A fresh representative IQ2_XXS
+`17408x5120` baseline measures
 **1.189375 ms / 18.064 GiB/s** at batch one; the retained batch-eight window is
 **4.984750 ms / 4.428 GiB/s**.
 CPU-dequantized parity covers every packed type present at batch 1/3/4/8,
@@ -420,12 +425,12 @@ reasoning-parser, and tool-parser suites passed 321 tests plus 64 subtests.
 This clears the local behavior blocker while leaving the Apple route outside
 the performance scoreboard until the required sampled workload, independent
 window, capacity ladder, and OpenCode2 gate pass. No Apple server or Metal
-compiler is live, port 30000 is free, and memory returned to 94% free after the
-verified tree shutdown. A pinned current llama.cpp comparison remains useful
-for dependency performance; it is no longer required to explain the prior
-formatting failure. The next measured native-kernel candidate is the
-IQ2_XXS batch-one/batch-prefill projection or removal of mixed packed-weight
-materializations.
+compiler is live, port 30000 is free, and memory returned to 92% free after the
+verified tree shutdown. Pinned llama.cpp build 10547 reached **14.661356
+tok/s** aggregate on the exact Apple `12+256` benchmark, still 21.943% below
+the record, and is closed as a record route under that revision. The next
+measured native-kernel candidate is the IQ2_XXS batch-one/batch-prefill
+projection; mixed packed-weight materialization is already eliminated.
 
 The MLX long-context lane also retains adaptive quantized-prefill query tiling
 behind `SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE`. Its 1 GiB automatic threshold

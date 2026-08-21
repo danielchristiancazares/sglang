@@ -1330,3 +1330,34 @@
   gates tiling above a measured 1 GiB score estimate.
 - Related commit or revert: superseded by the thresholded opt-in mechanism in
   `1271610e0b`.
+
+## PERF-FA045 - Pinned llama.cpp IQ2 Metal server as the Apple record route
+
+- Hypothesis: a current pinned llama.cpp Metal build could serve the retained
+  IQ2 artifact fast enough to replace the unavailable MLX checkpoint and beat
+  the Apple `12+256` scoreboard.
+- Scope: official llama.cpp build 10547 at detached commit
+  `749f688fcaa4c472ec034b08cb8a907c45cfaa02`, Release native ARM,
+  Accelerate, embedded Metal, all layers on GPU, 32K context, one slot, and
+  the OpenAI reasoning-preservation surface.
+- Attempted change: no dependency source edits. Built the server in its
+  separate checkout and ran one warmup plus five exact greedy, ignore-EOS
+  scoreboard requests against the immutable Bartowski IQ2 checkpoint.
+- Benchmark evidence: request-observed generation was `14.642054, 14.671473,
+  14.660470, 14.665758, 14.667059 tok/s`, aggregate **14.661356**. This is
+  **21.943%** below the 18.782925 aggregate record; its best sample is
+  **22.046%** below the 18.820713 best-hit gate.
+- Correctness evidence: every request generated exact 256 tokens with one
+  stable digest. The OpenAI endpoint returned coherent preserved reasoning
+  and final `703`, while its properties reported vision, video, and audio
+  disabled.
+- Failure mode: the pinned dependency is substantially faster than the
+  repository's generic MPS route, yet its IQ2 Metal kernels still miss the
+  existing MLX 4-bit record decisively.
+- Why not to retry unchanged: five warmed samples were tightly clustered and
+  the user closed further llama configuration work after seeing the result.
+- Reopen only if: a dependency/kernel revision supplies a measured projection
+  or decode improvement large enough to fund the roughly 28% throughput gain
+  required from this baseline.
+- Related commit or revert: no llama.cpp source change or commit; the detached
+  checkout and binary remain as a reproducible supporting oracle.

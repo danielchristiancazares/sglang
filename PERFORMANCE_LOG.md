@@ -7,7 +7,7 @@
 | Qwen3.8-27B Q4_0, 8 concurrent requests, 32 output tokens each | 32.953 TPS | 38.016 TPS | +5.063 TPS | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_sampling.py --concurrency 8 --output-tokens 32` | 2026-08-16 22:26 PDT |
 | Qwen3.8-27B Q4_0, batch 24, 128 output tokens each, real top-k/top-p sampling | 49.500 TPS | **62.034 TPS** | **+12.534 TPS** | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_batched_request.py --url http://127.0.0.1:30001/generate --batch-size 24 --output-tokens 128` | 2026-08-16 22:35 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` batch-one projection | 1.193958 ms | **1.189375 ms** | -0.004583 ms / -0.384% | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 21:10 PDT |
-| Qwen3.8-27B IQ2_XXS, deterministic `128+32` served workload | N/A | **6.956 prompt / 3.189 generation tok/s** | retained playground baseline | Python ingress against the packed Bartowski IQ2_XXS GGUF; exact launch in `notes/experiment-log.md` | 2026-08-20 20:28 PDT |
+| Qwen3.8-27B IQ2_XXS, deterministic `128+32` served workload | 6.979 prompt / 3.1858 generation tok/s | **7.0224 prompt / 3.309 generation tok/s** | **+0.622% / +3.867%** | `.venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 128 --output-tokens 32` | 2026-08-20 21:55 PDT |
 | Qwen3.8-27B RadixArk, real sampled `6213/512`, reasoning preserved | 122.712 tok/s | 122.712 tok/s | 0.000 | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` | 2026-08-16 22:40 PDT |
 | Post-correctness linear comparison, second warmed five-run window | 122.712 tok/s | 124.775 tok/s measured | +2.063 / +1.681% | same exact real-sampling command | 2026-08-16 23:24 PDT |
 | Selective target NVFP4 (`AttnNVFP4`) candidate, real sampled `6213/512`, admission window 1 | 124.775 tok/s | 131.707 tok/s mean / 130.824 median (unqualified) | +6.932 / +5.556% | same exact real-sampling command against `-ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` | 2026-08-17 02:00 PDT |
@@ -672,8 +672,8 @@ tree throughput can be ranked for production.
 | PERF-A003 | Bound quantized-KV prefill score residency by tiling independent query rows above a measured threshold. | MLX quantized attention wrapper and environment surface | Retained opt-in in `1271610e0b`; safety follow-up `ea983f3120` | Helper and full Qwen3.5 wrapper parity pass; `1024x32768` changed 0.258692 s / 1.732 GB peak to 0.229053 s / 0.701 GB. Cross-tile ordering now uses `mx.depends`. The advertised 262K profile still requires explicit flag wiring, dependency verification, cache policy, and a completed capacity run. |
 | PERF-A004 | Separate GGUF checkpoint behavior from SGLang formatting before qualifying the retained IQ2 route. | native GGUF tokenizer, reasoning parser, Qwen3 Coder tool parser | Correctness fix retained in `8879ed3d01` | GGUF USER_DEFINED reasoning/tool markers now encode atomically without becoming skippable specials. Live gates return final `703`, exact thinking-off `READY`, one parsed multiply call, and a preserved tool-result continuation. Performance/capacity qualification remains open. |
 | PERF-A005 | Bound MLX's recycled Metal buffer cache during monotonically growing long-context prefill. | `SGLANG_MLX_CACHE_LIMIT_GB`, outer prefill boundary, 262K profile | Active survey | The runner supports a pre-load cache cap, but no recorded long-context launch sets it and no cache clear occurs between outer chunks. This is distinct from the now-bounded active score tile. |
-| PERF-A006 | Compare the retained IQ2 GGUF through a pinned current llama.cpp Metal server. | Supporting dependency, exact Apple benchmark and behavior gates | Highest-priority dependency comparison | No local llama runtime is installed. A current reference can test mature IQ2/GDN/q4-KV kernels on the only retained artifact and quantify the dependency-level ceiling under the exact scoreboard shape. |
-| PERF-A007 | Eliminate per-forward materialization of heterogeneous merged GGUF projection shards. | `GGUFLinearMethod.apply`, packed Metal matmul strides/output offsets, GGUF storage | High-priority native candidate | The retained descriptor reaches 40 `.contiguous()` packed-weight copies and 32 output concatenations per full forward: 501,350,400 bytes / 478.125 MiB copied per generated token at batch one. Row-stride-aware dispatch can preserve each row's arithmetic; compact shards later recover 353.4375 MiB residency. |
+| PERF-A006 | Compare the retained IQ2 GGUF through a pinned current llama.cpp Metal server. | Supporting dependency, exact Apple benchmark and behavior gates | Measured; below scoreboard | Official build 10547 at `749f688f` completed the exact `12+256` workload at **14.661356 tok/s aggregate** over five warmed runs, 21.9% below the 18.782925 record. It returned correct preserved reasoning and final `703`; retain it as a dependency ceiling, not an optimization target. |
+| PERF-A007 | Eliminate per-forward materialization of heterogeneous merged GGUF projection shards. | `GGUFLinearMethod` storage/apply and packed Metal storage offsets | Retained in `13bea403d6` | One compact MPS backing allocation removes 40 copies / 478.125 MiB of packed-weight materialization per full forward. Five exact `128+32` samples improved generation **3.1858 -> 3.309 tok/s** (+3.867%), prompt **6.979 -> 7.0224** (+0.622%), and reported weight residency **10.03 -> 9.03 GB**, with the identical output digest. |
 | PERF-A008 | Replace native MPS score-array GQA with fixed-memory online or split-K softmax. | `decode_gqa` Metal kernel, KV indirection, cache write | Capacity-critical native candidate | Current native decode allocates `(cache_slots + 256) * 4` bytes of threadgroup scratch and rejects `cache_slots > 7936`. Fixed-size online state removes the configured-pool occupancy cost and this absolute context ceiling; split-K adds long-history parallelism. |
 | PERF-A009 | Remove batch-one GDN input packing and specialize the 96x5120 F32 b/a projection. | Qwen3.5 GDN producer/consumer boundary and Metal dense kernel | Profile next | Across 48 GDN layers the pack kernel only splits contiguous B1 views. The b/a path uses the batch-eight F32 kernel at B1, carrying eight accumulators and invalid-row checks while reading 90 MiB of weights per token across the model. |
 | PERF-A010 | Add native affine-q4 quantized SDPA and GQA-aware KV reuse to MLX. | Supporting MLX C++/Metal dependency | Long-horizon dependency candidate | Query tiling bounds materialized scores but leaves repeated qMM and q4 KV reads. A fused online-softmax route can dequantize K/V in tiles, reuse each KV head across six Q heads, and improve both long prefill and decode without full score storage. |
@@ -1459,3 +1459,79 @@ tree throughput can be ranked for production.
   could propagate NaN/infinity across independent tiles and added avoidable
   operations. Exact long-context qualification still depends on a pinned MLX
   build, cache limit, explicit profile, and capacity ladder.
+
+### 2026-08-20 21:45 PDT - PERF-A006 pinned llama.cpp Metal comparison
+
+- Change: built the official llama.cpp source at detached commit
+  `749f688fcaa4c472ec034b08cb8a907c45cfaa02`, build 10547, with AppleClang
+  21, Release, native ARM, Accelerate, and embedded Metal. The server binary's
+  SHA-256 is
+  `261f0de1320e14c4512751639998f4ab46f54ddd20e48bc239d8dc80b5ccb178`.
+- Benchmark evidence: one warmup followed by five exact `12+256`, greedy,
+  ignore-EOS requests produced request-observed generation
+  `14.642054, 14.671473, 14.660470, 14.665758, 14.667059 tok/s`;
+  aggregate **14.661356**, mean **14.661363**. Internal decode samples were
+  `14.802667, 14.793395, 14.771764, 14.777205, 14.778380 tok/s`, mean
+  **14.784682**. All requests produced 256 tokens, stopped at the length
+  limit, and retained FNV-1a-64 `6d4d220de481f54e`.
+- Correctness evidence: the live OpenAI endpoint returned separate coherent
+  `reasoning_content` and visible final `703`; `/props` reported vision,
+  video, and audio false. The exact tool/preserved-result gate was already
+  established on the corrected SGLang path and was not repeated after the
+  throughput miss.
+- Decision: close as a record candidate. Aggregate throughput is **21.943%**
+  below the 18.782925 scoreboard and best hit is **22.046%** below 18.820713.
+  Retain the pinned checkout as a supporting dependency oracle. Its 4.60x
+  advantage over the current native-MPS decode confirms substantial kernel
+  and dispatch headroom remains in the repository path.
+
+### 2026-08-20 21:45 PDT - PERF-A007 adjacent native-MPS control
+
+- Change: measurement only on signed `9b3debddee`, before compact mixed-shard
+  storage. The explicit parser server used the retained IQ2 artifact, float32
+  MPS, context/pool 1024, one request, chunk 256, and disabled radix, overlap,
+  and graphs.
+- Benchmark evidence: five cache-flushed exact `128+32` samples produced
+  prompt `6.988, 6.972, 6.963, 6.987, 6.985 tok/s` and generation
+  `3.185, 3.186, 3.186, 3.185, 3.187 tok/s`; means **6.979/3.1858**.
+  TTFT was `18.316205, 18.359352, 18.382821, 18.319858, 18.323902 s`, mean
+  **18.340428 s**. E2E mean was **28.070683 s**.
+- Correctness evidence: every run completed exact 128+32,
+  `finish_reason=length`, and SHA-256
+  `37f5512bd18c1962bd2e170f543fae806ca48b70495c2761ae162df3cac56299`.
+- Decision: use this adjacent window as control A for eliminating mixed packed
+  weight materializations.
+
+### 2026-08-20 21:58 PDT - PERF-A007 compact mixed-shard storage
+
+- Change: materialize heterogeneous merged GGUF shards once into a compact,
+  logical-output-order MPS parameter. Mixed native-Metal calls receive
+  contiguous narrow views into that shared allocation, whose storage offsets
+  the native binding already honors. Equal-format/equal-width merged shards
+  retain their single matmul. CUDA and every non-MPS platform retain the
+  established padded parameter path. Signed commit `13bea403d6` owns the
+  implementation and focused tests.
+- Loader diagnostic: the first attempt concatenated CPU loader shards and the
+  startup warmup failed immediately with `packed_weight must be on MPS` after
+  reporting 4.03 GB residency. The corrected owner allocates directly on
+  `qweight.device` and copies each shard into its recorded range. The clean
+  launch loaded in 19.88 seconds, reported **9.03 GB** weights versus the
+  adjacent control's **10.03 GB**, and completed startup normally.
+- Benchmark evidence: five cache-flushed exact `128+32` samples produced
+  prompt `7.025, 6.965, 7.031, 7.155, 6.936 tok/s` and generation
+  `3.306, 3.312, 3.322, 3.311, 3.294 tok/s`; means were
+  **7.0224/3.309**. Relative to control A, prompt improved **0.622%** and
+  generation improved **3.867%**. Mean TTFT changed
+  **18.340428 -> 18.229377 s** (-0.605%); mean E2E changed
+  **28.070683 -> 27.597721 s** (-1.685%).
+- Correctness evidence: every benchmark completed exact 128+32 with
+  `finish_reason=length` and unchanged SHA-256
+  `37f5512bd18c1962bd2e170f543fae806ca48b70495c2761ae162df3cac56299`.
+  The live endpoint returned coherent preserved reasoning plus final `703`,
+  exact thinking-disabled `READY`, and exactly one parsed
+  `multiply({"a":37,"b":19})` call with `finish_reason=tool_calls`.
+  `/model_info` reports image/audio false. Focused unit coverage passed 3/3;
+  Python compilation and cached whitespace checks passed.
+- Decision: retain. This removes all measured mixed packed-weight copies,
+  creates additional unified-memory headroom for the maximum-context lane,
+  and establishes the faster native-IQ2 control for the next kernel change.

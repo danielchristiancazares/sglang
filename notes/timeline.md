@@ -531,6 +531,25 @@ code changes, or process state matter.
   source commit `03ba3d2e27` promotes the selective checkpoint, chunk 7680,
   native draft-k1 q, and gate/up hybrid Marlin as Windows launcher defaults.
   The 3100/120 milestone remains the next record target, not a deployment gate.
+### Apple Silicon Q2 lane restores behavior and removes mixed-weight copies
+
+- Pinned Bartowski's conventional Qwen3.8-27B IQ2_XXS GGUF as the retained
+  32 GiB playground and added native packed Q2_K/Q4_K/IQ2_XXS/IQ1_M Metal
+  matmul/embedding support.
+- Repaired GGUF USER_DEFINED vocabulary registration, restoring atomic Qwen
+  reasoning/tool markers. Live gates now return preserved thinking, final
+  `703`, exact thinking-off `READY`, and one parsed multiply call.
+- A pinned current llama.cpp Metal build completed the exact `12+256`
+  scoreboard at **14.661356 tok/s aggregate**, below the 18.782925 record, and
+  became a dependency oracle.
+- The repository path's mixed merged projections were rebuilding 478.125 MiB
+  of packed weights per token. Compact MPS storage in `13bea403d6` removed all
+  40 copies, reduced reported weight residency **10.03 -> 9.03 GB**, and
+  improved five-run `128+32` generation **3.1858 -> 3.309 tok/s** with the
+  identical digest.
+- Native IQ2 kernel reuse is next. The independent 262K MLX lane retains
+  thresholded quantized-query tiling and still needs dependency pinning,
+  cache-limit wiring, and the remaining exact capacity rungs.
 
 ## Supersession map
 

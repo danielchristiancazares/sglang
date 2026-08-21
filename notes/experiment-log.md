@@ -5480,3 +5480,135 @@ mean 13.929045  17.125658 446.051        39.730
   capacity ladder, and OpenCode2 gate. A pinned llama.cpp comparison remains
   the strongest supporting-dependency throughput control rather than a
   prerequisite for explaining checkpoint semantics.
+
+### 2026-08-20 21:45 PDT - pinned llama.cpp misses the Apple record; native control A captured
+
+- Cloned the official llama.cpp repository into the separate
+  `/Users/dcazares/llama.cpp-749f688f` provenance line after resolving
+  `refs/heads/master` to
+  `749f688fcaa4c472ec034b08cb8a907c45cfaa02`, then detached at that exact
+  commit. The checkout remained clean. Its commit subject is
+  `ggml: support ggml_rope_set_offset on opencl, sycl, wgpu, hexagon (#27345)`.
+- Configured a Release native-ARM build with AppleClang 21, Accelerate, Metal,
+  and the embedded Metal library. The first server-target build failed
+  immediately because `LLAMA_BUILD_TOOLS=OFF` excludes the server subdirectory;
+  reconfigured only that option to `ON` and built `llama-server` successfully.
+  The resolved version is `0.1.2-dev`, build 10547, commit `749f688f`.
+  Binary SHA-256 is
+  `261f0de1320e14c4512751639998f4ab46f54ddd20e48bc239d8dc80b5ccb178`;
+  linked ggml libraries report 0.20.2 and resolve from the same build tree.
+- The exact reference launch was:
+
+  ```text
+  build-metal-release/bin/llama-server --model /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 --alias qwen3.8-27b-iq2 --ctx-size 32768 --parallel 1 --batch-size 4096 --ubatch-size 512 --n-gpu-layers all --fit off --flash-attn on --cache-type-k f16 --cache-type-v f16 --no-mmproj --jinja --reasoning-format deepseek --reasoning on --reasoning-preserve --perf --metrics --offline --no-webui --host 127.0.0.1 --port 30000 --timeout 600
+  ```
+
+  Listener PID 70058 was the direct child of the active client process.
+  `/v1/models` reported exact context 32768, training context 262144,
+  27,320,697,856 parameters, and IQ2_XXS. `/props` reported vision, video, and
+  audio false. Before inference, `vmmap` reported 11.1 GiB resident including
+  8.5 GiB mapped-file residency and 2.1 GiB shared memory, with a 2.3 GiB
+  physical footprint accounting value.
+- One warmup followed by five exact raw-prompt requests used the scoreboard
+  text, temperature zero, 256 forced tokens, and ignored EOS. Request-observed
+  generation was
+  `14.642054, 14.671473, 14.660470, 14.665758, 14.667059 tok/s`;
+  aggregate **14.661356**, arithmetic mean **14.661363**. Internal generation
+  was `14.802667, 14.793395, 14.771764, 14.777205, 14.778380 tok/s`, mean
+  **14.784682**. Wall times were
+  `17.483886, 17.448827, 17.461923, 17.455627, 17.454079 s`. Every response
+  evaluated the exact 12-token prompt, generated exactly 256 tokens, stopped
+  at the limit, and retained 878 output characters with FNV-1a-64
+  `6d4d220de481f54e`.
+- The reference server also returned coherent separate reasoning and visible
+  final `703` for `37 * 19`: 68 prompt tokens, 58 completion tokens, and
+  14.779049 internal generation tok/s. This independently confirms the
+  retained artifact's corrected semantic path. The user judged the measured
+  dependency throughput too slow to pursue, so no configuration sweep or
+  tool-result gate followed the decisive record miss.
+- Stopped PID 70058 through its owning terminal session. It exited cleanly;
+  the PID is absent, port 30000 is free, memory returned to 93% free, and no
+  thermal or performance warning was recorded. The pinned detached checkout
+  and build remain recoverable for later oracle work.
+- Relaunched the unchanged native SGLang/MPS route from signed
+  `HEAD=9b3debddeec0d3a73559e7433c3f68b9b257ce28` with the exact 21:30
+  explicit-parser arguments. Weight load was 15.74 s and remained 10.03 GB;
+  Mamba and KV allocations remained 0.29 and 0.12 GB. Five cache-flushed exact
+  `128+32` controls measured prompt
+  `6.988, 6.972, 6.963, 6.987, 6.985 tok/s` and generation
+  `3.185, 3.186, 3.186, 3.185, 3.187 tok/s`, means **6.979/3.1858**.
+  TTFT mean was **18.340428 s** and E2E mean **28.070683 s**. Every request
+  completed exact counts with `finish_reason=length` and SHA-256
+  `37f5512bd18c1962bd2e170f543fae806ca48b70495c2761ae162df3cac56299`.
+- Stopped the verified SGLang tree `70201 -> 70204,70205,70206` through its
+  owning session. All PIDs are absent, port 30000 is free, and memory returned
+  to 92% free. Decision: close llama.cpp as a record candidate and use its
+  roughly 4.60x advantage over native-MPS generation as evidence for kernel
+  headroom. Control A now funds compact mixed-shard storage, which removes a
+  proven 478.125 MiB of packed-weight materialization per full forward.
+
+### 2026-08-20 21:50 PDT - compact-shard loader device failure isolated
+
+- Implemented the first PERF-A007 compact mixed-shard candidate in the GGUF
+  linear storage owner. Unit coverage passed 3/3 and proved logical shard
+  order, one-launch retention for equal-format shards, shared storage for
+  mixed-format views, and preservation of the non-MPS padded path.
+- Launched the exact adjacent-control server arguments from the prior entry
+  with the candidate worktree. Weight loading finished in 19.63 seconds and
+  reported only 4.03 GB of MPS residency, then the startup warmup stopped at
+  the first mixed `qkv/z` projection with `RuntimeError: packed_weight must be
+  on MPS`. Root cause: `torch.cat` inherited the CPU device of GGUF loader
+  shard tensors, while the existing padded materializer allocates on the
+  destination parameter's MPS device.
+- The failed tree rooted at PID 70338 completed its registered crash cleanup.
+  That PID and every matching scheduler/resource process are absent, port
+  30000 is free, memory pressure is 92% free, and macOS reports no thermal or
+  performance warning.
+- Refined the same loader owner to allocate the compact backing buffer once on
+  `qweight.device` and copy each flattened shard directly into its recorded
+  range. The next gate is focused compilation/unit coverage followed by one
+  clean relaunch; no throughput result is attributed to the failed start.
+
+### 2026-08-20 21:58 PDT - PERF-A007 retained with a 3.867% decode win
+
+- The corrected compact-shard server used the exact launch arguments in the
+  21:30 entry. Weight load completed in 19.88 seconds and reported 9.03 GB,
+  down from the adjacent padded control's 10.03 GB. Mamba and KV allocation
+  remained 0.29 and 0.12 GB. The live verified tree is listener/root PID
+  70371 with resource tracker 70374, scheduler 70375, and detokenizer 70376;
+  `/model_info` reports generation enabled and image/audio false.
+- Five sequential cache-flushed exact `128+32` candidate samples measured
+  prompt `7.025, 6.965, 7.031, 7.155, 6.936 tok/s`, generation
+  `3.306, 3.312, 3.322, 3.311, 3.294 tok/s`, TTFT
+  `18.221113, 18.376377, 18.205524, 17.889634, 18.454238 s`, and E2E
+  `27.596617, 27.736427, 27.536693, 27.252378, 27.866489 s`. Means are
+  **7.0224 prompt / 3.309 generation tok/s**, **18.229377 s TTFT**, and
+  **27.597721 s E2E**. Against the immediately preceding control A, this is
+  **+0.622% prompt**, **+3.867% generation**, **-0.605% TTFT**, and
+  **-1.685% E2E**.
+- Every sample returned exact usage, `finish_reason=length`, 166 reasoning
+  characters, and unchanged SHA-256
+  `37f5512bd18c1962bd2e170f543fae806ca48b70495c2761ae162df3cac56299`.
+  A separate deterministic behavior gate returned coherent preserved
+  reasoning and final `703`; thinking-disabled output was exact `READY` with
+  zero reasoning tokens; and the explicit tool gate returned exactly one
+  parsed `multiply` call with arguments `{"a": 37, "b": 19}` and
+  `finish_reason=tool_calls`.
+- Focused compact-storage tests passed 3/3 after the device repair and Python
+  compilation plus `git diff --cached --check` passed. Ruff was unavailable
+  in this environment, so no Ruff result is claimed. Signed commit
+  `13bea403d6` (`perf: compact mixed GGUF weights on MPS`) contains only the
+  GGUF linear owner and its focused unit test; signature verification is good.
+- Decision: retain. The compact allocation eliminates the proven 40 packed
+  copies / 478.125 MiB of materialization per full forward while preserving
+  equal-shard launch fusion and all non-MPS behavior. The server remains live
+  only long enough to finish record capture, then must be stopped before the
+  next native-kernel experiment.
+
+### 2026-08-20 22:00 PDT - PERF-A007 cleanup complete
+
+- Stopped the verified compact-shard server through its owning terminal.
+  PIDs 70371, 70374, 70375, and 70376 are absent, port 30000 is free, no
+  matching SGLang or llama server remains, and memory pressure returned to
+  92% free. macOS reports no thermal or performance warning. The machine is
+  clean for one isolated native-kernel benchmark or build.
