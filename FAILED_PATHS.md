@@ -788,3 +788,26 @@
 - Reopen only if: prefill receives a real page-layout specialization rather
   than the existing token-index interface.
 - Related commit or revert: no source change; launcher default remains 64.
+
+## PERF-F051 - FlashInfer FP16 QK reduction for paged prefill
+
+- Hypothesis: FP16 QK reduction would accelerate the paged-prefix kernel while
+  preserving BF16 output.
+- Scope: all 25 exact-request prefix shapes, 24 Q heads, 4 KV heads, dimension
+  256, BF16 Q and FP8-E4M3 KV.
+- Attempted change: default-off ordinary-prefill precision switch; speculative
+  graph planners retained FP32.
+- Benchmark evidence: initial server A-B moved prompt +0.679%, but the exact
+  prefix ladder summed to **2964.761 ms FP32 vs 2974.993 ms FP16 per layer**,
+  or **163.705 ms slower** across 16 layers.
+- Correctness evidence: every isolated shape and both server digests were
+  bit-exact; exact counts and pools passed.
+- Failure mode: shape-dependent variance produced mixed results. The initial
+  server movement was environmental noise, not a stable kernel improvement.
+- Why not to retry unchanged: the complete deterministic kernel ladder is a
+  stronger attribution than the overlapping five-request means and favors
+  FP32.
+- Reopen only if: a later FlashInfer kernel changes the real
+  24-head/4-head/256-dimension precision economics.
+- Related commit or revert: the provisional PERF-035 code was removed in a
+  corrective follow-up; FP32 remains selected.
