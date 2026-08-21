@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
-18:26 PDT.
+18:45 PDT.
 
 **Qualified source line:** commit
 `7f5af878da7b8dc43063f31e554dfc69cee5d510`
@@ -115,6 +115,10 @@ target-NVFP4 checkpoint at **3048.086 prompt / 112.499 generation tok/s**,
 with **65.286869 s TTFT**, **65.420204 s** end to end, exact `199016` tokens,
 and `finish_reason=length`. Root [`../BENCHMARK.md`](../BENCHMARK.md) is the
 compact authority.
+
+The next target is **3100 prompt / 120 generation tok/s**, **<=64.20 s TTFT**,
+and **<=64.35 s** end to end in one eligible exact request. The timing limits
+are mathematically tied to the two throughput thresholds.
 
 The winning selective profile remains `AttnNVFP4`, chunk 7680, M3, and the
 bit-exact Windows Gemma residual-norm direct-output path. PERF-024 additionally

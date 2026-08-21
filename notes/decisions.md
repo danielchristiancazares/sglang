@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-20 18:26 PDT.
+**Reconciled through:** 2026-08-20 18:45 PDT.
 
 ## Selected production choices
 
@@ -13,7 +13,7 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Checkpoint | RadixArk Qwen3.8-27B NVFP4 | Restored coherent reasoning and tools; remained the fastest qualified real-sampled line |
 | Capacity | Real 200K target and draft pools | Exact `199016` passed repeatedly; 232K reached 98 MiB free before cache flush and was rejected for operating margin |
 | Primary performance scoreboard | Exact `199000+16` near-limit request | Current record is **3048.086 prompt / 112.499 generation tok/s** on selective target NVFP4 with selected large-EXTEND FP4 tactics; a new record must exceed both and complete exact `199016` |
-| Performance milestone | **3000 prompt / 110 generation tok/s exceeded** | Winning request completed exact `199016` at 65.286869 s TTFT / 65.420204 s E2E; deterministic selected-cache prompt mean is **3047.309** |
+| Next performance milestone | **3100 prompt / 120 generation tok/s**, TTFT **<=64.20 s**, E2E **<=64.35 s** | The two time limits are derived from the throughput thresholds on exact `199000+16`; all four must pass in one eligible request |
 | Model surface | Language-only with Qwen3 reasoning and Qwen3 Coder tools | Preserves required behavior and VRAM; image/audio remain disabled |
 | FlashInfer | Clean native-Windows port of 0.6.17 | Passed JIT/kernel tests, fixed long-prefill correctness, and satisfies the SGLang version contract |
 | Prefill | FlashInfer, production chunk size 4096 | Base RadixArk stays safe at exact capacity; global 7680 regressed prompt and fell to 200 MiB free |
@@ -53,7 +53,8 @@ averaged **3047.309 prompt tok/s** over five exact requests and
 the record to beat; production qualification remains separate from the
 single-run scoreboard.
 
-The first milestone of **3000 prompt / 110 generation tok/s** is complete.
+The next milestone is **3100 prompt / 120 generation tok/s**, with TTFT
+**<=64.20 s** and end-to-end time **<=64.35 s** in the same eligible request.
 
 ## Qualified reference results
 

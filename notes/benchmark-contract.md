@@ -5,19 +5,20 @@ Qwen3.8 production line. A comparable result records the request shape, server
 mode, cache treatment, sampling profile, graph state, GPU environment, and
 resolved launcher arguments.
 
-**Reconciled through:** 2026-08-20 12:29 PDT.
+**Reconciled through:** 2026-08-20 18:45 PDT.
 
 ## Primary performance scoreboard
 
 The user-selected headline workload is the exact near-limit `199000+16`
 request in the real 200K context and token pools. The current record to beat is
-the selective target-NVFP4 checkpoint at **3016.444 prompt tok/s** and
-**112.355 generation tok/s**, with **65.971714 s TTFT**, **66.105219 s** end to end,
+the selective target-NVFP4 checkpoint at **3048.086 prompt tok/s** and
+**112.499 generation tok/s**, with **65.286869 s TTFT**, **65.420204 s** end to end,
 exactly `199016` completed tokens, and `finish_reason=length`.
 
-The **3000 prompt / 110 generation tok/s** milestone is achieved. An
-independent restart also reached **3013.736/112.012**, with 66.031008 s TTFT
-and 66.164923 s end to end.
+The next compact-scoreboard target is **3100 prompt / 120 generation tok/s**,
+with **TTFT <=64.20 s** and **end-to-end time <=64.35 s** in the same exact
+request. The time limits are derived from the throughput targets rather than
+being independent goals.
 
 A new overall record completes the same workload and exceeds both headline
 throughput values under a matched environment record. This single-run
@@ -28,9 +29,10 @@ The compact scoreboard is [`../BENCHMARK.md`](../BENCHMARK.md).
 Candidate ranking still requires repeated matched controls. The request
 produces its first token during prefill, leaving only 15 post-first-token
 decode intervals. Current M3/M4 batches showed roughly 8-15% generation CV
-with identical outputs, so one generation hit above 110 tok/s is not evidence
-of a regression or win. Pair this headline request with verification-cycle
-counts, a longer decode/acceptance window, and an A-B-A control.
+with identical outputs, so one favorable short-run generation hit alone is not
+evidence of a regression or win. Pair this headline request with
+verification-cycle counts, a longer decode/acceptance window, and an A-B-A
+control.
 
 The record profile uses the selective checkpoint with explicit
 `-ChunkedPrefillSize 7680` plus the bit-exact native-Windows Gemma
