@@ -9,6 +9,7 @@
 | Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` batch-one projection | 1.176875 ms matched generic | **0.516000 ms** | **-0.660875 ms / -56.16%** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:25 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS Q5_K `248320x5120` head at batch one | 19.659291 ms matched generic | **3.754625 ms** | **-15.904666 ms / -80.90%; 5.24x** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor output.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:52 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS 48-layer F32 b/a projection sweep | 7.296667 ms selected custom Metal | **2.159000 / 2.051708 ms** native `torch.mm` A/B arms | **-70.41% / -71.88%; 3.38-3.56x** | `.venv/bin/python benchmark/mac/bench_mps_dense_ba.py $IQ2_GGUF --warmup 4 --iterations 9` | 2026-08-20 23:43 PDT |
+| Torch-native MPS GQA partial extend, `4096+4096`, FP32 | 542.376416 / 641.256125 ms padded-query controls | **176.066500 ms** lower-right-causal source path | **-67.54% / -72.54%; 3.08-3.64x** | `.venv/bin/python benchmark/mac/bench_mps_sdpa_extend.py --prefix-len 4096 --extend-len 4096 --warmups 1 --repeats 5` | 2026-08-21 00:15 PDT |
 | Qwen3.8-27B IQ2_XXS, deterministic `128+32` served workload | 6.979 prompt / 3.1858 generation tok/s | **7.0444 prompt / 8.4406 generation tok/s** | **+0.937% / +164.94%** | `.venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 128 --output-tokens 32` | 2026-08-20 23:42 PDT |
 | Qwen3.8-27B IQ2_XXS, required sampled `128+32` served workload | 7.0562 generation tok/s after PERF-A002 | **8.3094 / 8.2942 tok/s** in two PERF-A009 restart windows | **+4.59% / +4.26% over matched PERF-A011 windows** | same command with `--temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` | 2026-08-20 23:59 PDT |
 | Qwen3.8-27B RadixArk, real sampled `6213/512`, reasoning preserved | 122.712 tok/s | 122.712 tok/s | 0.000 | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` | 2026-08-16 22:40 PDT |
@@ -681,6 +682,7 @@ tree throughput can be ranked for production.
 | PERF-A009 | Specialize the 96x5120 batch-one F32 b/a projection, then remove GDN input packing only if it remains funded. | GGUF F32 dispatch and Qwen3.5 GDN producer/consumer boundary | Retained in `4d1641fdcd`; two windows passed; full context/OpenCode gate open | Native `torch.mm` reduced the actual 48-layer sweep from `7.296667` to `2.159000/2.051708 ms`. Deterministic served generation improved `8.0284 -> 8.4406 tok/s`; sampled restart windows reached `8.3094/8.2942 tok/s`, with behavior and multi-batch fallback intact. |
 | PERF-A010 | Add native affine-q4 quantized SDPA and GQA-aware KV reuse to MLX. | Supporting MLX C++/Metal dependency | Long-horizon dependency candidate | Query tiling bounds materialized scores but leaves repeated qMM and q4 KV reads. A fused online-softmax route can dequantize K/V in tiles, reuse each KV head across six Q heads, and improve both long prefill and decode without full score storage. |
 | PERF-A011 | Vectorize the Q5_K vocabulary head across four eight-lane row cohorts per SIMDgroup at batch one. | `gguf_q4_0.mm` Q5_K kernel and aligned host dispatch | Retained in `b19cf4acf3` | Matched candidate/control/candidate medians were `3.737000 / 19.659291 / 3.754625 ms`. Five-run deterministic served generation rose `7.1748 -> 8.0284 tok/s` (+11.90%) with the exact digest; a committed restart and two required-sampling windows passed. |
+| PERF-A012 | Run torch-native partial extend on only the new query rows with an offset causal mask. | Shared torch-native SDPA extend mechanism | Retained in `210a214c12`; full long-context model gate open | Exact source A/B at `4096+256` changed `97.995583/97.847500 -> 12.608125 ms`; at `4096+4096` it changed `542.376416/641.256125 -> 176.066500 ms`. Outputs were exact on MPS, and six focused CPU cases cover causal isolation, GQA, shuffled cache locations, ragged batches, sliding windows, noncausal attention, and empty extend. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1644,3 +1646,40 @@ tree throughput can be ranked for production.
   this endpoint with a real **13,635-token** agent prompt; the 1,024-token
   diagnostic launch rejected it before execution. Context-enabling work is
   required before the standalone-client gate can pass.
+
+### 2026-08-21 00:15 PDT - PERF-A012 lower-right causal partial extend
+
+- Change: the shared torch-native SDPA extend mechanism now submits only the
+  actual new query rows. Causal chunks with an existing prefix use an explicit
+  lower-right-aligned mask derived from the gathered Q/KV shapes. One-shot
+  causal, noncausal, cross-attention, and sliding-window paths retain their
+  domain semantics without manufacturing unused prefix query rows.
+- Baseline: signed `f697e40a10` on macOS 26.6.2, M1 Max 32-core GPU, PyTorch
+  2.11.0 MPS, FP32 Qwen geometry `24Q/4KV/D256`, one process, synchronized
+  samples, no server/client/compiler, 91-93% free memory, and no recorded
+  thermal or performance warning. The benchmark carries an exact copy of the
+  former padded source path as both matched controls.
+- Short-chunk evidence: `prefix=4096, extend=256`, two warmups and five
+  synchronized samples, produced padded A
+  `98.142292,97.995583,97.975167,98.056584,97.830542 ms`, candidate
+  `12.608125,12.673916,12.595750,12.723875,12.597375 ms`, and padded B
+  `97.847500,97.742375,97.852083,97.806250,98.268000 ms`. Medians were
+  **97.995583 / 12.608125 / 97.847500 ms**, a 7.77x source-level reduction.
+- Production-chunk evidence: `prefix=4096, extend=4096`, one warmup and five
+  samples, produced padded A
+  `503.558875,556.033500,541.891708,542.376416,618.237542 ms`, candidate
+  `508.756750,176.682250,176.066500,175.942334,176.000667 ms`, and padded B
+  `788.375209,641.256125,617.944750,689.572459,582.157333 ms`. The first
+  candidate sample carried a cold delayed dispatch; five-sample medians were
+  **542.376416 / 176.066500 / 641.256125 ms**, a 3.08-3.64x reduction.
+- Correctness: every MPS benchmark reported `source_max_error=0`. Six focused
+  CPU tests pass for partial-prefix GQA with shuffled physical slots, an
+  explicit future-value sentinel, lower-right sliding windows, ragged
+  multi-request GQA, noncausal partial extend, and zero-length extend. Python
+  compilation, Black 26.1.0, Ruff 0.15.1, and diff checks pass.
+- Decision: retain in signed commit `210a214c12`. The governing rule belongs
+  in `_run_sdpa_forward_extend`, the shared mechanism that gathers KV and owns
+  SDPA masking for every torch-native extend call. Full-model long-context and
+  OpenCode qualification remain gated by a separate decode admission defect:
+  BF16 or more than 7,936 physical cache rows currently enters an incompatible
+  FP32 score-array Metal kernel instead of the established SDPA fallback.

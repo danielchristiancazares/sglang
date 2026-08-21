@@ -399,6 +399,9 @@ and retains generic alignment and multi-batch fallbacks. Signed commit
 `4d1641fdcd` routes one-vector F32 GGUF projections through native MPS matrix
 multiplication while retaining the custom dense kernel for multi-vector
 prefill.
+Signed commit `210a214c12` removes padded prefix query rows from the shared
+torch-native extend path and uses lower-right causal alignment for partial
+chunks.
 Host cleanup leaves this artifact as the only Hugging Face model cache and no
 MTPLX model cache. A broader cache cleanup also removed the first retained
 copy, so the same immutable revision was downloaded again and its byte size
@@ -446,6 +449,14 @@ memory returned to 93% free after verified cleanup. Pinned llama.cpp build
 21.943% below the record, and is closed as a record route under that revision.
 PERF-A008's fixed-memory GQA and safe long-pool fallback are now the funded
 native context-enabling work.
+
+The first context-enabling half is retained. Exact source A/B at a
+`4096+4096` partial extend reduced the padded-query controls from
+**542.376416/641.256125 ms** to **176.066500 ms** with exact MPS output. A
+`4096+256` rung improved **97.995583/97.847500 -> 12.608125 ms**. The next
+gate is the decode admission boundary: BF16 or a physical pool above 7,936
+rows must enter the existing cache-write plus SDPA fallback until a bounded
+native long-context GQA kernel qualifies.
 
 The MLX long-context lane also retains adaptive quantized-prefill query tiling
 behind `SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE`. Its 1 GiB automatic threshold
