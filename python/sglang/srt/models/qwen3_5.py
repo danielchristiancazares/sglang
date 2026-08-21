@@ -99,7 +99,17 @@ from sglang.srt.model_loader.weight_utils import (
 )
 
 if sys.platform == "win32":
+    from sglang.kernels.ops.quantization.silu_and_mul_nvfp4 import (
+        is_supported_silu_and_mul_nvfp4,
+        silu_and_mul_nvfp4,
+    )
     from sglang.srt.layers.activation import SiluAndMul
+    from sglang.srt.layers.quantization.fp4_utils import (
+        get_fp4_gemm_runner_backend,
+    )
+    from sglang.srt.layers.quantization.modelopt_quant import (
+        ModelOptFp4LinearMethod,
+    )
 
     class Qwen2MoeMLP(nn.Module):
         def __init__(
@@ -129,10 +139,31 @@ if sys.platform == "win32":
                 prefix=add_prefix("down_proj", prefix),
             )
             self.act_fn = SiluAndMul()
+            down_quant_method = self.down_proj.quant_method
+            self._use_silu_and_mul_nvfp4 = (
+                isinstance(down_quant_method, ModelOptFp4LinearMethod)
+                and down_quant_method.quant_config.is_checkpoint_nvfp4_serialized
+                and not down_quant_method.quant_config.use_per_token_activation
+                and not down_quant_method.quant_config.is_awq
+                and self.down_proj.tp_size == 1
+                and get_fp4_gemm_runner_backend().is_flashinfer_cutlass()
+                and is_supported_silu_and_mul_nvfp4(
+                    intermediate_size,
+                    self.down_proj.params_dtype,
+                )
+            )
+            if self._use_silu_and_mul_nvfp4:
+                self.down_proj._accepts_prequantized_fp4 = True
 
         def forward(self, x):
             x, _ = self.gate_up_proj(x)
-            x = self.act_fn(x)
+            if (
+                self._use_silu_and_mul_nvfp4
+                and not torch.compiler.is_compiling()
+            ):
+                x = silu_and_mul_nvfp4(x, self.down_proj.input_scale_inv)
+            else:
+                x = self.act_fn(x)
             x, _ = self.down_proj(x)
             return x
 

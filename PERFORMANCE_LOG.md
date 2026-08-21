@@ -44,6 +44,11 @@
 | Current-source exact `199000+16` E2E baseline | 65.420204 s record | **67.910954 s five-run mean** | +2.490750 s / +3.807% slower | same exact requests | 2026-08-20 19:21 PDT |
 | PERF-028 adjacent exact `199000+16` arm | 2967.386 prompt / 102.302 generation tok/s staged control | 2960.228 / 98.817 tok/s fused | -0.241% prompt; short generation inconclusive | three staged and five fused exact requests; identical digest; only 15 decode intervals | 2026-08-20 20:04 PDT |
 | PERF-028 adjacent exact `199000+512` generation | 115.194 tok/s staged control | **116.583 tok/s fused** | **+1.388 / +1.205%** | three exact requests per arm; identical `199512` count and digest | 2026-08-20 20:04 PDT |
+| PERF-027 first full exact `199000+16` arm | 2960.228 prompt tok/s PERF-028 fused arm | **2993.552 prompt tok/s** | **+33.324 / +1.126%** | five exact requests; TTFT improved 67.229581 -> 66.485194 s, but deterministic output changed | 2026-08-20 20:37 PDT |
+| PERF-027 first full exact `199000+512` arm | 116.583 tok/s PERF-028 fused arm | 115.542 tok/s | -1.041 / -0.893% | three exact requests; changed deterministic trajectory, so not a valid decode attribution | 2026-08-20 20:42 PDT |
+| PERF-027 repaired exact `199000+16` prompt | 2960.228 tok/s PERF-028 fused arm | **2987.275 tok/s** | **+27.047 / +0.914%** | five exact requests after two warmups; eager-only fusion restored the established digest | 2026-08-20 21:58 PDT |
+| PERF-027 repaired exact `199000+16` TTFT | 67.229581 s PERF-028 fused arm | **66.622932 s** | **-0.606649 s / -0.902%** | same exact five-request window; all `199016`, `finish_reason=length` | 2026-08-20 21:58 PDT |
+| PERF-027 repaired exact `199000+512` support | 2974.600 prompt / 116.583 generation tok/s PERF-028 fused arm | **3001.344 prompt / 115.225 generation tok/s** | +0.899% prompt; decode within current variance | three exact requests; restored `cac0c6...a2092` digest | 2026-08-20 22:03 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
 
@@ -619,7 +624,7 @@ tree throughput can be ranked for production.
 | PERF-024 | Autotune target ordinary-EXTEND FP4 tactics at the real 7680/7000 prefill shapes without losing them to later draft contexts. | FlashInfer autotune runner and speculative target prefill | Retained expert opt-in; qualified record | Same-request record **3048.086/112.499**; persisted-cache exact prompt mean **3047.309** and long-generation mean **118.389**. Defaults remain unchanged. |
 | PERF-025 | Evaluate the already-implemented FlashInfer TRT-LLM dense FP4 backend on native-Windows SM120. | `ModelOptFp4LinearMethod`, FP4 backend selector, launcher | Blocked by installed backend | The real layer-path test reaches FlashInfer and fails all three shapes with `mm_fp4 does not support backend 'trtllm' with capability 120`; see `PERF-F042`. |
 | PERF-026 | Specialize greedy EAGLE draft proposals and retain a sparse exact sampled p/q path. | EAGLE draft graphs, proposal buffers, rejection sampling | Survey | Temperature-zero target verification is greedy while the draft still samples stochastic top-k 20. Any change must preserve exact q(X), RNG, graph replay, and asynchronous output lifetimes. |
-| PERF-027 | Fuse Qwen SwiGLU output directly into byte-identical NVFP4 activation/scales for `down_proj`. | Native CUDA activation/quant producer and FP4 linear tuple input | Survey | Removes 64 BF16 intermediate write/read pairs per target pass; first gate is byte-identical packed output at M1/M3/M7000/M7680 and a whole-chain win. |
+| PERF-027 | Fuse Qwen SwiGLU output directly into byte-identical NVFP4 activation/scales for `down_proj`. | Native CUDA activation/quant producer and FP4 linear tuple input | Retained eager-prefill win | Exact across every finite BF16 gate value, production shapes, mutable graphs, and the ModelOpt consumer. Eager-only selection preserves the former compiled M3 function and restored both deterministic digests; exact short prompt improved 0.914% versus PERF-028. |
 | PERF-028 | Fuse the native-Windows BF16 residual add into the bit-exact Gemma RMSNorm direct-output kernel. | JIT CUDA half-width RMSNorm and Windows Gemma dispatch | Retained additive decode win | Exact at M1/M3/M7000/M7680 and under mutable CUDA-graph replay. Stable M1/M3 kernel-only A-B-A improved about `16.5 -> 9.5 us`; adjacent exact `199000+512` generation improved `115.194 -> 116.583 tok/s` (+1.205%) with identical output. Prefill was neutral. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -797,3 +802,79 @@ tree throughput can be ranked for production.
   **1.205%**, consistent with the isolated M1/M3 launch reduction. Do not
   attribute a prefill gain: the adjacent short and long prompt arms differed
   by only -0.241% and -0.296%, respectively.
+
+### 2026-08-20 20:26 PDT - PERF-027 exact fused SwiGLU-to-NVFP4 producer
+
+- Admission probe: the installed
+  `flashinfer.silu_and_mul_nvfp4_quantize` API cannot run on this native
+  Windows stack because it imports the unavailable `cutlass` Python module.
+  The already-compiled native expert variant does run on SM120 and is fast,
+  but changed about 0.8% of packed values because it uses fast SiLU and only
+  one BF16 rounding boundary.
+- Change: added a native-Windows JIT producer that computes precise FP32 SiLU,
+  rounds the activation to BF16, multiplies by the FP32-converted up value,
+  rounds the product to BF16, then reuses FlashInfer's native NVFP4
+  E4M3-scale/E2M1 packing helpers. It writes caller-owned packed values and
+  every 128x4 scale-layout padding byte in one launch.
+- Exactness evidence: with production hidden width 17408 and the real layer-0
+  down-projection input scale `0.0025692894123494625`, both packed values and
+  every scale byte matched the current staged Windows sequence at
+  `M={1,3,7000,7680}`.
+- Isolated latency medians, staged versus exact fused:
+  - M1: `50.528 -> 20.224 us` (**2.498x**)
+  - M3: `49.568 -> 20.256 us` (**2.447x**)
+  - M7000: `664.112 -> 366.176 us` (**1.814x**)
+  - M7680: `730.416 -> 402.704 us` (**1.814x**)
+- Decision: isolated numerical and latency admission passed. The kernel
+  remains unwired until mutable CUDA-graph replay, fullgraph compilation, the
+  real ModelOpt tuple consumer, and a whole-model adjacent comparison pass.
+- Focused follow-up passed **8 tests**: mutable graph replay, fullgraph
+  compilation, and a captured exact producer-to-ModelOpt CUTLASS tuple chain
+  are all bit-exact. The producer was then wired behind the narrow native
+  Windows TP1 serialized non-AWQ per-tensor ModelOpt/CUTLASS gate.
+- First full-model arm: both 200K pools, 110 selected target tactics, and all
+  three graphs passed. Five exact `199000+16` requests measured prompt
+  `3044.589, 3014.218, 2984.494, 2984.251, 2940.207` tok/s (mean
+  **2993.552**), TTFT mean **66.485194 s**, and E2E mean
+  **66.660452 s**. This is +1.126% prompt and -0.744387 s TTFT versus the
+  prior PERF-028 fused arm under the current environment.
+- The arm is not promotable: every short request selected a new stable digest
+  `9db488...21375`. Three exact `199000+512` requests selected another changed
+  trajectory and measured `114.263, 119.534, 112.829` generation tok/s
+  (mean **115.542**), below PERF-028's 116.583. Next step is real-activation
+  numerical localization; no speed result can be retained until the digest
+  divergence is eliminated.
+
+### 2026-08-20 22:04 PDT - PERF-027 repaired and retained for eager prefill
+
+- Exhaustive finite-BF16 localization found 520 packed-byte differences in
+  final-product underflow groups. FlashInfer's separately compiled quantizer
+  flushes BF16 subnormals at its module boundary; the fused precise module
+  preserved them and could encode `0x77` under a zero E4M3 scale. The retained
+  kernel canonicalizes only the final rounded BF16 subnormal to signed zero.
+- A separate deployment-equivalent probe proved that the established compiled
+  target graph has a different contract from eager prefill. Inductor removes
+  the intermediate BF16 SiLU round: compiled native differed from eager staged
+  by 63 packed/18 scale bytes at M1 and 216/51 at M3. PERF-027 therefore runs
+  only outside `torch.compile`; compiled M3 keeps its original activation and
+  quantizer.
+- Focused coverage now passes **10 native CUDA tests**: exact
+  M1/M3/M7000/M7680 values, compact and TMA all-finite-BF16 sweeps, mutable
+  graph replay, fullgraph compilation, and a captured ModelOpt tuple chain.
+  The Qwen3.5 ModelOpt CPU suite passes **10 tests**, including explicit eager
+  tuple routing and compile-time preservation of the former activation path.
+- The repaired selective server restored the short digest
+  `cdf5bb57...f647d9` across five exact `199000+16` scores. Prompt samples
+  were `2977.888, 3008.041, 2946.967, 2968.875, 3034.603` tok/s, mean
+  **2987.275**; mean TTFT/E2E were **66.622932/66.776008 s**. Versus the
+  PERF-028 fused arm, prompt improved **0.914%** and TTFT improved
+  **0.606649 s**.
+- Three exact `199000+512` requests restored digest `cac0c6...a2092`, measured
+  prompt `3040.821, 2982.656, 2980.554` tok/s (mean **3001.344**) and
+  generation `117.174, 114.334, 114.168` tok/s (mean **115.225**). The prompt
+  gain persisted; decode remained within the existing 1-3% launch/WDDM range
+  and is not attributed to this eager-only change.
+- Decision: retain the exact eager-prefill producer as an additive prompt/TTFT
+  win. A compiled-semantics producer is a separate candidate and must match
+  the old M3 tuple and outer graph exactly before it can replace the compile
+  guard.

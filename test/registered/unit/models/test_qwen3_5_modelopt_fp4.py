@@ -10,10 +10,14 @@ Covers three things:
      RadixAttention parameter names.
 """
 
+import sys
 import unittest
+from unittest import mock
 
 import torch
+import torch.nn as nn
 
+import sglang.srt.models.qwen3_5 as qwen3_5
 from sglang.srt.layers.quantization.modelopt_quant import ModelOptFp4Config
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.model_loader.weight_utils import default_weight_loader
@@ -22,6 +26,83 @@ from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
 register_cpu_ci(est_time=5, suite="base-a-test-cpu")
+
+
+class _Projection(nn.Module):
+    def forward(self, x):
+        return x, None
+
+
+class _RecordingActivation(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def forward(self, x):
+        self.calls += 1
+        return x + 1
+
+
+class _RecordingDownProjection(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.input_scale_inv = nn.Parameter(
+            torch.tensor(1.0),
+            requires_grad=False,
+        )
+        self.last_input = None
+
+    def forward(self, x):
+        self.last_input = x
+        return x, None
+
+
+@unittest.skipUnless(sys.platform == "win32", "Native Windows routing only")
+class TestWindowsQwen3_5Nvfp4Routing(CustomTestCase):
+    def _make_mlp(self):
+        mlp = qwen3_5.Qwen2MoeMLP.__new__(qwen3_5.Qwen2MoeMLP)
+        nn.Module.__init__(mlp)
+        mlp.gate_up_proj = _Projection()
+        mlp.down_proj = _RecordingDownProjection()
+        mlp.act_fn = _RecordingActivation()
+        mlp._use_silu_and_mul_nvfp4 = True
+        return mlp
+
+    def test_eager_forward_uses_prequantized_tuple(self):
+        mlp = self._make_mlp()
+        input = torch.tensor([[1.0]])
+        packed = torch.tensor([[2]], dtype=torch.uint8)
+        scales = torch.tensor([[3]], dtype=torch.uint8)
+
+        with (
+            mock.patch.object(torch.compiler, "is_compiling", return_value=False),
+            mock.patch.object(
+                qwen3_5,
+                "silu_and_mul_nvfp4",
+                return_value=(packed, scales),
+            ) as fused,
+        ):
+            output = mlp(input)
+
+        fused.assert_called_once_with(input, mlp.down_proj.input_scale_inv)
+        self.assertIs(output[0], packed)
+        self.assertIs(output[1], scales)
+        self.assertEqual(mlp.act_fn.calls, 0)
+
+    def test_compile_forward_preserves_native_activation(self):
+        mlp = self._make_mlp()
+        input = torch.tensor([[1.0]])
+
+        with (
+            mock.patch.object(torch.compiler, "is_compiling", return_value=True),
+            mock.patch.object(qwen3_5, "silu_and_mul_nvfp4") as fused,
+        ):
+            output = mlp(input)
+
+        fused.assert_not_called()
+        torch.testing.assert_close(output, input + 1)
+        self.assertEqual(mlp.act_fn.calls, 1)
+        self.assertIsInstance(mlp.down_proj.last_input, torch.Tensor)
 
 
 class TestModelOptFp4AttentionExclusion(CustomTestCase):
