@@ -97,6 +97,7 @@ elif _is_mps:
         dense_matmul,
         q4_0_embedding,
         q4_0_matmul,
+        quant_embedding,
         quant_matmul,
     )
 else:
@@ -236,7 +237,15 @@ def fused_mul_mat_gguf(
                 qweight.shape[0],
                 x.shape[-1],
             )
-        elif qweight_type in (WeightType.Q4_1, WeightType.Q5_K, WeightType.Q6_K):
+        elif qweight_type in (
+            WeightType.Q4_1,
+            WeightType.Q2_K,
+            WeightType.Q4_K,
+            WeightType.Q5_K,
+            WeightType.Q6_K,
+            WeightType.IQ2_XXS,
+            WeightType.IQ1_M,
+        ):
             output = quant_matmul(
                 qweight.reshape(-1).view(torch.uint8),
                 x,
@@ -246,8 +255,8 @@ def fused_mul_mat_gguf(
             )
         else:
             raise NotImplementedError(
-                "The native Metal GGUF path supports Q4_0, Q4_1, Q5_K, and "
-                "Q6_K matrix weights; "
+                "The native Metal GGUF path does not support this matrix "
+                "weight type: "
                 f"got {WeightType(qweight_type).name}."
             )
         return output.to(x.dtype)
@@ -382,17 +391,35 @@ def apply_gguf_embedding(
     dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
     if _is_mps:
-        if qweight_type != WeightType.Q4_0:
-            raise NotImplementedError(
-                "The native Metal GGUF embedding path currently supports Q4_0; "
-                f"got {WeightType(qweight_type).name}."
+        if qweight_type in UNQUANTIZED_TYPES:
+            return torch.embedding(qweight, x).to(dtype or qweight.dtype)
+        packed_weight = qweight.reshape(-1).view(torch.uint8)
+        token_ids = x.to(torch.int64)
+        if qweight_type == WeightType.Q4_0:
+            output = q4_0_embedding(
+                packed_weight,
+                token_ids,
+                qweight.shape[0],
+                hidden_size,
             )
-        output = q4_0_embedding(
-            qweight.reshape(-1).view(torch.uint8),
-            x.to(torch.int64),
-            qweight.shape[0],
-            hidden_size,
-        )
+        elif qweight_type in (
+            WeightType.Q2_K,
+            WeightType.Q4_K,
+            WeightType.IQ2_XXS,
+            WeightType.IQ1_M,
+        ):
+            output = quant_embedding(
+                packed_weight,
+                token_ids,
+                qweight.shape[0],
+                hidden_size,
+                qweight_type,
+            )
+        else:
+            raise NotImplementedError(
+                "The native Metal GGUF embedding path does not support this "
+                f"weight type: {WeightType(qweight_type).name}."
+            )
         return output.to(dtype or torch.float32)
     if qweight_type in UNQUANTIZED_TYPES:
         return torch.embedding(qweight, x)
@@ -479,8 +506,12 @@ class GGUFLinearMethod(LinearMethodBase):
         if _is_mps and qweight_type not in (
             WeightType.Q4_0,
             WeightType.Q4_1,
+            WeightType.Q2_K,
+            WeightType.Q4_K,
             WeightType.Q5_K,
             WeightType.Q6_K,
+            WeightType.IQ2_XXS,
+            WeightType.IQ1_M,
             *UNQUANTIZED_TYPES,
         ):
             if layer.qweight.shard_id:

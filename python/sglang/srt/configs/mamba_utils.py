@@ -70,13 +70,10 @@ def mamba2_state_dtype(config=None) -> Mamba2StateDType:
         not envs.SGLANG_MAMBA_CONV_DTYPE.is_set()
         and torch.backends.mps.is_available()
     ):
-        try:
-            torch.empty(0, dtype=torch.bfloat16, device="mps")
-        except (RuntimeError, TypeError):
-            # The final Intel-macOS PyTorch wheel exposes MPS without BF16
-            # storage. Qwen3.5 already keeps its temporal state in FP32, and
-            # using FP32 for the small convolution state preserves that path.
-            conv_dtype_name = "float32"
+        # The native Metal Qwen3.5 causal-convolution kernels read and update
+        # FP32 state on every MPS device. Keep the small convolution cache in
+        # that format unless the operator explicitly requests another dtype.
+        conv_dtype_name = "float32"
     conv_dtype = dtype_map.get(conv_dtype_name, torch.bfloat16)
 
     # Get SSM dtype: default -> config -> env var
