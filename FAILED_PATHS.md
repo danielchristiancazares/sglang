@@ -972,7 +972,7 @@
 - Related commit or revert: configuration-only experiment; top-k 20 remains
   selected.
 
-## PERF-F059 - Greedy draft proposal top-k 1
+## PERF-F059 - Greedy draft proposal top-k 1 single-sample conclusion
 
 - Hypothesis: for the temperature-zero exact scoreboard, deterministic draft
   argmax would align more often with the one-hot greedy target than sampling
@@ -987,12 +987,10 @@
   deterministic output digest; all probes completed 512 tokens.
 - Failure mode: the draft argmax is not sufficiently aligned with target
   argmax; removing q support loses useful alternative-token overlap.
-- Why not to retry unchanged: both the exact client and direct greedy
-  acceptance evidence reject the premise.
-- Reopen only if: a calibrated root head changes draft argmax accuracy on a
-  held-out corpus.
-- Related commit or revert: configuration-only experiment; top-k 20 remains
-  selected.
+- Why not to retry unchanged: superseded by PERF-050's longer matched evidence.
+- Reopen only if: use the PERF-050 page64/top-p1 stack and long-window contract.
+- Related commit or revert: this early conclusion is superseded; k1 later
+  reached 123.049 tok/s on exact199K+512 but still fails exact16.
 
 ## PERF-F060 - Draft proposal top-k 16
 
@@ -1094,3 +1092,35 @@
   held-out conservative expected-length gain of at least 0.05.
 - Related commit or revert: no serving calibration retained; diagnostic queue
   repair retained separately.
+
+## PERF-F065 - XQA SM-count/PDL controls
+
+- Hypothesis: reducing XQA SM residency or disabling PDL would shorten the
+  199K target graph.
+- Scope: exact SM120 B1/Q3/QH24/KVH4/D256/FP8-KV/page64 XQA microshape.
+- Attempted change: swept 32,48,64,80,96,112,128,144,170 SMs and PDL on/off.
+- Benchmark evidence: lower SM counts changed output and saved only a few us;
+  all170 median was ~272 us. PDL true/false was 271.424/271.840 us.
+- Correctness evidence: only all170 preserved the reference digest; both PDL
+  modes were bit-exact.
+- Failure mode: split/reduction geometry changes numerics before providing
+  material value; PDL is neutral.
+- Why not to retry unchanged: no admissible built-in control clears funding.
+- Reopen only if: a CUDA kernel change preserves all170 reduction order.
+- Related commit or revert: no source change.
+
+## PERF-F066 - M4 under greedy k1
+
+- Hypothesis: higher greedy k1 yield could let four-row verification complete
+  exact16 in fewer cycles.
+- Scope: page64/top-p1, k1, three speculative steps/four verify rows.
+- Attempted change: launched full 200K M4 and measured exact16 acceptance.
+- Benchmark evidence: still seven cycles, emitted length **2.285714**, same as
+  M3 exact16; histogram `[2,1,2,2]`.
+- Correctness evidence: exact `199016` and established digest passed.
+- Failure mode: added row/step did not reduce discrete cycle count.
+- Why not to retry unchanged: it necessarily costs more per cycle for no cycle
+  reduction.
+- Reopen only if: a new proposal head raises exact16 emitted length enough for
+  six or fewer cycles.
+- Related commit or revert: configuration-only; M3 remains selected.

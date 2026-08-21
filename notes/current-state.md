@@ -222,6 +222,14 @@ capture queue was repaired from eight to bounded 64 entries after the first
 capture backpressured; the second request completed 239 records.
 Signed commit `4d6782121e` retains the bounded diagnostic queue repair.
 
+PERF-050 reopens greedy draft top-k 1 on stronger evidence. It improves
+exact199K+512 generation **116.549 -> 123.049 tok/s** with identical output
+and reaches **2.426540** exact-context acceptance. However, five exact16
+generation scores average only **98.478 tok/s**: the request uses seven
+long-context cycles averaging **19.895 ms**, so the single-request generation
+target remains open. M4 still used seven cycles and is rejected. XQA SM-count
+and PDL controls provide no bit-exact material win.
+
 The winning selective profile remains `AttnNVFP4`, chunk 7680, M3, and the
 bit-exact Windows Gemma residual-norm direct-output path. PERF-024 additionally
 runs an ordinary 16,384-token target EXTEND pass under the existing

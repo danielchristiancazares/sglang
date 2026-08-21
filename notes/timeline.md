@@ -490,6 +490,12 @@ code changes, or process state matter.
   later states. The diagnostic queue was raised from eight to bounded 64 after
   the first writer backpressured; the independent 239-record capture passed,
   and signed commit `4d6782121e` retained the repair.
+- A no-penalty greedy oracle then justified reopening draft k1. It improved
+  exact199K+512 generation from 116.549 to 123.049 tok/s with identical output,
+  but five exact16 samples stayed near 98.5 because seven 199K cycles averaged
+  19.895 ms. M4 also required seven cycles and was rejected.
+- XQA SM-count and PDL sweeps found no bit-exact material control; long-context
+  target-graph reduction now requires a kernel change or a six-cycle proposal.
 
 ## Supersession map
 
