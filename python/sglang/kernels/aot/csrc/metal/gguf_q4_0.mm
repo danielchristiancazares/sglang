@@ -1250,6 +1250,78 @@ kernel void q6_K_batch_8_vec4(
     }
 }
 
+// Give each eight-lane cohort a separate output row at batch one. Each lane
+// decodes four adjacent weights at a time, and all four cohorts reuse the same
+// input vector while producing sixteen rows per threadgroup.
+kernel void q5_K_batch_1_vec4(
+        device const block_q5_K * weights,
+        device const float * input,
+        device float * output,
+        constant Q4Args & args,
+        uint group [[threadgroup_position_in_grid]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr ushort lanes_per_row = 8;
+    constexpr ushort rows_per_simdgroup = 4;
+    constexpr ushort rows_per_threadgroup = 16;
+    const ushort row_in_simdgroup = lane / lanes_per_row;
+    const ushort thread_x = lane & (lanes_per_row - 1);
+    const uint row = group * rows_per_threadgroup
+        + simd_id * rows_per_simdgroup + row_in_simdgroup;
+    const bool valid_row = row < args.output_size;
+    device const block_q5_K * row_weights = valid_row
+        ? weights + row * args.blocks_per_row : weights;
+    float sum = 0.0f;
+    if (valid_row) {
+        const uint lane_base = thread_x * 4;
+        for (uint block_index = 0;
+             block_index < args.blocks_per_row;
+             ++block_index) {
+            device const block_q5_K * block = row_weights + block_index;
+            const float block_scale = float(block->d);
+            const float block_min = float(block->dmin);
+            const uchar4 packed_high =
+                *reinterpret_cast<device const uchar4 *>(
+                    block->qh + lane_base);
+#pragma unroll(4)
+            for (ushort group_index = 0; group_index < 4; ++group_index) {
+                const uchar4 packed_low =
+                    *reinterpret_cast<device const uchar4 *>(
+                        block->qs + group_index * 32 + lane_base);
+#pragma unroll(2)
+                for (ushort nibble_half = 0;
+                     nibble_half < 2;
+                     ++nibble_half) {
+                    const ushort scale_index =
+                        group_index * 2 + nibble_half;
+                    const uchar2 scale_min =
+                        q5_k_scale_min(block->scales, scale_index);
+                    const uchar4 low = nibble_half == 0
+                        ? packed_low & uchar4(0x0f) : packed_low >> 4;
+                    const uchar4 high =
+                        (packed_high >> scale_index) & uchar4(1);
+                    const float4 weight =
+                        block_scale * float(scale_min[0])
+                            * float4(uint4(low) + uint4(high) * 16)
+                        - block_min * float(scale_min[1]);
+                    const uint column = block_index * 256
+                        + group_index * 64 + nibble_half * 32 + lane_base;
+                    sum += dot(
+                        weight,
+                        *reinterpret_cast<device const float4 *>(
+                            input + column));
+                }
+            }
+        }
+    }
+    sum += simd_shuffle_down(sum, 4);
+    sum += simd_shuffle_down(sum, 2);
+    sum += simd_shuffle_down(sum, 1);
+    if (thread_x == 0 && valid_row) {
+        output[row] = sum;
+    }
+}
+
 kernel void q5_K_batch_8_vec4(
         device const block_q5_K * weights,
         device const float * input,
@@ -2526,6 +2598,7 @@ struct Pipelines {
     id<MTLComputePipelineState> q4_K_batch4 = nil;
     id<MTLComputePipelineState> q4_K_batch8 = nil;
     id<MTLComputePipelineState> q5_K_batch1 = nil;
+    id<MTLComputePipelineState> q5_K_batch1_vec4 = nil;
     id<MTLComputePipelineState> q5_K_batch4 = nil;
     id<MTLComputePipelineState> q5_K_batch8 = nil;
     id<MTLComputePipelineState> q5_K_batch8_vec4 = nil;
@@ -2617,6 +2690,7 @@ Pipelines & pipelines() {
         value.q4_K_batch4 = compile(@"q4_K_batch_4");
         value.q4_K_batch8 = compile(@"q4_K_batch_8");
         value.q5_K_batch1 = compile(@"q5_K_batch_1");
+        value.q5_K_batch1_vec4 = compile(@"q5_K_batch_1_vec4");
         value.q5_K_batch4 = compile(@"q5_K_batch_4");
         value.q5_K_batch8 = compile(@"q5_K_batch_8");
         value.q5_K_batch8_vec4 = compile(@"q5_K_batch_8_vec4");
@@ -2842,6 +2916,9 @@ torch::Tensor quant_matmul(
     const bool use_q6_batch24 = weight_type == 14 && batch_size >= 12;
     const bool use_q6_vec24 = weight_type == 14 && batch_size == 24;
     const bool use_q5_vec24 = weight_type == 13 && batch_size == 24;
+    const bool use_q5_vec4_batch1 =
+        weight_type == 13 && batch_size == 1 &&
+        weight_offset % 4 == 0 && input_offset % 16 == 0;
     const int64_t batch_tile = (use_q6_batch24 || use_q5_vec24)
         ? 24 : (batch_size == 1 ? 1 : (batch_size <= 4 ? 4 : 8));
     Pipelines & p = pipelines();
@@ -2857,7 +2934,9 @@ torch::Tensor quant_matmul(
             : (batch_tile == 4 ? p.q4_K_batch4 : p.q4_K_batch8);
     } else if (weight_type == 13) {
         pipeline = use_q5_vec24 ? p.q5_K_batch24_vec4
-            : (batch_tile == 1 ? p.q5_K_batch1
+            : (batch_tile == 1
+                ? (use_q5_vec4_batch1
+                    ? p.q5_K_batch1_vec4 : p.q5_K_batch1)
                 : (batch_tile == 4 ? p.q5_K_batch4
                     : (batch_size == 8 ? p.q5_K_batch8_vec4
                                        : p.q5_K_batch8)));
@@ -2892,9 +2971,12 @@ torch::Tensor quant_matmul(
         [encoder setBytes:&args length:sizeof(args) atIndex:3];
         const bool use_four_row_batch1 =
             (weight_type == 16 || weight_type == 29) && batch_size == 1;
-        const NSUInteger output_groups = use_four_row_batch1
-            ? (output_size + 7) / 8 : (output_size + 3) / 4;
-        const NSUInteger batch_groups = use_four_row_batch1
+        const NSUInteger output_groups = use_q5_vec4_batch1
+            ? (output_size + 15) / 16
+            : (use_four_row_batch1
+                ? (output_size + 7) / 8 : (output_size + 3) / 4);
+        const NSUInteger batch_groups =
+            (use_q5_vec4_batch1 || use_four_row_batch1)
             ? 1 : (batch_size + batch_tile - 1) / batch_tile;
         const NSUInteger threads = use_four_row_batch1 ? 64 : 128;
         [encoder dispatchThreadgroups:MTLSizeMake(output_groups, batch_groups, 1)
