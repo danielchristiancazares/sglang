@@ -419,6 +419,9 @@ code changes, or process state matter.
 - Fixed FlashInfer paged-prefix splits failed the 128 MiB workspace gate, and
   source inspection showed the proposed packed GDN verify path was already a
   zero-copy alias. Both routes closed without retained source.
+- Coalescing the final two prefill passes preserved exact capacity but moved
+  work into a 14,680-token ragged causal kernel, collapsing prompt throughput
+  to 1,917.509 tok/s and changing output. The scheduler experiment was removed.
 - Retained in `5ea3b734b0`. The headline record remains PERF-024; these
   additive changes are the active source for the next optimization.
 

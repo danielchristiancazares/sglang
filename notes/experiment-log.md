@@ -4004,3 +4004,46 @@ mean 13.929045  17.125658 446.051        39.730
 - Closed the candidate before code or GPU work. A future reopening requires an
   exact current trace naming `fused_qkv_split_gdn_prefill` 48 times per replay
   with at least 0.05 ms exclusive wall.
+
+### 2026-08-20 22:58 PDT - PERF-032 final-tail coalescing passes CPU admission
+
+- Added default-off expert knob
+  `SGLANG_OPT_PREFILL_TAIL_COALESCE_MAX_TOKENS`. The selective value 16,384
+  changes exact 199K planning from `25 * 7680 + 7000` to
+  `24 * 7680 + 14680`, removing one full model forward without changing token
+  count or the production launcher default.
+- The scheduler admits the merge only when one request is active, dynamic
+  chunking is off, the remainder is greater than the base chunk and no larger
+  than both the expert ceiling and `max_prefill_tokens`, and no conflicting
+  Mamba branching checkpoint exists.
+- The merged forward sets the existing Mamba branching tracker to the
+  eliminated base boundary at 192,000 tokens. The forward therefore retains
+  that radix checkpoint while the request's live state continues through all
+  199,000 prompt tokens.
+- Extended the shared eager-prefill buffer ceiling and K3 symmetric-buffer
+  sizing to include the expert tail maximum. ServerArgs and runtime-context
+  derived values remain equal under the environment override.
+- Focused CPU results: scheduler chunk tests **6 passed**; runtime-context tests
+  **70 passed plus 140 subtests**. Python compilation and `git diff --check`
+  passed. Next gate is an exact selective launch requiring 25 observed
+  prefill forwards, the preserved digest/checkpoint, 200K pools, and safe
+  residency.
+- The selective server allocated both 200K pools and captured target verify,
+  draft decode, and draft extend in **16.40, 1.10, and 0.92 s**. One exact
+  warmup completed before the scored request.
+- The score completed exact `199016` with `finish_reason=length`, but measured
+  **1917.509 prompt tok/s**, **48.657 short generation tok/s**,
+  **103.780505 s TTFT**, and **104.088783 s E2E**. Output digest changed from
+  `cdf5bb57...f647d9` to
+  `8e1d884c1a55a3f871c49f2c9b82ce28e3db384c133e1f2190da6eedd843d42a`.
+- The 14,680-token ragged-current causal pass is not economically equivalent
+  to the former 7,680 ragged pass plus a 7,000 ragged/paged merge. The 36%
+  prompt regression and changed reduction trajectory reject the geometry
+  without a second window.
+- Re-resolved and stopped only the verified tree rooted at PID 36344:
+  workers `56300/3048`, listener `50708`, parent Python `48428`, console
+  `42432`, then launcher PowerShell `36344`. Port 30000 and compiler workers
+  were absent afterward; the GPU returned to 1,577 MiB display residency with
+  30,611 MiB free.
+- Removed the environment descriptor, buffer sizing, scheduler logic, and
+  tests. Artifact: `perf032-tail-server-20260820-2259.log`.

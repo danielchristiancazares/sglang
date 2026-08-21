@@ -724,3 +724,27 @@
 - Reopen only if: a current exact M3 trace shows the split kernel running 48
   times with at least 0.05 ms exclusive wall per replay.
 - Related commit or revert: no source change.
+
+## PERF-F048 - Coalesced 14,680-token final prefill tail
+
+- Hypothesis: merging the final 7,680 and 7,000-token passes would remove one
+  complete 64-layer forward while retaining exact capacity and the 192K Mamba
+  checkpoint.
+- Scope: default-off selective profile, exact `199000+16`, one request,
+  16,384-token tail ceiling.
+- Attempted change: scheduler emitted `24 * 7680 + 14680`; the existing Mamba
+  branching tracker preserved the 192,000-token checkpoint.
+- Benchmark evidence: **1917.509 prompt tok/s**, **103.780505 s TTFT**, and
+  **104.088783 s E2E**, versus roughly 2,987 prompt tok/s and 66.623 s TTFT on
+  the retained source.
+- Correctness evidence: exact `199016` and `finish_reason=length` passed, but
+  the deterministic digest changed.
+- Failure mode: coalescing moved the last chunk's interaction with the preceding
+  7,680 tokens from paged-prefix attention into one much larger ragged-current
+  causal pass, changing both kernel efficiency and reduction order.
+- Why not to retry unchanged: the regression is about 36%, far outside noise;
+  dispatch removal cannot repay the larger ragged kernel.
+- Reopen only if: a fused/partitioned attention implementation preserves the
+  selected ragged/paged kernel shapes while eliminating host/model dispatch.
+- Related commit or revert: all tail option, sizing, scheduling, and tests were
+  removed.

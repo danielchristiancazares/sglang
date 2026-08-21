@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
-22:49 PDT.
+23:01 PDT.
 
 **Qualified production source line:** commit
 `7f5af878da7b8dc43063f31e554dfc69cee5d510`
@@ -324,6 +324,8 @@ distribution, and cost topology:
   2.265 GB temporary storage from the qualified 128 MiB workspace;
 - packed GDN target-verify split removal, because the selected Qwen width
   already takes zero-copy Q/K/V aliases and ReplaySSM accepts their strides;
+- final-tail coalescing, whose 14,680-token ragged-current pass regressed prompt
+  to 1,917.509 tok/s, TTFT to 103.781 s, and changed deterministic output;
 - global chunk-7680 promotion, which regressed the base checkpoint and
   transiently reduced headroom to 200 MiB;
 - chunk 7808, which regressed the selective prompt mean to 2909.350 tok/s;
