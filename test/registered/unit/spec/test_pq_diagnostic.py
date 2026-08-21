@@ -11,6 +11,7 @@ from sglang.srt.speculative.pq_diagnostic import (
     BranchPQCapture,
     PenaltyConfig,
     SamplingConfig,
+    _CaptureWriter,
     branch_counts,
     close_capture_writers,
     make_branch_pq_capture,
@@ -19,11 +20,12 @@ from sglang.srt.speculative.pq_diagnostic import (
     submit_capture,
 )
 from sglang.test.ci.ci_register import register_cpu_ci
+from sglang.test.test_utils import CustomTestCase
 
 register_cpu_ci(est_time=5, suite="base-a-test-cpu")
 
 
-class TestPQDiagnostic(unittest.TestCase):
+class TestPQDiagnostic(CustomTestCase):
     def tearDown(self):
         close_capture_writers()
 
@@ -127,6 +129,17 @@ class TestPQDiagnostic(unittest.TestCase):
             lines = Path(path).read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(lines), 1)
             self.assertEqual(json.loads(lines[0])["artifact_type"], "sparse_pq_cycle")
+
+    def test_writer_queue_scales_to_capture_limit_with_bounded_memory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            small = _CaptureWriter(str(Path(directory) / "small.jsonl"), 3)
+            large = _CaptureWriter(str(Path(directory) / "large.jsonl"), 256)
+            try:
+                self.assertEqual(small.queue.maxsize, 3)
+                self.assertEqual(large.queue.maxsize, 64)
+            finally:
+                small.close()
+                large.close()
 
     def test_live_capture_factory_snapshots_root_counts(self):
         req = _request()

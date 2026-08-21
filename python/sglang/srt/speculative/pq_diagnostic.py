@@ -374,7 +374,9 @@ class _CaptureWriter:
         self.path = Path(path)
         self.max_cycles = max_cycles
         self.count = 0
-        self.queue: queue.Queue[Optional[BranchPQCapture]] = queue.Queue(maxsize=8)
+        self.queue: queue.Queue[Optional[BranchPQCapture]] = queue.Queue(
+            maxsize=min(max_cycles, 64)
+        )
         self.error: Optional[BaseException] = None
         self.thread = threading.Thread(
             target=self._run,
