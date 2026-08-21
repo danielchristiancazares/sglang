@@ -551,6 +551,28 @@ code changes, or process state matter.
   thresholded quantized-query tiling and still needs dependency pinning,
   cache-limit wiring, and the remaining exact capacity rungs.
 
+### Native IQ2 and Q5 batch-one kernels cross 8 tok/s
+
+- Replaced generic IQ2_XXS batch-one scalar dequantization with a staged-table
+  two-SIMD/four-row Metal mapping adapted from pinned ggml. Matched projection
+  time fell `1.176875 -> 0.516000 ms`; exact served `128+32` generation rose
+  `3.309 -> 7.1748 tok/s` with the deterministic digest intact.
+- Constant-address lookup tables and a four-SIMD/two-row geometry both lost
+  matched ablations. Signed `16b2bf7a06` retains the selected shader, focused
+  boundary harness, and full MIT provenance.
+- The retained artifact's vocabulary head is Q5_K, shape `248320x5120`, and
+  read 0.814 GiB of packed weights per generated token. A four-cohort
+  batch-one specialization reduced matched head time
+  `19.659291 -> 3.754625 ms`.
+- Five deterministic served runs averaged **8.0284 tok/s** and the committed
+  restart reached **8.114 tok/s**. Required sampled windows averaged
+  **7.9450** and **7.9552 tok/s**. Reasoning, thinking-disabled, parsed tool,
+  preserved tool-result, and language-only gates passed. Signed
+  `b19cf4acf3` retains the kernel and alignment/extrema test.
+- The exact Apple Rust/MLX `12+256` record remains **18.782925 tok/s**. The
+  next native hotspot is the 48-call batch-one F32 GDN b/a path; maximum
+  context remains an independent MLX q4-KV qualification lane.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:

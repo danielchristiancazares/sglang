@@ -186,17 +186,20 @@ has not.
 
 | Candidate | Status | Why |
 |---|---|---|
-| Bartowski Qwen3.8-27B IQ2_XXS checkpoint | Retained playground | Immutable artifact is locally behavior-capable after the GGUF USER_DEFINED tokenizer repair; full scoreboard, capacity, and OpenCode2 qualification remain open |
+| Bartowski Qwen3.8-27B IQ2_XXS checkpoint | Retained native playground | Behavior, required sampling, and independent restart pass; exact Rust `12+256`, 32K/capacity, and standalone OpenCode2 qualification remain open |
 | Compact heterogeneous merged GGUF storage on MPS | Retained | Signed `13bea403d6` removes 40 packed copies / 478.125 MiB per forward, improves adjacent `128+32` generation **3.1858 -> 3.309 tok/s**, lowers reported weights **10.03 -> 9.03 GB**, and preserves the exact digest |
+| IQ2_XXS batch-one four-row Metal kernel | Retained | Signed `16b2bf7a06` changes matched projection time **1.176875 -> 0.516000 ms** and served generation **3.309 -> 7.1748 tok/s** with exact behavior across two restarts |
+| Q5_K batch-one four-cohort vocabulary head | Retained | Signed `b19cf4acf3` changes matched head time **19.659291 -> 3.754625 ms**; served deterministic generation reaches **8.0284 tok/s**, with an independent 8.114 tok/s confirmation and exact digest |
+| IQ2 constant-table and four-SIMD/two-row ablations | Rejected | Constant-table windows `0.546042/0.576833 ms` and alternate-geometry windows `0.560625/0.550667 ms` trail the selected staged two-SIMD/four-row path around `0.523625 ms` |
 | Pinned llama.cpp build 10547 IQ2 route | Rejected as record route | Exact five-run `12+256` aggregate is **14.661356 tok/s**, 21.943% below the Apple record; retain only as a dependency/kernel oracle |
 | Thresholded MLX quantized-query tiling | Retained opt-in | Large synthetic quantized prefill improves time and peak allocation while the 1 GiB threshold preserves the exact 5K path; maximum-context qualification remains open |
 | Always-on MLX quantized-query tiling | Rejected | Exact 5K prompt throughput regressed while only larger score shapes benefited |
 
-The current funded native step is an IQ2_XXS batch-one/batch-prefill Metal
-geometry that reuses grid/sign/auxiliary decode work across output rows. The
-separate long-context route still requires a pinned MLX dependency with the
-quantized-GQA tail correction, an explicit cache limit, and a completed
-capacity ladder.
+The current funded native step is the batch-one F32 GDN b/a projection, which
+uses a batch-eight kernel for 48 `96x5120` calls per token. The separate
+long-context route still requires a pinned MLX dependency with the
+quantized-GQA tail correction, an explicit cache limit, presence-penalty
+semantics, and a completed capacity ladder.
 
 ## Protected boundaries
 

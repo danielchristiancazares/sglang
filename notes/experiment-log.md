@@ -5612,3 +5612,415 @@ mean 13.929045  17.125658 446.051        39.730
   matching SGLang or llama server remains, and memory pressure returned to
   92% free. macOS reports no thermal or performance warning. The machine is
   clean for one isolated native-kernel benchmark or build.
+
+### 2026-08-20 22:04 PDT - PERF-A002 fresh IQ2 batch-one control
+
+- On signed `HEAD=1812694fab`, with no server or competing Metal workload,
+  reran the actual retained `blk.8.ffn_gate.weight` IQ2_XXS projection at
+  shape `17408x5120`, batch one, eight warmups, and 25 synchronized samples.
+  The exact command was
+  `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py <immutable-IQ2-blob>
+  --tensor blk.8.ffn_gate.weight --batch-size 1 --warmup 8 --iterations 25`.
+- Samples in milliseconds were `1.246333, 1.209291, 1.194250, 1.186334,
+  1.178833, 1.181541, 1.198916, 1.182000, 1.186750, 1.193833, 1.194500,
+  1.188209, 1.167375, 1.188916, 1.203333, 1.180875, 1.176375, 1.176000,
+  1.192834, 1.205083, 1.188667, 1.183833, 1.189875, 1.204041, 1.191000`;
+  median **1.188916 ms / 18.071 GiB/s**. This agrees with the retained
+  1.189375 ms baseline and is the adjacent control for the specialized
+  input-reuse kernel.
+
+### 2026-08-20 22:07 PDT - PERF-A002 four-row IQ2 matvec first gate
+
+- Specialized native-Metal IQ2_XXS batch-one matrix-vector work as two SIMD
+  groups with four output rows each, reusing every 32-float input atom across
+  four rows and staging the 2,176-byte grid/sign lookup tables once per
+  threadgroup. The mapping follows the pinned MIT llama.cpp oracle at
+  `749f688fcaa4c472ec034b08cb8a907c45cfaa02`; output-tail weight pointers are
+  guarded before formation.
+- With the same retained tensor, shape, process isolation, eight warmups, and
+  25 synchronized samples as the adjacent control, samples in milliseconds
+  were `0.972958, 0.835917, 0.811334, 0.759416, 0.711583, 0.723083,
+  0.709833, 0.711250, 0.710833, 0.700292, 0.713000, 0.709000, 0.712625,
+  0.667791, 0.588000, 0.772542, 0.820167, 0.817750, 0.830083, 0.725916,
+  0.719375, 0.708500, 0.688209, 0.701333, 0.698833`; median **0.712625 ms /
+  30.148 GiB/s**. Against the adjacent **1.188916 ms / 18.071 GiB/s**
+  control, median kernel time fell **40.06%** and effective bandwidth rose
+  **66.83%**.
+- Actual-file native parity passed for every retained quant type and its
+  batch/odd-row cases. IQ2_XXS reached maximum absolute error `2.14577e-06`
+  and relative error `5.67804e-07`; the suite maximum remained
+  `2.86102e-06`. This is an isolated-kernel gate. Matched confirmation,
+  ablations, full-model throughput, deterministic output, behavior, and
+  capacity remain pending.
+- An immediate fresh-process confirmation after parity produced milliseconds
+  `0.602333, 0.553875, 0.554250, 0.535542, 0.523167, 0.529125, 0.534834,
+  0.460292, 0.480709, 0.485875, 0.487750, 0.481458, 0.475458, 0.483583,
+  0.517500, 0.535041, 0.516291, 0.535083, 0.526375, 0.525125, 0.523625,
+  0.526584, 0.525125, 0.487000, 0.476000`; median **0.523625 ms /
+  41.030 GiB/s**. The large run-to-run clock/cache shift makes the adjacent
+  source-reverted A/B/A confirmation mandatory before promotion.
+
+### 2026-08-20 22:09 PDT - PERF-A002 constant-LUT ablation
+
+- Kept the two-SIMD/four-row IQ2 geometry and changed only the lookup path:
+  removed the 2,176-byte threadgroup staging copy and barrier, then read the
+  existing constant-address-space grid/sign tables directly.
+- Two fresh-process 25-sample windows reached medians **0.546042 ms /
+  39.346 GiB/s** and **0.576833 ms / 37.245 GiB/s**. Both were materially
+  faster than the generic control, while both trailed the staged candidate's
+  warmed **0.523625 ms / 41.030 GiB/s** confirmation. Retain threadgroup
+  staging for the next matched gate; the constant-table form is closed under
+  this geometry.
+
+### 2026-08-20 22:12 PDT - PERF-A002 two-row geometry ablation
+
+- Changed only IQ2 batch-one geometry from two SIMD groups x four rows to four
+  SIMD groups x two rows, retaining eight rows/threadgroup and staged lookup
+  tables. The host used 128 threads for IQ2 while leaving the existing IQ1_M
+  specialization at 64.
+- Two fresh-process 25-sample windows reached medians **0.560625 ms /
+  38.322 GiB/s** and **0.550667 ms / 39.015 GiB/s**. This retained most of
+  the specialization's gain yet trailed the four-row staged confirmation at
+  **0.523625 ms / 41.030 GiB/s**. Restored two SIMD groups x four rows for
+  qualification.
+- With that restored source, actual-file CPU parity passed at 17 output rows
+  for batch sizes 1, 3, 4, and 8. Candidate B1 IQ2 maximum absolute/relative
+  error was `4.76837e-07 / 2.04747e-07`; unchanged generic B3/B4/B8 IQ2
+  maxima were `1.49012e-06`, `1.43051e-06`, and `2.14577e-06`. Token
+  embedding parity also passed in every invocation.
+
+### 2026-08-20 22:16 PDT - PERF-A002 matched source-reverted A/B/A
+
+- Reinstated the generic IQ2 batch-one instantiation and its original
+  128-thread, four-row dispatch in source, compiled it in fresh processes,
+  then captured two 25-sample windows. Medians were **1.187792 ms /
+  18.088 GiB/s** and **1.176875 ms / 18.255 GiB/s**. The first control's
+  samples were `1.335709, 1.205083, 1.187792, 1.191875, 1.208125, 1.178000,
+  1.188292, 1.186250, 1.194584, 1.198542, 1.195167, 1.181416, 1.197834,
+  1.189083, 1.188791, 1.173458, 1.175666, 1.186833, 1.183083, 1.181500,
+  1.184542, 1.180416, 1.187000, 1.181875, 1.190500`; the second was
+  `1.227500, 1.188500, 1.199083, 1.186250, 1.175875, 1.172292, 1.178791,
+  1.176875, 1.176917, 1.182667, 1.176875, 1.183917, 1.186375, 1.200208,
+  1.179708, 1.158084, 1.173125, 1.157000, 1.165750, 1.170625, 1.239208,
+  1.151541, 1.164916, 1.160875, 1.168166`.
+- Restored the staged two-SIMD/four-row candidate exactly and compiled it in
+  fresh processes. Candidate medians were **0.584083 ms / 36.783 GiB/s** and
+  **0.516000 ms / 41.636 GiB/s**. Samples were `0.810583, 0.681500,
+  0.611084, 0.634125, 0.584500, 0.555291, 0.542666, 0.549708, 0.523417,
+  0.502042, 0.527875, 0.561333, 0.653375, 0.591375, 0.612208, 0.584292,
+  0.593958, 0.601167, 0.584083, 0.607292, 0.535041, 0.546209, 0.533125,
+  0.547250, 0.534334` and `0.867250, 0.716250, 0.537500, 0.523334,
+  0.531250, 0.586000, 0.515041, 0.516000, 0.511042, 0.527916, 0.481916,
+  0.475750, 0.478167, 0.501292, 0.459208, 0.463708, 0.463208, 0.458791,
+  0.545000, 0.517166, 0.530541, 0.513250, 0.518708, 0.521000, 0.515834`.
+- Both candidate medians beat both adjacent controls; the slower candidate
+  window still cut time **50.37%** and doubled effective bandwidth. Its
+  `0.867250 ms` maximum also remained below the generic windows' best sample.
+  Source is restored to the candidate. Proceed to boundary and full-model
+  gates.
+
+### 2026-08-20 22:21 PDT - PERF-A002 tail, offset, and long-K gates
+
+- Added a focused native-MPS IQ2 batch-one boundary harness using actual GGUF
+  prefixes at `K=256` and `K=768`, row counts `1,7,8,9,17`, and a realistic
+  eight-byte nonzero compact-storage offset. It also constructs 17 synthetic
+  rows covering grid indices 0/255, sign selectors 0/1/126/127, and every
+  four-bit local scale. All cases passed the CPU-dequantized reference. The
+  largest actual-file error was `4.17233e-07`; the synthetic extrema reached
+  `0.000732422` absolute / `1.38215e-06` relative, inside the established
+  `2e-3 / 2e-4` tolerances.
+- The first harness draft deliberately used an unaligned 13-byte storage
+  offset and produced NaNs. Compact mixed shards begin on packed-row
+  boundaries (IQ2 rows are multiples of eight bytes), so the gate was
+  corrected to an eight-byte nonzero offset. This did not expose a production
+  compact-storage failure.
+- On the complementary `blk.8.ffn_down.weight` projection, shape
+  `5120x17408` with the same total packed bytes and longer per-row input, the
+  generic source-reverted control measured **1.234667 ms / 17.401 GiB/s**.
+  The staged four-row candidate measured **0.540791 ms / 39.728 GiB/s**:
+  **56.19%** less median time and **128.31%** more effective bandwidth.
+  Candidate samples were `0.920541, 0.856625, 0.819916, 0.571042, 0.554625,
+  0.569000, 0.553291, 0.564667, 0.545958, 0.547625, 0.600833, 0.491708,
+  0.493667, 0.503500, 0.478000, 0.480958, 0.478875, 0.483500, 0.507042,
+  0.555834, 0.530042, 0.535125, 0.529417, 0.540791, 0.539875`; control
+  samples were `1.388416, 1.246083, 1.252417, 1.212833, 1.247291, 1.234917,
+  1.234667, 1.238334, 1.227458, 1.235417, 1.235291, 1.226916, 1.238250,
+  1.236583, 1.231500, 1.215875, 1.225000, 1.217459, 1.215125, 1.253000,
+  1.247250, 1.229458, 1.228875, 1.227459, 1.232708`. Source is restored to
+  the candidate.
+- Retained the complete ggml MIT notice in
+  `python/sglang/kernels/aot/THIRDPARTYNOTICES.txt`, with exact source symbol,
+  file, and commit provenance beside the adapted shader.
+
+### 2026-08-20 22:28 PDT - PERF-A002 first served window passes at 7.175 tok/s
+
+- Before launch, port 30000 was free, memory pressure reported 93% free,
+  macOS reported no thermal/performance warning, and no SGLang, llama, or
+  active compiler workload existed. Relaunched the exact compact-IQ2 command
+  from the 21:30/21:58 entries: native MPS, FP32 model/cache/state, context and
+  pool 1024, one request, chunk 256, prefill cap 512, radix/overlap/graphs
+  disabled, Qwen3 reasoning parser, Qwen3 Coder tool parser, and incremental
+  output. Resolved arguments matched. Weight load took 20.49 seconds and
+  reported 9.03 GB; Mamba/KV remained 0.29/0.12 GB. Listener/root PID `71954`
+  owns port 30000 with tracker/scheduler/detokenizer `71957/71958/71959`.
+- Five sequential cache-flushed deterministic exact `128+32` samples measured
+  prompt `6.985, 7.011, 7.006, 7.004, 6.964 tok/s`, generation
+  `7.177, 7.172, 7.179, 7.165, 7.181 tok/s`, TTFT `18.325857, 18.258001,
+  18.269937, 18.276440, 18.379939 s`, and E2E `22.645501, 22.580211,
+  22.588087, 22.603098, 22.696787 s`. Means are **6.994 prompt / 7.1748
+  generation tok/s**, **18.302035 s TTFT**, and **22.622737 s E2E**.
+- Against the adjacent compact generic baseline (**7.0224 / 3.309 tok/s**,
+  **18.229377 / 27.597721 s**), decode improved **116.77%** and E2E fell
+  **18.03%**. Prompt and TTFT moved `-0.40% / +0.40%`, consistent with the
+  deliberately unchanged multi-batch prefill path. Every result returned
+  exact usage, `finish_reason=length`, 166 reasoning characters, and the
+  unchanged deterministic SHA-256
+  `37f5512bd18c1962bd2e170f543fae806ca48b70495c2761ae162df3cac56299`.
+- Five more exact `128+32` requests used the required sampled profile:
+  temperature `1.0`, top-p `0.95`, top-k `20`, presence penalty `1.5`.
+  Generation was `7.058, 7.049, 7.051, 7.059, 7.064 tok/s` (mean
+  **7.0562**); prompt was `7.019, 6.986, 6.974, 6.998, 7.011` (mean
+  **6.9976**); TTFT mean **18.292204 s** and E2E mean **22.685479 s**. Every
+  request preserved nonempty reasoning, exact counts, and length finish.
+- Behavior under this exact loaded candidate passed again: arithmetic returned
+  coherent separate reasoning and visible `703`; thinking-disabled returned
+  exactly `READY`, zero reasoning tokens; the tool request returned exactly
+  one `multiply({"a":37,"b":19})` call with `finish_reason=tool_calls`; the
+  preserved-thinking tool-result continuation returned
+  `37 × 19 = **703**`. `/model_info` reports generation enabled and image/
+  audio understanding false. An independent restart/window remains before
+  promotion.
+
+### 2026-08-20 22:36 PDT - PERF-A002 independent restart confirms sampled gain
+
+- Signed commit `16b2bf7a06515b459f649b6af0f36a7bbfd06da5`
+  (`perf: accelerate IQ2 decode on MPS`) contains the specialized shader,
+  focused boundary harness, and complete pinned-ggml MIT notice. Cached diff
+  validation passed and the commit signature is good.
+- Stopped the first verified tree, confirmed PIDs `71954/71957/71958/71959`
+  absent, port 30000 free, 93% memory free, and no compiler/server process.
+  Relaunched the identical command from committed `HEAD`. Weight loading took
+  19.67 seconds at the same 9.03 GB residency; listener `72110` used tracker,
+  scheduler, and detokenizer `72113/72114/72115`.
+- One deterministic exact `128+32` confirmation reached **6.972 prompt /
+  7.169 generation tok/s**, **18.358622 s TTFT**, and **22.682993 s E2E**
+  with the established exact digest, usage, reasoning length, and finish
+  reason.
+- The independent required-sampling window measured generation
+  `7.068, 7.068, 7.054, 7.063, 7.066 tok/s` (mean **7.0638**), prompt
+  `6.976, 6.964, 7.008, 6.990, 7.004` (mean **6.9884**), TTFT
+  `18.348673, 18.380782, 18.265967, 18.311323, 18.276292 s` (mean
+  **18.316607 s**), and E2E `22.734850, 22.767014, 22.660376, 22.700444,
+  22.663269 s` (mean **22.705191 s**). Every request used temperature `1.0`,
+  top-p `0.95`, top-k `20`, presence penalty `1.5`, returned exact `128+32`,
+  preserved nonempty reasoning, and finished by length.
+- Thinking-disabled independently returned exact `READY` with zero reasoning.
+  Stopped the verified tree; despite the normal interrupt surfacing scheduler
+  `KeyboardInterrupt` as exit 1, all known PIDs are absent, port 30000 is
+  free, no matching compiler/server remains, memory is 92% free, and macOS
+  reports no thermal/performance warning. The native IQ2 optimization is
+  retained. The Apple scoreboard's separate Rust `12+256` workload still
+  needs an exact measurement; the MLX record remains untouched.
+
+### 2026-08-20 22:39 PDT - PERF-A011 Q5_K vocabulary-head control
+
+- With the PERF-A002 server fully stopped, port 30000 free, no matching
+  compiler/server process, 92% memory free, and no macOS thermal/performance
+  warning, inspected the retained Bartowski IQ2_XXS checkpoint's
+  `output.weight`. The actual vocabulary head is Q5_K, shape
+  `248320x5120`, with **874,086,400 bytes / 0.8141 GiB** of packed weights
+  read per generated token. This corrects the earlier working inventory that
+  called the head Q6_K.
+- Established the committed-source batch-one control with
+  `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py <retained-blob>
+  --tensor output.weight --batch-size 1 --warmup 8 --iterations 25`.
+  Median kernel time was **19.656584 ms / 41.462 GiB/s**. Individual times
+  were `19.709500, 19.632333, 19.663625, 19.673000, 19.703584, 19.705458,
+  19.714584, 19.628625, 19.616709, 19.674000, 19.642917, 19.670584,
+  19.640833, 19.644291, 19.697583, 19.657084, 19.651792, 19.676666,
+  19.626959, 19.655750, 19.614041, 19.626709, 19.639875, 19.656584,
+  19.679167 ms`.
+- At PERF-A002's approximately 139.4 ms/token decode interval, this one
+  kernel is about 14.1% of elapsed generation time. The next isolated
+  candidate will reuse the already-retained Q5_K vector-four decode while
+  assigning the four eight-lane cohorts in each SIMDgroup to four separate
+  output rows. This changes only Q5_K batch one; prefill batches remain on
+  their current kernels.
+
+### 2026-08-20 22:44 PDT - PERF-A011 vector-four Q5_K candidate is 5.24x
+
+- Removed only the generic Q5_K batch-one instantiation and replaced it with
+  a 128-thread specialization. Each SIMDgroup is divided into four
+  eight-lane cohorts, each cohort decodes one independent output row with the
+  retained vector-four Q5_K path, and a threadgroup produces 16 rows. All
+  lanes reach the `4/2/1` cohort reductions; invalid tail cohorts retain a
+  zero accumulator and avoid out-of-range pointer formation. Q5_K batches
+  four, eight, and twenty-four remain on their previous kernels.
+- First warmed candidate measurement used the exact `output.weight` command
+  from the 22:39 control and reached **3.747750 ms / 217.464 GiB/s**, down
+  **80.93%** from the adjacent committed generic control's 19.656584 ms and
+  equivalent to a **5.245x** kernel speedup. Candidate samples were
+  `3.858708, 3.743875, 3.703292, 3.790958, 3.747959, 3.759042, 3.721292,
+  3.737167, 3.728667, 3.819625, 3.789500, 3.759666, 3.756917, 3.802583,
+  3.731917, 3.727417, 3.716041, 3.714666, 3.737791, 3.764959, 3.796084,
+  3.731292, 3.722958, 3.747750, 3.758333 ms`.
+- The first attempted parity command incorrectly supplied the benchmark-only
+  `--tensor` option to `test_mps_gguf_quant.py`; argparse rejected it before
+  loading or dispatching any kernel. Reissued the supported actual-file
+  command for 17 rows at batches one, three, four, and eight. Every retained
+  quant format passed its CPU-dequantized tolerance. Q5_K maximum
+  absolute/relative errors were respectively `7.7486e-07/4.01256e-07`,
+  `1.3113e-06/6.27244e-07`, `1.66893e-06/7.7813e-07`, and
+  `2.14577e-06/7.34796e-07`. The unchanged multi-batch paths remain within
+  their established bounds. Focused tail/alignment coverage, matched source
+  A/B/A, and full-model digest evidence remain before retention.
+
+### 2026-08-20 22:52 PDT - PERF-A011 boundary and matched-source gates pass
+
+- Kept the generic `q5_K_batch_1` pipeline as an alignment fallback and named
+  the candidate `q5_K_batch_1_vec4`. Candidate selection requires Q5_K,
+  batch exactly one, a four-byte-aligned packed-weight byte offset, and a
+  sixteen-byte-aligned input byte offset. The live compact model has an
+  eight-byte weight offset and its ordinary input begins at offset zero.
+- Added `benchmark/mac/test_mps_q5_batch1.py`. Actual checkpoint prefixes at
+  K=256 and K=768 passed for M=`1,7,8,9,15,16,17,31,32`; the long K=5120
+  compact case passed at weight offset eight and input storage offset four;
+  and the generic vector-alignment fallback passed at weight byte offset two
+  and input element offset one. The largest actual-file error was
+  **5.96046e-07 absolute / 3.08027e-07 relative**.
+- Synthetic Q5_K blocks exercised zero/max/mixed packed scale-min fields,
+  zero/all-one/alternating high bits, low nibbles `0/F`, and mixed nibble
+  patterns across 17 rows and three blocks per row. The aligned compact
+  candidate remained finite and passed with **0.00146484 absolute /
+  3.02919e-07 relative** error. An initial artificial one-byte structured
+  block offset yielded NaNs on the generic kernel because it violates the
+  half-aligned Q5_K block representation; the supported fallback case was
+  corrected to a two-byte block offset and passed.
+- Final-source candidate/control/candidate windows used the same retained
+  head, command, eight warmups, and 25 samples. Candidate 1 measured
+  **3.737000 ms / 218.090 GiB/s**; temporarily forcing the retained generic
+  selection measured **19.659291 ms / 41.456 GiB/s**; restored candidate 2
+  measured **3.754625 ms / 217.066 GiB/s**. Both candidate medians reduce
+  kernel time by more than 80.8%, and the source is restored to the aligned
+  specialization.
+- Candidate-1 samples were `3.775583, 3.755834, 3.737000, 3.746042,
+  3.721333, 3.743917, 3.746375, 3.766292, 3.815667, 3.752041, 3.738125,
+  3.747875, 3.736500, 3.747750, 3.703084, 3.736875, 3.711833, 3.759416,
+  3.734959, 3.697791, 3.697458, 3.705167, 3.704833, 3.692625,
+  3.694958 ms`. Control samples were `20.230459, 20.217333, 19.937209,
+  19.763083, 19.688458, 19.691292, 19.708833, 19.684334, 19.633167,
+  19.658750, 19.659291, 19.655625, 19.689500, 19.676708, 19.618750,
+  19.666875, 19.665542, 19.605792, 19.629083, 19.606500, 19.622417,
+  19.657750, 19.647959, 19.645208, 19.625125 ms`. Candidate-2 samples were
+  `3.989375, 3.853375, 3.806333, 3.769416, 3.753166, 3.754625, 3.769375,
+  3.746750, 3.752084, 3.743917, 3.749250, 3.746709, 3.751000, 3.774541,
+  3.792083, 3.722458, 3.715792, 3.706417, 3.750708, 3.784833, 3.773375,
+  3.760750, 3.756750, 3.787916, 3.738000 ms`.
+
+### 2026-08-20 23:00 PDT - PERF-A011 serves 8.028 tok/s with exact digest
+
+- Before launch, port 30000 was free, no SGLang/llama/Metal compiler process
+  existed, memory pressure reported 93% free, and macOS reported no thermal
+  or performance warning. Launched the exact native-MPS command from the
+  PERF-A002 windows: retained Bartowski IQ2_XXS checkpoint and tokenizer,
+  FP32 model/cache/state, context and pool 1024, one running request, chunk
+  256, prefill cap 512, radix/overlap/graphs disabled, Qwen3 reasoning parser,
+  Qwen3 Coder tool parser, incremental output, and port 30000. Resolved
+  arguments matched. Weight load took 18.12 seconds and remained 9.03 GB;
+  Mamba/KV remained 0.29/0.12 GB. Listener/root PID `73657` owns port 30000
+  with tracker/scheduler/detokenizer `73660/73661/73662`.
+- Five sequential cache-flushed exact `128+32` deterministic measurements
+  reached prompt `7.013, 6.994, 7.041, 7.000, 6.996 tok/s` (mean
+  **7.0088**) and generation `8.030, 8.023, 8.024, 8.033, 8.032 tok/s`
+  (mean **8.0284**). TTFT was `18.251614, 18.301078, 18.180481,
+  18.285291, 18.296675 s` (mean **18.263028 s**); E2E was `22.112364,
+  22.164844, 22.043653, 22.144571, 22.156326 s` (mean **22.124352 s**).
+  Against PERF-A002's adjacent five-run mean, generation improved
+  **11.90%** and E2E fell **2.20%**. Every result preserved exact counts,
+  `finish_reason=length`, 166 reasoning characters, and exact SHA-256
+  `37f5512bd18c1962bd2e170f543fae806ca48b70495c2761ae162df3cac56299`.
+- The required sampled profile used temperature `1.0`, top-p `0.95`, top-k
+  `20`, and presence penalty `1.5`. Five exact results reached generation
+  `7.935, 7.953, 7.944, 7.934, 7.959 tok/s` (mean **7.9450**) and prompt
+  `7.007, 6.997, 6.997, 7.014, 7.005 tok/s` (mean **7.0040**). TTFT was
+  `18.268570, 18.293031, 18.293273, 18.249892, 18.273559 s` (mean
+  **18.275665 s**); E2E was `22.175538, 22.190741, 22.195526, 22.157232,
+  22.168630 s` (mean **22.177533 s**). Every response preserved nonempty
+  reasoning, exact usage, and length finish.
+- Behavior gates passed on the loaded candidate. Sampled arithmetic returned
+  coherent separate reasoning and visible `703`; thinking disabled returned
+  exact `READY` with zero reasoning; the tool request returned exactly one
+  parsed `multiply({"a": 37, "b": 19})` call and
+  `finish_reason=tool_calls`; its explicit tool-result continuation preserved
+  incoming thinking and returned `**37 × 19 = 703**` with fresh coherent
+  reasoning. The first continuation shell command had an unmatched quote and
+  made no request; the corrected JSON request passed. `/model_info` reports
+  generation enabled, text model type, and image/audio understanding false.
+- PERF-A011 is retained provisionally. Its isolated and served gains are
+  large, repeatable, and numerically qualified. An independent committed
+  restart remains before final promotion. The separate Apple Rust/MLX
+  `12+256` scoreboard record remains **18.782925 tok/s** and is unchanged.
+
+### 2026-08-20 23:02 PDT - PERF-A011 first-window cleanup complete
+
+- Stopping the verified tree leaf-first exposed the server's crash-monitor
+  behavior: terminating detokenizer PID `73662` caused the root to classify
+  the deliberate signal as a child crash, send SIGQUIT, attempt unavailable
+  `py-spy`, and wait its fixed 60-second CUDA-coredump interval even though
+  this host has no CUDA coredump pipe. Exact TERM signals were then sent to
+  scheduler `73661`, tracker `73660`, and root `73657`; the root completed its
+  registered `kill_process_tree` cleanup after the diagnostic interval.
+- All four known PIDs are now absent, port 30000 is free, no matching server,
+  compiler, or resource tracker remains, memory pressure is back to 93% free,
+  and macOS reports no thermal/performance warning. Future controlled MPS
+  shutdowns should interrupt the owning root session directly, because this
+  process supervisor treats an intentional leaf exit as a crash.
+
+### 2026-08-20 23:03 PDT - PERF-A011 source committed
+
+- Signed commit `b19cf4acf3` (`perf: accelerate Q5 decode on MPS`) contains
+  only the aligned Q5_K batch-one specialization, generic fallback/dispatch,
+  and focused boundary/extrema test. `py_compile`, cached diff validation,
+  actual-file parity, synthetic parity, and the first full-model gates passed.
+  Black and Ruff are not installed in this environment, so no formatter or
+  Ruff result is claimed. `git verify-commit` reports a good signature.
+- The specialization is located in the Q5_K Metal implementation, while the
+  shared `quant_matmul` host dispatcher owns the type/batch/alignment rule for
+  every native GGUF quantized matmul. Its local conditional represents the
+  genuine Q5_K batch-one and vector-alignment domain distinction; Q5_K
+  multi-batch and misaligned storage automatically retain the generic path.
+
+### 2026-08-20 23:09 PDT - PERF-A011 independent committed restart passes
+
+- From committed `HEAD=b19cf4acf3`, relaunched the identical resolved
+  native-MPS command after confirming port/process absence, 93% free memory,
+  and no thermal/performance warning. Weight loading took 18.24 seconds at
+  the same 9.03 GB residency; Mamba/KV stayed 0.29/0.12 GB. Listener/root PID
+  `73859` owns port 30000 with tracker/scheduler/detokenizer
+  `73863/73864/73865`.
+- One independent deterministic exact `128+32` confirmation reached
+  **7.015 prompt / 8.114 generation tok/s**, **18.246949 s TTFT**, and
+  **22.067424 s E2E** with exact counts, length finish, 166 reasoning
+  characters, and the established bit-exact digest.
+- The independent required-sampling window measured generation
+  `7.959, 7.947, 7.963, 7.948, 7.959 tok/s` (mean **7.9552**) and prompt
+  `6.952, 6.991, 6.976, 6.977, 6.979 tok/s` (mean **6.9750**). TTFT was
+  `18.411515, 18.310209, 18.347594, 18.345551, 18.341990 s` (mean
+  **18.351372 s**); E2E was `22.306608, 22.211111, 22.240635, 22.245963,
+  22.237067 s` (mean **22.248277 s**). Every response used the required
+  temperature/top-p/top-k/presence profile and preserved exact counts,
+  nonempty reasoning, and length finish. Thinking disabled independently
+  returned exact `READY` with zero reasoning.
+- The second restart reproduces the served decode gain. PERF-A011 is promoted
+  as the native IQ2 lane's selected Q5_K head path. Its 8.0284 tok/s first
+  deterministic mean remains a diagnostic workload result; it does not
+  replace the separate 18.782925 tok/s Apple Rust/MLX scoreboard record.
+
+### 2026-08-20 23:10 PDT - PERF-A011 independent cleanup complete
+
+- Interrupted the owning root session directly. Scheduler and detokenizer
+  surfaced expected `KeyboardInterrupt` traces during idle receive/load
+  publication, while Uvicorn completed application shutdown and the root ran
+  registered child-tree cleanup immediately. All known PIDs are absent, port
+  30000 is free, no matching server/compiler/tracker remains, memory pressure
+  is 93% free, and macOS records no thermal/performance warning.

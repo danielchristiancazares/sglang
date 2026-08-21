@@ -1361,3 +1361,48 @@
   required from this baseline.
 - Related commit or revert: no llama.cpp source change or commit; the detached
   checkout and binary remain as a reproducible supporting oracle.
+
+## PERF-FA046 - Constant-address IQ2 lookup tables
+
+- Hypothesis: leaving the 2 KiB IQ2 grid and 128-byte sign table in Metal
+  constant address space would avoid the threadgroup copy/barrier and improve
+  the selected four-row batch-one decoder.
+- Scope: IQ2_XXS `17408x5120` batch-one matvec with identical two-SIMD,
+  four-rows-per-SIMD geometry; only lookup-table residency changed.
+- Attempted change: temporarily removed the threadgroup staging and read the
+  immutable lookup arrays directly from constant memory. Ran two warmed
+  matched windows around the retained staged implementation.
+- Benchmark evidence: constant-table medians were **0.546042** and
+  **0.576833 ms**. The staged path reached **0.523625 ms** in the matched
+  window.
+- Correctness evidence: both implementations retained actual-file tolerance;
+  this was a residency-only ablation.
+- Failure mode: repeated row-local random grid/sign accesses benefit from one
+  cooperative staging pass; removing the copy/barrier increases steady lookup
+  latency.
+- Why not to retry unchanged: both independent constant-table windows trail
+  the staged kernel.
+- Reopen only if: the table access pattern, threadgroup geometry, or Metal
+  constant-cache behavior changes materially.
+- Related commit or revert: ablation removed; `16b2bf7a06` retains staging.
+
+## PERF-FA047 - Four-SIMD two-row IQ2 batch-one geometry
+
+- Hypothesis: four SIMDgroups producing two rows each would improve latency
+  hiding while retaining the selected kernel's eight rows per threadgroup.
+- Scope: IQ2_XXS batch-one matvec with the same staged tables, decode algebra,
+  row count, and benchmark tensor.
+- Attempted change: changed only the threadgroup geometry from two SIMDgroups
+  × four rows to four SIMDgroups × two rows, retaining eight rows per group.
+- Benchmark evidence: two warmed medians were **0.560625** and
+  **0.550667 ms**, both above the matched selected two-by-four result around
+  **0.523625 ms**.
+- Correctness evidence: the row mapping retained actual-file tolerance and
+  tail guards.
+- Failure mode: the extra SIMDgroups add scheduling/resource pressure without
+  creating more output work per threadgroup.
+- Why not to retry unchanged: both windows lose consistently and the retained
+  geometry already exposes ample grid parallelism.
+- Reopen only if: the production matrix shapes or GPU SIMD occupancy change.
+- Related commit or revert: ablation removed; `16b2bf7a06` retains two
+  SIMDgroups × four rows.
