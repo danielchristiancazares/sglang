@@ -6229,3 +6229,58 @@ mean 13.929045  17.125658 446.051        39.730
   pool-write plus SDPA fallback. Implement the metadata-only dispatch gate,
   qualify its BF16 cache mutation and grouped-query numerics, then run one
   unchanged 32K launch through capacity and the 13,635-token OpenCode prompt.
+
+### 2026-08-21 00:24 PDT - PERF-A013 long-pool decode fallback retained
+
+- Began from clean signed `HEAD=a71dc364cf81602d76c9fe1e386bfbc421f788f1`,
+  branch `main` ahead of `origin/main` by 14. Port 30000 was free; no SGLang,
+  llama, OpenCode benchmark, native compiler, or MPS benchmark was live.
+  Memory pressure reported 92% free and macOS recorded no thermal or
+  performance warning before each Metal gate.
+- The native Python wrapper unconditionally reached `decode_gqa` for MPS,
+  batch-decode, non-sliding NHD geometry. The Objective-C++ binding then
+  required FP32 query/current K/current V/cache, contiguous caches,
+  `head_dim <= 256`, and at most 7,936 physical cache rows. Pool dtype and
+  physical rows are known only where `TorchNativeAttnBackend.forward_decode`
+  owns the choice between fused decode and the general fallback.
+- Added a metadata-only compatibility predicate at that dispatcher. Compatible
+  input keeps the fused call. Incompatible input falls through the existing
+  `set_kv_buffer` dtype conversion, gathered active-cache read, query-dtype
+  conversion, and noncausal one-row SDPA path. No MPS synchronization or data
+  readback was introduced in dispatch.
+- Exact pre-change baselines were:
+
+  ```text
+  .venv/bin/python benchmark/mac/test_mps_decode_fallback.py --cache-slots 32769 --cache-dtype bfloat16 --seq-len 257 --expect-error
+  status=expected_error error=native Metal decode attention requires float32 tensors
+
+  .venv/bin/python benchmark/mac/test_mps_decode_fallback.py --cache-slots 7937 --cache-dtype float32 --seq-len 257 --expect-error
+  status=expected_error error=native Metal decode attention supports at most 7936 cache slots
+  ```
+
+- Exact post-change gates, run sequentially with a fresh process and repeated
+  safety inspection, were:
+
+  ```text
+  .venv/bin/python benchmark/mac/test_mps_decode_fallback.py --cache-slots 32769 --cache-dtype bfloat16 --seq-len 257
+  status=ok cache_slots=32769 cache_dtype=torch.bfloat16 seq_len=257 max_error=0
+
+  .venv/bin/python benchmark/mac/test_mps_decode_fallback.py --cache-slots 7937 --cache-dtype float32 --seq-len 257
+  status=ok cache_slots=7937 cache_dtype=torch.float32 seq_len=257 max_error=0
+
+  .venv/bin/python benchmark/mac/test_mps_decode_fallback.py --cache-slots 7936 --cache-dtype float32 --seq-len 257
+  status=ok cache_slots=7936 cache_dtype=torch.float32 seq_len=257 max_error=2.5331974e-07
+  ```
+
+- The retained harness verifies current K/V cache mutation and grouped-query
+  output against PyTorch SDPA. Its pool mirrors production dtype conversion.
+  Nine focused CPU tests passed across MPS dispatch and partial-extend
+  behavior. Python compilation, Black 26.1.0, Ruff 0.15.1, and `git diff
+  --check` passed.
+- Signed commit `b2b8ab4af8` (`fix: gate native MPS decode capabilities`)
+  contains the dispatcher, MPS qualification harness, and focused CPU tests.
+  `git verify-commit` reports a good EDDSA signature. The next controlled rung
+  is one BF16 32K full-model launch, exact capacity evidence, and the real
+  13,635-token process-scoped OpenCode request. PERF-A008 remains funded to
+  replace the safe fallback with bounded long-history native decode once this
+  capacity gate passes.

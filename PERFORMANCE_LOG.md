@@ -10,6 +10,7 @@
 | Qwen3.8-27B IQ2_XXS, native-MPS Q5_K `248320x5120` head at batch one | 19.659291 ms matched generic | **3.754625 ms** | **-15.904666 ms / -80.90%; 5.24x** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor output.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:52 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS 48-layer F32 b/a projection sweep | 7.296667 ms selected custom Metal | **2.159000 / 2.051708 ms** native `torch.mm` A/B arms | **-70.41% / -71.88%; 3.38-3.56x** | `.venv/bin/python benchmark/mac/bench_mps_dense_ba.py $IQ2_GGUF --warmup 4 --iterations 9` | 2026-08-20 23:43 PDT |
 | Torch-native MPS GQA partial extend, `4096+4096`, FP32 | 542.376416 / 641.256125 ms padded-query controls | **176.066500 ms** lower-right-causal source path | **-67.54% / -72.54%; 3.08-3.64x** | `.venv/bin/python benchmark/mac/bench_mps_sdpa_extend.py --prefix-len 4096 --extend-len 4096 --warmups 1 --repeats 5` | 2026-08-21 00:15 PDT |
+| Torch-native MPS decode at unsupported physical pool/dtype boundaries | Runtime error for BF16 or more than 7,936 cache rows | **SDPA fallback, max error 0** at BF16/32,769 and FP32/7,937; fused FP32/7,936 preserved at `2.5331974e-07` | long-pool decode admitted without widening the native kernel contract | `.venv/bin/python benchmark/mac/test_mps_decode_fallback.py --cache-slots {32769,7937,7936} --cache-dtype {bfloat16,float32,float32} --seq-len 257` | 2026-08-21 00:24 PDT |
 | Qwen3.8-27B IQ2_XXS, deterministic `128+32` served workload | 6.979 prompt / 3.1858 generation tok/s | **7.0444 prompt / 8.4406 generation tok/s** | **+0.937% / +164.94%** | `.venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 128 --output-tokens 32` | 2026-08-20 23:42 PDT |
 | Qwen3.8-27B IQ2_XXS, required sampled `128+32` served workload | 7.0562 generation tok/s after PERF-A002 | **8.3094 / 8.2942 tok/s** in two PERF-A009 restart windows | **+4.59% / +4.26% over matched PERF-A011 windows** | same command with `--temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` | 2026-08-20 23:59 PDT |
 | Qwen3.8-27B RadixArk, real sampled `6213/512`, reasoning preserved | 122.712 tok/s | 122.712 tok/s | 0.000 | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` | 2026-08-16 22:40 PDT |
@@ -683,6 +684,7 @@ tree throughput can be ranked for production.
 | PERF-A010 | Add native affine-q4 quantized SDPA and GQA-aware KV reuse to MLX. | Supporting MLX C++/Metal dependency | Long-horizon dependency candidate | Query tiling bounds materialized scores but leaves repeated qMM and q4 KV reads. A fused online-softmax route can dequantize K/V in tiles, reuse each KV head across six Q heads, and improve both long prefill and decode without full score storage. |
 | PERF-A011 | Vectorize the Q5_K vocabulary head across four eight-lane row cohorts per SIMDgroup at batch one. | `gguf_q4_0.mm` Q5_K kernel and aligned host dispatch | Retained in `b19cf4acf3` | Matched candidate/control/candidate medians were `3.737000 / 19.659291 / 3.754625 ms`. Five-run deterministic served generation rose `7.1748 -> 8.0284 tok/s` (+11.90%) with the exact digest; a committed restart and two required-sampling windows passed. |
 | PERF-A012 | Run torch-native partial extend on only the new query rows with an offset causal mask. | Shared torch-native SDPA extend mechanism | Retained in `210a214c12`; full long-context model gate open | Exact source A/B at `4096+256` changed `97.995583/97.847500 -> 12.608125 ms`; at `4096+4096` it changed `542.376416/641.256125 -> 176.066500 ms`. Outputs were exact on MPS, and six focused CPU cases cover causal isolation, GQA, shuffled cache locations, ragged batches, sliding windows, noncausal attention, and empty extend. |
+| PERF-A013 | Admit BF16 and long physical pools through the established torch-native decode fallback while preserving eligible fused Metal decode. | Torch-native MPS decode dispatch | Retained in `b2b8ab4af8`; full-model 32K gate open | The pre-change BF16/32,769 and FP32/7,937 probes raised at the native binding. Both now reach pool-write plus SDPA with zero observed error; the FP32/7,936 boundary remains fused with maximum error `2.5331974e-07`. Nine focused CPU tests plus PyCompile, Black, Ruff, and diff checks pass. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1683,3 +1685,30 @@ tree throughput can be ranked for production.
   OpenCode qualification remain gated by a separate decode admission defect:
   BF16 or more than 7,936 physical cache rows currently enters an incompatible
   FP32 score-array Metal kernel instead of the established SDPA fallback.
+
+### 2026-08-21 00:24 PDT - PERF-A013 MPS decode capability gate
+
+- Change: the shared torch-native MPS decode dispatcher now selects the fused
+  native GQA kernel only when the actual query, current K/V, and physical NHD
+  cache satisfy its FP32, contiguous-cache, head-dimension, and 7,936-row
+  contract. Unsupported configurations continue through the existing cache
+  write and PyTorch SDPA path.
+- Baseline: with port 30000 free, no server/client/compiler process, 92% free
+  memory, and no recorded thermal or performance warning, BF16 with 32,769
+  physical rows failed with `native Metal decode attention requires float32
+  tensors`; FP32 with 7,937 rows failed with `native Metal decode attention
+  supports at most 7936 cache slots`.
+- Boundary evidence: the same BF16/32,769 and FP32/7,937 probes now complete
+  through SDPA with `max_error=0`. The eligible FP32/7,936 boundary remains on
+  the fused native kernel and reports `max_error=2.5331974e-07`. Each process
+  was isolated; memory remained 92% free and macOS recorded no warning.
+- Correctness: the harness uses production-equivalent cache dtype casting and
+  verifies current-token K/V mutation before comparing grouped-query output.
+  Nine focused CPU cases pass across this dispatch and the retained partial
+  extend behavior. Python compilation, Black 26.1.0, Ruff 0.15.1, and diff
+  checks pass.
+- Decision: retain in signed commit `b2b8ab4af8`. The rule lives in
+  `TorchNativeAttnBackend.forward_decode`, the lowest shared layer that owns
+  both native admission and the established fallback. Full-model 32K capacity
+  and the 13,635-token OpenCode request remain the next gates; PERF-A008's
+  bounded native kernel remains funded as the throughput path after capacity.
