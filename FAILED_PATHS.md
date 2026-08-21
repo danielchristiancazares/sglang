@@ -683,3 +683,44 @@
   graph work as well.
 - Related commit or revert: all PERF-029 source and test changes were removed;
   PERF-027 eager fusion remains retained.
+
+## PERF-F046 - FlashInfer fixed paged-prefix split under 128 MiB workspace
+
+- Hypothesis: an explicit paged-prefix split size could improve the dominant
+  long-prefix attention work while retaining ragged-current attention.
+- Scope: selected checkpoint, chunk 7680, exact 200K pools, 128 MiB workspace,
+  split sizes 4096 and 8192.
+- Attempted change: honored the existing registered prefill-split descriptor
+  when explicitly set outside deterministic mode; all other settings remained
+  unchanged.
+- Benchmark evidence: no score. Both arms failed on the first exact-shape
+  warmup before inference output.
+- Correctness evidence: model load, exact pool allocation, and graph capture
+  passed; the request never reached a result.
+- Failure mode: FlashInfer requested **2,264,924,160 bytes** for
+  `batch_prefill_tmp_v`, but the qualified workspace contains 134,217,728
+  bytes.
+- Why not to retry unchanged: both tested split sizes hit the same allocation
+  wall. Increasing workspace violates the selected 128 MiB contract and
+  consumes limited exact-capacity headroom.
+- Reopen only if: FlashInfer's fixed-split planner can bound temporary storage
+  below 128 MiB for this exact ragged/paged geometry.
+- Related commit or revert: the expert opt-in was removed; unset behavior is
+  unchanged.
+
+## PERF-F047 - Packed GDN target-verify split removal
+
+- Hypothesis: target verification materialized Q, K, and V after convolution,
+  and removing that copy would reduce the M3 cycle.
+- Scope: Qwen3.8 M3, 48 GDN layers, ReplaySSM fold target verification.
+- Attempted change: none; source reachability was the admission gate.
+- Benchmark evidence: no candidate kernel exists on the selected route.
+- Correctness evidence: Qwen3.8 has packed QKV width 10,240, above
+  `MAX_FUSED_QKV_SPLIT_DIM=8192`, so the backend selects metadata-only
+  `torch.split`/`view` aliases. ReplaySSM consumes their runtime token stride.
+- Failure mode: the assumed materialization is already absent.
+- Why not to retry unchanged: adding a packed-pointer API would replace an
+  existing zero-copy alias with more code and potential register pressure.
+- Reopen only if: a current exact M3 trace shows the split kernel running 48
+  times with at least 0.05 ms exclusive wall per replay.
+- Related commit or revert: no source change.

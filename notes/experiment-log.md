@@ -3956,3 +3956,51 @@ mean 13.929045  17.125658 446.051        39.730
   `perf029-exact200k-20260820-2216.log`,
   `perf029-long-20260820-2225.log`, and
   `target_width_m3-20260820-223006`.
+
+### 2026-08-20 22:34 PDT - PERF-030 admits expert-only prefill split tuning
+
+- Began a one-variable FlashInfer paged-prefix split sweep without enabling
+  deterministic inference, disabling ragged-current attention, or increasing
+  the 128 MiB workspace. The existing
+  `SGLANG_FLASHINFER_PREFILL_SPLIT_TILE_SIZE` descriptor previously affected
+  only deterministic mode.
+- Updated `FlashInferAttnBackend` to honor that already-registered descriptor
+  when it is explicitly set, while leaving the unset production path at
+  `fixed_split_size=None`. Replaced the legacy raw integer-env reads with the
+  descriptor API for both prefill and deterministic decode values.
+- Python compilation and `git diff --check` passed. The first arm uses
+  split size 4096 with the selective checkpoint, chunk 7680, selected target
+  tactics, exact 200K pools, and all other launcher settings unchanged.
+- Split 4096 loaded both 200K pools and captured all graphs, then failed on the
+  first exact-shape warmup before model execution. FlashInfer requested
+  **2,264,924,160 bytes** for `batch_prefill_tmp_v` from the selected 128 MiB
+  workspace and raised an explicit allocator overflow. The scheduler exited,
+  the client observed a reset connection, port 30000 closed, and the GPU
+  returned to display residency. No throughput sample exists.
+- The 8192 arm is a bounded follow-up to determine whether a coarser fixed
+  split can remain inside the qualified 128 MiB workspace. Larger workspace
+  is not an allowed workaround because 128 MiB is the selected functional
+  floor and post-JIT exact-capacity headroom is already limited.
+- Split 8192 reproduced the same failure exactly:
+  `batch_prefill_tmp_v` again requested **2,264,924,160 bytes** from the
+  134,217,728-byte allocator. The warmup connection reset after the scheduler
+  exception; no score was produced.
+- Removed the expert split opt-in. Both failed server trees exited with port
+  30000 free and no compiler workers; final GPU state was 1,445 MiB used,
+  30,743 MiB free, and 30 C. Artifacts:
+  `perf030-split4096-server-20260820-2235.log` and
+  `perf030-split8192-server-20260820-2245.log`.
+
+### 2026-08-20 22:49 PDT - proposed packed GDN verify work was already selected
+
+- Traced the Qwen3.8 M3 post-convolution handoff before implementing the next
+  decode candidate. Q/K/V widths are 2,048/2,048/6,144, so packed QKV width is
+  10,240. The GDN backend materializes contiguous Q/K/V only when width is at
+  most 8,192.
+- The selected branch already uses metadata-only split/view aliases with token
+  stride 10,240 and base offsets 0/2,048/4,096. ReplaySSM reads runtime token
+  strides and therefore consumes these aliases directly. No split/copy kernel
+  exists on the selected route.
+- Closed the candidate before code or GPU work. A future reopening requires an
+  exact current trace naming `fused_qkv_split_gdn_prefill` 48 times per replay
+  with at least 0.05 ms exclusive wall.

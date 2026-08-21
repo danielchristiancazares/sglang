@@ -416,6 +416,9 @@ code changes, or process state matter.
   time from 70.848 to 25.152 us, but 233 full-cycle samples retained a
   **16.045 ms** median versus **16.058 ms** control. Its +0.839% long-client
   movement was noise; the experiment was removed.
+- Fixed FlashInfer paged-prefix splits failed the 128 MiB workspace gate, and
+  source inspection showed the proposed packed GDN verify path was already a
+  zero-copy alias. Both routes closed without retained source.
 - Retained in `5ea3b734b0`. The headline record remains PERF-024; these
   additive changes are the active source for the next optimization.
 
