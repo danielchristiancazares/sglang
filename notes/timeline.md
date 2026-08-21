@@ -573,6 +573,24 @@ code changes, or process state matter.
   next native hotspot is the 48-call batch-one F32 GDN b/a path; maximum
   context remains an independent MLX q4-KV qualification lane.
 
+### Native F32 projection reaches 8.3 sampled tok/s and exposes the client-capacity gate
+
+- The compact loader presents every GDN layer's alpha/beta pair as one actual
+  `96x5120` F32 b/a projection. Reusing input rows inside the custom Metal
+  matvec reduced occupancy and lost three exact-shape ablations.
+- Routing only the one-vector F32 case through native MPS matrix
+  multiplication reduced the 48-layer sweep from **7.296667 ms** to
+  **2.159000/2.051708 ms**. Multi-vector prefill retains the custom kernel.
+- Five deterministic served runs averaged **8.4406 tok/s**. Required sampled
+  windows on two independent launches averaged **8.3094** and **8.2942
+  tok/s**, with arithmetic, thinking-disabled, tool parsing, preserved tool
+  result, digest, and language-only behavior intact. Signed `4d1641fdcd`
+  retains the change and its actual-weight benchmark and test.
+- A process-scoped OpenCode 1.18.15 request reached the exact endpoint with a
+  13,635-token main agent prompt. The 1,024-token diagnostic launch rejected
+  it at admission, making native context enablement the next funded step. The
+  exact Apple scoreboard record remains **18.782925 tok/s** and is unchanged.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:

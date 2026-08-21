@@ -8,8 +8,9 @@
 | Qwen3.8-27B Q4_0, batch 24, 128 output tokens each, real top-k/top-p sampling | 49.500 TPS | **62.034 TPS** | **+12.534 TPS** | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_batched_request.py --url http://127.0.0.1:30001/generate --batch-size 24 --output-tokens 128` | 2026-08-16 22:35 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` batch-one projection | 1.176875 ms matched generic | **0.516000 ms** | **-0.660875 ms / -56.16%** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:25 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS Q5_K `248320x5120` head at batch one | 19.659291 ms matched generic | **3.754625 ms** | **-15.904666 ms / -80.90%; 5.24x** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor output.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:52 PDT |
-| Qwen3.8-27B IQ2_XXS, deterministic `128+32` served workload | 6.979 prompt / 3.1858 generation tok/s | **7.0088 prompt / 8.0284 generation tok/s** | **+0.427% / +152.01%** | `.venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 128 --output-tokens 32` | 2026-08-20 23:09 PDT |
-| Qwen3.8-27B IQ2_XXS, required sampled `128+32` served workload | 7.0562 generation tok/s after PERF-A002 | **7.9450 / 7.9552 tok/s** in two restart windows | **+12.60% / +12.74%** | same command with `--temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` | 2026-08-20 23:09 PDT |
+| Qwen3.8-27B IQ2_XXS, native-MPS 48-layer F32 b/a projection sweep | 7.296667 ms selected custom Metal | **2.159000 / 2.051708 ms** native `torch.mm` A/B arms | **-70.41% / -71.88%; 3.38-3.56x** | `.venv/bin/python benchmark/mac/bench_mps_dense_ba.py $IQ2_GGUF --warmup 4 --iterations 9` | 2026-08-20 23:43 PDT |
+| Qwen3.8-27B IQ2_XXS, deterministic `128+32` served workload | 6.979 prompt / 3.1858 generation tok/s | **7.0444 prompt / 8.4406 generation tok/s** | **+0.937% / +164.94%** | `.venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 128 --output-tokens 32` | 2026-08-20 23:42 PDT |
+| Qwen3.8-27B IQ2_XXS, required sampled `128+32` served workload | 7.0562 generation tok/s after PERF-A002 | **8.3094 / 8.2942 tok/s** in two PERF-A009 restart windows | **+4.59% / +4.26% over matched PERF-A011 windows** | same command with `--temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` | 2026-08-20 23:59 PDT |
 | Qwen3.8-27B RadixArk, real sampled `6213/512`, reasoning preserved | 122.712 tok/s | 122.712 tok/s | 0.000 | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` | 2026-08-16 22:40 PDT |
 | Post-correctness linear comparison, second warmed five-run window | 122.712 tok/s | 124.775 tok/s measured | +2.063 / +1.681% | same exact real-sampling command | 2026-08-16 23:24 PDT |
 | Selective target NVFP4 (`AttnNVFP4`) candidate, real sampled `6213/512`, admission window 1 | 124.775 tok/s | 131.707 tok/s mean / 130.824 median (unqualified) | +6.932 / +5.556% | same exact real-sampling command against `-ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` | 2026-08-17 02:00 PDT |
@@ -677,7 +678,7 @@ tree throughput can be ranked for production.
 | PERF-A006 | Compare the retained IQ2 GGUF through a pinned current llama.cpp Metal server. | Supporting dependency, exact Apple benchmark and behavior gates | Measured; below scoreboard | Official build 10547 at `749f688f` completed the exact `12+256` workload at **14.661356 tok/s aggregate** over five warmed runs, 21.9% below the 18.782925 record. It returned correct preserved reasoning and final `703`; retain it as a dependency ceiling, not an optimization target. |
 | PERF-A007 | Eliminate per-forward materialization of heterogeneous merged GGUF projection shards. | `GGUFLinearMethod` storage/apply and packed Metal storage offsets | Retained in `13bea403d6` | One compact MPS backing allocation removes 40 copies / 478.125 MiB of packed-weight materialization per full forward. Five exact `128+32` samples improved generation **3.1858 -> 3.309 tok/s** (+3.867%), prompt **6.979 -> 7.0224** (+0.622%), and reported weight residency **10.03 -> 9.03 GB**, with the identical output digest. |
 | PERF-A008 | Replace native MPS score-array GQA with fixed-memory online or split-K softmax. | `decode_gqa` Metal kernel, KV indirection, cache write | Capacity-critical native candidate | Current native decode allocates `(cache_slots + 256) * 4` bytes of threadgroup scratch and rejects `cache_slots > 7936`. Fixed-size online state removes the configured-pool occupancy cost and this absolute context ceiling; split-K adds long-history parallelism. |
-| PERF-A009 | Remove batch-one GDN input packing and specialize the 96x5120 F32 b/a projection. | Qwen3.5 GDN producer/consumer boundary and Metal dense kernel | Profile next | Across 48 GDN layers the pack kernel only splits contiguous B1 views. The b/a path uses the batch-eight F32 kernel at B1, carrying eight accumulators and invalid-row checks while reading 90 MiB of weights per token across the model. |
+| PERF-A009 | Specialize the 96x5120 batch-one F32 b/a projection, then remove GDN input packing only if it remains funded. | GGUF F32 dispatch and Qwen3.5 GDN producer/consumer boundary | Retained in `4d1641fdcd`; two windows passed; full context/OpenCode gate open | Native `torch.mm` reduced the actual 48-layer sweep from `7.296667` to `2.159000/2.051708 ms`. Deterministic served generation improved `8.0284 -> 8.4406 tok/s`; sampled restart windows reached `8.3094/8.2942 tok/s`, with behavior and multi-batch fallback intact. |
 | PERF-A010 | Add native affine-q4 quantized SDPA and GQA-aware KV reuse to MLX. | Supporting MLX C++/Metal dependency | Long-horizon dependency candidate | Query tiling bounds materialized scores but leaves repeated qMM and q4 KV reads. A fused online-softmax route can dequantize K/V in tiles, reuse each KV head across six Q heads, and improve both long prefill and decode without full score storage. |
 | PERF-A011 | Vectorize the Q5_K vocabulary head across four eight-lane row cohorts per SIMDgroup at batch one. | `gguf_q4_0.mm` Q5_K kernel and aligned host dispatch | Retained in `b19cf4acf3` | Matched candidate/control/candidate medians were `3.737000 / 19.659291 / 3.754625 ms`. Five-run deterministic served generation rose `7.1748 -> 8.0284 tok/s` (+11.90%) with the exact digest; a committed restart and two required-sampling windows passed. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
@@ -1589,3 +1590,57 @@ tree throughput can be ranked for production.
   one-row-per-SIMD decoder remains an oracle; its much larger threadgroup grid
   is unfunded after the cohort path's 5.24x isolated result. The next measured
   native target is PERF-A009's batch-one F32 GDN b/a projection.
+
+### 2026-08-20 23:43 PDT - PERF-A009 native F32 batch-one projection
+
+- Change: select PyTorch's native MPS matrix multiplication for F32 GGUF
+  projections containing exactly one input vector. The existing custom Metal
+  dense kernel remains selected for every multi-vector prefill. The live
+  production path reaches this branch 48 times per decoded token through the
+  compact `96x5120` GDN b/a projection.
+- Microbenchmark evidence: a fresh actual-weight A/B/A sweep across all 48
+  layers measured candidate/control/candidate medians **2.159000 /
+  7.296667 / 2.051708 ms** for 90 MiB of F32 weights. Raw candidate A was
+  `2.216708, 2.180458, 2.174042, 2.183375, 2.144958, 2.158209, 2.140250,
+  2.148500, 2.159000 ms`; control was `7.218208, 7.243125, 7.296667,
+  7.308958, 7.343000, 7.296208, 7.266750, 7.647750, 7.864792 ms`;
+  candidate B was `2.154292, 2.071875, 2.025875, 2.039833, 2.051708,
+  2.024833, 2.045709, 2.064416, 2.070833 ms`. Candidate and control differed
+  by at most `1.78813934e-06`.
+- Served evidence: five clean deterministic exact `128+32` requests reached
+  generation `8.447, 8.450, 8.444, 8.431, 8.431 tok/s`, mean **8.4406**,
+  or **5.13%** above PERF-A011. Prompt mean was **7.0444 tok/s**, TTFT mean
+  **18.170302 s**, and E2E mean **21.842957 s**. The required sampled profile
+  reached `8.309, 8.304, 8.295, 8.325, 8.314 tok/s`, mean **8.3094**, or
+  **4.59%** above PERF-A011's first window. Every deterministic response kept
+  exact counts, length finish, and digest
+  `37f5512bd18c1962bd2e170f543fae806ca48b70495c2761ae162df3cac56299`;
+  every sampled response preserved nonempty reasoning.
+- Correctness evidence: focused coverage proves batch one bypasses the custom
+  kernel, batches 2/3/4/8 retain it, output-row and input-width boundaries
+  pass, and all 48 actual b/a matrices agree with CPU F32 within tolerance;
+  maximum actual-layer error was `2.86102295e-06`. Arithmetic returned final
+  `703`, thinking-disabled returned exact `READY`, the parser emitted exactly
+  one `multiply({"a":37,"b":19})` call, the tool-result continuation kept
+  reasoning and returned `703`, and `/model_info` retained image/audio false.
+- Decision: retain provisionally. The first isolated and served windows pass;
+  the independent committed restart also passes. This is the selected native
+  IQ2 diagnostic path. Full Apple promotion remains gated by the exact Rust
+  scoreboard, long-context capacity, and a real OpenCode request.
+- Commit: signed `4d1641fdcd` (`perf: accelerate F32 GGUF decode on MPS`).
+
+#### Independent restart
+
+- From committed `HEAD`, one deterministic confirmation reached **8.420
+  generation / 7.010 prompt tok/s**, **18.259251 s TTFT**, and
+  **21.940782 s E2E** with exact counts and the established digest.
+- Five required-sampling requests measured generation
+  `8.313, 8.294, 8.238, 8.313, 8.313 tok/s` (mean **8.2942**) and prompt
+  `7.029, 7.052, 7.044, 7.025, 7.026 tok/s` (mean **7.0352**). TTFT mean was
+  **18.194274 s** and E2E mean **21.931784 s**. This is within 0.19% of the
+  first candidate window and 4.26% above PERF-A011's independent mean.
+- Arithmetic, thinking-disabled, parsed-tool, preserved-tool-result, and
+  language-only gates passed again. Process-scoped OpenCode 1.18.15 reached
+  this endpoint with a real **13,635-token** agent prompt; the 1,024-token
+  diagnostic launch rejected it before execution. Context-enabling work is
+  required before the standalone-client gate can pass.

@@ -1406,3 +1406,51 @@
 - Reopen only if: the production matrix shapes or GPU SIMD occupancy change.
 - Related commit or revert: ablation removed; `16b2bf7a06` retains two
   SIMDgroups × four rows.
+
+## PERF-FA048 - Cross-row reuse in the F32 batch-one Metal matvec
+
+- Hypothesis: share each F32 input tile across multiple output rows within a
+  SIMDgroup so the `96x5120` GDN b/a projection reloads less input data.
+- Scope: the custom native-MPS F32 dense matmul at the exact merged b/a shape,
+  with only output-row/threadgroup geometry changed.
+- Attempted change: measured two SIMDgroups × four rows, one SIMDgroup × four
+  rows, and two SIMDgroups × two rows against the selected one-row-per-SIMD
+  implementation. Every experimental shader change was removed afterward.
+- Benchmark evidence: the selected control's 25-sample median was
+  **0.390083 ms**. Two-SIMD/four-row measured **0.484833 ms**; one-SIMD/
+  four-row measured **0.504208 ms**; two-SIMD/two-row measured
+  **0.556667 ms**.
+- Correctness evidence: each geometry retained CPU F32 tolerance before its
+  timing decision. The restored source has no Metal diff.
+- Failure mode: the matrix exposes only 96 output rows, and grouping rows
+  reduces the threadgroup grid enough that lost occupancy outweighs shared
+  input reads.
+- Why not to retry unchanged: all three row-reuse geometries lose decisively
+  on the exact production shape. The retained PERF-A009 route uses the faster
+  system MPS matrix multiply instead.
+- Reopen only if: a fused downstream consumer changes the matrix shape or
+  removes enough launch/output traffic to offset the observed occupancy loss.
+- Related commit or revert: no retained shader change.
+
+## PERF-FA049 - OpenCode against the 1K native diagnostic launch
+
+- Hypothesis: the short native-IQ2 server used for kernel qualification could
+  also satisfy the required standalone OpenCode integration check.
+- Scope: OpenCode 1.18.15 with a process-scoped OpenAI-compatible provider,
+  tools advertised, thinking displayed, and the exact server on port 30000.
+- Attempted change: left global OpenCode configuration untouched and invoked
+  one bounded `opencode run --pure` request against the 1,024-token context
+  and token pool.
+- Benchmark evidence: OpenCode formed a **13,635-token** main agent prompt.
+  SGLang rejected it with HTTP 400 because the live context limit was 1,024.
+- Correctness evidence: the failure occurred at request admission before model
+  execution. The same server had already passed direct reasoning, tools,
+  preserved tool-result, and language-only checks.
+- Failure mode: the real client's system/tool surface is more than thirteen
+  times larger than the diagnostic launch's entire token pool.
+- Why not to retry unchanged: prompt admission is mathematically impossible
+  at 1,024 tokens, independent of decode speed or model output.
+- Reopen only if: the native lane serves at least the measured 13,635-token
+  prompt plus output headroom, then completes the same process-scoped request.
+- Related commit or revert: no source change; PERF-A008 is the current native
+  context-enabling candidate.

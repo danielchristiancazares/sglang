@@ -395,27 +395,33 @@ while preserving the padded CUDA/non-MPS path.
 Signed commit `16b2bf7a06` specializes aligned IQ2_XXS batch-one matvec with
 four-row input/LUT reuse. Signed commit `b19cf4acf3` specializes the aligned
 Q5_K batch-one vocabulary head with four eight-lane row cohorts per SIMDgroup
-and retains generic alignment and multi-batch fallbacks.
+and retains generic alignment and multi-batch fallbacks. Signed commit
+`4d1641fdcd` routes one-vector F32 GGUF projections through native MPS matrix
+multiplication while retaining the custom dense kernel for multi-vector
+prefill.
 Host cleanup leaves this artifact as the only Hugging Face model cache and no
 MTPLX model cache. A broader cache cleanup also removed the first retained
 copy, so the same immutable revision was downloaded again and its byte size
 and SHA-256 were reverified. SGLang, Codex-runtime, uv, and other rebuildable
 user caches are cold. The data volume had 267 GiB free after restoration.
 
-The selected native-IQ2 `128+32` deterministic window averages **7.0088
-prompt / 8.0284 generation tok/s**, **18.263028 s TTFT**, and **22.124352 s
-E2E** over five cache-flushed runs. This is **152.01%** more generation
+The selected native-IQ2 `128+32` deterministic window averages **7.0444
+prompt / 8.4406 generation tok/s**, **18.170302 s TTFT**, and **21.842957 s
+E2E** over five cache-flushed runs. This is **164.94%** more generation
 throughput than the pre-kernel padded control's **3.1858 tok/s**, with the
 same deterministic digest. An independent committed restart reached
-**8.114 tok/s**. Required-sampling windows averaged **7.9450** and **7.9552
-tok/s** across two restarts.
+**8.420 tok/s**. Required-sampling windows averaged **8.3094** and **8.2942
+tok/s** across two restarts, 4.59% and 4.26% above the corresponding selected
+Q5_K windows.
 
 Packed weight loading reports **9.03 GB**, down from 10.03 GB; Mamba and KV
 allocations add about 0.41 GB. Matched generic/candidate IQ2_XXS
 `17408x5120` medians reached **1.176875 -> 0.516000 ms**. The Q5_K
 `248320x5120` vocabulary head reached **19.659291 -> 3.754625 ms** in the
-matched source window. Actual-file batch 1/3/4/8 parity, odd row boundaries,
-compact offsets, and focused packed extrema pass.
+matched source window. Across all 48 actual F32 `96x5120` b/a projections,
+the selected native MPS path changed **7.296667 -> 2.159000/2.051708 ms** in
+an A/B/A sweep. Actual-file batch 1/3/4/8 parity, odd row boundaries, compact
+offsets, and focused packed extrema pass.
 
 The earlier missing-final and empty-thinking-disabled behavior was a native
 GGUF tokenizer defect rather than checkpoint evidence. Qwen's `<think>`,
@@ -431,14 +437,15 @@ reasoning-parser, and tool-parser suites passed 321 tests plus 64 subtests.
 This clears the local behavior, sampled-workload, and independent-restart
 gates. The native route remains outside the Apple scoreboard until it runs the
 exact `12+256` fixture through the Rust ingress under the qualified 32K
-profile, then completes capacity and standalone OpenCode2 checks. No Apple
-server or Metal compiler is live, port 30000 is free, and memory returned to
-93% free after the verified tree shutdown. Pinned llama.cpp build 10547
-reached **14.661356 tok/s** aggregate on the exact Apple benchmark, 21.943%
-below the record, and is closed as a record route under that revision. The
-next measured native candidate is PERF-A009's batch-one F32 GDN b/a
-projection; PERF-A008's fixed-memory GQA remains the native context-enabling
-candidate.
+profile, then completes capacity and standalone OpenCode checks. A
+process-scoped OpenCode 1.18.15 probe formed a **13,635-token** real agent
+prompt, proving the 1,024-token diagnostic launch cannot satisfy that gate.
+No Apple server, client, or Metal compiler is live, port 30000 is free, and
+memory returned to 93% free after verified cleanup. Pinned llama.cpp build
+10547 reached **14.661356 tok/s** aggregate on the exact Apple benchmark,
+21.943% below the record, and is closed as a record route under that revision.
+PERF-A008's fixed-memory GQA and safe long-pool fallback are now the funded
+native context-enabling work.
 
 The MLX long-context lane also retains adaptive quantized-prefill query tiling
 behind `SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE`. Its 1 GiB automatic threshold
