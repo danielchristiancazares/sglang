@@ -14,6 +14,10 @@ from sglang.kernels.ops.sampling.sparse_top_p_renorm import (
 )
 from sglang.srt.environ import envs
 from sglang.srt.model_executor.cuda_graph_composite import CudaGraphChildSequence
+from sglang.srt.speculative.eagle_draft_cuda_graph_runner import (
+    EAGLEDraftCudaGraphRunner,
+)
+from sglang.srt.speculative.eagle_worker_v2 import EagleDraftWorker
 from sglang.srt.speculative.eagle_utils import _renorm_target_probs_top_p
 from sglang.srt.speculative.multi_layer_eagle_draft_extend_cuda_graph_runner import (
     MultiLayerEagleDraftExtendCudaGraphRunner,
@@ -229,6 +233,93 @@ class TestDraftProposalFlashInfer(CustomTestCase):
                 self.assertTrue(use_sparse_top_p_renorm())
         finally:
             use_sparse_top_p_renorm.cache_clear()
+
+    def test_draft_top_p_one_routes_to_both_proposal_owners(self):
+        runner = EAGLEDraftCudaGraphRunner.__new__(EAGLEDraftCudaGraphRunner)
+        runner.model_runner = SimpleNamespace(
+            model_config=SimpleNamespace(vocab_size=16)
+        )
+        runner.max_bs = 1
+        runner.draft_sampling_top_k = 20
+        runner.draft_sampling_top_p = 1.0
+        runner.temperatures = torch.ones((1, 1), device="cuda")
+        runner.draft_top_ps = torch.zeros(1, device="cuda")
+        runner.draft_additive_penalties = torch.zeros((1, 16), device="cuda")
+        live_sampling_info = SimpleNamespace(
+            temperatures=torch.full((1, 1), 0.8, device="cuda"),
+            top_ps=torch.full((1,), 0.95, device="cuda"),
+            acc_additive_penalties=None,
+            logit_bias=None,
+        )
+
+        runner.copy_sampling_info_to_graph(live_sampling_info, raw_bs=1)
+        graph_sampling_info = runner.sampling_info_for_graph(num_seqs=1)
+
+        self.assertFalse(graph_sampling_info.need_top_p_sampling)
+        torch.testing.assert_close(
+            graph_sampling_info.top_ps,
+            torch.ones(1, device="cuda"),
+            rtol=0,
+            atol=0,
+        )
+        torch.testing.assert_close(
+            live_sampling_info.top_ps,
+            torch.full((1,), 0.95, device="cuda"),
+            rtol=0,
+            atol=0,
+        )
+
+        worker = EagleDraftWorker.__new__(EagleDraftWorker)
+        worker.draft_sampling_top_p = 1.0
+        post_extend_info = SimpleNamespace(
+            need_top_p_sampling=True,
+            top_ps=torch.full((1,), 0.95, device="cuda"),
+            temperatures=torch.ones((1, 1), device="cuda"),
+        )
+        proposal_info = worker._proposal_sampling_info(post_extend_info)
+        self.assertFalse(proposal_info.need_top_p_sampling)
+        self.assertTrue(post_extend_info.need_top_p_sampling)
+
+        with patch(
+            "sglang.srt.speculative.eagle_worker_v2.sys",
+            SimpleNamespace(platform="linux"),
+        ):
+            generic_info = worker._proposal_sampling_info(post_extend_info)
+        torch.testing.assert_close(
+            generic_info.top_ps,
+            torch.ones(1, device="cuda"),
+            rtol=0,
+            atol=0,
+        )
+        torch.testing.assert_close(
+            post_extend_info.top_ps,
+            torch.full((1,), 0.95, device="cuda"),
+            rtol=0,
+            atol=0,
+        )
+
+        cpu_info = SimpleNamespace(
+            need_top_p_sampling=True,
+            top_ps=torch.full((1,), 0.95),
+            temperatures=torch.ones((1, 1)),
+        )
+        with patch(
+            "sglang.srt.speculative.eagle_worker_v2.sys",
+            SimpleNamespace(platform="win32"),
+        ):
+            cpu_proposal_info = worker._proposal_sampling_info(cpu_info)
+        torch.testing.assert_close(
+            cpu_proposal_info.top_ps,
+            torch.ones(1),
+            rtol=0,
+            atol=0,
+        )
+
+        standalone = EagleDraftWorker.__new__(EagleDraftWorker)
+        self.assertIs(
+            standalone._proposal_sampling_info(post_extend_info),
+            post_extend_info,
+        )
 
     @patch(
         "sglang.srt.speculative.spec_utils.use_sparse_top_p_renorm",

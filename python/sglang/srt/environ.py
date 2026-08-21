@@ -1294,6 +1294,8 @@ class Envs:
     # Experimental; auto-falls back to eager if the backend's prep is not capturable.
     SGLANG_ENABLE_METADATA_GLUE_GRAPH = EnvBool(False)
     SGLANG_OPT_FUSED_KDA_VERIFY = EnvBool(False)
+    # Proposal-only top-p override for aligned speculative rejection sampling.
+    SGLANG_OPT_SPEC_DRAFT_TOP_P = EnvFloat(None)
     # Use the native sparse-support top-p renormalizer after finite top-k.
     # Expert A/B knob; unsupported or wider top-k batches keep FlashInfer AIR.
     SGLANG_OPT_SPARSE_TOP_P_RENORM = EnvBool(False)
