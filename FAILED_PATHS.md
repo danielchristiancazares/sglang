@@ -600,3 +600,58 @@
   `mm_fp4(..., backend="trtllm")` on capability 120 and the focused numerics
   plus CUDA-graph replay test passes before a server launch.
 - Related commit or revert: no implementation change; evidence-only update.
+
+## PERF-F043 - FlashInfer CuTe-DSL fused SwiGLU-to-NVFP4 on native Windows
+
+- Hypothesis: FlashInfer `0.6.17`'s public fused
+  `silu_and_mul_nvfp4_quantize` API could directly replace the selected
+  Windows activation plus NVFP4 quantization sequence.
+- Scope: native Windows RTX 5090, production width 17408, real
+  down-projection input scale, and `M={1,3,7000,7680}`.
+- Attempted change: no runtime source change. Called the installed API through
+  the native CUDA environment before any model wiring.
+- Benchmark evidence: no kernel timing was possible. Importing
+  `flashinfer.cute_dsl` failed with `ModuleNotFoundError: No module named
+  'cutlass'`.
+- Correctness evidence: unavailable because the dependency failed before
+  compilation. The separate native CUDA expert producer was measurable but
+  changed about 0.8% of packed values and is not a valid exact replacement.
+- Failure mode: the public API is CuTe-DSL-only. NVIDIA's CUTLASS DSL binary
+  dependency has no native-Windows wheel/source route in the documented
+  environment.
+- Why not to retry unchanged: installing the metadata package repeats the
+  already-closed native-Windows CUTLASS-DSL failure and cannot supply its
+  Linux-only compiled base.
+- Reopen only if: NVIDIA publishes a supported native-Windows CUTLASS DSL
+  runtime and the public API passes packed-value, scale-byte, graph, and
+  latency parity.
+- Related commit or revert: no dependency or site-package change. PERF-027
+  continues through a separate exact native CUDA JIT producer.
+
+## PERF-F044 - One eager-exact SwiGLU-to-NVFP4 producer for every phase
+
+- Hypothesis: the byte-exact eager Windows producer could replace
+  `SiluAndMul` plus activation quantization in both long prefill and the
+  torch-compiled M3 target-verification graph.
+- Scope: selective target-NVFP4 checkpoint, chunk 7680, compiled M3 target
+  graph, eager 7680/7000 prefill, and exact `199000+16`/`199000+512`.
+- Attempted change: selected the precise two-rounding native producer in every
+  target MLP phase.
+- Benchmark evidence: five short requests improved prompt to **2993.552
+  tok/s**, but selected a different stable digest. Three long requests also
+  changed trajectory and averaged **115.542 generation tok/s**.
+- Correctness evidence: a direct discriminator found that eager native matched
+  the explicit staged reference, while `torch.compile(fullgraph=True)` changed
+  the quantized tuple by 63 packed/18 scale bytes at M1 and 216/51 at M3.
+- Failure mode: Inductor fuses `F.silu(gate) * up` in FP32 and removes the
+  eager path's intermediate BF16 rounding. The eager-exact producer therefore
+  changed the established compiled target function even though it was exact
+  for prefill.
+- Why not to retry unchanged: production target verification is compiled, so
+  selecting one eager arithmetic contract globally deterministically changes
+  logits, rejection decisions, and output.
+- Reopen only if: a separate compiled-semantics producer matches the prior M3
+  packed values, scales, down-projection output, logits, RNG decisions, and
+  outer CUDA-graph replay bit-for-bit.
+- Related commit or revert: PERF-027 is retained only outside
+  `torch.compiler.is_compiling()`; the former compiled path remains selected.

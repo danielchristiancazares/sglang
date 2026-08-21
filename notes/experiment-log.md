@@ -3651,3 +3651,234 @@ mean 13.929045  17.125658 446.051        39.730
   `-k "qwen35_gemma or qwen35_jit_gemma" -q`: **8 passed**. Python
   compilation for both runtime modules and the test, plus
   `git diff --check`, also passed.
+
+### 2026-08-20 20:26 PDT - PERF-027 exact native producer passed isolated byte and latency gates
+
+- Recovered the documented chunk-size boundary before proceeding: 7680 is
+  selective-checkpoint-only, exact 199K is `25 * 7680 + 7000`, base RadixArk
+  remains at 4096, and 7808 is a closed planner/kernel cliff. Every isolated
+  and later full-model gate therefore covers both M7680 and M7000 and must not
+  alter the launcher default.
+- Read the selected checkpoint metadata directly: hidden size 5120,
+  intermediate size 17408, 64 layers. All 64 down projections carry ModelOpt
+  input scales; layer 0 is `0.0025692894123494625`, used as the real-scale
+  isolated reference.
+- The installed public
+  `flashinfer.silu_and_mul_nvfp4_quantize` failed before compilation with
+  `ModuleNotFoundError: No module named 'cutlass'`. This is the same
+  Linux-only CUTLASS-DSL dependency boundary already recorded for native
+  Windows; no package was installed or modified. Artifact:
+  `perf027-flashinfer-fused-probe-20260820-2010.log`.
+- FlashInfer's native CUDA expert producer was then exercised with one expert.
+  It improved median producer latency by 1.24-1.79x, but changed about 0.8% of
+  packed FP4 bytes. Source inspection confirmed the cause: `__expf` plus one
+  BF16 conversion after the product, versus the selected precise `expf`,
+  activation-round, multiply, product-round contract. It was rejected as the
+  exact producer. Artifact:
+  `perf027-flashinfer-native-fused-probe-20260820-2014.log`.
+- Added `silu_and_mul_nvfp4.cuh` plus a thin mutating custom-op wrapper. The
+  kernel preserves the two BF16 rounding boundaries and calls the same
+  FlashInfer native E4M3-scale/E2M1 conversion helper as the current
+  quantizer. Its grid also writes all padded 128x4 scale bytes, avoiding
+  uninitialized padding.
+- The first compile exposed one missing FlashInfer internal include root; after
+  adding the dependency's `nv_internal/include` path, compilation succeeded.
+  No server was running, no compiler tree overlapped the probes, and post-run
+  GPU residency returned to 1,193 MiB with 30,995 MiB free.
+- Exact producer versus the current staged activation plus
+  `fp4_quantize`, using BF16 width 17408 and the real layer-0 scale:
+  - M1: zero packed/scale mismatches; `50.528 -> 20.224 us` median.
+  - M3: zero packed/scale mismatches; `49.568 -> 20.256 us` median.
+  - M7000: zero mismatches across 60,928,000 packed bytes and 7,659,520
+    scale bytes; `664.112 -> 366.176 us`.
+  - M7680: zero mismatches across 66,846,720 packed bytes and 8,355,840
+    scale bytes; `730.416 -> 402.704 us`.
+- Artifact:
+  `perf027-exact-jit-probe-20260820-2026.log`.
+  Next gates are mutable CUDA-graph replay, torch fullgraph compilation, and
+  exact consumption through `ModelOptFp4LinearMethod` before any server launch.
+- Added focused registered coverage. Exact BF16 production shapes
+  M1/M3/M7000/M7680, mutable M1/M3 CUDA-graph replay with both input and scale
+  changed, `torch.compile(fullgraph=True)`, and a captured
+  producer-to-`ModelOptFp4LinearMethod` CUTLASS tuple chain all passed:
+  **8 tests passed**. The existing Qwen3.5 ModelOpt CPU file also passed
+  **8 tests**; Python compilation, module import, and `git diff --check`
+  passed.
+- Wired the producer only in native-Windows `Qwen2MoeMLP` when the down
+  projection is TP1, serialized per-tensor non-AWQ ModelOpt FP4 using
+  FlashInfer CUTLASS, the hidden width is supported, and 4over6 is inactive.
+  The down projection's existing explicit prequantized-tuple contract is
+  enabled only in that branch. Every other quantization, topology, platform,
+  and Qwen path retains the staged activation and quantizer.
+- Pre-launch state: commit `e09e43171d`, only the PERF-027 source, tests, and
+  ledgers dirty; port 30000 free; no compiler worker; RTX 5090 at 1,157 MiB
+  used / 31,031 MiB free, 21% transient utilization, 30 C.
+- Launched the explicit selective profile (not the production default):
+  `$env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND='1';`
+  `.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1`
+  `-ModelPath`
+  `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4`
+  `-ChunkedPrefillSize 7680 -RandomSeed 615388882`.
+  Startup artifact:
+  `perf027-exact-fused-server-20260820-2033.log`.
+- Readiness passed on listener PID 12320. Both target and draft KV pools
+  resolved to exactly 200,000 tokens; 110 selected target FP4 tactics were
+  promoted. Target verify, draft decode, and draft extend graph captures
+  completed in 15.65, 1.06, and 0.86 s with 4.58 GiB reported free.
+- Two exact warmups plus five cache-flushed `199000+16` scores produced:
+  - prompt `3044.589, 3014.218, 2984.494, 2984.251, 2940.207` tok/s,
+    mean **2993.552**;
+  - legacy generation `77.939, 96.132, 76.080, 86.495, 95.414` tok/s,
+    mean **86.412**;
+  - TTFT mean **66.485194 s** and E2E mean **66.660452 s**.
+  All completed exact `199016` with `finish_reason=length`, but selected
+  digest `9db488121a2e5f6b7a64dfb69ba000c62910b06e09ef7da340854481f6621375`
+  instead of PERF-028's `cdf5bb57...f647d9`.
+- Three exact `199000+512` scores measured prompt
+  `3030.638, 3013.477, 2957.484` tok/s (mean **3000.533**) and generation
+  `114.263, 119.534, 112.829` tok/s (mean **115.542**). TTFT/E2E means were
+  **66.328776/70.754119 s**. All completed exact `199512`, but the changed
+  output digest `deb15a60...bf40a0` confirms a different trajectory.
+- Interpretation: the +1.126% prompt and -0.744387 s TTFT movement versus the
+  prior PERF-028 fused arm is large enough to continue, but neither output nor
+  long decode qualifies. Isolated random inputs, graph replay, fullgraph, and
+  a small real tuple consumer were exact; the next gate must locate a
+  real-layer divergence, including exhaustive BF16 edge values and an
+  FP4-GEMM -> fused producer -> FP4-GEMM chain. Artifacts:
+  `perf027-exact-fused-window-20260820-2038.log` and
+  `perf027-exact-fused-long-20260820-2040.log`.
+
+### 2026-08-20 21:08 PDT - PERF-027 finite-BF16 sweep reproduces the numerical defect
+
+- Resumed from session `fd2e8d01-e225-4b48-9ab3-4d118100a4a9` on commit
+  `e09e43171d` with only the PERF-027 source, tests, and ledgers dirty. Port
+  30000 was free, no server or CUDA/compiler worker was active, and the RTX
+  5090 was at ordinary display residency: 1,341 MiB used, 30,847 MiB free,
+  30 C, and 5% sampled utilization.
+- Reused the prior session's numerical-localization script after fixing its
+  diagnostic-only two-dimensional activation index. The first invocation
+  failed before CUDA initialization because `PYTHONPATH` was absent; the
+  corrected command was:
+  `$env:PYTHONPATH=(Resolve-Path .\python).Path;`
+  `.\scripts\windows\invoke_cuda_python.ps1 -Script`
+  `C:\Users\Daniel\.copilot\session-state\fd2e8d01-e225-4b48-9ab3-4d118100a4a9\files\perf027_numerical_localization.py`.
+- The sweep paired all **65,280 finite BF16 bit patterns** as gate values with
+  a 7,919-position rotation as up values. At each tested global scale
+  (`389.212673, 286.720003, 86.015997, 40, 20, 10`), the fused producer
+  differed from staged activation plus `fp4_quantize` in exactly **520 packed
+  bytes** and **zero scale bytes**.
+- The first mismatches are finite underflow cases: gate values near
+  `1.82e-11`, up values near `4.36e-30`, and staged BF16 products equal to
+  zero or the minimum subnormal. The staged path packs `0x00`; the fused path
+  packs `0x77` while retaining the same scale byte. This is a concrete
+  numerical defect that random-normal production-shape tests did not cover.
+- The separate FP4 gate-projection chain still matched exactly in eager,
+  `torch.compile(fullgraph=True)`, and three mutable captured replays. The
+  finite underflow mismatch, rather than generic graph capture, is now the
+  first repair target.
+- Artifact:
+  `C:\Users\Daniel\.copilot\session-state\93a94358-a792-4795-bcc3-a02f1f278ae6\files\perf027-edge-detail-20260820-2108.log`.
+  Do not retain or benchmark PERF-027 again until every finite BF16 packed and
+  scale byte matches the staged path and the full-model deterministic digest
+  is restored.
+
+### 2026-08-20 21:31 PDT - PERF-027 repaired as an eager-only exact producer
+
+- A deployment-equivalent arithmetic probe exposed a second, independent
+  contract. The former eager Windows `SiluAndMul.forward_native` call matched
+  the explicit two-rounding staged reference exactly, but
+  `torch.compile(fullgraph=True)` fused the native expression and changed the
+  quantized tuple:
+  - M1: **63 packed / 18 scale-byte** mismatches versus staged.
+  - M3: **216 packed / 51 scale-byte** mismatches versus staged.
+  - The exact fused producer still had zero ordinary-random mismatches versus
+    eager staged at both shapes.
+- This proves that replacing every phase with the eager-exact producer changed
+  the established compiled M3 target-verification function. The candidate now
+  runs only when `torch.compiler.is_compiling()` is false. Eager 7680/7000
+  prefill uses the fused exact producer; the compiled M3 target graph retains
+  its former `SiluAndMul.forward_native` plus `fp4_quantize` path and RNG/logit
+  trajectory.
+- The probe initially attempted to instantiate `SiluAndMul` without a
+  published runtime-context `exec` namespace and failed before measurement.
+  The corrected probe called the class's exact native expression directly.
+  Artifact:
+  `C:\Users\Daniel\.copilot\session-state\93a94358-a792-4795-bcc3-a02f1f278ae6\files\perf027-compiled-baseline-20260820-2122.log`.
+- Repaired the finite-domain mismatch by canonicalizing only the final rounded
+  BF16 subnormal product to sign-preserving zero before NVFP4 conversion. This
+  recreates the staged global-memory boundary into FlashInfer's FTZ-compiled
+  quantizer without enabling fast SiLU math or flushing a subnormal rounded
+  activation before multiplication.
+- Added fail-closed SM100+ host and Python gates plus explicit 32-byte input
+  and 8-byte output alignment checks. Added vectorized all-finite-BF16
+  coverage in both the compact non-TMA shape `(4080,16)` and the native TMA
+  shape `(1024,512)`.
+- Focused native CUDA results: **10 passed**, including production
+  M1/M3/M7000/M7680 equality, both finite-domain sweeps, mutable graph replay,
+  fullgraph compilation, and the captured ModelOpt tuple consumer. The
+  existing Qwen3.5 ModelOpt CPU suite passed **8 tests**; Python compilation
+  and `git diff --check` passed.
+- The next gate is a clean selective-profile relaunch. It must restore the
+  established deterministic short and long digests while retaining a prompt
+  gain. Decode is intentionally the PERF-028 control path until a separately
+  exact compiled-semantics producer is proven.
+
+### 2026-08-20 22:04 PDT - repaired PERF-027 restores exact output and retains the prefill win
+
+- Two attempts to launch through `.venv\Scripts\sglang.exe` failed immediately
+  with `uv trampoline failed to canonicalize script path`; the session's
+  relocated virtual environment was created after the earlier successful
+  launches. No model process or CUDA context survived either failure.
+- Launched the same resolved launcher arguments through the still-supported
+  `D:\sglang\.venv\Scripts\python.exe -m sglang.launch_server` entry point
+  after sourcing the native CUDA/MSVC environment. The full resolved argument
+  list is the first line of
+  `perf027-repaired-server-direct-20260820-2152.log`; all simulation, tree,
+  SWOR, adaptive, and device-cycle controls remained absent.
+- Both target and draft KV pools resolved to exactly 200,000 tokens. The
+  selected 16,384-token target EXTEND pass ran, and target verify, draft
+  decode, and draft extend graphs captured in **18.17, 61.18, and 0.92 s**.
+  The long draft-decode capture included a one-time missing-cache autotune.
+  `/health` returned 200; `/model_info` reported image/audio understanding
+  false. Listener PID 21336 descended from Python 33140 and detached launcher
+  PowerShell 22096.
+- After two exact warmups, five cache-flushed `199000+16` scores produced:
+  - prompt `2977.888, 3008.041, 2946.967, 2968.875, 3034.603` tok/s,
+    mean **2987.275**, median **2977.888**, CV **1.150%**;
+  - short generation `95.687, 90.710, 113.181, 95.859, 97.245` tok/s,
+    mean **98.536**, retained only as 15-interval evidence;
+  - TTFT mean **66.622932 s** and E2E mean **66.776008 s**.
+- Every short request completed exact `199016`, returned
+  `finish_reason=length`, and restored digest
+  `cdf5bb57b88deaa7515abaedf36406d10494599fce2e23eeaa400461d9f647d9`.
+  Relative to the PERF-028 fused arm, prompt improved
+  **27.047 tok/s / 0.914%** and TTFT improved **0.606649 s / 0.902%**.
+  Relative to the fresh current-source baseline, prompt improved **1.698%**
+  and TTFT improved **1.126997 s**.
+- Three exact `199000+512` requests measured:
+  - prompt `3040.821, 2982.656, 2980.554` tok/s, mean **3001.344**;
+  - generation `117.174, 114.334, 114.168` tok/s, mean **115.225**, CV
+    **1.466%**;
+  - TTFT/E2E means **66.309344/70.744768 s**.
+  All completed exact `199512` and restored digest
+  `cac0c6e4fab3115102a9a0c4163e4465068fba30cb09f0bb5556c7021e4a2092`.
+  The prompt gain persisted; decode is statistically unchanged and remains
+  governed by PERF-028 plus environment variance.
+- Retain PERF-027 only for eager execution. Its mechanism and full-model
+  signal agree: the staged producer changed `664.112 -> 366.176 us` at M7000
+  and `730.416 -> 402.704 us` at M7680, while the repaired exact request
+  improved prompt/TTFT without changing output. The compile guard deliberately
+  leaves M3 decode unchanged.
+- Re-resolved and stopped only the verified tree rooted at PID 22096:
+  worker leaves `11992/52320`, listener `21336`, parent Python `33140`,
+  console `45832`, then launcher PowerShell `22096`. All known PIDs exited,
+  port 30000 was free, compiler workers were absent, and the RTX 5090 returned
+  to 1,945 MiB display residency with 30,243 MiB free.
+- Artifacts:
+  `perf027-repaired-server-direct-20260820-2152.log` and
+  `perf027-repaired-long-20260820-2159.log` under session
+  `93a94358-a792-4795-bcc3-a02f1f278ae6`.
+- Added CPU routing ratchets after shutdown: eager Qwen MLP execution must pass
+  the prequantized tuple, while compile tracing must retain the native
+  activation path. The expanded Qwen3.5 ModelOpt suite passed **10 tests**;
+  Python compilation and `git diff --check` passed.
