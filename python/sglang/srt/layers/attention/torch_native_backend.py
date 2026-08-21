@@ -16,9 +16,7 @@ if TYPE_CHECKING:
     from sglang.srt.model_executor.model_runner import ModelRunner
 
 
-_SDPA_HAS_ENABLE_GQA = "enable_gqa" in (
-    scaled_dot_product_attention.__doc__ or ""
-)
+_SDPA_HAS_ENABLE_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 
 
 def _sdpa(query, key, value, *, enable_gqa: bool, **kwargs):
@@ -66,6 +64,20 @@ class TorchNativeAttnBackend(AttentionBackend):
         ).unsqueeze(1)
         k_pos = torch.arange(kv_len, device=device).unsqueeze(0)
         return (k_pos <= q_pos) & (k_pos >= q_pos - sliding_window_size)
+
+    @staticmethod
+    def _make_causal_mask(
+        *,
+        q_len: int,
+        kv_len: int,
+        device: torch.device,
+        query_offset: int = 0,
+    ) -> torch.Tensor:
+        q_pos = torch.arange(
+            query_offset, query_offset + q_len, device=device
+        ).unsqueeze(1)
+        k_pos = torch.arange(kv_len, device=device).unsqueeze(0)
+        return k_pos <= q_pos
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         """Init the metadata for a forward pass."""
@@ -130,8 +142,6 @@ class TorchNativeAttnBackend(AttentionBackend):
             # Need optimize the performance later.
 
             extend_seq_len_q = extend_seq_lens[seq_idx]
-            prefill_seq_len_q = extend_prefix_lens[seq_idx]
-
             seq_len_kv = seq_lens[seq_idx]
             end_q = start_q + extend_seq_len_q
             if encoder_lens is not None:
@@ -145,13 +155,9 @@ class TorchNativeAttnBackend(AttentionBackend):
                 start_kv = 0
                 end_kv = start_kv + seq_len_kv
             per_req_query = query[:, start_q:end_q, :]
-            per_req_query_redudant = torch.empty(
-                (per_req_query.shape[0], seq_len_kv, per_req_query.shape[2]),
-                dtype=per_req_query.dtype,
-                device=per_req_query.device,
-            )
-
-            per_req_query_redudant[:, prefill_seq_len_q:, :] = per_req_query
+            if per_req_query.shape[-2] == 0:
+                start_q, start_kv = end_q, end_kv
+                continue
 
             # get key and value from cache. per_req_tokens contains the kv cache
             # index for each token in the sequence.
@@ -167,18 +173,34 @@ class TorchNativeAttnBackend(AttentionBackend):
 
             attn_mask = None
             is_causal = causal
+            seq_len_q = per_req_query.shape[-2]
+            seq_len_kv = per_req_key.shape[-2]
+            query_offset = seq_len_kv - seq_len_q
+            if query_offset < 0 and (
+                causal or (sliding_window_size is not None and sliding_window_size > -1)
+            ):
+                raise ValueError("Causal extend query cannot be longer than its KV")
             if sliding_window_size is not None and sliding_window_size > -1:
                 attn_mask = self._make_sliding_window_mask(
-                    q_len=seq_len_kv,
+                    q_len=seq_len_q,
                     kv_len=seq_len_kv,
                     sliding_window_size=sliding_window_size,
                     device=per_req_query.device,
+                    query_offset=query_offset,
+                )
+                is_causal = False
+            elif causal and query_offset > 0:
+                attn_mask = self._make_causal_mask(
+                    q_len=seq_len_q,
+                    kv_len=seq_len_kv,
+                    device=per_req_query.device,
+                    query_offset=query_offset,
                 )
                 is_causal = False
 
-            per_req_out_redudant = (
+            per_req_out = (
                 _sdpa(
-                    per_req_query_redudant.unsqueeze(0),
+                    per_req_query.unsqueeze(0),
                     per_req_key.unsqueeze(0),
                     per_req_value.unsqueeze(0),
                     attn_mask=attn_mask,
@@ -189,7 +211,7 @@ class TorchNativeAttnBackend(AttentionBackend):
                 .squeeze(0)
                 .movedim(query.dim() - 2, 0)
             )
-            output[start_q:end_q, :, :] = per_req_out_redudant[prefill_seq_len_q:, :, :]
+            output[start_q:end_q, :, :] = per_req_out
             start_q, start_kv = end_q, end_kv
         return output
 
@@ -332,10 +354,7 @@ class TorchNativeAttnBackend(AttentionBackend):
         seq_lens = forward_batch.seq_lens
         extend_prefix_lens = forward_batch.extend_prefix_lens
         extend_seq_lens = forward_batch.extend_seq_lens
-        if (
-            forward_batch.forward_mode.is_target_verify()
-            and extend_prefix_lens is None
-        ):
+        if forward_batch.forward_mode.is_target_verify() and extend_prefix_lens is None:
             tokens_per_req = forward_batch.spec_info.num_tokens_per_req
             extend_prefix_lens = forward_batch.seq_lens.to(torch.int32)
             extend_seq_lens = torch.full(
@@ -423,10 +442,7 @@ class TorchNativeAttnBackend(AttentionBackend):
                 None,
             )
             == "nhd"
-            and (
-                layer.sliding_window_size is None
-                or layer.sliding_window_size <= -1
-            )
+            and (layer.sliding_window_size is None or layer.sliding_window_size <= -1)
         ):
             from sglang.srt.hardware_backend.mps.ops import decode_gqa
 
@@ -486,7 +502,9 @@ class TorchNativeMultiStepDraftBackend:
 
     needs_cpu_seq_lens: bool = False
 
-    def __init__(self, model_runner: ModelRunner, topk: int, speculative_num_steps: int):
+    def __init__(
+        self, model_runner: ModelRunner, topk: int, speculative_num_steps: int
+    ):
         if topk != 1:
             raise NotImplementedError(
                 "Torch-native speculative decode currently supports topk=1"
