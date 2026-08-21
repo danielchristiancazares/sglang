@@ -372,6 +372,69 @@ and a patched all-GPU K+1 verify route. Any reproduction or SGLang port now
 ranks first on the exact `199000+16` scoreboard. Short-context acceptance and
 device-cycle measurements remain supporting diagnostics.
 
+## Apple-silicon experimental handoff
+
+The Apple route is active as an experimental lane on an M1 Max with 32 GiB
+unified memory. At the user's request, the pinned Q1 cache was deleted after
+its experiment, reclaiming 7.9 GB; its immutable revision and checksum remain
+in the 19:09 experiment-log entry. The current retained playground is
+Bartowski's conventional `Qwen3.8-27B-IQ2_XXS.gguf`, pinned at revision
+`f0eec4a4bb4975114a030d048952d83c0a53c034`. It is 9,393,043,040 bytes with
+SHA-256 `b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9`.
+All 866 tensors use formats supported by the native torch/MPS route.
+Signed commit `7740cae691` owns that packed low-bit GGUF route and its MPS
+convolution-state contract. Signed commit `1271610e0b` owns the separate,
+opt-in MLX quantized-prefill query tiling mechanism. Signed follow-up
+`ea983f3120` expresses its cross-tile lifetime ordering with `mx.depends`,
+which preserves query values and avoids arithmetic dependency propagation.
+Signed commit `8879ed3d01` registers GGUF USER_DEFINED vocabulary entries as
+ordinary added tokens while keeping CONTROL entries special.
+Host cleanup leaves this artifact as the only Hugging Face model cache and no
+MTPLX model cache. A broader cache cleanup also removed the first retained
+copy, so the same immutable revision was downloaded again and its byte size
+and SHA-256 were reverified. SGLang, Codex-runtime, uv, and other rebuildable
+user caches are cold. The data volume had 267 GiB free after restoration.
+
+The current generic IQ2 `128+32` deterministic window averages **6.956 prompt /
+3.189 generation tok/s**, **18.400854 s TTFT**, and **28.121441 s E2E** over
+five cache-flushed runs. Packed weight loading reports **10.03 GB**; the Mamba
+and KV allocations bring the accounted runtime total to about **10.44 GB**.
+`vmmap` reports a 12.4 GiB scheduler physical footprint and 15.0 GiB peak after
+serving. A fresh representative IQ2_XXS `17408x5120` baseline measures
+**1.189375 ms / 18.064 GiB/s** at batch one; the retained batch-eight window is
+**4.984750 ms / 4.428 GiB/s**.
+CPU-dequantized parity covers every packed type present at batch 1/3/4/8,
+including odd output rows.
+
+The earlier missing-final and empty-thinking-disabled behavior was a native
+GGUF tokenizer defect rather than checkpoint evidence. Qwen's `<think>`,
+`</think>`, and tool markers are GGML USER_DEFINED entries; before
+`8879ed3d01`, they fragmented into ordinary text pieces. A fresh explicit-parser
+server now returns preserved `reasoning_content` plus visible final `703`,
+exact thinking-disabled `READY`, exactly one parsed
+`multiply({"a":37,"b":19})` call with `finish_reason=tool_calls`, and a
+tool-result continuation ending in `37 × 19 = **703**`. `/model_info`
+continues to report image/audio understanding false. The focused tokenizer,
+reasoning-parser, and tool-parser suites passed 321 tests plus 64 subtests.
+
+This clears the local behavior blocker while leaving the Apple route outside
+the performance scoreboard until the required sampled workload, independent
+window, capacity ladder, and OpenCode2 gate pass. No Apple server or Metal
+compiler is live, port 30000 is free, and memory returned to 94% free after the
+verified tree shutdown. A pinned current llama.cpp comparison remains useful
+for dependency performance; it is no longer required to explain the prior
+formatting failure. The next measured native-kernel candidate is the
+IQ2_XXS batch-one/batch-prefill projection or removal of mixed packed-weight
+materializations.
+
+The MLX long-context lane also retains adaptive quantized-prefill query tiling
+behind `SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE`. Its 1 GiB automatic threshold
+preserves small-prefill behavior while bounding the score temporary that caused
+the original 98K-context Metal allocation failure. Promotion still requires
+pinning an MLX build with the relevant quantized GQA tail-tile correction,
+wiring an explicit maximum-context profile, selecting a recycled-buffer cache
+limit, and completing the exact capacity ladder.
+
 ## Behavior and capacity invariants
 
 Every promoted candidate retains all of these:

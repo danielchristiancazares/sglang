@@ -1283,3 +1283,50 @@
 - Related commit or revert: only all 64 target gate/up projections remain in
   `03ba3d2e27`; draft-only, arbitrary shape/layer masks, and debug logging were
   removed.
+## PERF-FA043 - Batch-one MLX ArraysCache merge/split bypass
+
+- Hypothesis: a single-request auxiliary-state cache can avoid general
+  merge/split handling and reduce the fixed decode round cost.
+- Scope: MLX Qwen3.8 batch-one `ArraysCache` handling on the established
+  Fast32K fixed-decode control.
+- Attempted change: installed a batch-one bypass and compared five warmed
+  end-to-end samples per arm with the same checkpoint and workload.
+- Benchmark evidence: control times were `13.786914, 13.638193, 13.638745,
+  13.647698, 13.625752 s` (mean **13.667460 s**); candidate times were
+  `13.790976, 13.609490, 13.598677, 13.661740, 13.636127 s` (mean
+  **13.659402 s**). The roughly 0.06% difference lies inside the window.
+- Correctness evidence: the fixed workload completed with unchanged output
+  behavior during the comparison.
+- Failure mode: cache merge/split bookkeeping is not a material part of the
+  batch-one end-to-end critical path.
+- Why not to retry unchanged: the largest plausible effect is below the
+  measurement noise and cannot clear the Apple record gate.
+- Reopen only if: a trace on a materially different request topology shows
+  cache composition on the serialized critical path.
+- Related commit or revert: experimental code was removed before commit.
+
+## PERF-FA044 - Always-on MLX quantized-prefill query tiling
+
+- Hypothesis: dividing quantized attention by query rows would improve every
+  prefill while reducing Metal score-matrix residency.
+- Scope: Qwen3.8 quantized-KV prefill at a 64-row query tile, including the
+  exact `5000+1` server control.
+- Attempted change: forced query tiling without the later 1 GiB score-size
+  admission threshold.
+- Benchmark evidence: the established path completed exact `5000+1` in
+  **59.078458 s / 84.633218 prompt tok/s**; always-tiled completed it in
+  **59.271317 s / 84.357836 prompt tok/s**. Both returned token id 100.
+  At the larger synthetic `Lq=1024,Lk=32768` shape, tiling improved
+  **0.258692 -> 0.229053 s** and reduced peak allocation
+  **1,732,382,776 -> 701,499,056 bytes**.
+- Correctness evidence: causal helper parity and later complete Qwen3.5
+  wrapper parity pass. The exact server control returned the same token.
+- Failure mode: extra dispatch and concatenation cost has no small-prefill
+  payoff, while large score matrices do benefit.
+- Why not to retry unchanged: the process-wide always-on policy regresses the
+  common small workload and offers no capacity benefit there.
+- Reopen only if: dependency dispatch cost changes enough to make small score
+  matrices measurably faster when tiled. The retained implementation instead
+  gates tiling above a measured 1 GiB score estimate.
+- Related commit or revert: superseded by the thresholded opt-in mechanism in
+  `1271610e0b`.

@@ -6,6 +6,8 @@
 |---|---:|---:|---:|---|---|
 | Qwen3.8-27B Q4_0, 8 concurrent requests, 32 output tokens each | 32.953 TPS | 38.016 TPS | +5.063 TPS | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_sampling.py --concurrency 8 --output-tokens 32` | 2026-08-16 22:26 PDT |
 | Qwen3.8-27B Q4_0, batch 24, 128 output tokens each, real top-k/top-p sampling | 49.500 TPS | **62.034 TPS** | **+12.534 TPS** | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_batched_request.py --url http://127.0.0.1:30001/generate --batch-size 24 --output-tokens 128` | 2026-08-16 22:35 PDT |
+| Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` batch-one projection | 1.193958 ms | **1.189375 ms** | -0.004583 ms / -0.384% | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 21:10 PDT |
+| Qwen3.8-27B IQ2_XXS, deterministic `128+32` served workload | N/A | **6.956 prompt / 3.189 generation tok/s** | retained playground baseline | Python ingress against the packed Bartowski IQ2_XXS GGUF; exact launch in `notes/experiment-log.md` | 2026-08-20 20:28 PDT |
 | Qwen3.8-27B RadixArk, real sampled `6213/512`, reasoning preserved | 122.712 tok/s | 122.712 tok/s | 0.000 | `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` | 2026-08-16 22:40 PDT |
 | Post-correctness linear comparison, second warmed five-run window | 122.712 tok/s | 124.775 tok/s measured | +2.063 / +1.681% | same exact real-sampling command | 2026-08-16 23:24 PDT |
 | Selective target NVFP4 (`AttnNVFP4`) candidate, real sampled `6213/512`, admission window 1 | 124.775 tok/s | 131.707 tok/s mean / 130.824 median (unqualified) | +6.932 / +5.556% | same exact real-sampling command against `-ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` | 2026-08-17 02:00 PDT |
@@ -665,6 +667,16 @@ tree throughput can be ranked for production.
 | PERF-059 | Emit greedy draft-k1 q directly with native CUDA. | Native Windows argmax/one-hot q producer | Promoted additive win in `03ba3d2e27` | Proposal construction fell 73-87 -> 3.7-3.9 us. Matched long generation improved 122.352 -> 123.559 tok/s (+0.987%); independent restart averaged 123.831. |
 | PERF-061 | Retune all exact target FP4 tactics and disable PDL. | Six SM120 target GEMM families | Rejected | PDL-off regressed weighted shape timing; exact tactic pair projected 0.361 ms but moved real long generation only 123.831 -> 123.972 tok/s (+0.114%), inside noise. |
 | PERF-062 | Use Cutlass for prefill and in-place Marlin for target gate/up decode. | 64 target gate/up projections plus native draft-k1 q | Promoted launcher default in `03ba3d2e27` | Accepted exact score **3078.058/114.617**, TTFT **64.651152 s**, E2E **64.782022 s**; independent no-override launch **3052.437/114.053**. Both beat all four prior record metrics. |
+| PERF-A001 | Keep Q2_K, Q4_K, IQ2_XXS, and IQ1_M GGUF weights packed through native Metal matmul and embedding kernels. | MPS GGUF loader, Metal kernels, convolution-state selection | Retained in `7740cae691` | Actual Bartowski IQ2 rows pass batch 1/3/4/8 parity; prior immutable IQ1 evidence is retained in the experiment log. Packed serving reduces model residency and makes the retained Q2 checkpoint runnable. |
+| PERF-A002 | Reuse each IQ2_XXS unpack and input load across multiple output rows at batch one and across request rows during prefill. | `gguf_q4_0.mm` IQ2_XXS kernels and host dispatch | Next native-kernel experiment | Current generic scalar-dequant kernel measures 1.189375 ms / 18.064 GiB/s for `17408x5120` at batch one. First geometry is one 32-weight atom per threadgroup step with scale/aux/grid/sign reuse, followed by two output rows per SIMD group. |
+| PERF-A003 | Bound quantized-KV prefill score residency by tiling independent query rows above a measured threshold. | MLX quantized attention wrapper and environment surface | Retained opt-in in `1271610e0b`; safety follow-up `ea983f3120` | Helper and full Qwen3.5 wrapper parity pass; `1024x32768` changed 0.258692 s / 1.732 GB peak to 0.229053 s / 0.701 GB. Cross-tile ordering now uses `mx.depends`. The advertised 262K profile still requires explicit flag wiring, dependency verification, cache policy, and a completed capacity run. |
+| PERF-A004 | Separate GGUF checkpoint behavior from SGLang formatting before qualifying the retained IQ2 route. | native GGUF tokenizer, reasoning parser, Qwen3 Coder tool parser | Correctness fix retained in `8879ed3d01` | GGUF USER_DEFINED reasoning/tool markers now encode atomically without becoming skippable specials. Live gates return final `703`, exact thinking-off `READY`, one parsed multiply call, and a preserved tool-result continuation. Performance/capacity qualification remains open. |
+| PERF-A005 | Bound MLX's recycled Metal buffer cache during monotonically growing long-context prefill. | `SGLANG_MLX_CACHE_LIMIT_GB`, outer prefill boundary, 262K profile | Active survey | The runner supports a pre-load cache cap, but no recorded long-context launch sets it and no cache clear occurs between outer chunks. This is distinct from the now-bounded active score tile. |
+| PERF-A006 | Compare the retained IQ2 GGUF through a pinned current llama.cpp Metal server. | Supporting dependency, exact Apple benchmark and behavior gates | Highest-priority dependency comparison | No local llama runtime is installed. A current reference can test mature IQ2/GDN/q4-KV kernels on the only retained artifact and quantify the dependency-level ceiling under the exact scoreboard shape. |
+| PERF-A007 | Eliminate per-forward materialization of heterogeneous merged GGUF projection shards. | `GGUFLinearMethod.apply`, packed Metal matmul strides/output offsets, GGUF storage | High-priority native candidate | The retained descriptor reaches 40 `.contiguous()` packed-weight copies and 32 output concatenations per full forward: 501,350,400 bytes / 478.125 MiB copied per generated token at batch one. Row-stride-aware dispatch can preserve each row's arithmetic; compact shards later recover 353.4375 MiB residency. |
+| PERF-A008 | Replace native MPS score-array GQA with fixed-memory online or split-K softmax. | `decode_gqa` Metal kernel, KV indirection, cache write | Capacity-critical native candidate | Current native decode allocates `(cache_slots + 256) * 4` bytes of threadgroup scratch and rejects `cache_slots > 7936`. Fixed-size online state removes the configured-pool occupancy cost and this absolute context ceiling; split-K adds long-history parallelism. |
+| PERF-A009 | Remove batch-one GDN input packing and specialize the 96x5120 F32 b/a projection. | Qwen3.5 GDN producer/consumer boundary and Metal dense kernel | Profile next | Across 48 GDN layers the pack kernel only splits contiguous B1 views. The b/a path uses the batch-eight F32 kernel at B1, carrying eight accumulators and invalid-row checks while reading 90 MiB of weights per token across the model. |
+| PERF-A010 | Add native affine-q4 quantized SDPA and GQA-aware KV reuse to MLX. | Supporting MLX C++/Metal dependency | Long-horizon dependency candidate | Query tiling bounds materialized scores but leaves repeated qMM and q4 KV reads. A fused online-softmax route can dequantize K/V in tiles, reuse each KV head across six Q heads, and improve both long prefill and decode without full score storage. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1349,3 +1361,101 @@ tree throughput can be ranked for production.
   `03ba3d2e27` makes the selective checkpoint, chunk 7680, native draft-k1 q,
   large-EXTEND tuning, and gate/up hybrid Marlin the normal Windows launcher
   path. The higher 3100/120 milestone remains future work.
+### 2026-08-20 21:10 PDT - PERF-A-BASELINE-001 retained IQ2 Metal baseline
+
+- Change: measurement only from `main` at
+  `e09e43171d46d4f5bdf35d3c8b3b56a628bafc0d` plus the recovered Apple
+  worktree. No source was changed before this baseline.
+- Environment: MacBookPro18,2 with an Apple M1 Max, 32 GPU cores, 32 GiB
+  unified memory, macOS 26.6.2 (25G83), Python 3.11.15, PyTorch 2.11.0,
+  MLX 0.32.0, mlx-lm 0.31.3, AC power, sleeping display, 94% system memory
+  free, and no thermal or performance warning. Port 30000 and the SGLang,
+  Metal-compiler, and model-runtime process set were empty.
+- Input: immutable Bartowski `Qwen3.8-27B-IQ2_XXS.gguf` revision
+  `f0eec4a4bb4975114a030d048952d83c0a53c034`, SHA-256
+  `b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9`.
+  The measured tensor was `blk.8.ffn_gate.weight`, IQ2_XXS,
+  `17408x5120`, batch one.
+- Command:
+  `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py <immutable-blob> --tensor blk.8.ffn_gate.weight --batch-size 1 --warmup 8 --iterations 25`.
+- Raw milliseconds:
+  `1.255834, 1.215417, 1.204625, 1.227542, 1.184541, 1.191250,
+  1.215709, 1.201458, 1.185042, 1.189375, 1.208000, 1.189250,
+  1.179875, 1.190500, 1.200875, 1.186125, 1.183500, 1.168500,
+  1.179125, 1.187875, 1.187375, 1.194792, 1.175834, 1.189125,
+  1.214000`; median **1.189375 ms**, effective packed bandwidth
+  **18.064 GiB/s**.
+- Correctness evidence: actual-file CPU-dequantized parity passed at 17 odd
+  output rows for every packed type present in this checkpoint at batch sizes
+  1, 3, 4, and 8, plus Q2_K embedding lookup. Worst observed absolute error
+  was `2.86102e-06`; worst relative error was `9.45619e-07`. The focused MPS
+  convolution-state tests passed 2/2 and the MLX quantized-KV suite passed
+  9/9.
+- Decision: accept as the fresh pre-candidate IQ2 kernel baseline. It agrees
+  within 0.4% with the retained 1.193958 ms window and does not qualify the
+  checkpoint's served behavior.
+
+### 2026-08-20 21:14 PDT - PERF-A001/A003 recovered Apple mechanisms committed
+
+- Change: committed the recovered packed Q2_K/Q4_K/IQ2_XXS/IQ1_M Metal
+  matmul and embedding route, the MPS FP32 convolution-state default, and the
+  focused microbenchmark/parity tools as signed commit `7740cae691`
+  (`perf: serve packed low-bit GGUF on MPS`). Committed thresholded,
+  process-opt-in quantized-KV query tiling as signed commit `1271610e0b`
+  (`perf: tile long-context MLX quantized attention`).
+- Benchmark evidence: the packed Bartowski IQ2 lane retains the fresh
+  **1.189375 ms / 18.064 GiB/s** batch-one projection baseline and the prior
+  **6.956 prompt / 3.189 generation tok/s** model-level window. The MLX helper
+  retains the measured `1024x32768` reduction from **0.258692 s / 1.732 GB**
+  to **0.229053 s / 0.701 GB**; exact 5K behavior remains on the established
+  path under the 1 GiB threshold.
+- Correctness evidence: actual-file packed parity passed at batch 1/3/4/8,
+  MPS convolution-state tests passed 2/2, GGUF metadata/name-map tests passed
+  3/3, and the MLX quantized-KV suite passed 10/10. The added Qwen3.5 test
+  compares the complete gated attention wrapper against mlx-lm's ordinary
+  quantized-cache forward, including projections, Q/K normalization, RoPE,
+  causal attention, gate, output projection, and cache offset.
+- Decision: retain both mechanisms. The MPS path is the available Q2
+  playground. MLX tiling is capacity infrastructure rather than a general
+  speed claim; its long-context profile still needs a cache policy and an
+  exact rung beyond 32K.
+
+### 2026-08-20 21:30 PDT - PERF-A004 native GGUF marker repair
+
+- Change: registered GGML USER_DEFINED vocabulary entries as ordinary added
+  tokens in the native GGUF tokenizer while retaining GGML CONTROL entries as
+  special tokens. Qwen reasoning and tool boundary tokens are now atomic and
+  remain visible when `skip_special_tokens=True`. The change is isolated to
+  native GGUF tokenizer construction and is signed in `8879ed3d01`.
+- Benchmark evidence: no throughput number is attributed to this correctness
+  change. Weight/cache residency stayed at the retained 10.03/0.29/0.12 GB
+  values during the live gate.
+- Correctness evidence: the real retained artifact changed `<think>\n` from
+  four token pieces to `[248068, 198]` and `<tool_call>\n` from five pieces to
+  `[248058, 198]`. An explicit Qwen3/Qwen3-Coder parser launch returned
+  coherent separate reasoning plus visible `703`, exact thinking-disabled
+  `READY`, exactly one `multiply({"a":37,"b":19})` call with
+  `finish_reason=tool_calls`, and a preserved tool-result continuation ending
+  in `703`. Image/audio remained disabled. Focused validation passed 321 tests
+  plus 64 subtests.
+- Decision: retain. The previous apparent checkpoint formatting failure was
+  tokenizer-induced. The IQ2 lane now has valid local behavior evidence, while
+  sampled performance, independent restart, maximum context, and OpenCode2
+  gates remain required before promotion.
+
+### 2026-08-20 21:30 PDT - PERF-A003 dependency-safe tile ordering
+
+- Change: replaced the quantized-prefill tiler's arithmetic
+  `sum(previous) * 0` lifetime edge with MLX's `mx.depends` scheduling
+  primitive. Signed commit `ea983f3120` preserves the intended serialized
+  allocation lifetime without modifying query values.
+- Benchmark evidence: no new speed claim; the retained long-shape evidence is
+  **0.258692 -> 0.229053 s** with peak allocation
+  **1,732,382,776 -> 701,499,056 bytes**. The ordinary path remains default.
+- Correctness evidence: the full quantized-KV helper and Qwen wrapper suite
+  passed **10/10** after the change; Python compilation and whitespace checks
+  passed.
+- Decision: retain as a promotion prerequisite. The former arithmetic edge
+  could propagate NaN/infinity across independent tiles and added avoidable
+  operations. Exact long-context qualification still depends on a pinned MLX
+  build, cache limit, explicit profile, and capacity ladder.
