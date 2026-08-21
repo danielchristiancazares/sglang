@@ -1,13 +1,21 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
-18:45 PDT.
+22:04 PDT.
 
-**Qualified source line:** commit
+**Qualified production source line:** commit
 `7f5af878da7b8dc43063f31e554dfc69cee5d510`
 (`perf: retain large-extend FlashInfer tactics`). The selected optimization is
 expert-opt-in; the base RadixArk, 4096-token chunk, and exact 200K launcher
 defaults were requalified unchanged after the commit's source was tested.
+
+**Latest retained selective-performance source:** commit
+`5ea3b734b0` (`perf: fuse eager Windows SwiGLU NVFP4`). It includes the
+bit-exact fused Gemma residual norm from `e09e43171d` and adds an eager-only
+SwiGLU-to-NVFP4 producer. The explicit selective checkpoint/chunk-7680 profile
+passed exact capacity and deterministic-output gates. Production-default
+behavior/client requalification is deferred until the active target is
+cleared, so the qualified production source line above remains unchanged.
 
 ## Qualified production configuration
 
@@ -54,6 +62,8 @@ executable source of truth.
 | Primary exact `199000+16` record | **3048.086 prompt / 112.499 generation tok/s**, TTFT **65.286869 s**, E2E **65.420204 s** |
 | Selected-cache exact prompt window | **3047.309 tok/s** five-run mean; every request exact `199016` |
 | Selected-cache long generation | **118.389 tok/s** three-run mean at exact `199000+512` |
+| Current eager-fusion prompt window | **2987.275 tok/s** five-run mean in the drifted current environment; **0.914%** above the adjacent PERF-028 arm with the established digest restored |
+| Current eager-fusion long support | **3001.344 prompt / 115.225 generation tok/s** over three exact `199000+512` requests; established digest restored |
 | Behavior | Coherent preserved thinking; correct `703`; exactly one `multiply({"a":37,"b":19})` tool call |
 | Surface | Image and audio understanding reported false |
 | Final production relaunch | Defaults unchanged; exact `199016`, all three graphs, OpenCode2, and **2,222 MiB** post-flush free |
@@ -119,6 +129,16 @@ compact authority.
 The next target is **3100 prompt / 120 generation tok/s**, **<=64.20 s TTFT**,
 and **<=64.35 s** end to end in one eligible exact request. The timing limits
 are mathematically tied to the two throughput thresholds.
+
+PERF-028 and PERF-027 are now retained additive changes on the active source
+line. PERF-028 fuses residual-add plus Gemma norm and improved adjacent exact
+long generation by **1.205%**. PERF-027 fuses eager Qwen SwiGLU directly into
+the NVFP4 tuple consumed by `down_proj`; its repaired exact window improved
+prompt by **0.914%** and TTFT by **0.606649 s** versus PERF-028 while restoring
+both deterministic digests. PERF-027 deliberately bypasses
+`torch.compiler.is_compiling()`: Inductor removes the eager BF16 SiLU rounding
+boundary, so the compiled M3 target graph retains its former function until a
+separately exact compiled-semantics producer qualifies.
 
 The winning selective profile remains `AttnNVFP4`, chunk 7680, M3, and the
 bit-exact Windows Gemma residual-norm direct-output path. PERF-024 additionally
@@ -294,6 +314,9 @@ distribution, and cost topology:
   increase outweighed its 3.636% acceptance gain;
 - FlashInfer paged-only prefill, which changed exact-200K prompt by -0.135%
   and long generation by -2.207%;
+- selecting the eager-exact SwiGLU-to-NVFP4 producer inside the compiled M3
+  target graph, which changed the deterministic output because Inductor's
+  one-rounding function differs from eager prefill;
 - global chunk-7680 promotion, which regressed the base checkpoint and
   transiently reduced headroom to 200 MiB;
 - chunk 7808, which regressed the selective prompt mean to 2909.350 tok/s;

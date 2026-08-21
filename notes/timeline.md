@@ -394,6 +394,27 @@ code changes, or process state matter.
   20,928-byte cache has SHA-256
   `8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`.
 
+### Fuse exact eager normalization and MLP activation boundaries
+
+- Fused residual addition into the bit-exact native-Windows Gemma norm. The
+  M1/M3 kernel boundary fell from about 16.5 to 9.5 us, and adjacent exact
+  long generation improved **115.194 -> 116.583 tok/s**.
+- Added a precise native SwiGLU-to-NVFP4 producer for Qwen MLP down
+  projections. Random production shapes initially passed, but an exhaustive
+  finite-BF16 sweep found 520 underflow-group packed-byte differences. The
+  repair recreates FlashInfer's final FTZ quantizer boundary and passes compact
+  plus TMA all-finite coverage.
+- A second discriminator proved eager prefill and compiled target verification
+  have different established arithmetic: Inductor removes the intermediate
+  BF16 SiLU round. The producer is therefore eager-only; compiled M3 retains
+  its former path and deterministic trajectory.
+- Five repaired exact `199000+16` requests restored the established digest and
+  averaged **2987.275 prompt tok/s**, **0.914%** above the adjacent PERF-028
+  arm, with TTFT improved by **0.606649 s**. Three exact long requests restored
+  their digest and averaged **3001.344 prompt / 115.225 generation tok/s**.
+- Retained in `5ea3b734b0`. The headline record remains PERF-024; these
+  additive changes are the active source for the next optimization.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
