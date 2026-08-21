@@ -6024,3 +6024,158 @@ mean 13.929045  17.125658 446.051        39.730
   registered child-tree cleanup immediately. All known PIDs are absent, port
   30000 is free, no matching server/compiler/tracker remains, memory pressure
   is 93% free, and macOS records no thermal/performance warning.
+
+### 2026-08-20 23:25 PDT - PERF-A009 F32 b/a path isolated
+
+- Began from signed `HEAD=88026f6cf614c3735d599d4f9a3ef8e397c5194f`
+  on `main`, ahead of `origin/main` by ten. The only candidate worktree paths
+  were `gguf.py` plus new `bench_mps_dense_ba.py` and
+  `test_mps_dense_batch1.py`; `BENCHMARK.md` remained byte-unchanged. Host is
+  an Apple M1 Max with 32 GB unified memory, macOS 26.6.2, arm64 Python 3.11,
+  PyTorch 2.11.0, and native MPS available.
+- Source tracing confirmed the live compact mixed-shard path concatenates the
+  48 pairs of `48x5120` F32 alpha/beta weights into one contiguous
+  `96x5120` projection per GDN layer. That makes 48 calls and 90 MiB of F32
+  weights per decoded token. The prior F32 MPS dispatcher always selected the
+  custom dense kernel, including the one-vector case.
+- Three custom Metal row-reuse geometries lost against its selected
+  one-row-per-SIMD 25-sample median of **0.390083 ms**: two SIMDgroups × four
+  rows measured **0.484833 ms**, one SIMDgroup × four rows measured
+  **0.504208 ms**, and two SIMDgroups × two rows measured **0.556667 ms**.
+  All experimental shader edits were removed; the final Metal diff is empty.
+  During ablation an unrelated IQ2 SIMDgroup count was accidentally touched,
+  found in the diff, and restored before any retained or served measurement.
+- PyTorch's native MPS `torch.mm` instead measured approximately
+  **0.277459 ms** for one exact synchronized call. The retained dispatch
+  changes only the F32, MPS, one-vector branch to `x @ qweight.T`; every
+  multi-vector invocation still selects `dense_matmul`.
+- A production A/B/A sweep over all 48 actual merged weights measured
+  candidate/control/candidate medians **2.332041 / 7.231042 / 2.067041 ms**.
+  A fresh post-cleanup rerun measured **2.159000 / 7.296667 / 2.051708 ms**;
+  its complete raw values are preserved in `PERFORMANCE_LOG.md`. Maximum
+  candidate/control difference was `1.78813934e-06`.
+- Focused coverage passed output rows
+  `1,2,3,4,5,7,8,9,15,16,31,32,47,48,95,96,97`, input widths
+  `1,31,32,33,63,64,65,5120`, multi-batch fallback at `2,3,4,8`, and every
+  actual layer. Maximum actual-layer error was `2.86102295e-06`.
+  `py_compile` and `git diff --check` passed. Ruff and Black are absent, so no
+  result from either tool is claimed.
+
+### 2026-08-20 23:42 PDT - PERF-A009 first served window passes and cleans up
+
+- Before launch, port 30000 and the server/compiler process set were empty,
+  memory pressure reported 93% free, and macOS reported no thermal or
+  performance warning. Launched:
+
+  ```text
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-IQ2_XXS.gguf --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 --context-length 1024 --max-total-tokens 1024 --max-running-requests 1 --chunked-prefill-size 256 --max-prefill-tokens 512 --disable-radix-cache --disable-overlap-schedule --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments matched: native MPS, FP32 weights/cache/state, context
+  and token pool 1024, one request, chunk 256, prefill cap 512, radix and
+  overlap off, graphs off, Qwen3 reasoning and Qwen3 Coder tool parsing.
+  Weight loading took 19.05 seconds and reported 9.03 GB; Mamba/KV reported
+  0.29/0.12 GB. Root/listener PID `74751` owned port 30000 with tracker,
+  scheduler, and detokenizer `74756/74757/74758`.
+- An orchestration error initially started two benchmark clients after their
+  nested launch calls yielded session IDs. Exact client PID `74788` was
+  stopped immediately; PID `74786` had already completed. The server finished
+  the aborted work, then a successful `/flush_cache?timeout=600` reset state.
+  Those overlapping attempts are excluded. Process inspection confirmed no
+  benchmark client remained before the clean sequential window.
+- Five cache-flushed deterministic exact `128+32` samples measured generation
+  `8.447, 8.450, 8.444, 8.431, 8.431 tok/s` (mean **8.4406**) and prompt
+  `7.029, 7.043, 7.060, 7.056, 7.034 tok/s` (mean **7.0444**). TTFT was
+  `18.210373, 18.173457, 18.130881, 18.140328, 18.196470 s` (mean
+  **18.170302 s**); E2E was `21.880339, 21.841889, 21.802018, 21.817133,
+  21.873407 s` (mean **21.842957 s**). Every response had exact usage,
+  `finish_reason=length`, 166 reasoning characters, and unchanged digest
+  `37f5512bd18c1962bd2e170f543fae806ca48b70495c2761ae162df3cac56299`.
+- Five more exact requests used temperature 1.0, top-p 0.95, top-k 20, and
+  presence penalty 1.5. Generation measured
+  `8.309, 8.304, 8.295, 8.325, 8.314 tok/s` (mean **8.3094**); prompt was
+  `7.059, 7.039, 7.076, 7.043, 7.031 tok/s` (mean **7.0496**). TTFT mean was
+  **18.157277 s** and E2E mean **21.887987 s**. Every response completed exact
+  `128+32` with nonempty separate reasoning and length finish.
+- Behavior gates passed. Sampled arithmetic returned coherent reasoning and
+  final `703`; thinking disabled returned exact `READY` and zero reasoning;
+  the parser returned one `multiply({"a":37,"b":19})` call with
+  `finish_reason=tool_calls`; the explicit tool-result continuation preserved
+  incoming thought, added fresh reasoning, and returned
+  `**37 × 19 = 703**`. `/model_info` reports generation enabled, text model
+  type, and image/audio understanding false.
+- Before shutdown, PID ancestry and port ownership still matched, memory was
+  93% free, and no thermal/performance warning was present. Interrupted the
+  owning root session. Uvicorn completed shutdown and registered child-tree
+  cleanup immediately. PIDs `74751/74756/74757/74758` are absent, port 30000
+  is free, no server/client/compiler remains, memory is 93% free, and macOS
+  still records no warning. Commit and an independent restart are next.
+
+### 2026-08-20 23:46 PDT - PERF-A009 source committed
+
+- Signed commit `4d1641fdcd` (`perf: accelerate F32 GGUF decode on MPS`)
+  contains only the narrow F32 one-vector dispatch, actual-weight A/B/A
+  benchmark, and focused parity/fallback harness. `git verify-commit` reports
+  a good EDDSA signature. Python compilation, focused actual-weight coverage,
+  cached diff validation, the first served window, and all behavior gates
+  passed before commit.
+- The rule lives in `fused_mul_mat_gguf`, the shared GGUF matmul dispatcher
+  that owns device, stored type, activation type, and batch geometry. This
+  covers every reachable F32 MPS projection while retaining the selected
+  custom dense kernel for multi-vector prefill and leaving every non-MPS path
+  unchanged. The next gate is an identical restart from committed `HEAD`.
+
+### 2026-08-21 00:00 PDT - PERF-A009 committed restart passes; OpenCode exposes context gate
+
+- Confirmed port 30000 free, no server/client/compiler process, 93% free
+  memory, and no macOS thermal/performance warning. Relaunched the identical
+  command recorded at 23:42 from signed
+  `HEAD=4d1641fdcdf0e3a78cedbca42148eec5ddd63a8a`; only the three performance
+  ledgers were dirty. Resolved arguments matched again. Weight loading took
+  **19.56 seconds** at 9.03 GB, with 0.29 GB Mamba and 0.12 GB FP32 KV.
+  Root/listener PID `75016` owned port 30000 with tracker/scheduler/
+  detokenizer `75019/75020/75021`. The one-time native Metal build completed
+  before measurement and no compiler remained.
+- One independent deterministic exact `128+32` confirmation reached
+  **7.010 prompt / 8.420 generation tok/s**, **18.259251 s TTFT**, and
+  **21.940782 s E2E**. It returned exact usage, length finish, 166 reasoning
+  characters, and the established digest
+  `37f5512bd18c1962bd2e170f543fae806ca48b70495c2761ae162df3cac56299`.
+- Five sequential cache-flushed requests used temperature 1.0, top-p 0.95,
+  top-k 20, and presence penalty 1.5. Generation measured
+  `8.313, 8.294, 8.238, 8.313, 8.313 tok/s` (mean **8.2942**); prompt was
+  `7.029, 7.052, 7.044, 7.025, 7.026 tok/s` (mean **7.0352**). TTFT was
+  `18.210145, 18.152113, 18.171726, 18.219778, 18.217608 s` (mean
+  **18.194274 s**); E2E was `21.939056, 21.889660, 21.934728, 21.948829,
+  21.946647 s` (mean **21.931784 s**). All five completed exact `128+32`,
+  kept nonempty separate reasoning, and finished by length. This mean is
+  within 0.19% of the first candidate window and 4.26% above PERF-A011's
+  independent `7.9552 tok/s` mean.
+- Independent behavior passed: arithmetic returned separate reasoning and
+  final `703`; thinking disabled returned exact `READY` and zero reasoning;
+  exactly one `multiply({"a":37,"b":19})` call parsed with tool-call finish;
+  the explicit result continuation preserved thought and returned
+  `**37 × 19 = 703**`; `/model_info` retained image/audio false.
+- OpenCode 1.18.15 is installed on this host. The first process-scoped config
+  attempt used the newer plural-provider schema and failed validation before
+  any request; the corrected current schema used singular `provider`,
+  `npm=@ai-sdk/openai-compatible`, and
+  `options.baseURL=http://127.0.0.1:30000/v1`. Global OpenCode configuration
+  was never read or changed. `opencode run --pure --model local/qwen --format
+  json --thinking 'Reply with exactly OC READY. Do not call tools.'` formed a
+  **13,635-token** main request. The live 1,024-token server returned HTTP 400
+  `ContextOverflowError` before model execution.
+- The client remained alive for smaller auxiliary/title work after emitting
+  the main-request error. After two bounded 30-second waits, interrupted only
+  its owning command session; it exited 130. The server then reported deleted
+  tokenizer state while draining canceled output and still held one queued
+  auxiliary request. Process inspection showed the OpenCode process absent.
+  The verified server root was interrupted directly; its scheduler surfaced
+  `KeyboardInterrupt` in that leftover extend while Uvicorn and registered
+  tree cleanup completed normally.
+- PIDs `75016/75019/75020/75021` are absent, port 30000 is free, no
+  server/client/compiler remains, memory returned to 93% free, and macOS
+  reports no warning. PERF-A009 is retained as the selected native-IQ2
+  diagnostic decode path. It does not change `BENCHMARK.md`; native promotion
+  now depends on the exact Rust scoreboard plus context capacity sufficient
+  for the measured OpenCode prompt.
