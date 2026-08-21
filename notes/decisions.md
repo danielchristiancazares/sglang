@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-20 23:07 PDT.
+**Reconciled through:** 2026-08-20 23:34 PDT.
 
 ## Selected production choices
 
@@ -93,6 +93,7 @@ The next milestone is **3100 prompt / 120 generation tok/s**, with TTFT
 | Packed GDN target verify | Already selected through aliases | Qwen3.8 width 10,240 bypasses the materialized split and ReplaySSM accepts the existing strided Q/K/V views; no implementation is needed |
 | Coalesced final prefill tail | Rejected | Merging 7680+7000 into one 14680-token ragged pass regressed prompt to 1917.509 tok/s, raised TTFT to 103.781 s, and changed deterministic output |
 | Attention gate-to-NVFP4 fusion | Rejected below admission | Exact M3 saving projected to 0.0068 ms/replay and large-prefill saving to about 20.9 ms; no model wiring was retained |
+| Global KV page size | Keep 64 | Page 128 floors exact pools to 199,936; page 32 does not reach prefill's token-index wrapper and reduced long generation to 112.576 tok/s |
 | FlashInfer paged-only prefill | Rejected | Exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token generation changed **106.467 -> 104.117**; deterministic output also changed |
 | Global chunk-7680 default | Rejected | Base RadixArk exact prompt fell to **2226.770 tok/s** and only 200 MiB remained before follow-up probes |
 | Selective chunk 7808 | Rejected | Exact-200K prompt averaged **2909.350 tok/s**, a stable cliff below the 7680 winner |

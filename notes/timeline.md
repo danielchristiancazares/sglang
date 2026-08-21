@@ -425,6 +425,9 @@ code changes, or process state matter.
 - An exact attention-gate-to-NVFP4 kernel improved isolated large shapes by
   37%, but only 16 layers use it; projected target and exact-prefill savings
   were 0.0068 ms and 20.9 ms. It closed before model wiring.
+- Page 128 failed exact pool capacity and page 32 regressed long generation.
+  FlashInfer prefill already uses per-token indices with logical page size 1,
+  so global storage-page tuning cannot address the 78.1% paged-prefix wall.
 - Retained in `5ea3b734b0`. The headline record remains PERF-024; these
   additive changes are the active source for the next optimization.
 
