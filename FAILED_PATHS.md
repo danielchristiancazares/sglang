@@ -1124,3 +1124,48 @@
 - Reopen only if: a new proposal head raises exact16 emitted length enough for
   six or fewer cycles.
 - Related commit or revert: configuration-only; M3 remains selected.
+
+## PERF-F067 - Device-resident cycle under greedy k1
+
+- Hypothesis: composing draft extend and the next draft decode would remove
+  enough host launch seam to improve the seven-cycle exact16 request now that
+  greedy k1 avoids categorical proposal work.
+- Scope: selected page64/top-p1/k1 M3 profile at exact `199000+16`.
+- Attempted change: enabled the retained batch-one device-resident EAGLE cycle.
+- Benchmark evidence: generation was **97.730 tok/s**, versus the adjacent
+  five-run control mean **98.478 tok/s**; prompt was **3215.592 tok/s**.
+- Correctness evidence: exact `199016`, `finish_reason=length`, and output
+  SHA-256 `cdf5bb57...f647d9` matched the control.
+- Failure mode: composing the two draft phases does not shorten the exposed
+  long-context target/cycle wall; the movement is inside control variance.
+- Why not to retry unchanged: the new greedy-k1 premise was tested directly.
+- Reopen only if: the composite graph itself becomes materially cheaper or
+  another change removes a measured exposed transition.
+- Related commit or revert: configuration-only; the opt-in infrastructure
+  remains retained.
+
+## PERF-F068 - SM120 XQA structural constant sweep
+
+- Hypothesis: deeper V buffering, wider K/V tiles, a no-hint row-max mode, or
+  smaller CTA geometry could reduce the 199K XQA kernel.
+- Scope: installed FlashInfer SM120 B1/Q3/QH24/KVH4/D256/FP8-KV/page64 source
+  and its exact JIT module.
+- Attempted change: independently screened V buffers 3, V tile 64, K partition
+  128 with one/two buffers, row-max method 0, and CTA-x 2.
+- Benchmark evidence: V buffers 3 moved **273.952 -> 273.824 us** and V tile 64
+  moved **273.952 -> 272.992 us**, both below funding. Row-max 0 was
+  **274.240 us**. K128/one-buffer appeared faster at **264.992 us** but was
+  nondeterministic.
+- Correctness evidence: V-buffer and V-tile candidates preserved digest
+  `8a532a...034`; K128/one-buffer changed across repeated launches. K128/two
+  buffers exceeded SM120 shared memory (`116352 > 101376` bytes), and CTA-x 2
+  is structurally invalid for four GEMM1 warps per group.
+- Failure mode: valid variants are noise-sized; the only faster build violates
+  the kernel's double-buffer pipeline and output determinism.
+- Why not to retry unchanged: every independent source constant was compiled
+  or rejected by a precise architecture constraint.
+- Reopen only if: a redesigned CUDA mainloop preserves buffering, reduction
+  order, and all-170-SM output while reducing measured wall materially.
+- Related commit or revert: all candidate modules were removed; installed
+  `mha.cu` was restored to SHA-256
+  `097203B6DCD37A04A2DC99F2174D397409E8F17D0AE0F3E16F4B754C8059218D`.

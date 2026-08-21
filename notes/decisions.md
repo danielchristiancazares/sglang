@@ -102,7 +102,7 @@ The next milestone is **3100 prompt / 120 generation tok/s**, with TTFT
 | Sparse top-p after finite top-k | Retain default-off native Windows opt-in in `7cb4ed0796`; keep AIR production default | Exact AIR pivot with 15 CUDA + 6 integration tests and repeatable cycle win; predecessor standalone long generation averaged only 111.559 tok/s |
 | Page-aligned FlashInfer prefix prefill | Retain default-off in `afd5606077`; production promotion pending | Bit-exact 25-shape ladder improved 5.270%; five exact prompts averaged 3209.728 tok/s with every prompt/TTFT/E2E gate passing |
 | Draft proposal top-k 32 | Rejected; keep 20 | Five-probe acceptance fell 2.217279 -> 2.173943 and latency worsened |
-| Greedy draft proposal top-k 1 | Rejected; keep 20 | Exact generation stayed at 97.900 tok/s and three greedy acceptance probes averaged only 2.107020 |
+| Greedy draft proposal top-k 1 early screen | Superseded by PERF-050 | The single exact sample and three 6K probes understated the later exact199K+512 k1 gain |
 | Draft proposal top-k 16 | Rejected; keep 20 | Five-probe acceptance averaged 2.205710 versus 2.217279 at k20; k1/k8/k16/k32 now close static support sizing |
 | Proposal-only top-p 1.0 | Retain default-off in `6b963eed05` | After fixing all proposal-owner routes, AIR top-p fell 3 -> 1 launch/cycle; matched mean/median/p90 improved 0.194/0.185/0.149 ms and acceptance rose slightly |
 | Proposal additive-penalty scale | Rejected for current workload | Correctly routed scales 0.75 and 0.0 reproduced identical proposal/output sequences |
@@ -112,6 +112,8 @@ The next milestone is **3100 prompt / 120 generation tok/s**, with TTFT
 | Greedy draft top-k 1 | Retain specialized long-window candidate; do not replace sampled k20 default | Exact199K+512 improved 116.549 -> 123.049 with identical digest, but exact16 remains ~98.5 tok/s over seven long-context cycles |
 | XQA SM count / PDL | Keep all SMs and default PDL | Lower SM counts changed output for negligible savings; PDL on/off was timing-neutral |
 | M4 with greedy k1 | Rejected | Exact16 still required seven cycles; extra row/step adds cost without reducing the gate |
+| Device-resident cycle with greedy k1 | Rejected | Exact16 reached 97.730 tok/s with the control digest, below the adjacent 98.478 tok/s mean |
+| SM120 XQA structural constants | Keep restored FlashInfer control | Valid V buffering/tiling saved <=0.960 us; single-K-buffer output was nondeterministic and two buffers exceeded shared memory |
 | Gate/up custom epilogue | Closed as a small EVT change | Selected tactics are swap-AB DP and need a custom half-height collective; stock EVT cannot pair/halve coordinates |
 | FlashInfer paged-only prefill | Rejected | Exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token generation changed **106.467 -> 104.117**; deterministic output also changed |
 | Global chunk-7680 default | Rejected | Base RadixArk exact prompt fell to **2226.770 tok/s** and only 200 MiB remained before follow-up probes |
