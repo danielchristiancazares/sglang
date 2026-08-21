@@ -4204,3 +4204,39 @@ mean 13.929045  17.125658 446.051        39.730
   unavailable; its cubin fallback fails to compile under MSVC/CUDA and only
   admits head dimensions 128 or 192, while this model uses 256. That route is
   unavailable for the selected shape.
+
+### 2026-08-21 01:11 PDT - PERF-036 paged-prefix MMA-KV reduction rejected
+
+- Audited the native FlashInfer FA2 paged-prefix dispatcher before a server
+  launch. The first `DISPATCH_NUM_MMA_KV` edit had reached
+  `SinglePrefillWithKVCacheDispatched`, not the traced
+  `BatchPrefillWithPagedKVCacheDispatched` route. Its apparent exact-ladder
+  movement from **3013.932 to 2977.011 ms/layer** therefore had no mechanism
+  and is classified as noise. A second ambiguous placement reached the ragged
+  dispatcher and was caught by `git diff` before compilation or measurement.
+- Applied the cap only inside
+  `BatchPrefillWithPagedKVCacheDispatched`, rebuilt the exact generated
+  `bpkvcd_q_bf16_kv_e4m3_o_bf16_idx_i32_qk_256_vo_256_pe_0_swa_False_lc_False_f16qk_False`
+  module, and reran all 25 exact-request prefix shapes.
+- The real `NUM_MMA_KV=2` paged kernel summed to **3414.967592 ms/layer**
+  versus the restored `NUM_MMA_KV=4` control's **3013.931843 ms/layer**:
+  **+401.035749 ms/layer / +13.306%**, or about **6.417 seconds** projected
+  across 16 full-attention layers. It also changed the complete output digest
+  from `d9ad4f3e...992d6` to `54c63ec6...217d` and LSE digest from
+  `2b20c9f2...ebc9` to `3de7b7e1...69a9`.
+- CTA-Q 16 was independently slower at **4154.807 ms/layer**; CTA-Q 32 and
+  128 are invalid for this FP8/head-dimension-256 configuration. CTA-Q 64 and
+  `NUM_MMA_KV=4` remain selected.
+- Restored both maintained and installed `prefill.cuh` copies to matching
+  SHA-256
+  `2E5927BDC0D36DDB393CB4FAB68C2E958D65D5B4B0085C969F7CFA777ECDFB5B`,
+  deleted the exact experimental generated-module cache, and confirmed no
+  maintained-source diff remains. No server was launched.
+- Artifacts:
+  `perf036-cta64-fp32-20260821-0054.log` (SHA-256
+  `F5691BF46A10F92A012F089900A05AF76B89F604139EA9AAF060D30728D75530`),
+  `perf036-mmakv2-fp32-20260821-0103.log` (misrouted admission; SHA-256
+  `F3000E12DB3770BF1EC8553F10991BD0468C1F36A45DC74A534777FDE382A79B`),
+  and `perf036-paged-mmakv2-20260821-0111.log` (real paged candidate;
+  SHA-256
+  `FBC50FD6B40DC661685134EDD4C3A57B3C95CC5E7F40EDD349DE02A700C2885F`).

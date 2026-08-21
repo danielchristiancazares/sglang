@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-21
-00:24 PDT.
+01:11 PDT.
 
 **Qualified production source line:** commit
 `7f5af878da7b8dc43063f31e554dfc69cee5d510`
@@ -144,6 +144,22 @@ PERF-035's provisional FP16 QK reduction was removed. Although the first
 five-request A-B moved **2985.317 -> 3005.592 tok/s**, the corrected
 24-query-head/4-KV-head/256-dimension exact prefix ladder measured FP16
 **163.705 ms slower** across 16 layers. FP32 remains selected.
+
+PERF-036 closes the practical native FA2 tile family for the same dominant
+kernel. CTA-Q 16 regressed to **4154.807 ms/layer**, CTA-Q 32/128 are invalid,
+and the correctly routed CTA-Q-64 `NUM_MMA_KV=2` candidate regressed the exact
+ladder from **3013.932 to 3414.968 ms/layer** while changing output and LSE
+digests. The maintained and installed FlashInfer headers are restored to
+matching SHA-256
+`2E5927BDC0D36DDB393CB4FAB68C2E958D65D5B4B0085C969F7CFA777ECDFB5B`;
+CTA-Q 64 with `NUM_MMA_KV=4` remains selected.
+
+The next funded decode candidate is a repository-native SM120 CUTLASS
+gate/up-GEMM epilogue that emits the compiled-semantics SwiGLU NVFP4 tuple
+consumed by the unchanged down projection. It must replace, not extend, the
+Python/CuTe reference implementation; Python remains only a thin custom-op
+binding and dispatch surface. Isolated admission requires at least **0.30 ms**
+across all 64 distinct target MLP boundaries before a full-cycle server gate.
 
 The winning selective profile remains `AttnNVFP4`, chunk 7680, M3, and the
 bit-exact Windows Gemma residual-norm direct-output path. PERF-024 additionally

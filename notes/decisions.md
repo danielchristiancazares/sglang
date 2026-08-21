@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-21 00:24 PDT.
+**Reconciled through:** 2026-08-21 01:11 PDT.
 
 ## Selected production choices
 
@@ -95,6 +95,7 @@ The next milestone is **3100 prompt / 120 generation tok/s**, with TTFT
 | Attention gate-to-NVFP4 fusion | Rejected below admission | Exact M3 saving projected to 0.0068 ms/replay and large-prefill saving to about 20.9 ms; no model wiring was retained |
 | Global KV page size | Keep 64 | Page 128 floors exact pools to 199,936; page 32 does not reach prefill's token-index wrapper and reduced long generation to 112.576 tok/s |
 | Paged-prefix QK reduction | Keep FP32 | Exact 25-prefix ladder measured FP16 163.705 ms slower across 16 layers; the provisional +0.679% server movement was noise |
+| Paged-prefix FA2 tile | Keep CTA-Q 64 and `NUM_MMA_KV=4` | CTA-Q 16 was 37.9% slower, CTA-Q 32/128 are invalid, and `NUM_MMA_KV=2` regressed the exact ladder 13.3% while changing output/LSE digests |
 | FlashInfer paged-only prefill | Rejected | Exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token generation changed **106.467 -> 104.117**; deterministic output also changed |
 | Global chunk-7680 default | Rejected | Base RadixArk exact prompt fell to **2226.770 tok/s** and only 200 MiB remained before follow-up probes |
 | Selective chunk 7808 | Rejected | Exact-200K prompt averaged **2909.350 tok/s**, a stable cliff below the 7680 winner |
