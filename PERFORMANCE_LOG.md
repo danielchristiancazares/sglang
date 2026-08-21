@@ -655,6 +655,8 @@ tree throughput can be ranked for production.
 | PERF-050 | Use greedy draft top-k 1 on the temperature-zero exact profile. | Existing proposal configuration plus page64/top-p1 stack | Retained greedy long-window candidate; exact16 target open | Exact199K+512 improved 116.549 -> 123.049 tok/s with identical digest; exact-context acceptance reached 2.426540. Five exact16 scores still averaged 98.478 tok/s because seven long-context cycles cost ~19.90ms each. |
 | PERF-051 | Tune XQA SM count and PDL at exact199K shape. | Existing FlashInfer XQA controls | Rejected | Counts below all170 changed output and saved only a few us/call; PDL true/false was bit-exact and timing-neutral. |
 | PERF-052 | Reopen M4 under greedy k1 proposal law. | Existing 3-step/4-row configuration | Rejected | Exact16 still required seven verify cycles and emitted 2.285714 tokens/cycle; the extra target row/draft step cannot improve the discrete gate. |
+| PERF-053 | Reopen the retained device-resident cycle under greedy k1. | Composite draft-extend/next-draft CUDA graph | Rejected | Exact199K+16 generation was 97.730 tok/s with the control digest, inside and slightly below the 98.478 tok/s control window. |
+| PERF-054 | Tune SM120 XQA structural constants. | FlashInfer native CUDA XQA mainloop | Rejected | Valid V-buffer/V-tile variants saved at most 0.960 us/call; wider K with one buffer was nondeterministic, two buffers exceeded shared memory, row-max 0 was slower, and CTA-x 2 was invalid. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1254,3 +1256,26 @@ tree throughput can be ranked for production.
   Exact199K+16 still used seven cycles and emitted **2.285714** tokens/cycle
   (histogram `[2,1,2,2]`). The extra row/step cannot reduce the discrete cycle
   count and is rejected without another long window.
+
+### 2026-08-21 07:05 PDT - PERF-053 device-resident greedy cycle rejected
+
+- Reopened the retained two-launch cycle because greedy k1 removes the
+  categorical proposal cost that informed its earlier rejection.
+- The exact request measured **3215.592 prompt / 97.730 generation tok/s**,
+  **61.885956 s TTFT**, and **62.039440 s E2E**. Exact `199016`,
+  `finish_reason=length`, and output SHA-256 `cdf5bb57...f647d9` matched.
+- The candidate remains inside and slightly below the five-run **98.478 tok/s**
+  control window. Graph composition therefore does not fund the exact16 gate.
+
+### 2026-08-21 07:06 PDT - PERF-054 XQA source constants closed
+
+- At the exact SM120 XQA shape, three V buffers changed the matched all-SM
+  median **273.952 -> 273.824 us**; a 64-token V tile reached **272.992 us**.
+  Both were bit-exact but too small to fund a cycle change.
+- A 128-byte K partition with the required two buffers exceeded shared memory.
+  Reducing to one K buffer compiled and appeared faster (**264.992 us**) but
+  produced different outputs across repeated launches, proving the mainloop
+  depends on double buffering.
+- Deterministic row-max method 0 was slower and changed numerics. CTA-x 2 cannot
+  represent the four-warps-per-GEMM1 group. Every candidate cache was removed;
+  installed source and the control module were restored.

@@ -496,6 +496,10 @@ code changes, or process state matter.
   19.895 ms. M4 also required seven cycles and was rejected.
 - XQA SM-count and PDL sweeps found no bit-exact material control; long-context
   target-graph reduction now requires a kernel change or a six-cycle proposal.
+- The retained device-resident cycle was reopened under greedy k1 and measured
+  97.730 tok/s on exact16 with the control digest, so graph composition remains
+  rejected. Native XQA structural sweeps found only sub-microsecond valid
+  changes; a faster single-K-buffer build was nondeterministic and removed.
 
 ## Supersession map
 

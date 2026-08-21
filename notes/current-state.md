@@ -230,6 +230,13 @@ long-context cycles averaging **19.895 ms**, so the single-request generation
 target remains open. M4 still used seven cycles and is rejected. XQA SM-count
 and PDL controls provide no bit-exact material win.
 
+PERF-053/054 close the retained device-resident cycle under greedy k1 and the
+available XQA structural constants. Device composition produced only
+**97.730 tok/s** on exact16 with the control digest. Valid native XQA buffering
+and V-tile variants saved at most **0.960 us/call**; the apparently faster
+single-K-buffer build was nondeterministic. Installed FlashInfer source and
+the exact control JIT module are restored.
+
 The winning selective profile remains `AttnNVFP4`, chunk 7680, M3, and the
 bit-exact Windows Gemma residual-norm direct-output path. PERF-024 additionally
 runs an ordinary 16,384-token target EXTEND pass under the existing

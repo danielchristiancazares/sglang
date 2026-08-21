@@ -4823,3 +4823,52 @@ mean 13.929045  17.125658 446.051        39.730
   exact trace `8EFCBB1D...76E4`, target attribution `6BCF1C1D...D39A`.
 - Stopped every verified server tree leaf-first. Port 30000 is free and GPU
   residency returned to ordinary display state.
+
+### 2026-08-21 07:06 PDT - PERF-053/054 device-cycle and XQA source screens
+
+- Signed commit `59e658c385352da4e022280e093d0cbfccca63b8`
+  (`docs: record greedy exact-context frontier`) preserved PERF-050/051/052
+  without staging the concurrent native tensor-view ABI work.
+- Reopened the retained batch-one device-resident EAGLE cycle under page64,
+  proposal top-p 1, greedy draft k1, M3, and exact 200K pools. All target,
+  draft-decode/composite, and draft-extend graph phases captured. Exact
+  `199000+16` measured **3215.592 prompt / 97.730 generation tok/s**,
+  **61.885956 s TTFT**, and **62.039440 s E2E**. It preserved exact `199016`,
+  `finish_reason=length`, and output SHA-256 `cdf5bb57...f647d9`.
+- The result is inside and slightly below the five-run **98.478 tok/s**
+  control. Greedy proposal cost does not change the device-cycle conclusion;
+  the candidate was stopped and port/GPU residency returned to baseline.
+- Independently compiled exact-shape SM120 XQA source variants. Three V buffers
+  moved matched all-SM median **273.952 -> 273.824 us**. A 64-token V tile
+  reached **272.992 us**. Both preserved digest `8a532a...034` but are far
+  below funding. Row-max method 0 was **274.240 us** and changed the digest.
+- A 128-byte K partition with two buffers failed the exact shared-memory bound
+  (`116352 > 101376` bytes). With one K buffer it appeared faster at
+  **264.992 us**, but the reference and later all-SM/PDL runs produced
+  different digests, exposing an invalid pipeline. CTA-x 2 failed because
+  head dimension 256 requires four GEMM1 warps per group.
+- Removed every candidate JIT module and restored the installed FlashInfer
+  source and control cache. `mha.cu` SHA-256 is
+  `097203B6DCD37A04A2DC99F2174D397409E8F17D0AE0F3E16F4B754C8059218D`.
+  No server, compiler worker, or listener remains; GPU residency is 1,092 MiB.
+
+### 2026-08-21 07:14 PDT - PERF-055 rotated-NVFP4 admission
+
+- Screened whether the repository's native CUDA Hadamard transform can recover
+  stock NVFP4 KV quality without changing XQA: rotate Q/K, optionally rotate V,
+  run the existing native FP4 XQA, and invert the output when V is rotated.
+- On a deterministic B1/Q3/QH24/KVH4/D256/page64/16K synthetic XQA shape,
+  raw NVFP4 measured **0.101824 relative L2 / 0.994812 cosine** against FP8.
+  Rotated K measured **0.101823 / 0.994812**; rotated K+V measured
+  **0.101624 / 0.994842**. The BF16 Hadamard round trip alone was
+  **0.001606 relative L2**, so transform arithmetic is not the limiting error.
+- This falsifies basis rotation around the existing E2M1/block-scale recipe as
+  a standalone quality fix on Gaussian-shaped data. A credible compressed-KV
+  route needs TurboQuant's actual Lloyd-Max key centroids/norm correction or
+  the less aggressive FP8-K/uniform-4-bit-V layout, followed by real-activation
+  and semantic gates.
+- Script SHA-256
+  `315BDC74B5519863D7A23FD45A89FD2DC65A5D91BBFAF527484278C8DCEFDA5E`;
+  output SHA-256
+  `BD454E1C07113F94807F18A2AE892BBF557D9D0F84EEC1118C4846E2C3F097D3`.
+  The script is a session artifact only; no serving source changed.
