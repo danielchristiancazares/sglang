@@ -637,6 +637,7 @@ tree throughput can be ranked for production.
 | PERF-036 | Reduce the native FA2 paged-prefix KV MMA tile for FP8 KV/head dimension 256. | FlashInfer `BatchPrefillWithPagedKVCacheDispatched` | Rejected | The correctly routed `NUM_MMA_KV=2` kernel regressed the exact ladder from 3013.932 to 3414.968 ms/layer (+13.306%) and changed output/LSE digests. CTA-Q 16 also lost; CTA-Q 32/128 are invalid. Restored CTA-Q 64 and `NUM_MMA_KV=4`. |
 | PERF-037 | Fuse residual-add/Gemma RMSNorm directly into the following NVFP4 activation tuple. | Native SM120 dual-output norm/quant producer | Rejected; boundary-neutral | Bit-exact at M1/M3/M7000/M7680. The real captured norm+quant+gate/up-GEMM boundary moved 0.096704 -> 0.097152 ms/layer, projecting -0.0287 ms over 64 layers. PDL already hides the separate quantizer. The prototype was removed. |
 | PERF-038 | Specialize the dominant M3 NVFP4 GEMM below CTA-M 128. | Native SM120 CUTLASS 64x32x256 cooperative/ping-pong schedules | Closed at compile-time architecture gate | Cooperative GEMM requires CTA-M >=128; ping-pong still requires the fixed 128-row NVFP4 scale TMA atom. Qualified M3 tactics already swap A/B and use the minimum supported CTA-N 32. No kernel launched. |
+| PERF-039 | Fuse the two MTP Gemma norms and concatenation before the BF16 fusion projection. | Native SM120 two-CTA producer | Rejected below funding | Bit-exact through the dependent FC. M1 saved 1.248 us and M3 saved 2.080 us; combined draft-decode/draft-extend value is only about 0.0033 ms/cycle. The prototype was removed. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1045,3 +1046,13 @@ tree throughput can be ranked for production.
 - No kernel executed. Removed the prototype and its exact JIT cache; plain
   GEMM work now requires a different mainloop/scale-loader architecture, not
   another tactic entry.
+
+### 2026-08-21 02:25 PDT - PERF-039 MTP norm/concat fusion below admission
+
+- The occupancy-preserving native design launched two 320-thread norm CTAs in
+  one graph node and wrote the concatenated MTP FC input directly. Concatenated
+  BF16 values and the dependent FC output were bit-exact.
+- Through the FC, 101-sample medians improved by **1.248 us at M1** and
+  **2.080 us at M3**. The combined speculative-cycle ceiling is about
+  **0.0033 ms**, far below the 0.25 ms funding floor.
+- Removed the prototype and exact JIT cache before model wiring.
