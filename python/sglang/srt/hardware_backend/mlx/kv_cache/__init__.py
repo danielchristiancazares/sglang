@@ -27,6 +27,7 @@ from sglang.srt.hardware_backend.mlx.kv_cache.attention_wrapper import (
     clear_context,
     get_context,
     set_context,
+    tiled_quantized_scaled_dot_product_attention,
 )
 from sglang.srt.hardware_backend.mlx.kv_cache.auxiliary_state import (
     MlxAuxiliaryStateComponent,
@@ -66,6 +67,7 @@ __all__ = [
     "PoolBackedAttentionKVCache",
     "QuantizedAttentionKVCache",
     "set_context",
+    "tiled_quantized_scaled_dot_product_attention",
     "uses_sliding_window_attention",
     "WindowedAttentionKVCache",
 ]

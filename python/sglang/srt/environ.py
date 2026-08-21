@@ -807,6 +807,9 @@ class Envs:
     SGLANG_MLX_MTP_DIR = EnvStr(None)
     SGLANG_MLX_USE_CUSTOM_ROPE = EnvBool(False)
     SGLANG_MLX_FUSE_SWIGLU = EnvBool(False)
+    # Query rows per quantized-KV prefill attention tile. Zero keeps mlx-lm's
+    # single score matrix; a positive value bounds the long-context temporary.
+    SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE = EnvInt(0)
     # Number of decode steps between periodic mx.clear_cache() calls.
     # Set to 0 to disable cache clearing entirely.
     SGLANG_MLX_CLEAR_CACHE_STEPS = EnvInt(256)

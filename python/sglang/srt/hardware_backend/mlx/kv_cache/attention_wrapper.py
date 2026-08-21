@@ -9,6 +9,7 @@ from typing import Any, Optional
 import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.models.base import quantized_scaled_dot_product_attention
+from sglang.srt.environ import envs
 from sglang.srt.hardware_backend.mlx.aot import (
     MlxAOTKernelContext,
     MlxAOTKernelSet,
@@ -27,6 +28,107 @@ from sglang.srt.hardware_backend.mlx.kv_cache.attention_kv_cache import (
 )
 
 _thread_local = threading.local()
+
+# Leave compact quantized-prefill matrices on mlx-lm's single-call path.  The
+# query tiles begin once the estimated score/mask temporary crosses 1 GiB,
+# where bounded residency matters more than dispatch count on a 32 GB M1 Max.
+_QUANTIZED_PREFILL_SCORE_LIMIT_BYTES = 1 << 30
+
+
+def tiled_quantized_scaled_dot_product_attention(
+    queries: mx.array,
+    q_keys: tuple[mx.array, mx.array, mx.array],
+    q_values: tuple[mx.array, mx.array, mx.array],
+    *,
+    scale: float,
+    mask: Any,
+    group_size: int,
+    bits: int,
+    query_tile_size: int,
+) -> mx.array:
+    """Quantized SDPA with a bounded query dimension.
+
+    mlx-lm's quantized attention materializes a score matrix proportional to
+    ``query_length * key_length``.  At six-figure context lengths a 4K prefill
+    chunk can exceed Metal's single-buffer limit.  Query rows are independent,
+    so evaluate the same full-key softmax in smaller row tiles and concatenate
+    the outputs.  Key/value reductions stay intact; only the independent query
+    dimension is partitioned.
+    """
+    query_length = queries.shape[-2]
+    if query_tile_size <= 0 or query_length <= query_tile_size:
+        return quantized_scaled_dot_product_attention(
+            queries,
+            q_keys,
+            q_values,
+            scale=scale,
+            mask=mask,
+            group_size=group_size,
+            bits=bits,
+        )
+
+    key_length = q_keys[0].shape[-2]
+    outputs = []
+    for start in range(0, query_length, query_tile_size):
+        end = min(start + query_tile_size, query_length)
+        tile_queries = queries[..., start:end, :]
+        if outputs:
+            # MLX may schedule independent lazy branches together and reserve
+            # every score matrix at once.  Carry a zero-valued dependency from
+            # the preceding tile so their large temporaries have disjoint
+            # lifetimes while the small tile outputs remain concatenable.
+            tile_queries = tile_queries + mx.sum(outputs[-1][..., -1:, :]) * 0
+        tile_mask = _quantized_query_tile_mask(
+            mask,
+            start=start,
+            end=end,
+            query_length=query_length,
+            key_length=key_length,
+        )
+        outputs.append(
+            quantized_scaled_dot_product_attention(
+                tile_queries,
+                q_keys,
+                q_values,
+                scale=scale,
+                mask=tile_mask,
+                group_size=group_size,
+                bits=bits,
+            )
+        )
+    return mx.concatenate(outputs, axis=-2)
+
+
+def _quantized_query_tile_mask(
+    mask: Any,
+    *,
+    start: int,
+    end: int,
+    query_length: int,
+    key_length: int,
+) -> Any:
+    """Slice an attention mask while preserving absolute causal positions."""
+    if mask is None:
+        return None
+    if isinstance(mask, str):
+        # mlx-lm treats its string sentinel as causal.  Each tile still sees
+        # the complete key history, so derive positions from the unsliced
+        # query length instead of letting the callee place every tile at the
+        # end of that history.
+        query_start = key_length - query_length + start
+        query_positions = mx.arange(query_start, query_start + end - start)
+        key_positions = mx.arange(key_length)
+        return query_positions[:, None] >= key_positions[None, :]
+
+    mask_query_length = mask.shape[-2]
+    if mask_query_length == 1:
+        return mask
+    if mask_query_length != query_length:
+        raise ValueError(
+            "Quantized prefill mask query length does not match attention: "
+            f"mask={mask_query_length}, queries={query_length}"
+        )
+    return mask[..., start:end, :]
 
 
 # TODO: Move from threading to multiprocessing or asyncio
@@ -233,12 +335,117 @@ class MLXAttentionWrapper(nn.Module):
         object.__setattr__(
             self, "_sink_kwargs", {} if sinks is None else {"sinks": sinks}
         )
+        query_tile_size = envs.SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE.get()
+        if query_tile_size < 0:
+            raise ValueError(
+                "SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE must be non-negative, "
+                f"got {query_tile_size}"
+            )
+        object.__setattr__(
+            self, "_quantized_prefill_query_tile", query_tile_size
+        )
 
     def __call__(self, x: mx.array, mask: Any = None, cache: Any = None) -> mx.array:
         ctx = get_context()
         if ctx is None:
+            if (
+                isinstance(cache, QuantizedAttentionKVCache)
+                and self._quantized_prefill_query_tile > 0
+                and x.shape[1] > self._quantized_prefill_query_tile
+                and self._quantized_prefill_score_bytes(x, cache)
+                > _QUANTIZED_PREFILL_SCORE_LIMIT_BYTES
+            ):
+                return self._quantized_prefill(x, mask, cache)
             return self._inner(x, mask=mask, cache=cache)
         return self._batched_decode(x, ctx)
+
+    def _quantized_prefill_score_bytes(
+        self,
+        x: mx.array,
+        cache: QuantizedAttentionKVCache,
+    ) -> int:
+        """Estimate mlx-lm's full quantized-attention score temporary."""
+        batch_size, query_length, _ = x.shape
+        key_length = cache.offset + query_length
+        # One score per query head plus causal-mask/softmax workspace.  The
+        # two-byte allowance reproduces the Qwen3.8 allocation observed in
+        # Metal (50 bytes per query/key pair for 24 BF16 query heads).
+        bytes_per_pair = self._n_heads * x.dtype.size + 2
+        return batch_size * query_length * key_length * bytes_per_pair
+
+    def _quantized_prefill(
+        self,
+        x: mx.array,
+        mask: Any,
+        cache: QuantizedAttentionKVCache,
+    ) -> mx.array:
+        """Run the wrapped attention with query-tiled quantized SDPA."""
+        inner = self._inner
+        batch_size, query_length, _ = x.shape
+        n_heads = self._n_heads
+        n_kv_heads = self._n_kv_heads
+
+        q_proj_output = inner.q_proj(x)
+        keys = inner.k_proj(x)
+        values = inner.v_proj(x)
+
+        head_dim = self._head_dim
+        if head_dim is None:
+            head_dim = keys.shape[-1] // n_kv_heads
+        q_width = n_heads * head_dim
+        gate = None
+        if q_proj_output.shape[-1] == q_width:
+            queries = q_proj_output.reshape(
+                batch_size, query_length, n_heads, head_dim
+            )
+        elif q_proj_output.shape[-1] == 2 * q_width:
+            queries, gate = mx.split(
+                q_proj_output.reshape(
+                    batch_size, query_length, n_heads, 2 * head_dim
+                ),
+                2,
+                axis=-1,
+            )
+            gate = gate.reshape(batch_size, query_length, q_width)
+        else:
+            raise RuntimeError(
+                f"Unexpected q_proj output shape {q_proj_output.shape} for "
+                f"{type(inner).__name__}"
+            )
+
+        keys = keys.reshape(batch_size, query_length, n_kv_heads, head_dim)
+        values = values.reshape(batch_size, query_length, n_kv_heads, head_dim)
+        if self._has_q_norm:
+            queries = inner.q_norm(queries)
+        if self._has_k_norm:
+            keys = inner.k_norm(keys)
+
+        queries = queries.transpose(0, 2, 1, 3)
+        keys = keys.transpose(0, 2, 1, 3)
+        values = values.transpose(0, 2, 1, 3)
+        offset = cache.offset
+        queries = inner.rope(queries, offset=offset)
+        keys = inner.rope(keys, offset=offset)
+        q_keys, q_values = cache.update_and_fetch(keys, values)
+
+        if self._sinks is not None:
+            raise ValueError("Quantized KV attention does not support sinks")
+        output = tiled_quantized_scaled_dot_product_attention(
+            queries,
+            q_keys,
+            q_values,
+            scale=self._scale,
+            mask=mask,
+            group_size=cache.group_size,
+            bits=cache.bits,
+            query_tile_size=self._quantized_prefill_query_tile,
+        )
+        output = output.transpose(0, 2, 1, 3).reshape(
+            batch_size, query_length, -1
+        )
+        if gate is not None:
+            output = output * mx.sigmoid(gate)
+        return inner.o_proj(output)
 
     def _batched_decode(self, x: mx.array, ctx: BatchedDecodeContext) -> mx.array:
         inner = self._inner
