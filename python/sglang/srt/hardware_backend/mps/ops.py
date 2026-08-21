@@ -112,6 +112,22 @@ def q4_0_embedding(
     )
 
 
+def quant_embedding(
+    packed_weight: torch.Tensor,
+    token_ids: torch.Tensor,
+    vocab_size: int,
+    hidden_size: int,
+    weight_type: int,
+) -> torch.Tensor:
+    return _extension().quant_embedding(
+        packed_weight.contiguous(),
+        token_ids.contiguous(),
+        vocab_size,
+        hidden_size,
+        int(weight_type),
+    )
+
+
 def causal_conv1d_decode(
     x: torch.Tensor,
     weight: torch.Tensor,

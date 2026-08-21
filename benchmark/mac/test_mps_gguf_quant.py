@@ -1,4 +1,4 @@
-"""Correctness smoke for the native Intel-Mac GGUF Metal matmuls."""
+"""Correctness smoke for the native Apple GGUF Metal kernels."""
 
 from __future__ import annotations
 
@@ -8,14 +8,22 @@ import gguf
 import numpy as np
 import torch
 
-from sglang.srt.hardware_backend.mps.ops import q4_0_matmul, quant_matmul
+from sglang.srt.hardware_backend.mps.ops import (
+    q4_0_matmul,
+    quant_embedding,
+    quant_matmul,
+)
 
 
 CASES = (
-    ("blk.8.ffn_gate.weight", gguf.GGMLQuantizationType.Q4_0),
-    ("blk.0.ffn_down.weight", gguf.GGMLQuantizationType.Q4_1),
-    ("blk.0.ssm_out.weight", gguf.GGMLQuantizationType.Q5_K),
-    ("output.weight", gguf.GGMLQuantizationType.Q6_K),
+    gguf.GGMLQuantizationType.Q4_0,
+    gguf.GGMLQuantizationType.Q4_1,
+    gguf.GGMLQuantizationType.Q2_K,
+    gguf.GGMLQuantizationType.Q4_K,
+    gguf.GGMLQuantizationType.Q5_K,
+    gguf.GGMLQuantizationType.Q6_K,
+    gguf.GGMLQuantizationType.IQ2_XXS,
+    gguf.GGMLQuantizationType.IQ1_M,
 )
 
 
@@ -27,12 +35,18 @@ def main() -> None:
     args = parser.parse_args()
 
     reader = gguf.GGUFReader(args.gguf_path)
-    tensors = {tensor.name: tensor for tensor in reader.tensors}
+    tensors = list(reader.tensors)
     generator = torch.Generator().manual_seed(7)
 
-    for name, expected_type in CASES:
-        tensor = tensors[name]
-        assert tensor.tensor_type == expected_type
+    tested = set()
+    for expected_type in CASES:
+        tensor = next(
+            (tensor for tensor in tensors if tensor.tensor_type == expected_type),
+            None,
+        )
+        if tensor is None:
+            continue
+        tested.add(expected_type)
         packed_np = np.array(tensor.data[: args.rows], copy=True)
         dense_np = gguf.dequantize(packed_np, tensor.tensor_type)
         dense = torch.from_numpy(dense_np).to(torch.float32)
@@ -59,10 +73,45 @@ def main() -> None:
         max_reference = expected.abs().max().item()
         relative_error = max_error / max(max_reference, 1e-12)
         print(
-            f"{tensor.tensor_type.name:4s} {name:30s} "
+            f"{tensor.tensor_type.name:8s} {tensor.name:30s} "
             f"max_error={max_error:.6g} relative={relative_error:.6g}"
         )
         torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-3)
+
+    embedding = next(
+        (
+            tensor
+            for tensor in tensors
+            if tensor.name == "token_embd.weight"
+            and tensor.tensor_type
+            in {
+                gguf.GGMLQuantizationType.Q2_K,
+                gguf.GGMLQuantizationType.Q4_K,
+                gguf.GGMLQuantizationType.IQ2_XXS,
+                gguf.GGMLQuantizationType.IQ1_M,
+            }
+        ),
+        None,
+    )
+    if embedding is not None:
+        packed_np = np.array(embedding.data[: args.rows], copy=True)
+        dense_np = gguf.dequantize(packed_np, embedding.tensor_type)
+        token_ids = torch.tensor([0, args.rows - 1], dtype=torch.int64)
+        actual = quant_embedding(
+            torch.from_numpy(packed_np).to("mps").view(torch.uint8),
+            token_ids.to("mps"),
+            args.rows,
+            dense_np.shape[1],
+            int(embedding.tensor_type),
+        ).cpu()
+        expected = torch.from_numpy(dense_np)[token_ids]
+        torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)
+        print(f"{embedding.tensor_type.name:8s} token embedding parity passed")
+
+    print(
+        "tested="
+        + ",".join(sorted(quant_type.name for quant_type in tested))
+    )
 
 
 if __name__ == "__main__":
