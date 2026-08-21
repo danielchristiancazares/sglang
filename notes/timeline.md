@@ -367,6 +367,33 @@ code changes, or process state matter.
   4.810% prompt gap from the historical record. This is the immediate matched
   control, not a replacement for the qualified winner.
 
+### Large-EXTEND FP4 tactics set a new exact-200K record
+
+- Found that speculative startup rewrote target dummy forwards to
+  TARGET_VERIFY, so ordinary large EXTEND FP4 buckets were never profiled.
+  The existing expert opt-in now admits a narrowly asserted target EXTEND
+  pass while draft workers and default behavior remain unchanged.
+- An independent retune produced five exact prompts averaging **3046.912
+  tok/s** and a same-request record of **3048.086 prompt / 112.499 generation
+  tok/s**, TTFT **65.286869 s**, and E2E **65.420204 s**.
+- Cache-only and dummy-only controls returned to the baseline tactic digest,
+  proving the gain came from FP4 selection rather than stale Mamba/KV state.
+  Fresh profiling was rejected after a different valid tactic set reduced
+  long generation to **101.162 tok/s**.
+- FlashInfer file hits were being cleared by later draft autotune contexts.
+  Promoting only the 110 target entries exercised by the large EXTEND pass
+  into the runner-keyed process cache reproduced the selected cache without
+  re-profiling. Its five exact prompts averaged **3047.309 tok/s**; three
+  exact long requests averaged **118.389 generation tok/s**.
+- Reasoning, tools, language-only surface, sampled generation, native
+  acceptance, standalone OpenCode2, exact capacity, and headroom passed. An
+  unchanged base RadixArk/chunk-4096 relaunch ran no extra EXTEND pass,
+  captured all three graphs, completed exact `199016`, and retained the
+  production defaults.
+- Retained in `7f5af878da7b8dc43063f31e554dfc69cee5d510`. The selected
+  20,928-byte cache has SHA-256
+  `8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
@@ -375,7 +402,7 @@ Use these results when older “final” checkpoints conflict:
 |---|---|---|
 | Fixed `6213/512` | `171.263 tok/s` safe five-run mean | `167.776`, `162.726`, `159.973`, `156.968`, `135.167`, `86.016` |
 | Real sampled `6213/512` | `122.712 tok/s` ten-run mean | `121.075`, `117.794`, `110.750`, `98.126`, `96.110` |
-| Near-limit `199000/16` record | `3016.444` prompt, `112.355` generation tok/s on selective target NVFP4 + chunk 7680 + direct Gemma output; qualified production remains `2608.263/102.358` | `2838.980/107.253`, `2570.356`, `2429.153`, `2423.812`, `2200.563` |
+| Near-limit `199000/16` record | `3048.086` prompt, `112.499` generation tok/s on selective target NVFP4 + chunk 7680 + direct Gemma output + selected large-EXTEND FP4 tactics; qualified production remains `2608.263/102.358` | `3016.444/112.355`, `2838.980/107.253`, `2570.356`, `2429.153`, `2423.812`, `2200.563` |
 | Production capacity | `200000` context and token pools | rejected `232000` operating-margin experiment |
 | Speculation geometry | 2 steps / 3 draft tokens | 3 steps / 4 draft tokens |
 | Target verification | TRT-LLM MHA/XQA | FlashInfer-prefill verify route |

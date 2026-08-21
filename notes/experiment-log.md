@@ -3444,3 +3444,8 @@ mean 13.929045  17.125658 446.051        39.730
   `perf024-production-default-ready-20260820-1822.log`,
   `perf024-production-default-gates-20260820-1824.log`, and
   `perf024-production-default-shutdown-20260820-1825.log`.
+- Committed the implementation, focused CPU tests, performance ledger, and
+  raw recovery record as
+  `7f5af878da7b8dc43063f31e554dfc69cee5d510`
+  (`perf: retain large-extend FlashInfer tactics`). The pre-existing
+  `BENCHMARK.md` edits and `HANDOFF.md` deletion were not staged.

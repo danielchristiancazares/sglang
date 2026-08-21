@@ -1,12 +1,13 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-20
-15:36 PDT.
+18:26 PDT.
 
-**Qualified source line:** commit `9681850bed660b9079ee1aee906cda819603da7a`
-(`Add exact SWOR tree verification and topology analysis`), with the final
-232K rejection and 200K restoration recorded after that commit. Launcher
-defaults were restored to 200K and rechecked during the notes migration.
+**Qualified source line:** commit
+`7f5af878da7b8dc43063f31e554dfc69cee5d510`
+(`perf: retain large-extend FlashInfer tactics`). The selected optimization is
+expert-opt-in; the base RadixArk, 4096-token chunk, and exact 200K launcher
+defaults were requalified unchanged after the commit's source was tested.
 
 ## Qualified production configuration
 
@@ -30,6 +31,7 @@ tools, and a language-only model surface.
 | Prefill | 4096-token chunks |
 | Mamba | 4 slots; `extra_buffer_lazy`; FP32 state |
 | GEMM tuning | FlashInfer CUTLASS FP4; autotune enabled; FP8 GEMM autotune skipped |
+| Selective large-EXTEND tuning | Off by default; `SGLANG_FLASHINFER_AUTOTUNE_EXTEND=1` on the explicit AttnNVFP4/chunk-7680 profile |
 | Compile/graphs | Torch compile mode `default`; batch-one full decode graphs |
 | Scheduling/streaming | Scheduler receive interval 4; stream interval 4; incremental output |
 | Workspace | 128 MiB FlashInfer workspace, the measured functional floor |
@@ -49,9 +51,12 @@ executable source of truth.
 | Safe fixed work, exact `6213/512`, accepted length 3 | **171.263 tok/s** five-run mean; all runs retained the established digest |
 | Native acceptance | Five-probe mean **2.318174** emitted/accepted tokens per verification |
 | Near-limit capacity, exact `199000+16` | **2608.263 prompt tok/s**, **102.358 generation tok/s**, `199016` total |
+| Primary exact `199000+16` record | **3048.086 prompt / 112.499 generation tok/s**, TTFT **65.286869 s**, E2E **65.420204 s** |
+| Selected-cache exact prompt window | **3047.309 tok/s** five-run mean; every request exact `199016` |
+| Selected-cache long generation | **118.389 tok/s** three-run mean at exact `199000+512` |
 | Behavior | Coherent preserved thinking; correct `703`; exactly one `multiply({"a":37,"b":19})` tool call |
 | Surface | Image and audio understanding reported false |
-| Final production relaunch | All three speculative graphs captured; **1.84 GiB** reported headroom |
+| Final production relaunch | Defaults unchanged; exact `199016`, all three graphs, OpenCode2, and **2,222 MiB** post-flush free |
 
 The real promotion used seed `783025237` to make matched investigations easier,
 while ordinary production semantics retain stochastic rejection sampling. The
@@ -105,57 +110,55 @@ remain unchanged.
 ## Active performance handoff
 
 The user designated the exact `199000+16` request in the real 200K pools as the
-primary performance scoreboard. The record to beat is the selective
-target-NVFP4 checkpoint at **3016.444 prompt tok/s** and **112.355 generation
-tok/s**, with **65.971714 s TTFT**, **66.105219 s** end to end, exact `199016`
-tokens, and `finish_reason=length`. Root [`../BENCHMARK.md`](../BENCHMARK.md)
-is the compact authority for this scoreboard.
+primary performance scoreboard. PERF-024 sets the record on the selective
+target-NVFP4 checkpoint at **3048.086 prompt / 112.499 generation tok/s**,
+with **65.286869 s TTFT**, **65.420204 s** end to end, exact `199016` tokens,
+and `finish_reason=length`. Root [`../BENCHMARK.md`](../BENCHMARK.md) is the
+compact authority.
 
-The **3000 prompt / 110 generation tok/s** milestone is achieved in one exact
-request. An independent restart confirmed **3013.736/112.012**, TTFT
-66.031008 s, E2E 66.164923 s.
+The winning selective profile remains `AttnNVFP4`, chunk 7680, M3, and the
+bit-exact Windows Gemma residual-norm direct-output path. PERF-024 additionally
+runs an ordinary 16,384-token target EXTEND pass under the existing
+`SGLANG_FLASHINFER_AUTOTUNE_EXTEND=1` expert opt-in. An independent retune
+produced exact prompt samples
+`3051.345, 3048.538, 3048.086, 3042.488, 3044.105`, mean **3046.912**.
 
-The winning selective profile is `AttnNVFP4`, chunk 7680, M3, and the
-bit-exact Windows Gemma residual-norm direct-output path. All eight exact
-prompt samples across two launches exceeded 3000 tok/s and averaged
-**3013.229**. Three samples also exceeded 110 generation tok/s. Two
-`199000+512` support runs averaged **3013.443/109.683** and peaked at 111.094
-generation tok/s.
+FlashInfer 0.6.17 stores file hits in process-global `_file_configs`, which
+later draft autotune contexts replace. The retained adapter promotes only
+target EXTEND file hits actually exercised by the pass into the runner-keyed
+process cache. A clean relaunch promoted 110 entries from the selected
+20,928-byte cache, SHA-256
+`8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`,
+without re-profiling. Its five exact prompts averaged **3047.309 tok/s**.
 
-A fresh current-source M3 A-B-A control at seed `615388882` averaged
-**2791.022 prompt / 100.647 generation tok/s** over five exact completions;
-the four warmed prompt samples averaged **2789.288 tok/s** with 0.063% CV,
-while generation retained roughly 10% CV because only 15 post-first-token
-decode intervals are measured. This is the immediate matched control, not a
-replacement for the historical scoreboard record.
+Long generation is the stable generation authority because exact-16 measures
+only 15 post-first-token intervals. Three selected-cache `199000+512` requests
+averaged **3047.754 prompt / 118.389 generation tok/s**, while five real
+sampled `6213/512` requests averaged **126.252 tok/s** and five native probes
+averaged **2.217256** accepted tokens per verify. All deterministic windows
+retained their selected-tactic digests.
 
-The new explicitly authorized branch established a post-promotion
-current-source baseline from `adf3a620ef64` with the selective checkpoint,
-chunk 7680, and the same server seed. After two complete warmups, five exact
-cache-flushed scores averaged **2871.358 prompt / 90.459 legacy generation
-tok/s**; prompt CV was 0.747%, generation CV was 15.633%, and the best pair
-was **2873.846/111.926**. Every request completed exact `199016` with the
-established digest. This window did not reproduce the historical record and
-ran with active desktop WDDM clients plus accumulated software power-capping
-time, so it is the immediate same-environment control rather than a new
-qualified reference. Recovering or explaining the **4.810% prompt gap** is
-part of the active handoff.
+Cache-only and dummy-only controls both returned to about 3009 prompt tok/s
+and the baseline digest, proving tactics rather than stale recurrent/KV state
+caused the gain. Profiling afresh on every launch was rejected: it retained a
+3043.747 exact prompt mean but selected a long-generation tactic family that
+averaged only 101.162 tok/s. Keep the selected cache and requalify any new
+tactic selection.
 
-Supporting measurements on that same launch were not stationary. Three exact
-`199000+512` requests averaged **2956.842 prompt / 108.738 legacy generation
-tok/s** with stable output, while the immediately following five-request
-`199000+16` control averaged **2867.286/101.758**. The exact prompt shape and
-cache policy were unchanged. Treat A-B-A controls as mandatory for attribution;
-neither standalone window is a sufficient candidate baseline. The benchmark
-client now also fails before sending a request unless prompt calibration equals
-the requested count exactly.
+The branch began from a five-run current-source control of **2871.358 prompt /
+90.459 short generation tok/s** and an adjacent A2 control of
+**2926.303/92.782**. The selected-cache prompt mean is 4.136% above A2 and
+1.023% above the prior 3016.444 record. The benchmark client fails before
+sending a request unless prompt calibration equals the requested count exactly.
 
 The qualified RadixArk production baseline remains **2608.263 prompt tok/s**
 and **102.358 generation tok/s** on the same exact workload. A current
-launcher-default gate with the retained direct-output code reached
-**2643.254/101.980**, exact capacity, arithmetic/tools, model surface, and
-1.91 GiB post-flush headroom. The selective checkpoint remains the performance
-record profile rather than the production default.
+launcher-default gate after PERF-024 reached **2648.283/88.187**, exact
+capacity, arithmetic/tools, model surface, standalone OpenCode2, and
+2,222 MiB post-flush free. Its short generation result is retained as
+cycle-quantized gate evidence, not a replacement baseline. The selective
+checkpoint remains the performance record profile rather than the production
+default.
 
 The earlier 200-TPS short-context objective and 215-TPS geometry funding floor
 remain historical diagnostic context. Production defaults and the qualified
