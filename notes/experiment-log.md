@@ -6179,3 +6179,53 @@ mean 13.929045  17.125658 446.051        39.730
   diagnostic decode path. It does not change `BENCHMARK.md`; native promotion
   now depends on the exact Rust scoreboard plus context capacity sufficient
   for the measured OpenCode prompt.
+
+### 2026-08-21 00:15 PDT - PERF-A012 removes padded partial-extend queries
+
+- Began from clean signed `HEAD=f697e40a10d306d7963a0e6391f313095be566d4`,
+  branch `main` ahead of `origin/main` by 12. Port 30000 was free; no SGLang,
+  llama, OpenCode benchmark, native compiler, or MPS benchmark was live;
+  memory pressure reported 93% free initially and 91% before the final large
+  gate; macOS recorded no thermal or performance warning.
+- Production reachability is
+  `Qwen3_5AttentionDecoderLayer.self_attention -> RadixAttention ->
+  HybridLinearAttnBackend -> TorchNativeAttnBackend.forward_extend ->
+  _run_sdpa_forward_extend`. The shared helper used a full-KV-length query
+  allocation for every partial chunk, filled only the suffix, ran causal SDPA
+  on every manufactured prefix row, then discarded those outputs.
+- Added `benchmark/mac/bench_mps_sdpa_extend.py`, which keeps the former source
+  path as matched controls and compares the retained lower-right path at exact
+  `24Q/4KV/D256` FP32 geometry. Preliminary `256+256` direct SDPA medians were
+  `2.346917/1.795584/2.338792 ms`; `1024+256` were
+  `9.822792/3.697375/9.785916 ms`; and `4096+256` were
+  `94.982625/10.715042/95.000834 ms`. Both CausalBias and the explicit offset
+  mask produced zero observed error.
+- Final exact-source `4096+256` A/candidate/B samples were
+  `98.142292,97.995583,97.975167,98.056584,97.830542` /
+  `12.608125,12.673916,12.595750,12.723875,12.597375` /
+  `97.847500,97.742375,97.852083,97.806250,98.268000 ms`; medians
+  **97.995583/12.608125/97.847500 ms**.
+- Final exact-source `4096+4096` A/candidate/B samples were
+  `503.558875,556.033500,541.891708,542.376416,618.237542` /
+  `508.756750,176.682250,176.066500,175.942334,176.000667` /
+  `788.375209,641.256125,617.944750,689.572459,582.157333 ms`; medians
+  **542.376416/176.066500/641.256125 ms**. The first candidate sample was a
+  cold delayed dispatch; every direct and source comparison reported zero
+  output error.
+- The retained implementation submits the actual new query rows, uses an
+  offset lower-right boolean mask for partial causal chunks, applies the same
+  absolute-position rule to sliding windows, keeps square one-shot causal SDPA
+  on `is_causal=True`, and skips empty request rows. Six CPU tests pass for
+  shuffled physical slots and GQA, future-value isolation, sliding windows,
+  ragged batches, noncausal attention, and empty extend. PyCompile, Black
+  26.1.0, Ruff 0.15.1, and diff checks pass.
+- Signed commit `210a214c12` (`perf: remove padded torch-native extend
+  queries`) contains only the shared implementation, focused CPU tests, and
+  MPS A/B benchmark. `git verify-commit` reports a good EDDSA signature.
+- Independent audits converge on the next blocker. A 32K/BF16 NHD cache has
+  32,768 logical rows plus padding, while the current native decode binding
+  requires FP32 and `key_cache.shape[0] <= 7936`. The Python MPS predicate
+  admits that incompatible configuration instead of reaching the existing
+  pool-write plus SDPA fallback. Implement the metadata-only dispatch gate,
+  qualify its BF16 cache mutation and grouped-query numerics, then run one
+  unchanged 32K launch through capacity and the 13,635-token OpenCode prompt.

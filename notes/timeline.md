@@ -591,6 +591,21 @@ code changes, or process state matter.
   it at admission, making native context enablement the next funded step. The
   exact Apple scoreboard record remains **18.782925 tok/s** and is unchanged.
 
+### Torch-native partial prefill stops recomputing prefix queries
+
+- The generic extend path padded every partial chunk's query back to the full
+  KV length solely to obtain causal alignment. On MPS this also selected a
+  two-pass temporary proportional to that manufactured query length.
+- Signed `210a214c12` runs SDPA on only the new rows and supplies the required
+  lower-right causal or offset sliding-window mask. Future-value sentinel,
+  shuffled-cache GQA, ragged, noncausal, and empty-extend coverage passes.
+- Exact `4096+256` source medians improved about 7.77x. Exact `4096+4096`
+  five-sample medians improved 3.08-3.64x with zero observed output error.
+- The remaining native context blocker is decode admission. A 32K/BF16 pool
+  currently reaches a Metal binding restricted to FP32 and at most 7,936
+  physical rows; the next narrow change routes incompatible tensors to the
+  already established cache-write plus SDPA fallback.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
