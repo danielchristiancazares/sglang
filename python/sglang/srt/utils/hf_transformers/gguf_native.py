@@ -208,6 +208,7 @@ _PRE_TOKENIZER_REGEX = {
 }
 
 _GGML_TOKEN_TYPE_CONTROL = 3
+_GGML_TOKEN_TYPE_USER_DEFINED = 4
 
 
 def build_gguf_generation_config(gguf_path: str):
@@ -249,8 +250,9 @@ def build_gguf_tokenizer(gguf_path: str, **kwargs: Any):
     checkpoint loader rejects, and its converters key on ``tokenizer.ggml.model``
     (here "gpt2") which loses both the special-token block and the pre-tokenizer
     regex. So the tokenizers spec is assembled directly instead: a byte-level BPE
-    over the NORMAL tokens, the CONTROL tokens registered as added specials, and
-    the split regex named by ``tokenizer.ggml.pre``.
+    over the full vocabulary, CONTROL tokens registered as added specials,
+    USER_DEFINED tokens registered as ordinary added tokens, and the split regex
+    named by ``tokenizer.ggml.pre``.
     """
     import json
 
@@ -272,6 +274,11 @@ def build_gguf_tokenizer(gguf_path: str, **kwargs: Any):
 
     control_ids = [
         i for i, t in enumerate(token_types) if t == _GGML_TOKEN_TYPE_CONTROL
+    ]
+    added_ids = [
+        i
+        for i, t in enumerate(token_types)
+        if t in (_GGML_TOKEN_TYPE_CONTROL, _GGML_TOKEN_TYPE_USER_DEFINED)
     ]
     # Keep the full id space in the BPE vocabulary. Tokenizers compacts sparse
     # vocabularies, which would silently renumber control tokens above the first
@@ -297,9 +304,9 @@ def build_gguf_tokenizer(gguf_path: str, **kwargs: Any):
                 "lstrip": False,
                 "rstrip": False,
                 "normalized": False,
-                "special": True,
+                "special": token_types[i] == _GGML_TOKEN_TYPE_CONTROL,
             }
-            for i in control_ids
+            for i in added_ids
         ],
         "normalizer": None,
         "pre_tokenizer": {

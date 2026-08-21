@@ -62,6 +62,41 @@ class TestGGUFMetadataSnapshot(unittest.TestCase):
             )
         )
 
+    def test_user_defined_markers_are_added_without_becoming_special(self):
+        meta = {
+            "general.architecture": "qwen35",
+            "qwen35.context_length": 262144,
+            "tokenizer.ggml.model": "gpt2",
+            "tokenizer.ggml.pre": "qwen35",
+            "tokenizer.ggml.tokens": [
+                "<|im_end|>",
+                "<think>",
+                "</think>",
+                "<tool_call>",
+                "</tool_call>",
+            ],
+            "tokenizer.ggml.token_type": [3, 4, 4, 4, 4],
+            "tokenizer.ggml.merges": [],
+            "tokenizer.ggml.eos_token_id": 0,
+        }
+
+        with patch.object(
+            gguf_native,
+            "_read_gguf_metadata_snapshot",
+            return_value=(meta, ()),
+        ):
+            tokenizer = gguf_native.build_gguf_tokenizer("model.gguf")
+
+        self.assertEqual(
+            tokenizer.encode("<think>", add_special_tokens=False), [1]
+        )
+        self.assertEqual(
+            tokenizer.encode("<tool_call>", add_special_tokens=False), [3]
+        )
+        self.assertTrue(tokenizer.added_tokens_decoder[0].special)
+        self.assertFalse(tokenizer.added_tokens_decoder[1].special)
+        self.assertEqual(tokenizer.decode([1], skip_special_tokens=True), "<think>")
+
 
 class TestQwen35GGUFNameMap(unittest.TestCase):
     def test_bundled_mtp_tail_maps_to_mtp_namespace(self):
