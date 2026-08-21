@@ -575,10 +575,106 @@ INSTANTIATE_QUANT_BATCH("q5_K_batch_8", block_q5_K, 256, 8)
 INSTANTIATE_QUANT_BATCH("q6_K_batch_1", block_q6_K, 256, 1)
 INSTANTIATE_QUANT_BATCH("q6_K_batch_4", block_q6_K, 256, 4)
 INSTANTIATE_QUANT_BATCH("q6_K_batch_8", block_q6_K, 256, 8)
-INSTANTIATE_QUANT_BATCH("iq2_xxs_batch_1", block_iq2_xxs, 256, 1)
 INSTANTIATE_QUANT_BATCH("iq2_xxs_batch_4", block_iq2_xxs, 256, 4)
 INSTANTIATE_QUANT_BATCH("iq2_xxs_batch_8", block_iq2_xxs, 256, 8)
 #undef INSTANTIATE_QUANT_BATCH
+
+// Batch-one IQ2_XXS matrix-vector products reuse each 32-value input chunk
+// across four output rows. Staging the compact lookup tables once per
+// threadgroup also turns the four random grid/sign lookups per row and chunk
+// into threadgroup-memory reads. This mapping adapts
+// kernel_mul_mv_iq2_xxs_f32_impl from ggml-org/llama.cpp's
+// ggml/src/ggml-metal/ggml-metal.metal at
+// 749f688fcaa4c472ec034b08cb8a907c45cfaa02; see THIRDPARTYNOTICES.txt.
+kernel void iq2_xxs_batch_1(
+        device const block_iq2_xxs * weights,
+        device const float * input,
+        device float * output,
+        constant Q4Args & args,
+        uint group [[threadgroup_position_in_grid]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr ushort rows_per_simdgroup = 4;
+    constexpr ushort simdgroups = 2;
+    threadgroup ulong grid_lut[256];
+    threadgroup uchar sign_lut[128];
+
+    const uint local_thread = simd_id * 32 + lane;
+#pragma unroll
+    for (ushort i = 0; i < 4; ++i) {
+        const uint index = local_thread + i * 64;
+        grid_lut[index] = kIQ2XXSGrid[index];
+    }
+#pragma unroll
+    for (ushort i = 0; i < 2; ++i) {
+        const uint index = local_thread + i * 64;
+        sign_lut[index] = kIQ2Signs[index];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint first_row =
+        (group * simdgroups + simd_id) * rows_per_simdgroup;
+    const uint chunks_per_row = args.blocks_per_row * 8;
+    float sums[rows_per_simdgroup] = {0.0f};
+
+    if (first_row < args.output_size) {
+        for (uint chunk = lane; chunk < chunks_per_row; chunk += 32) {
+            float input_chunk[32];
+#pragma unroll
+            for (ushort i = 0; i < 32; ++i) {
+                input_chunk[i] = input[chunk * 32 + i];
+            }
+
+            const uint block_index = chunk / 8;
+            const uint group32 = chunk & 7;
+#pragma unroll
+            for (ushort row_offset = 0;
+                 row_offset < rows_per_simdgroup;
+                 ++row_offset) {
+                const uint row = first_row + row_offset;
+                if (row >= args.output_size) {
+                    continue;
+                }
+                device const block_iq2_xxs * block =
+                    weights + row * args.blocks_per_row + block_index;
+                device const ushort * q2 = block->qs + 4 * group32;
+                const uint packed_grids =
+                    uint(q2[0]) | (uint(q2[1]) << 16);
+                const uint packed_aux =
+                    uint(q2[2]) | (uint(q2[3]) << 16);
+                const float scale = float(block->d) *
+                    (0.5f + float(packed_aux >> 28));
+                float chunk_sum = 0.0f;
+#pragma unroll
+                for (ushort grid_group = 0; grid_group < 4; ++grid_group) {
+                    const uint grid_index =
+                        (packed_grids >> (8 * grid_group)) & 0xff;
+                    const threadgroup uchar * grid =
+                        (const threadgroup uchar *)(grid_lut + grid_index);
+                    const uchar signs =
+                        sign_lut[(packed_aux >> (7 * grid_group)) & 127];
+#pragma unroll
+                    for (ushort j = 0; j < 8; ++j) {
+                        chunk_sum += input_chunk[8 * grid_group + j] *
+                            float(grid[j]) *
+                            ((signs & (1u << j)) ? -1.0f : 1.0f);
+                    }
+                }
+                sums[row_offset] += scale * chunk_sum;
+            }
+        }
+    }
+
+#pragma unroll
+    for (ushort row_offset = 0;
+         row_offset < rows_per_simdgroup;
+         ++row_offset) {
+        const float sum = simd_sum(sums[row_offset]);
+        const uint row = first_row + row_offset;
+        if (lane == 0 && row < args.output_size) {
+            output[row] = sum * 0.25f;
+        }
+    }
+}
 
 // Batch-one decode is dominated by matrix-vector products. Process four rows
 // per SIMD group so each input vector load feeds four independent IQ1_M rows.
@@ -2794,12 +2890,13 @@ torch::Tensor quant_matmul(
         [encoder setBuffer:input_buffer offset:input_offset atIndex:1];
         [encoder setBuffer:output_buffer offset:output_offset atIndex:2];
         [encoder setBytes:&args length:sizeof(args) atIndex:3];
-        const bool use_iq1_batch1 = weight_type == 29 && batch_size == 1;
-        const NSUInteger output_groups = use_iq1_batch1
+        const bool use_four_row_batch1 =
+            (weight_type == 16 || weight_type == 29) && batch_size == 1;
+        const NSUInteger output_groups = use_four_row_batch1
             ? (output_size + 7) / 8 : (output_size + 3) / 4;
-        const NSUInteger batch_groups = use_iq1_batch1
+        const NSUInteger batch_groups = use_four_row_batch1
             ? 1 : (batch_size + batch_tile - 1) / batch_tile;
-        const NSUInteger threads = use_iq1_batch1 ? 64 : 128;
+        const NSUInteger threads = use_four_row_batch1 ? 64 : 128;
         [encoder dispatchThreadgroups:MTLSizeMake(output_groups, batch_groups, 1)
                     threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
     });
