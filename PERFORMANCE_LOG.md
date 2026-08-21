@@ -34,6 +34,10 @@
 | Fresh current-source exact `199000+16` legacy generation baseline | 112.355 tok/s record | 90.459 arithmetic mean / 88.746 aggregate / 111.926 best | -21.896 / -19.488% arithmetic mean; 15.633% CV | same exact command and launch | 2026-08-20 15:36 PDT |
 | Adjacent pre-candidate exact `199000+16` prompt control A | 3016.444 tok/s record | 2867.286 mean / 2858.962 median / 2909.109 best | -149.158 / -4.945% mean | same launch, five cache-flushed `--skip-warmup` requests after long/sampled support probes | 2026-08-20 15:55 PDT |
 | Adjacent pre-candidate exact `199000+512` support control | 3013.443 tok/s prior qualified mean | 2956.842 prompt / 108.738 legacy generation tok/s | -56.601 prompt / -0.945 generation | same launch, three exact cache-flushed requests; stable output digest | 2026-08-20 15:44 PDT |
+| PERF-024 exact `199000+16` same-request record | 3016.444 prompt / 112.355 generation tok/s | **3048.086 / 112.499 tok/s** | **+31.642 / +1.049% prompt; +0.144 / +0.128% generation** | selective checkpoint, chunk 7680, target ordinary-EXTEND FP4 tactics | 2026-08-20 18:17 PDT |
+| PERF-024 deterministic exact prompt window | 3016.444 tok/s record | **3047.309 tok/s five-run mean** | **+30.865 / +1.023%** | restored 20,928-byte selected cache; 110 target configs promoted into process cache | 2026-08-20 18:17 PDT |
+| PERF-024 exact `199000+512` long generation | 109.683 tok/s prior qualified mean | **118.389 tok/s three-run mean** | **+8.706 / +7.937%** | persisted-cache relaunch; exact counts and stable digest | 2026-08-20 18:17 PDT |
+| PERF-024 real sampled `6213/512` support | 117.940 tok/s fresh matched baseline | **126.252 tok/s five-run mean** | **+8.312 / +7.048%** | sampled production profile on the persisted-cache relaunch | 2026-08-20 18:17 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
 
@@ -534,6 +538,46 @@ tree throughput can be ranked for production.
   and
   `C:\Users\Daniel\.copilot\session-state\df1c744a-8e2f-4823-bd37-18b450ed10d1\files\control-a-exact16-20260820-1554.log`.
 
+### 2026-08-20 18:17 PDT - PERF-024 large-EXTEND FlashInfer FP4 tactics
+
+- Change: allowed the existing opt-in FlashInfer EXTEND autotuner to run one
+  ordinary 16,384-token EXTEND forward on a speculative target worker while
+  keeping draft workers and ordinary speculative dummy callers on their prior
+  paths. FlashInfer file hits exercised by that pass are promoted into the
+  runner-keyed process cache so later draft autotune contexts cannot discard
+  them.
+- Causality: the initial candidate beat the record, and an independent retune
+  produced a distinct 20,928-byte cache with SHA-256
+  `8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`.
+  Cache-only and dummy-only controls both returned to about 3009 prompt tok/s
+  and the baseline output digest. The gain therefore comes from FP4 tactics,
+  not stale state or the extra forward.
+- Record evidence: the independent exact prompt window was
+  `3051.345, 3048.538, 3048.086, 3042.488, 3044.105 tok/s`, mean
+  **3046.912**. The third request set the qualified same-request record at
+  **3048.086 prompt / 112.499 generation tok/s**, TTFT **65.286869 s**,
+  and E2E **65.420204 s**.
+- Persistence evidence: a clean relaunch promoted exactly 110 selected target
+  configs without re-profiling. Its exact prompt window was
+  `3050.570, 3048.607, 3044.288, 3045.422, 3047.659 tok/s`, mean
+  **3047.309**. Three exact `199000+512` requests averaged
+  **3047.754 prompt / 118.389 generation tok/s**. Five real sampled requests
+  averaged **126.252 tok/s**, and five native probes averaged
+  **2.217256** accepted tokens per verify.
+- Correctness/capacity: every exact request completed its requested
+  `199016` or `199512` tokens with stable selected-tactic digests. Preserved
+  reasoning returned `703`; exactly one multiply tool call parsed; image and
+  audio remained false; standalone OpenCode2 returned visible `READY`; and
+  cache flush left 5,386 MiB free.
+- Rejected branch: profiling afresh on every launch kept exact prompt mean at
+  **3043.747 tok/s** but selected tactics whose long generation averaged only
+  **101.162 tok/s**. Fresh profiling remains diagnostic, not the promotion
+  policy.
+- Decision: retain as an expert opt-in for the selective chunk-7680 profile.
+  The base RadixArk/chunk-4096 launcher defaults remain unchanged. A hostile
+  review also moved large-buffer allocation inside the OOM fallback and added
+  CPU coverage for allocation failure and exception-safe method restoration.
+
 ## Candidate Inventory
 
 | ID | Hypothesis | Scope | Status | Evidence |
@@ -566,7 +610,7 @@ tree throughput can be ranked for production.
 | PERF-021 | Run single-layer draft-extend `lm_head` only on each selected accepted row. | EAGLE worker/graph runner using the existing multi-layer selection contract | Rejected | Draft-extend span changed 1.059 -> 1.061 ms and full cycle 16.058328 -> 16.066558 ms; memory fell but runtime did not. |
 | PERF-022 | Remove the temporary/copy from native-Windows Gemma residual normalization. | Windows `GemmaRMSNorm` dispatch using existing JIT output buffer | Retained | Bit-exact; 22-24% isolated reduction; exact `199000+16` record **3016.444/112.355**, independent confirmation **3013.736/112.012**. |
 | PERF-023 | Re-establish the current-source exact-200K baseline before changing code. | Selective checkpoint, chunk 7680, exact benchmark and live environment | Complete | Five exact scores averaged **2871.358/90.459** with exact digest; current environment did not reproduce the historical record. |
-| PERF-024 | Autotune target ordinary-EXTEND FP4 tactics at the real 7680/7000 prefill shapes without overwriting M1/M3 tactics. | FlashInfer autotune runner and speculative target prefill | Survey | Current speculative startup tunes target-verify-sized buffers; the opt-in extend autotuner rejects speculative runners. Requires direct source and installed-backend admission. |
+| PERF-024 | Autotune target ordinary-EXTEND FP4 tactics at the real 7680/7000 prefill shapes without losing them to later draft contexts. | FlashInfer autotune runner and speculative target prefill | Retained expert opt-in; qualified record | Same-request record **3048.086/112.499**; persisted-cache exact prompt mean **3047.309** and long-generation mean **118.389**. Defaults remain unchanged. |
 | PERF-025 | Evaluate the already-implemented FlashInfer TRT-LLM dense FP4 backend on native-Windows SM120. | `ModelOptFp4LinearMethod`, FP4 backend selector, launcher | Survey | Core source and B200 tests expose `flashinfer_trtllm`, while the Windows launcher omits it. Must prove installed 0.6.17 capability, SM120 parity, M3/M7680 timing, and memory. |
 | PERF-026 | Specialize greedy EAGLE draft proposals and retain a sparse exact sampled p/q path. | EAGLE draft graphs, proposal buffers, rejection sampling | Survey | Temperature-zero target verification is greedy while the draft still samples stochastic top-k 20. Any change must preserve exact q(X), RNG, graph replay, and asynchronous output lifetimes. |
 | PERF-027 | Fuse Qwen SwiGLU output directly into byte-identical NVFP4 activation/scales for `down_proj`. | Native CUDA activation/quant producer and FP4 linear tuple input | Survey | Removes 64 BF16 intermediate write/read pairs per target pass; first gate is byte-identical packed output at M1/M3/M7000/M7680 and a whole-chain win. |

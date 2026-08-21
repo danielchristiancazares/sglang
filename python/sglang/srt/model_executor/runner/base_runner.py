@@ -375,6 +375,7 @@ class BaseRunner(ABC):
         *,
         buffers,
         extend_num_tokens_per_req: Optional[int] = None,
+        allow_speculative_target_extend: bool = False,
     ):
         """Run a dummy forward pass for warmup/profiling.
 
@@ -412,7 +413,17 @@ class BaseRunner(ABC):
         _is_pd_prefill_target = (
             mr.server_args.disaggregation_mode == "prefill" and not mr.is_draft_worker
         )
-        if mr.spec_algorithm.is_speculative() and not _is_pd_prefill_target:
+        if allow_speculative_target_extend:
+            assert (
+                mr.spec_algorithm.is_speculative()
+                and not mr.is_draft_worker
+                and capture_forward_mode == ForwardMode.EXTEND
+            ), "speculative target EXTEND requires a target worker in EXTEND mode"
+        if (
+            mr.spec_algorithm.is_speculative()
+            and not _is_pd_prefill_target
+            and not allow_speculative_target_extend
+        ):
             if mr.is_draft_worker:
                 assert (
                     mr.spec_algorithm.supports_target_verify_for_draft()
@@ -421,9 +432,8 @@ class BaseRunner(ABC):
             num_tokens_per_req = mr.decode_num_tokens_per_req()
         if extend_num_tokens_per_req is not None:
             assert (
-                capture_forward_mode == ForwardMode.EXTEND
-                and not mr.spec_algorithm.is_speculative()
-            ), "extend_num_tokens_per_req requires a non-speculative EXTEND dummy"
+                capture_forward_mode == ForwardMode.EXTEND and not mr.is_draft_worker
+            ), "extend_num_tokens_per_req requires a target EXTEND dummy"
             num_tokens_per_req = extend_num_tokens_per_req
 
         num_tokens = batch_size * num_tokens_per_req
@@ -552,12 +562,16 @@ class BaseRunner(ABC):
             global_num_tokens_cpu = None
 
         # Speculative metadata and hidden-state capture mode.
-        spec_info = create_dummy_verify_input(
-            mr.spec_algorithm,
-            mr.server_args,
-            buffers.custom_mask,
-            num_tokens_per_req,
-            mr.is_draft_worker,
+        spec_info = (
+            create_dummy_verify_input(
+                mr.spec_algorithm,
+                mr.server_args,
+                buffers.custom_mask,
+                num_tokens_per_req,
+                mr.is_draft_worker,
+            )
+            if capture_forward_mode.is_target_verify()
+            else None
         )
         if spec_info is not None and (
             mr.spec_algorithm.is_eagle() or mr.spec_algorithm.is_standalone()

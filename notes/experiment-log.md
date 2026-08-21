@@ -3152,3 +3152,295 @@ mean 13.929045  17.125658 446.051        39.730
   `C:\Users\Daniel\.copilot\session-state\df1c744a-8e2f-4823-bd37-18b450ed10d1\files\baseline-support-20260820-1542.log`
   and
   `C:\Users\Daniel\.copilot\session-state\df1c744a-8e2f-4823-bd37-18b450ed10d1\files\control-a-exact16-20260820-1554.log`.
+
+### 2026-08-20 16:43 PDT - PERF-024 large-EXTEND tactics set a provisional exact-200K record
+
+- On committed `HEAD=69d88c6912863aa89141af13e94c8081ef4439c8`, changed
+  the FlashInfer startup autotune experimentally so an explicitly requested
+  ordinary EXTEND dummy remains EXTEND on a speculative target worker,
+  speculative verify metadata is created only for TARGET_VERIFY, and the
+  existing `SGLANG_FLASHINFER_AUTOTUNE_EXTEND` gate excludes the draft worker
+  rather than every speculative runner. Multimodal and non-generation skips
+  remained intact.
+- Snapshotted the original FlashInfer tactic cache under
+  `C:\Users\Daniel\.copilot\session-state\df1c744a-8e2f-4823-bd37-18b450ed10d1\files\flashinfer-autotune-pre-perf024`.
+  It was 3,029 bytes with SHA-256
+  `54C9520E83722FA0670C5334520ADC228E22B9F8E2A5BC2304CFA185BE938B0A`.
+  Launched the selective profile with the opt-in set only in the launch
+  process:
+
+  ```powershell
+  $env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND = "1"
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 `
+    -ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4 `
+    -ChunkedPrefillSize 7680 `
+    -RandomSeed 615388882
+  ```
+
+  The extra ordinary-EXTEND pass ran at 16,384 tokens and populated 22 FP4
+  M-buckets through 16,384. The cache grew to 20,926 bytes, SHA-256
+  `20E745B0B328437F4C5DC0360575541D0A2B1AABD29676393CFBD70B33603150`.
+  Target, draft-decode, and draft-extend graph phases all captured; startup
+  reported 4.65 GiB free.
+- The first five exact `199000+16` scores had prompt
+  `3051.759, 3033.324, 3039.994, 3034.686, 2862.891 tok/s`, mean
+  **3004.531**, median **3034.686**, and best **3051.759**. Legacy generation
+  was `131.591, 130.960, 130.178, 129.702, 129.927 tok/s`, mean **130.472**.
+  The first request set a same-request provisional record at
+  **3051.759 prompt / 131.591 generation tok/s**, TTFT **65.208286 s** and
+  E2E **65.322275 s**. All requests completed exact `199016`, returned
+  `finish_reason=length`, and had digest
+  `a6bcf2394ef3cdd140bf100ab6b4ee5fa90f3e77c3fefd993b9acc63fe6d19ec`.
+- After the support probes and a 60-second idle, the second five-score window
+  was stable: prompt `3047.409, 3034.755, 3042.432, 3041.355, 3041.038`,
+  mean **3041.398**, median **3041.355**, and CV **0.148%**. Legacy
+  generation was `111.725, 135.797, 132.677, 111.717, 96.922`, mean
+  **117.768**; the fixed 16-token interval remained cycle-quantized. The
+  stable prompt mean was **6.073%** above adjacent control A,
+  **3.934%** above restored control A2, and **0.827%** above the historical
+  3016.444 record.
+- Three exact `199000+512` requests measured prompt
+  `2881.222, 3019.790, 3048.056 tok/s`, mean **2983.023**, and generation
+  `110.670, 118.180, 116.470 tok/s`, mean **115.107**, aggregate
+  **115.016**. Each completed exact `199512`, returned
+  `finish_reason=length`, and retained digest
+  `c29e8dff98df577b8abf24c8373ca3e5ab7451ce14aeec43018c74eaf5abe2ea`.
+  Five real sampled `6213/512` requests measured
+  `125.251, 121.666, 125.182, 120.795, 129.973 tok/s`, mean **124.573**,
+  a **5.624%** improvement over the fresh baseline support window.
+- Five native acceptance probes measured accepted length
+  `2.226087, 2.188034, 2.370370, 2.255507, 2.188034`, mean **2.245606**;
+  mean acceptance rate was **0.621928** and mean verify count **228.2**.
+  Behavior retained coherent `reasoning_content`, arithmetic result `703`,
+  exactly one parsed `multiply({"a":37,"b":19})` call with
+  `finish_reason=tool_calls`, and image/audio understanding false. Cache flush
+  left 5.301 GiB free.
+- Stopped the candidate tree leaf-first
+  (`35596 -> 54872 -> 20684 -> 45040`). Port 30000 and compiler workers were
+  clear; GPU residency returned to 650 MiB. Reverted the experimental source
+  and restored the original tactic cache byte-for-byte before control A2.
+- Relaunched the identical selective model/chunk/seed with baseline source and
+  the restored 3,029-byte cache. No large EXTEND autotune ran and the cache
+  remained unchanged. Five exact A2 scores measured prompt
+  `2997.970, 2996.980, 2883.162, 2893.345, 2860.058 tok/s`, mean
+  **2926.303**, and generation
+  `98.152, 86.027, 94.325, 105.532, 79.873 tok/s`, mean **92.782**.
+  Every request returned the baseline
+  `9a0e20749e2930a697fefdd3bdd7863a067abe4d9860e6d1e7d9b80a62668b37`
+  digest. This A-B-A result attributes the speed and deterministic-output
+  change to selected FP4 tactics rather than the ordinary launch arguments.
+- Stopped A2 leaf-first
+  (`55984 -> 44644 -> 46188 -> 37276`) at 16:42 PDT. Port 30000 and compiler
+  workers were clear; GPU residency was 824 MiB.
+- Reapplied the candidate as a narrower retained implementation:
+  `_dummy_run` now requires an explicit `allow_speculative_target_extend`
+  capability in addition to target-worker and EXTEND assertions; only the
+  gated FlashInfer helper supplies it. Draft workers still skip the pass and
+  ordinary speculative dummy callers still become TARGET_VERIFY. Added CPU
+  coverage for opt-in target admission, draft rejection, and default-off
+  behavior. Seven focused tests, four subtests, Python compilation, and
+  whitespace checks passed. The system virtualenv lacks Ruff/Black, so the
+  repository-pinned Ruff 0.15.1 and Black 26.1.0 were run through `uvx`;
+  lint and formatting passed.
+- Raw artifacts:
+  `perf024-exact16-20260820-1604.log`,
+  `perf024-support-20260820-1611.log`,
+  `perf024-exact16-window2-20260820-1618.log`,
+  `perf024-behavior-20260820-1627.log`,
+  `perf024-shutdown-20260820-1629.log`,
+  `control-a2-exact16-20260820-1632.log`, and
+  `control-a2-shutdown-20260820-1643.log`, all under the session `files`
+  directory above.
+- Status: PERF-024 is a provisional winner, not yet promoted. Required next
+  evidence is a clean independent restart with the retained source, a cache-
+  only restart to separate tactic persistence from startup-state effects, and
+  final production-default/OpenCode2 gates.
+
+### 2026-08-20 17:12 PDT - independent retune reproduced PERF-024 and isolated tactic causality
+
+- Kept `HEAD=69d88c6912863aa89141af13e94c8081ef4439c8` and the
+  retained speculative-target EXTEND implementation. Restored the original
+  3,029-byte cache before launch, then independently ran the same opt-in
+  selective profile:
+
+  ```powershell
+  $env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND = "1"
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 `
+    -ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4 `
+    -ChunkedPrefillSize 7680 `
+    -RandomSeed 615388882
+  ```
+
+  The new cache was 20,928 bytes with SHA-256
+  `8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`.
+  Its preserved snapshot is
+  `C:\Users\Daniel\.copilot\session-state\df1c744a-8e2f-4823-bd37-18b450ed10d1\files\flashinfer-autotune-perf024-restart\rank_tp0_pp0_dp0.json`.
+- Five exact `199000+16` scores measured prompt
+  `3051.345, 3048.538, 3048.086, 3042.488, 3044.105 tok/s`, mean
+  **3046.912**. The third request independently beat both published
+  same-request records at **3048.086 prompt / 112.499 generation tok/s**,
+  TTFT **65.286869 s**, and E2E **65.420204 s**. Every request completed
+  exact `199016`, returned `finish_reason=length`, and used digest
+  `cdf5bb57b88deaa7515abaedf36406d10494599fce2e23eeaa400461d9f647d9`.
+- Three exact `199000+512` requests measured prompt
+  `3045.851, 3049.214, 3044.966 tok/s`, mean **3046.677**, and generation
+  `117.632, 117.686, 118.241 tok/s`, mean **117.853**. All completed exact
+  `199512` with digest
+  `cac0c6e4fab3115102a9a0c4163e4465068fba30cb09f0bb5556c7021e4a2092`.
+  Five real sampled `6213/512` requests averaged **125.517 tok/s**.
+  Five native probes averaged about **2.2173** accepted tokens per verify,
+  **0.6069** acceptance rate, and **231** verifies.
+- Arithmetic/reasoning returned `703`; the tool check emitted exactly one
+  parsed `multiply({"a":37,"b":19})` call with
+  `finish_reason=tool_calls`; `/model_info` kept image/audio false. A cache
+  flush left about 5.4 GiB free.
+- Ran two causality controls after clean leaf-first restarts:
+  - **Cache-only:** launched with the 20,928-byte cache but without the
+    ordinary EXTEND pass. Exact prompt returned to about **3009.716 tok/s**,
+    long generation to about **111.016 tok/s**, and both outputs returned to
+    the baseline digest family. The file entries alone were not retained for
+    runtime use.
+  - **Dummy-only:** ran the same 16,384-token ordinary EXTEND forward while
+    skipping FP4 autotuning. Three exact prompts averaged about
+    **3008.942 tok/s** and retained the baseline digest. The dummy forward's
+    Mamba/KV state was therefore not the source of the gain.
+- These controls attribute both the throughput and deterministic-output
+  change to the selected FP4 tactics. Raw artifacts include
+  `perf024-restart-server-20260820-1645.log`,
+  `perf024-restart-exact16-20260820-1650.log`,
+  `perf024-restart-support-20260820-1659.log`,
+  `perf024-restart-behavior-20260820-1704.log`,
+  `perf024-cacheonly-causality-20260820-1707.log`, and
+  `perf024-dummyonly-causality-20260820-1718.log` under the session
+  `files` directory.
+
+### 2026-08-20 17:57 PDT - rejected fresh profiling and fixed FlashInfer file-cache lifetime
+
+- A direct attempt to reactivate the saved cache after later startup phases
+  did not recover the selected tactics. Source tracing found the precise
+  lifetime mismatch in FlashInfer 0.6.17:
+  - file hits loaded by `autotune(cache=...)` live in process-global
+    `_file_configs`;
+  - each later speculative-draft autotune context clears and replaces that
+    table;
+  - live profiling writes runner-keyed entries to `profiling_cache`, which
+    survives later contexts.
+- Tested always profiling the large target EXTEND pass afresh. Five exact
+  prompts remained strong at mean **3043.747 tok/s**, and two short requests
+  beat both historical same-request values. However, the independently
+  selected tactics reduced three long-generation results to
+  `101.469, 98.969, 103.049 tok/s`, mean **101.162**, despite sampled
+  generation averaging about **125.006 tok/s**. Behavior and standalone
+  OpenCode2 still passed. Rejected fresh profiling as a production policy
+  because startup-selected tactics introduced material long-generation
+  variance.
+- Added an opt-in file-hit promotion adapter around only the target EXTEND
+  forward. It wraps `AutoTuner.search_cache`, copies only matching file
+  entries actually exercised by that forward into the exact runner-keyed
+  `profiling_cache`, and restores the original method in `finally`. Ordinary
+  target-decode and speculative-draft autotune paths remain unchanged.
+- Restored the independently selected 20,928-byte cache and launched the
+  selective profile again. Startup promoted exactly **110** target FP4
+  configs without re-profiling. Target, draft-decode, and draft-extend graph
+  phases all captured. The first exact smoke measured
+  **3050.570 prompt / 97.844 short generation tok/s** with digest
+  `cdf5bb57b88deaa7515abaedf36406d10494599fce2e23eeaa400461d9f647d9`;
+  the first long smoke measured **3048.094 prompt / 118.184 generation
+  tok/s** with digest
+  `cac0c6e4fab3115102a9a0c4163e4465068fba30cb09f0bb5556c7021e4a2092`.
+  Those digests exactly matched the independent retune, proving the adapter
+  recreated the selected in-process tactic state.
+- Raw artifacts include `perf024-final-gates-20260820-1728.log`,
+  `perf024-freshfinal-exact16-20260820-1737.log`,
+  `perf024-freshfinal-fullgates-20260820-1747.log`,
+  `perf024-promoted-server-20260820-1758.log`, and
+  `perf024-promoted-smoke-20260820-1800.log`.
+
+### 2026-08-20 18:17 PDT - deterministic promotion qualified; hostile review closed OOM fallback
+
+- Continued the promoted-cache smoke into a five-request exact window. Prompt
+  was `3050.570, 3048.607, 3044.288, 3045.422, 3047.659 tok/s`, mean
+  **3047.309**, all exact `199000+16` with identical `cdf5bb...f647d9`
+  digests. Short-generation samples were
+  `97.844, 97.326, 77.929, 86.769, 111.849 tok/s`, mean **94.343**;
+  this 15-token interval remains quantized by speculative-cycle and SSE
+  boundaries and is not the primary generation comparison.
+- Three exact `199000+512` requests measured prompt
+  `3048.094, 3047.287, 3047.882 tok/s`, mean **3047.754**, and generation
+  `118.184, 118.764, 118.219 tok/s`, mean **118.389**. Every request
+  completed exact `199512` with identical `cac0c6...a2092` digests.
+- Five sampled `6213/512` requests measured end-to-end generation
+  `123.488, 122.142, 128.497, 126.584, 130.551 tok/s`, mean **126.252**;
+  decode-only mean was **143.329 tok/s**. Five native probes measured
+  accepted length
+  `2.285714, 2.245614, 2.169492, 2.197425, 2.188034`, mean **2.217256**;
+  acceptance-rate mean was **0.606901** and verify-count mean **231.0**.
+- On this exact launch, arithmetic/reasoning returned `703`, exactly one
+  `multiply({"a":37,"b":19})` tool call parsed with
+  `finish_reason=tool_calls`, and `/model_info` kept image/audio false. An
+  intentionally reduced OpenCode2 output cap of 128 exhausted its budget
+  after hidden reasoning and emitted no visible text; this harness probe was
+  rejected. The established standalone wrapper at its normal 8192-token cap
+  returned visible `READY` and restored the process-scoped configuration
+  overlay. Cache flush left **5,386 MiB** free.
+- Verified and stopped the launch leaf-first:
+  `36608 (listener) -> 23124 (python) -> 45672 (sglang) -> 4284 (pwsh)`.
+  Port 30000 and compiler workers were clear; GPU residency returned to
+  573 MiB. Artifacts are
+  `perf024-promoted-window-20260820-1805.log`,
+  `perf024-promoted-generation-20260820-1814.log`,
+  `perf024-promoted-final-gates-20260820-1816.log`, and
+  `perf024-promoted-shutdown-20260820-1816.log`.
+- Hostile review found one startup failure-path gap: the optional EXTEND pass
+  allocated its large dummy buffers before entering the OOM fallback, so an
+  allocation OOM could still abort startup. Moved allocation inside the
+  guarded region, retained fail-fast behavior for non-OOM errors, narrowed
+  file-hit promotion to speculative targets, and added CPU regression
+  coverage for allocation OOM plus exception-safe method restoration. All
+  five focused tests passed.
+- Selected PERF-024 result:
+  - qualified same-request record: **3048.086 prompt / 112.499 generation
+    tok/s** from the independent retune;
+  - deterministic five-run exact prompt mean: **3047.309 tok/s**;
+  - deterministic three-run long generation mean: **118.389 tok/s**;
+  - best observed same-request result: **3051.759 / 131.591 tok/s**;
+  - selected cache: 20,928 bytes,
+    `8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`.
+  The next gate is an unchanged launcher-default base-model/chunk-4096
+  production relaunch with the EXTEND opt-in absent.
+
+### 2026-08-20 18:26 PDT - unchanged production defaults passed after PERF-024
+
+- Launched
+  `scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1` with no arguments and
+  `SGLANG_FLASHINFER_AUTOTUNE_EXTEND` absent. The resolved server used base
+  `Qwen3.8-27B-NVFP4-RadixArk`, chunk 4096, generated seed `10981265`, exact
+  200,000 context and target/draft token pools, one request, page 64, M3
+  linear rejection sampling, draft top-k 20, FP8 draft KV, FP32 Mamba state,
+  and all experimental tree/SWOR/simulation controls inactive.
+- Startup loaded both exact 200,000-token KV pools. No extra EXTEND pass and
+  no file-hit promotion appeared in the log. Target verify, draft decode, and
+  draft extend graphs captured in **41.18, 1.29, and 0.98 s**; startup
+  reported 1.56 GiB free and `/health` returned 200.
+- One cache-flushed exact `199000+16` request completed exact `199016` with
+  `finish_reason=length`, **2648.283 prompt / 88.187 short generation tok/s**,
+  TTFT **75.143026 s**, and E2E **75.313120 s**. The short generation field
+  remains cycle-quantized; this gate was for unchanged behavior and capacity,
+  not a new base-profile performance window.
+- Preserved reasoning returned `703`; exactly one
+  `multiply({"a":37,"b":19})` call parsed with
+  `finish_reason=tool_calls`; `/model_info` reported the base checkpoint and
+  image/audio false. Standalone OpenCode2 returned visible `READY` and
+  restored its process-scoped overlay. Post-flush free VRAM was **2,222 MiB**.
+- Verified and stopped the tree leaf-first:
+  `35148 (listener) -> 31028 (python) -> 22888 (sglang) -> 34068 (pwsh)`.
+  Port 30000 and compiler workers were clear; GPU residency returned to
+  585 MiB.
+- The selected live selective-profile cache remains 20,928 bytes with SHA-256
+  `8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`.
+  The original 3,029-byte cache remains separately preserved with SHA-256
+  `54C9520E83722FA0670C5334520ADC228E22B9F8E2A5BC2304CFA185BE938B0A`.
+  Artifacts are `perf024-production-default-server-20260820-1820.log`,
+  `perf024-production-default-ready-20260820-1822.log`,
+  `perf024-production-default-gates-20260820-1824.log`, and
+  `perf024-production-default-shutdown-20260820-1825.log`.
