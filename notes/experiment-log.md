@@ -4240,3 +4240,33 @@ mean 13.929045  17.125658 446.051        39.730
   and `perf036-paged-mmakv2-20260821-0111.log` (real paged candidate;
   SHA-256
   `FBC50FD6B40DC661685134EDD4C3A57B3C95CC5E7F40EDD349DE02A700C2885F`).
+
+### 2026-08-21 01:40 PDT - PERF-037 norm-to-NVFP4 fusion is boundary-neutral
+
+- Built a temporary repository-native SM120 CUDA producer that preserved the
+  selected fused residual-add/Gemma-RMSNorm kernel's BF16 arithmetic, wrote
+  normalized BF16 and residual outputs in place, and emitted the exact
+  FlashInfer NVFP4 values plus 128x4-swizzled E4M3 scale bytes from the same
+  rounded BF16 registers.
+- Exact M1/M3/M7000/M7680 comparisons passed for normalized input, updated
+  residual, every packed value byte, and every scale byte including padding.
+  The fused single M3 boundary improved **0.040000 -> 0.027296 ms**, but a
+  synthetic graph containing 64 adjacent norms favored the staged route
+  **0.145888 vs 0.272352 ms** because PDL overlapped its otherwise independent
+  quantizers across fake neighboring norms.
+- Corrected attribution included the real immediately dependent
+  `M=3,K=5120,N=34816` NVFP4 gate/up GEMM. Over 51 captured samples, the staged
+  norm+quant+GEMM median was **0.096704 ms/layer** and the fused
+  norm/quant+GEMM median was **0.097152 ms/layer**. The candidate lost
+  **0.000448 ms/layer**, projecting to **-0.028672 ms** across 64 layers.
+- Failure mechanism: the selected PDL chain already overlaps the standalone
+  activation quantizer with GEMM startup. Removing its isolated launch does
+  not shorten the serialized norm-to-projection boundary.
+- Removed both experimental repository files and the exact
+  `sgl_kernel_jit_gemma_fused_add_rmsnorm_nvfp4_5120_true_bf16_t_false`
+  cache directory. No model routing or server launch occurred; the worktree
+  returned to documentation plus the user-owned untracked paths.
+- Artifacts: `perf037-gemma-norm-nvfp4-20260821-0130.log` (SHA-256
+  `53C8FCB1EB67F930B3BC5C30F7E227B9A03FEB415119919D1B60BC73ABC8DDD4`)
+  and `perf037-gemma-norm-nvfp4-boundary-20260821-0140.log` (SHA-256
+  `71356F5F50F46552CE41E2CD7739411512F51624253AEAB9A6B679082D48F8E8`).

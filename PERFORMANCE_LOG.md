@@ -635,6 +635,7 @@ tree throughput can be ranked for production.
 | PERF-034 | Tune global KV page size for the paged-prefix attention wall. | Page sizes 128 and 32 | Rejected | Page 128 floored pools to 199,936 tokens. Page 32 retained exact pools but does not reach prefill's page-size-1 token-index wrapper and reduced long generation to 112.576 tok/s. |
 | PERF-035 | Use FlashInfer FP16 QK reduction only for ordinary paged prefill. | Paged-prefix plan precision mode | Rejected as noise | Initial server A-B moved +0.679%, but the exact 25-prefix ladder was 163.705 ms slower across 16 layers. The opt-in and tests were removed. |
 | PERF-036 | Reduce the native FA2 paged-prefix KV MMA tile for FP8 KV/head dimension 256. | FlashInfer `BatchPrefillWithPagedKVCacheDispatched` | Rejected | The correctly routed `NUM_MMA_KV=2` kernel regressed the exact ladder from 3013.932 to 3414.968 ms/layer (+13.306%) and changed output/LSE digests. CTA-Q 16 also lost; CTA-Q 32/128 are invalid. Restored CTA-Q 64 and `NUM_MMA_KV=4`. |
+| PERF-037 | Fuse residual-add/Gemma RMSNorm directly into the following NVFP4 activation tuple. | Native SM120 dual-output norm/quant producer | Rejected; boundary-neutral | Bit-exact at M1/M3/M7000/M7680. The real captured norm+quant+gate/up-GEMM boundary moved 0.096704 -> 0.097152 ms/layer, projecting -0.0287 ms over 64 layers. PDL already hides the separate quantizer. The prototype was removed. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1018,3 +1019,16 @@ tree throughput can be ranked for production.
 - Restored the maintained and installed FlashInfer headers byte-for-byte,
   removed the generated candidate module, and retained CTA-Q 64 with
   `NUM_MMA_KV=4`. No full server gate was warranted.
+
+### 2026-08-21 01:40 PDT - PERF-037 exact norm-to-NVFP4 producer rejected
+
+- A native SM120 kernel fused the selected residual-add/Gemma RMSNorm with
+  exact NVFP4 packing while retaining both BF16 outputs. M1/M3/M7000/M7680
+  normalized input, residual, packed values, and scale bytes matched exactly.
+- Isolated M3 improved **0.040000 -> 0.027296 ms**, but the real dependent
+  `3x5120 -> 34816` gate/up-GEMM boundary measured **0.096704 ms staged**
+  versus **0.097152 ms fused** across 51 captured samples.
+- The candidate projects to **-0.028672 ms** across 64 target layers. PDL
+  already overlaps the standalone quantizer with GEMM startup, so the isolated
+  launch saving is not serialized. Removed the native prototype and its exact
+  JIT cache without changing model routing.

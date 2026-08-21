@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-21
-01:11 PDT.
+01:40 PDT.
 
 **Qualified production source line:** commit
 `7f5af878da7b8dc43063f31e554dfc69cee5d510`
@@ -153,6 +153,13 @@ digests. The maintained and installed FlashInfer headers are restored to
 matching SHA-256
 `2E5927BDC0D36DDB393CB4FAB68C2E958D65D5B4B0085C969F7CFA777ECDFB5B`;
 CTA-Q 64 with `NUM_MMA_KV=4` remains selected.
+
+PERF-037 closes standalone norm-to-NVFP4 fusion. Its native SM120 producer was
+bit-exact at all production shapes, but the captured M3
+norm+quant+gate/up-GEMM boundary moved **0.096704 -> 0.097152 ms/layer**.
+FlashInfer's existing PDL chain already hides the quantizer behind GEMM
+startup; the prototype and its exact JIT cache were removed before model
+wiring.
 
 The next funded decode candidate is a repository-native SM120 CUTLASS
 gate/up-GEMM epilogue that emits the compiled-semantics SwiGLU NVFP4 tuple
