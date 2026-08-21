@@ -238,6 +238,8 @@ def fused_mul_mat_gguf(
             and x.dtype == torch.float32
             and qweight.dtype == torch.float32
         ):
+            if x.numel() == x.shape[-1]:
+                return x @ qweight.T
             return dense_matmul(qweight, x)
         return (x.to(qweight.dtype) @ qweight.T).to(x.dtype)
     if _is_mps:
