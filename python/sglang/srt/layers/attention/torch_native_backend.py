@@ -33,6 +33,32 @@ def _sdpa(query, key, value, *, enable_gqa: bool, **kwargs):
     return scaled_dot_product_attention(query, key, value, **kwargs)
 
 
+_MPS_DECODE_GQA_MAX_CACHE_SLOTS = 7936
+
+
+def _native_mps_decode_gqa_inputs_supported(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    head_dim: int,
+) -> bool:
+    tensors = (query, key, value, key_cache, value_cache)
+    return (
+        all(tensor.device.type == "mps" for tensor in tensors)
+        and all(tensor.dtype == torch.float32 for tensor in tensors)
+        and key_cache.ndim == 3
+        and value_cache.ndim == 3
+        and key_cache.shape == value_cache.shape
+        and key_cache.shape[-1] == head_dim
+        and key_cache.is_contiguous()
+        and value_cache.is_contiguous()
+        and 0 < key_cache.shape[0] <= _MPS_DECODE_GQA_MAX_CACHE_SLOTS
+        and 0 < head_dim <= 256
+    )
+
+
 class TorchNativeAttnBackend(AttentionBackend):
     def __init__(self, model_runner: ModelRunner):
         super().__init__()
@@ -444,20 +470,30 @@ class TorchNativeAttnBackend(AttentionBackend):
             == "nhd"
             and (layer.sliding_window_size is None or layer.sliding_window_size <= -1)
         ):
-            from sglang.srt.hardware_backend.mps.ops import decode_gqa
-
-            return decode_gqa(
+            key_cache = self.token_to_kv_pool.get_key_buffer(layer.layer_id)
+            value_cache = self.token_to_kv_pool.get_value_buffer(layer.layer_id)
+            if _native_mps_decode_gqa_inputs_supported(
                 q,
                 k,
                 v,
-                self.token_to_kv_pool.get_key_buffer(layer.layer_id),
-                self.token_to_kv_pool.get_value_buffer(layer.layer_id),
-                cache_loc,
-                self.req_to_token_pool.req_to_token,
-                forward_batch.req_pool_indices,
-                seq_lens,
-                layer.scaling,
-            )
+                key_cache,
+                value_cache,
+                layer.qk_head_dim,
+            ):
+                from sglang.srt.hardware_backend.mps.ops import decode_gqa
+
+                return decode_gqa(
+                    q,
+                    k,
+                    v,
+                    key_cache,
+                    value_cache,
+                    cache_loc,
+                    self.req_to_token_pool.req_to_token,
+                    forward_batch.req_pool_indices,
+                    seq_lens,
+                    layer.scaling,
+                )
 
         if save_kv_cache and k is not None and v is not None:
             self.token_to_kv_pool.set_kv_buffer(
