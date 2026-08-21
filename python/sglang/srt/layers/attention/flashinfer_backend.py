@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sglang.srt.runtime_context import get_parallel
+from sglang.srt.runtime_context import get_disagg, get_parallel
 
 """
 Support different attention backends.
@@ -157,6 +157,7 @@ class PrefillMetadata:
     extend_no_prefix: bool
     multi_item_params: Optional[MultiItemScoringParams] = None
     swa_out_cache_loc: Optional[torch.Tensor] = None
+    logical_page_size: int = 1
 
 
 # Reuse this workspace buffer across all flashinfer wrappers
@@ -386,6 +387,61 @@ class FlashInferAttnBackend(AttentionBackend):
         else:
             self.num_wrappers = 1
             self.dispatch_reason = None
+
+        self.page_aligned_prefill = (
+            envs.SGLANG_OPT_FLASHINFER_PAGE_ALIGNED_PREFILL.get()
+            and self.__class__ is FlashInferAttnBackend
+            and prefill_backend == "flashinfer"
+            and not (get_disagg().enable_pdmux and not init_new_workspace)
+            and not skip_prefill
+        )
+        if self.page_aligned_prefill:
+            k_shape, v_shape = self.token_to_kv_pool.get_kv_buffer_shape()
+            backing_pool = getattr(
+                self.token_to_kv_pool,
+                "full_kv_pool",
+                self.token_to_kv_pool,
+            )
+            supported = (
+                self.page_size > 1
+                and model_runner.token_to_kv_pool_allocator.page_size
+                == self.page_size
+                and self.dispatch_reason is None
+                and not self.is_multimodal
+                and not self.enable_mis
+                and self.prefill_kv_access is not None
+                and self.prefill_kv_access.kind
+                == KVCacheAttentionAccessKind.PLAIN
+                and model_runner.kv_cache_dtype_str != "mxfp8"
+                and getattr(backing_pool, "kv_cache_layout", None) == "nhd"
+                and getattr(backing_pool, "k_scale_buffer", None) is None
+                and getattr(backing_pool, "v_scale_buffer", None) is None
+                and get_parallel().attn_dcp_size == 1
+                and len(k_shape) == 3
+                and len(v_shape) == 3
+                and k_shape[0] % self.page_size == 0
+                and v_shape[0] % self.page_size == 0
+                and backing_pool.k_buffer[0].is_contiguous()
+                and backing_pool.v_buffer[0].is_contiguous()
+            )
+            if not supported:
+                raise ValueError(
+                    "SGLANG_OPT_FLASHINFER_PAGE_ALIGNED_PREFILL requires a "
+                    "direct NHD KV pool with page_size > 1 and ordinary "
+                    "single-wrapper prefill"
+                )
+            self.prefill_physical_page_count = k_shape[0] // self.page_size
+            logger.info(
+                "FlashInfer page-aligned prefill enabled: page_size=%d, "
+                "physical_pages=%d",
+                self.page_size,
+                self.prefill_physical_page_count,
+            )
+            from sglang.kernels.ops.kvcache.flashinfer_page_table import (
+                preload_flashinfer_page_table,
+            )
+
+            preload_flashinfer_page_table(self.page_size)
 
         # Qwen2/Qwen3 models require higher flashinfer workspace size
         if (
@@ -999,6 +1055,7 @@ class FlashInferAttnBackend(AttentionBackend):
                 extend_no_prefix,
                 multi_item_params,
                 swa_out_cache_loc=swa_out_cache_loc,
+                logical_page_size=self.indices_updater_prefill.logical_page_size,
             )
 
     def init_cuda_graph_state(
@@ -1284,6 +1341,12 @@ class FlashInferAttnBackend(AttentionBackend):
             )
         else:
             kv_cache = pool.get_kv_buffer(layer.layer_id)
+        if self.forward_metadata.logical_page_size > 1:
+            page_size = self.forward_metadata.logical_page_size
+            kv_cache = tuple(
+                tensor.view(-1, page_size, *tensor.shape[1:])
+                for tensor in kv_cache
+            )
 
         # use paged attention
         if not self.forward_metadata.use_ragged:
@@ -1678,6 +1741,9 @@ class FlashInferIndicesUpdaterDecode:
             kv_indptr, kv_indices = spec_info.kv_indptr, spec_info.kv_indices
             bs = kv_indptr.shape[0] - 1
 
+        if self.attn_backend.page_aligned_prefill:
+            self.kv_last_page_len[:bs].fill_(1)
+
         if use_sliding_window_kv_pool:
             assert self._swa_kv_pool is not None
             kv_last_index = kv_indptr[-1]
@@ -1769,6 +1835,7 @@ class FlashInferIndicesUpdaterPrefill:
         self.req_to_token = model_runner.req_to_token_pool.req_to_token
         self._swa_kv_pool = attn_backend._swa_kv_pool
         self.prefill_wrapper_ragged = attn_backend.prefill_wrapper_ragged
+        self.logical_page_size = 1
 
         # Dispatch the update function
         if self.attn_backend.dispatch_reason == WrapperDispatch.SLIDING_WINDOW:
@@ -2057,40 +2124,89 @@ class FlashInferIndicesUpdaterPrefill:
         window_left: int = -1,
     ):
         bs = len(seq_lens)
+        self.logical_page_size = 1
+        if self.attn_backend.page_aligned_prefill:
+            self.kv_last_page_len[:bs].fill_(1)
         if spec_info is None:
             assert prefix_lens is not None
             assert len(seq_lens) == len(req_pool_indices)
             # Normal extend
             # custom_kv_indices uses exact dq_paged_kernel_lens so FlashInfer causal
             # offsets are based on real token counts, not page-aligned padding.
-            if (
-                custom_kv_indices is not None
-                and self.attn_backend.dq_paged_kernel_lens is not None
-            ):
+            use_page_aligned_prefill = (
+                self.attn_backend.page_aligned_prefill
+                and use_ragged
+                and bs == 1
+                and paged_kernel_lens_sum > 0
+                and paged_kernel_lens_sum % self.attn_backend.page_size == 0
+                and kv_start_idx is None
+                and custom_kv_indices is None
+                and not (
+                    multi_item_params is not None
+                    and multi_item_params.is_enabled()
+                )
+                and cross_attention_custom_mask is None
+                and window_left < 0
+            )
+            if use_page_aligned_prefill:
+                self.logical_page_size = self.attn_backend.page_size
+                logical_page_lens = torch.div(
+                    paged_kernel_lens,
+                    self.logical_page_size,
+                    rounding_mode="floor",
+                )
+                logical_page_count = (
+                    paged_kernel_lens_sum // self.logical_page_size
+                )
                 kv_indptr[1 : bs + 1] = torch.cumsum(
-                    self.attn_backend.dq_paged_kernel_lens, dim=0
+                    logical_page_lens, dim=0
                 )
-            else:
-                kv_indptr[1 : bs + 1] = torch.cumsum(paged_kernel_lens, dim=0)
-            kv_indptr = kv_indptr[: bs + 1]
+                kv_indptr = kv_indptr[: bs + 1]
+                from sglang.kernels.ops.kvcache.flashinfer_page_table import (
+                    build_flashinfer_page_table,
+                )
 
-            if custom_kv_indices is not None:
-                kv_indices = custom_kv_indices
-            else:
-                kv_indices = torch.empty(
-                    paged_kernel_lens_sum + 256,
-                    dtype=torch.int32,
-                    device=req_pool_indices.device,
-                )
-                create_flashinfer_kv_indices_triton[(bs,)](
+                kv_indices = build_flashinfer_page_table(
                     self.req_to_token,
                     req_pool_indices,
-                    paged_kernel_lens,
+                    logical_page_lens,
                     kv_indptr,
-                    kv_start_idx,
-                    kv_indices,
-                    self.req_to_token.shape[1],
+                    logical_page_count,
+                    self.logical_page_size,
+                    self.attn_backend.prefill_physical_page_count,
                 )
+                self.kv_last_page_len[:bs].fill_(self.logical_page_size)
+            else:
+                if (
+                    custom_kv_indices is not None
+                    and self.attn_backend.dq_paged_kernel_lens is not None
+                ):
+                    kv_indptr[1 : bs + 1] = torch.cumsum(
+                        self.attn_backend.dq_paged_kernel_lens, dim=0
+                    )
+                else:
+                    kv_indptr[1 : bs + 1] = torch.cumsum(
+                        paged_kernel_lens, dim=0
+                    )
+                kv_indptr = kv_indptr[: bs + 1]
+
+                if custom_kv_indices is not None:
+                    kv_indices = custom_kv_indices
+                else:
+                    kv_indices = torch.empty(
+                        paged_kernel_lens_sum + 256,
+                        dtype=torch.int32,
+                        device=req_pool_indices.device,
+                    )
+                    create_flashinfer_kv_indices_triton[(bs,)](
+                        self.req_to_token,
+                        req_pool_indices,
+                        paged_kernel_lens,
+                        kv_indptr,
+                        kv_start_idx,
+                        kv_indices,
+                        self.req_to_token.shape[1],
+                    )
             qo_indptr[1 : bs + 1] = torch.cumsum(seq_lens - prefix_lens, dim=0)
             qo_indptr = qo_indptr[: bs + 1]
 
@@ -2202,7 +2318,7 @@ class FlashInferIndicesUpdaterPrefill:
             self.num_qo_heads,
             self.num_kv_heads,
             self.head_dim,
-            1,
+            self.logical_page_size,
             q_data_type=self.q_data_type,
             kv_data_type=self.data_type,
             custom_mask=use_custom_mask,
