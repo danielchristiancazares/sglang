@@ -4788,3 +4788,38 @@ mean 13.929045  17.125658 446.051        39.730
 - Signed commit `4d6782121e3763b07cbf29f20b13c84f0da23575`
   (`fix: prevent p-q capture backpressure`) contains only the bounded queue
   repair and its eight-test ratchet.
+
+### 2026-08-21 08:15 PDT - PERF-050/051/052 greedy exact-context frontier
+
+- Captured a third 228-record branch-exact corpus with temperature 1,
+  top-p 1, top-k 20, and no penalties. Treating target argmax as the greedy
+  token showed q sharpening is robustly beneficial; confidence-gated collapse
+  did not beat global near-k1. Capture SHA-256
+  `C7B1E59FBB393B512FB190E46725C14601172E9DC4D3DBE57C2E1FACF7B4CD69`.
+- Live greedy k20 at 6K averaged **1.883967** emitted tokens/verify. Prior k1
+  averaged **2.107020**. At exact199K+512, k1 acceptance reached
+  **2.426540** and generation improved from adjacent k20 **116.549** to
+  **123.049 tok/s**, with identical output SHA-256 `cac0c6...a2092`.
+- Five k1 exact199K+16 scores:
+  - prompt `3215.029, 3212.412, 3210.714, 3205.662, 3203.910`, mean
+    **3209.545 tok/s**;
+  - generation `97.424, 99.245, 98.992, 98.476, 98.253`, mean
+    **98.478 tok/s**;
+  - TTFT mean **62.002652 s**, E2E mean **62.154976 s**.
+  Every request completed exact `199016` with established digest.
+- Native exact16 acceptance was **2.285714**, histogram `[2,1,4]`, over seven
+  verify cycles. Exact trace measured cycle samples around **19.895310 ms**
+  mean and target graph **16.250653 ms** mean. Thus short generation is a
+  discrete seven-cycle/long-context target issue, not steady proposal yield.
+- XQA contributes 16 calls/replay and **4.301900 ms** aggregate at exact
+  context. Exact-shape SM-count sweep found only all 170 SMs preserve output;
+  lower counts changed digests for negligible savings. PDL true/false was
+  bit-exact and neutral. Artifact SHA-256 `42BBB6F1...20DD`.
+- Reopened M4 under k1: exact16 still used seven cycles and emitted
+  **2.285714** (`[2,1,2,2]`). Rejected without a long window.
+- Key artifacts SHA-256: k20 long `3850780F...FD7E`, k1 long
+  `835BC3AD...689E`, k1 exact window `1A68C39F...AA7D`, exact-context
+  acceptance `0625A9ED...F69B`, exact16 acceptance `9B99D09A...A871`,
+  exact trace `8EFCBB1D...76E4`, target attribution `6BCF1C1D...D39A`.
+- Stopped every verified server tree leaf-first. Port 30000 is free and GPU
+  residency returned to ordinary display state.

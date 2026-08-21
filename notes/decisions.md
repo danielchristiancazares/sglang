@@ -109,6 +109,9 @@ The next milestone is **3100 prompt / 120 generation tok/s**, with TTFT
 | ReplaySSM commit overlap | Rejected | 186.8 us fold overlap expanded draft graph 8 by 176.4 us; serial fold+extend ~1.234 ms beat overlapped ~1.237 ms |
 | Static proposal gamma/rank/token calibration | Rejected | Two branch-exact corpora showed trajectory-dependent mismatch; maximin gain only 0.000133 and rank/token fits regressed held-out chronology |
 | P/q diagnostic queue | Increase bounded capacity 8 -> 64 in `4d6782121e` | Eight entries crashed at 151 cycles; bounded 64 completed a 239-record request without ordinary-path impact |
+| Greedy draft top-k 1 | Retain specialized long-window candidate; do not replace sampled k20 default | Exact199K+512 improved 116.549 -> 123.049 with identical digest, but exact16 remains ~98.5 tok/s over seven long-context cycles |
+| XQA SM count / PDL | Keep all SMs and default PDL | Lower SM counts changed output for negligible savings; PDL on/off was timing-neutral |
+| M4 with greedy k1 | Rejected | Exact16 still required seven cycles; extra row/step adds cost without reducing the gate |
 | Gate/up custom epilogue | Closed as a small EVT change | Selected tactics are swap-AB DP and need a custom half-height collective; stock EVT cannot pair/halve coordinates |
 | FlashInfer paged-only prefill | Rejected | Exact-200K prompt changed **2789.036 -> 2785.260 tok/s** and 512-token generation changed **106.467 -> 104.117**; deterministic output also changed |
 | Global chunk-7680 default | Rejected | Base RadixArk exact prompt fell to **2226.770 tok/s** and only 200 MiB remained before follow-up probes |

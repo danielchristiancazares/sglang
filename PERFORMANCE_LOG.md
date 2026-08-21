@@ -652,6 +652,9 @@ tree throughput can be ranked for production.
 | PERF-047 | Scale proposal-only additive penalties. | Temporary default-off graph dispatch | Rejected as no-op on workload | Correctly routed scales 0.75 and 0.0 reproduced the exact same proposal/output trajectory; the active workload exposed no leverage through this additive row. |
 | PERF-048 | Overlap target ReplaySSM fold/conv commit with independent draft extend. | Default-off CUDA side stream with forward-stream rejoin | Rejected after interval attribution | 186.8/189.5 us fold overlapped graph 8, but graph 8 expanded 1.061 -> 1.237 ms from contention. Serial fold+extend was ~1.234 ms versus ~1.237 ms overlapped; apparent cycle gain was noise. |
 | PERF-049 | Learn static root/depth proposal calibration from branch-exact p/q capture. | Existing diagnostic plus offline gamma/rank/token fitting | Static calibration rejected; queue fixed in `4d6782121e` | Two chronological corpora (151 and 239 records) found maximin gamma at identity/negligible +0.00013 expected length; rank/token fits regressed held-out data. Queue capacity 8 -> bounded 64 prevents diagnostic backpressure. |
+| PERF-050 | Use greedy draft top-k 1 on the temperature-zero exact profile. | Existing proposal configuration plus page64/top-p1 stack | Retained greedy long-window candidate; exact16 target open | Exact199K+512 improved 116.549 -> 123.049 tok/s with identical digest; exact-context acceptance reached 2.426540. Five exact16 scores still averaged 98.478 tok/s because seven long-context cycles cost ~19.90ms each. |
+| PERF-051 | Tune XQA SM count and PDL at exact199K shape. | Existing FlashInfer XQA controls | Rejected | Counts below all170 changed output and saved only a few us/call; PDL true/false was bit-exact and timing-neutral. |
+| PERF-052 | Reopen M4 under greedy k1 proposal law. | Existing 3-step/4-row configuration | Rejected | Exact16 still required seven verify cycles and emitted 2.285714 tokens/cycle; the extra target row/draft step cannot improve the discrete gate. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1219,3 +1222,35 @@ tree throughput can be ranked for production.
   context-dependent calibration or a learned hidden adapter.
 - Commit: signed `4d6782121e` (`fix: prevent p-q capture backpressure`) retains
   only the bounded diagnostic queue repair and test.
+
+### 2026-08-21 08:10 PDT - PERF-050 greedy k1 and long-context gate
+
+- A no-penalty/top-p1 branch-exact corpus predicted that sharpening q toward
+  argmax materially improves greedy target overlap. Live greedy k20 acceptance
+  averaged **1.883967**; k1 evidence averaged **2.107020** at 6K and
+  **2.426540** over exact199K+512.
+- Matched exact199K+512 improved **116.549 -> 123.049 generation tok/s** with
+  identical `cac0c6...a2092` output digest. K1 is retained as a specialized
+  greedy long-window candidate.
+- Five exact199K+16 scores kept prompt/time gates but generation remained
+  `97.424, 99.245, 98.992, 98.476, 98.253`, mean **98.478**. Direct metadata
+  shows seven verify cycles and emitted length **2.285714**.
+- Exact-context profiling measured **19.895310 ms** mean cycle and
+  **16.250653 ms** target graph. The 15 post-first tokens plus one-time
+  transition cost therefore cannot clear 120 tok/s without either six cycles
+  or a material long-context target-graph reduction.
+
+### 2026-08-21 08:12 PDT - PERF-051 XQA controls closed
+
+- Exact XQA shape: SM120, B1/Q3, QH24/KVH4, D256, FP8 KV, BF16 Q/O,
+  page64, sequence 199000. Counts 32-144 all changed bitwise output and saved
+  at most a few microseconds versus all 170 SMs. Only 170 matched.
+- At 170 SMs, PDL true/false was bit-exact and timing-neutral
+  (**271.424/271.840 us median**). No built-in XQA launch control is retained.
+
+### 2026-08-21 08:15 PDT - PERF-052 M4 greedy k1 rejected
+
+- Reopened M4 because greedy k1 changed the prior q20 acceptance premise.
+  Exact199K+16 still used seven cycles and emitted **2.285714** tokens/cycle
+  (histogram `[2,1,2,2]`). The extra row/step cannot reduce the discrete cycle
+  count and is rejected without another long window.
