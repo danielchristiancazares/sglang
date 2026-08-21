@@ -130,6 +130,23 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
         self.draft_sampling_top_k = getattr(
             model_runner.server_args, "speculative_draft_sampling_top_k", None
         )
+        self.draft_sampling_top_p = (
+            envs.SGLANG_OPT_SPEC_DRAFT_TOP_P.get()
+            if getattr(
+                model_runner.server_args,
+                "speculative_use_rejection_sampling",
+                False,
+            )
+            else None
+        )
+        if (
+            self.draft_sampling_top_p is not None
+            and self.draft_sampling_top_p != 1.0
+        ):
+            raise ValueError(
+                "SGLANG_OPT_SPEC_DRAFT_TOP_P currently supports only 1.0, got "
+                f"{self.draft_sampling_top_p}"
+            )
         self.draft_attn_backend = draft_attn_backend or model_runner.draft_attn_backend
 
         # Patch_model in parent's capture() needs an attn_backend reference.
@@ -373,7 +390,10 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
             ),
             is_all_greedy=False,
             is_any_greedy=False,
-            need_top_p_sampling=self.draft_top_ps is not None,
+            need_top_p_sampling=(
+                self.draft_top_ps is not None
+                and getattr(self, "draft_sampling_top_p", None) != 1.0
+            ),
             need_top_k_sampling=False,
             need_min_p_sampling=False,
             vocab_size=self.model_runner.model_config.vocab_size,
@@ -392,7 +412,11 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
         if self.draft_top_ps is None:
             return
 
-        self.draft_top_ps[:raw_bs].copy_(sampling_info.top_ps[:raw_bs])
+        draft_sampling_top_p = getattr(self, "draft_sampling_top_p", None)
+        if draft_sampling_top_p is None:
+            self.draft_top_ps[:raw_bs].copy_(sampling_info.top_ps[:raw_bs])
+        else:
+            self.draft_top_ps[:raw_bs].fill_(draft_sampling_top_p)
         additive = sampling_info.acc_additive_penalties
         logit_bias = sampling_info.logit_bias
         additive_dst = self.draft_additive_penalties[:raw_bs]

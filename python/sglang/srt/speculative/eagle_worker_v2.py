@@ -185,6 +185,21 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         self.draft_sampling_top_k = getattr(
             server_args, "speculative_draft_sampling_top_k", None
         )
+        self.draft_sampling_top_p = (
+            envs.SGLANG_OPT_SPEC_DRAFT_TOP_P.get()
+            if server_args.speculative_use_rejection_sampling
+            else None
+        )
+        if self.draft_sampling_top_p is not None:
+            if self.draft_sampling_top_p != 1.0:
+                raise ValueError(
+                    "SGLANG_OPT_SPEC_DRAFT_TOP_P currently supports only 1.0, got "
+                    f"{self.draft_sampling_top_p}"
+                )
+            logger.info(
+                "Proposal-only top-p override enabled: %.6f",
+                self.draft_sampling_top_p,
+            )
         self.tree_depth_discount = getattr(
             server_args, "speculative_tree_depth_discount", 1.0
         )
@@ -868,7 +883,9 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                     )
                     probs, topk_p, topk_index = sample_draft_proposal(
                         logits_output.next_token_logits,
-                        forward_batch.sampling_info,
+                        self._proposal_sampling_info(
+                            forward_batch.sampling_info
+                        ),
                         getattr(self, "draft_sampling_top_k", None),
                         sampling_seed=self._device_cycle_sampling_seed,
                         sampling_offset=sampling_offset,
@@ -892,7 +909,9 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                 else:
                     probs = renorm_draft_probs(
                         logits_output.next_token_logits,
-                        forward_batch.sampling_info,
+                        self._proposal_sampling_info(
+                            forward_batch.sampling_info
+                        ),
                         get_spec().speculative_use_rejection_sampling,
                         getattr(self, "draft_sampling_top_k", None),
                     )
@@ -1064,13 +1083,13 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         if use_rejection_sampling:
             probs, topk_p, topk_index = sample_draft_proposal(
                 logits_output.next_token_logits,
-                batch.sampling_info,
+                self._proposal_sampling_info(batch.sampling_info),
                 getattr(self, "draft_sampling_top_k", None),
             )
         else:
             probs = renorm_draft_probs(
                 logits_output.next_token_logits,
-                batch.sampling_info,
+                self._proposal_sampling_info(batch.sampling_info),
                 use_rejection_sampling,
                 getattr(self, "draft_sampling_top_k", None),
             )
@@ -1116,6 +1135,7 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         sampling_offset: Optional[torch.Tensor] = None,
     ):
         """Apply the exact post-extend proposal policy used by the next draft."""
+        sampling_info = self._proposal_sampling_info(sampling_info)
         if get_spec().speculative_use_rejection_sampling:
             return sample_draft_proposal(
                 next_token_logits,
@@ -1142,6 +1162,18 @@ class EagleDraftWorker(EagleDraftWorkerBase):
             return probs, topk_p, topk_index
         topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
         return None, topk_p, topk_index
+
+    def _proposal_sampling_info(self, sampling_info):
+        if getattr(self, "draft_sampling_top_p", None) != 1.0:
+            return sampling_info
+        proposal_sampling_info = copy.copy(sampling_info)
+        proposal_sampling_info.need_top_p_sampling = False
+        if (
+            sys.platform != "win32"
+            or not sampling_info.temperatures.is_cuda
+        ):
+            proposal_sampling_info.top_ps = torch.ones_like(sampling_info.top_ps)
+        return proposal_sampling_info
 
     def _draft_extend_for_decode(
         self, batch: ScheduleBatch, batch_result: GenerationBatchResult

@@ -401,7 +401,9 @@ class MultiLayerEagleDraftExtendCudaGraphRunner(DecodeCudaGraphRunner):
             temperatures=buffers.temperatures[:bs],
             acc_additive_penalties=buffers.draft_additive_penalties[:bs],
             logit_bias=None,
-            need_top_p_sampling=True,
+            need_top_p_sampling=(
+                getattr(self.eagle_worker, "draft_sampling_top_p", None) != 1.0
+            ),
             top_ps=buffers.draft_top_ps[:bs],
         )
         probs, ret.topk_p, ret.topk_index = sample_draft_proposal(
@@ -808,7 +810,15 @@ class MultiLayerEagleMultiStepDraftExtendCudaGraphRunner:
 
         if buffers.draft_top_ps is not None:
             sampling_info = forward_batch.sampling_info
-            buffers.draft_top_ps[:raw_bs].copy_(sampling_info.top_ps[:raw_bs])
+            draft_sampling_top_p = getattr(
+                self.eagle_worker, "draft_sampling_top_p", None
+            )
+            if draft_sampling_top_p is None:
+                buffers.draft_top_ps[:raw_bs].copy_(
+                    sampling_info.top_ps[:raw_bs]
+                )
+            else:
+                buffers.draft_top_ps[:raw_bs].fill_(draft_sampling_top_p)
 
             additive = sampling_info.acc_additive_penalties
             logit_bias = sampling_info.logit_bias

@@ -1117,6 +1117,8 @@ class Envs:
     # Speculative decoding
     # ===================================================================
     SGLANG_ENABLE_OVERLAP_PLAN_STREAM = EnvBool(False)
+    # Proposal-only top-p override for aligned speculative rejection sampling.
+    SGLANG_OPT_SPEC_DRAFT_TOP_P = EnvFloat(None)
     # Use the native sparse-support top-p renormalizer after finite top-k.
     # Expert A/B knob; unsupported or wider top-k batches keep FlashInfer AIR.
     SGLANG_OPT_SPARSE_TOP_P_RENORM = EnvBool(False)

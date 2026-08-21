@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import sys
 import time
@@ -141,6 +142,19 @@ class MultiLayerEagleDraftWorker(EagleDraftWorkerBase):
         self.draft_sampling_top_k = getattr(
             server_args, "speculative_draft_sampling_top_k", None
         )
+        self.draft_sampling_top_p = (
+            envs.SGLANG_OPT_SPEC_DRAFT_TOP_P.get()
+            if self.use_rejection_sampling
+            else None
+        )
+        if (
+            self.draft_sampling_top_p is not None
+            and self.draft_sampling_top_p != 1.0
+        ):
+            raise ValueError(
+                "SGLANG_OPT_SPEC_DRAFT_TOP_P currently supports only 1.0, got "
+                f"{self.draft_sampling_top_p}"
+            )
         if (
             sys.platform == "win32"
             and self.use_rejection_sampling
@@ -583,6 +597,18 @@ class MultiLayerEagleDraftWorker(EagleDraftWorkerBase):
         forward_batch.mamba_cow_src_indices = None
         forward_batch.mamba_cow_dst_indices = None
 
+    def _proposal_sampling_info(self, sampling_info):
+        if getattr(self, "draft_sampling_top_p", None) != 1.0:
+            return sampling_info
+        proposal_sampling_info = copy.copy(sampling_info)
+        proposal_sampling_info.need_top_p_sampling = False
+        if (
+            sys.platform != "win32"
+            or not sampling_info.temperatures.is_cuda
+        ):
+            proposal_sampling_info.top_ps = torch.ones_like(sampling_info.top_ps)
+        return proposal_sampling_info
+
     def _draft_extend_for_prefill(
         self,
         batch: ScheduleBatch,
@@ -677,7 +703,9 @@ class MultiLayerEagleDraftWorker(EagleDraftWorkerBase):
                 # Rejection sampling (prefill): sample X ~ q and stash q for the first verify.
                 probs, topk_p, topk_index = sample_draft_proposal(
                     output.logits_output.next_token_logits,
-                    forward_batch.sampling_info,
+                    self._proposal_sampling_info(
+                        forward_batch.sampling_info
+                    ),
                     self.draft_sampling_top_k,
                 )
                 draft_probs_list.append(probs)
@@ -815,7 +843,9 @@ class MultiLayerEagleDraftWorker(EagleDraftWorkerBase):
                             step_logits = _out.next_token_logits[sel]
                         probs, ret_topk_p, ret_topk_index = sample_draft_proposal(
                             step_logits,
-                            forward_batch.sampling_info,
+                            self._proposal_sampling_info(
+                                forward_batch.sampling_info
+                            ),
                             self.draft_sampling_top_k,
                         )
                         ret_draft_probs_list.append(probs)
@@ -891,7 +921,9 @@ class MultiLayerEagleDraftWorker(EagleDraftWorkerBase):
                 if self.use_rejection_sampling and self.topk == 1:
                     probs, ret_topk_p, ret_topk_index = sample_draft_proposal(
                         logits_sel,
-                        forward_batch.sampling_info,
+                        self._proposal_sampling_info(
+                            forward_batch.sampling_info
+                        ),
                         self.draft_sampling_top_k,
                     )
                     ret_draft_probs_list.append(probs)
