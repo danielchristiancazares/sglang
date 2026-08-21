@@ -3464,6 +3464,63 @@ mean 13.929045  17.125658 446.051        39.730
   Exact `199016` completion and `finish_reason=length` remain pass/fail gates,
   not a fifth performance target.
 
+### 2026-08-20 19:09 PDT - Apple-silicon route reopened; IQ1_M asset pinned
+
+- Began the new Apple-silicon performance branch at explicit user request on
+  `main` commit `adf3a620ef64e11aea6159643f560c790327c57f`. The worktree was
+  initially clean. The host is an M1 Max with 32 GPU cores and 32 GiB unified
+  memory, running macOS 26.6.2 (25G83); display sleep was active and thermal
+  pressure remained nominal. The fresh local environment uses Python 3.11.15,
+  MLX 0.32.0, and mlx-lm 0.31.3.
+- Reconstructed the exact Apple prompt locally with the checkpoint tokenizer:
+  `PROMPT_UNIT * 9473 + FILLER_UNIT * 15` yields exactly 199,000
+  chat-templated tokens. The Rust endpoint currently exposes neither
+  `/v1/tokenize` nor `/flush_cache`, so the local tokenizer is the exact-count
+  control.
+- A Q4-KV launch with outer chunks of 4096 reached roughly 98K context, then
+  MLX rejected a 20,132,659,200-byte Metal allocation above its
+  20,100,448,256-byte buffer limit. A fresh 1024-chunk launch completed one
+  exact `199000+16` warm-up in roughly 55 minutes; the benchmark discarded that
+  warm-up timing by contract. A second run encountered heavy swap pressure and
+  was stopped. A fresh timed 1024-chunk run later reached roughly 168K before
+  `kIOGPUCommandBufferCallbackErrorOutOfMemory`; the client reported zero
+  usage. A 512-chunk retry was stopped cleanly when the user redirected the
+  work to optimization. Every server tree was verified absent afterward and
+  port 30000 was free.
+- Rejected a batch-one `ArraysCache` auxiliary-cache merge/split bypass. Fresh
+  Fast32K control times were `13.786914, 13.638193, 13.638745, 13.647698,
+  13.625752 s` (mean **13.667460 s**); candidate times were `13.790976,
+  13.609490, 13.598677, 13.661740, 13.636127 s` (mean **13.659402 s**), a
+  roughly 0.06% change. Its code and test were removed.
+- Implemented an opt-in quantized-prefill query tile through
+  `SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE`; zero preserves the established
+  route. A dependency between tiles keeps MLX from reserving every independent
+  score matrix concurrently. At `Lq=1024`, `Lk=32768`, 24 query heads, four KV
+  heads, and head dimension 256, the original path measured **0.258692 s** and
+  **1,732,382,776 bytes** peak. A 64-row tile measured **0.229053 s** and
+  **701,499,056 bytes** peak. The helper's full-result causal parity and score
+  estimate tests bring the focused Q4 suite to **9 passing tests**. An adaptive
+  1 GiB score threshold keeps smaller prefills on the established path.
+- Fresh exact `5000+1` server controls were **59.078458 s / 84.633218 tok/s**
+  for the original path and **59.271317 s / 84.357836 tok/s** for the initial
+  always-tiled candidate; both returned token id 100. A subsequent adaptive
+  64-row exact-32K candidate processed five 4096-token chunks, with reported
+  chunk throughputs `62.55, 82.36, 79.64, 76.90, 74.43 tok/s`, before the user
+  requested the compact Q1 artifact. The client and exact server tree
+  (`60022`, `60027`, `60028`) were stopped cleanly; port 30000 is free and
+  system memory returned to 93% free.
+- Downloaded the text-model artifact
+  `MarxistLeninist/Qwen3.8-27B-IQ1_M-GGUF` at immutable Hub revision
+  `ce47f29f93ea828bf883f29bd59af3dd941c3b67`. The selected file is
+  `Qwen3.8-27B-IQ1_M.gguf`, **7,870,069,760 bytes**, with verified SHA-256
+  `131cdf5c1c4b547081543382b00434e9ebf3f8eb369ef3714550086074f80bdf`.
+  Its snapshot path is
+  `/Users/dcazares/.cache/huggingface/hub/models--MarxistLeninist--Qwen3.8-27B-IQ1_M-GGUF/snapshots/ce47f29f93ea828bf883f29bd59af3dd941c3b67/Qwen3.8-27B-IQ1_M.gguf`.
+  The data volume has 172 GiB available after download. This checkpoint is a
+  GGUF/llama.cpp artifact; the current SGLang Apple loader consumes MLX
+  safetensors, so it is retained as the compact reference asset for the next
+  route experiment.
+
 ### 2026-08-20 19:21 PDT - new optimization lane baseline established
 
 - Began the explicit autonomous target of clearing all four root-scoreboard
@@ -3593,6 +3650,79 @@ mean 13.929045  17.125658 446.051        39.730
 - The source change is not yet retained or committed. Next gate is the
   selected-checkpoint/chunk-7680 full-model exact-200K adjacent comparison
   under the same seed and selected EXTEND cache.
+
+### 2026-08-20 19:55 PDT - Native MPS IQ1_M route serving; first matvec/prefill optimization
+
+- Continued on `main` commit `adf3a620ef64e11aea6159643f560c790327c57f`
+  with only this Apple-lane work in the worktree. The pinned file contains 866
+  tensors: F32 360, IQ1_M 408, Q4_K 72, IQ2_XXS 16, Q2_K 9, and Q5_K 1.
+- Extended the native torch/MPS GGUF path with packed Q2_K, Q4_K, IQ2_XXS, and
+  IQ1_M matmul and embedding kernels. The Metal source carries the exact GGML
+  lookup grids in constant memory. These types remain packed after loading;
+  before that allowlist change SGLang eagerly expanded this file to FP16 and
+  reported 25.41 GB residency. Packed loading reports **9.04 GB**, leaving
+  **22.96 GB** available. The existing protected `ggml-common.h` was read for
+  format provenance and left untouched.
+- Set the default MPS convolution-state cache to FP32 when the dtype environment
+  variable is unset. Qwen3.5's native Metal causal-convolution path consumes
+  FP32 input and weights; the previous BF16 cache selected on Apple silicon
+  failed its first warm-up. An explicit `SGLANG_MAMBA_CONV_DTYPE` continues to
+  take precedence.
+- Startup recovery exposed three separate ingress/runtime gaps. The Rust
+  sidecar expects a neighboring `tokenizer.json` for this single-file GGUF;
+  Python ingress can load tokenizer metadata directly from the GGUF. The
+  `--language-model-only` switch rejects a checkpoint already declaring
+  `Qwen3_5ForCausalLM`. Before packed types and FP32 conv state were retained,
+  warm-up failed first on an F16 embedding type and then on BF16 conv state.
+  The working controlled launch was:
+
+  ```text
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--MarxistLeninist--Qwen3.8-27B-IQ1_M-GGUF/blobs/131cdf5c1c4b547081543382b00434e9ebf3f8eb369ef3714550086074f80bdf --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--MarxistLeninist--Qwen3.8-27B-IQ1_M-GGUF/snapshots/ce47f29f93ea828bf883f29bd59af3dd941c3b67/Qwen3.8-27B-IQ1_M.gguf --served-model-name qwen3.8-27b-iq1 --load-format gguf --dtype float32 --context-length 1024 --max-total-tokens 1024 --max-running-requests 1 --chunked-prefill-size 256 --max-prefill-tokens 512 --disable-radix-cache --disable-overlap-schedule --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Load time settled at 14.27-14.34 s. `/model_info` reported generation true,
+  `Qwen3_5ForCausalLM`, and image/audio understanding false.
+- CPU-dequantized GGUF parity passed on actual Q1-file rows for Q2_K, Q4_K,
+  Q5_K, IQ2_XXS, and IQ1_M at batch sizes 1, 3, 4, and 8, including an odd
+  17-row boundary. Worst observed absolute error was `2.98023e-06`; worst
+  relative error was `9.00733e-07`. Packed Q2_K token-embedding parity also
+  passed. The focused MPS dtype tests passed 2/2, the MLX quantized-KV tests
+  passed 9/9, the native GGUF metadata/name-map tests passed 3/3, Python
+  compilation passed, and `git diff --check` passed.
+- Replaced batch-one IQ1_M scalar dequantization with a four-row-per-SIMD-group
+  vectorized matvec, following the row/chunk mapping in llama.cpp commit
+  `749f688fcaa4c472ec034b08cb8a907c45cfaa02`. On full
+  `blk.0.ffn_gate.weight` (`17408x5120`), the earlier median was **1.625 ms /
+  11.2 GiB/s**; the candidate measured **0.573084 ms / 31.831 GiB/s**, a
+  roughly **2.84x** kernel speedup.
+- Vectorized the corresponding batch-4/8 prefill kernel so one IQ1 unpack feeds
+  every batch accumulator. The full batch-eight matched control was
+  **5.452125 ms / 3.454 GiB/s**; the candidate was **2.649458 ms / 7.107
+  GiB/s**, a roughly **2.06x** kernel speedup.
+- Before the optimized kernels, the deterministic `128+32` streaming smoke was
+  **6.018 prompt / 3.092 generation tok/s**, **21.270246 s TTFT**, and
+  **31.294527 s E2E**. After the batch-one kernel, five fresh samples produced
+  generation `6.791, 6.789, 6.778, 6.767, 6.766` tok/s (mean **6.778**) and
+  mean TTFT **21.219620 s**. The output digest remained
+  `5c210454b1facc1e317a759f6059324f793841eb23d1f549179b64d1584c55f8`.
+- After the prefill kernel, five fresh cache-flushed samples were:
+  prompt `10.474, 10.486, 10.472, 10.469, 10.495` tok/s; generation
+  `6.772, 6.768, 6.760, 6.772, 6.763` tok/s; TTFT `12.221278, 12.206595,
+  12.223251, 12.226547, 12.196323 s`; and E2E `16.799282, 16.786722,
+  16.809189, 16.804340, 16.780169 s`. Means are **10.479 prompt / 6.767
+  generation tok/s**, **12.214799 s TTFT**, and **16.795940 s E2E**. Every
+  run completed exactly 32 tokens with `finish_reason=length` and retained the
+  same digest. Relative to the first packed-Q1 smoke, prompt rate improved
+  about 74%, generation about 119%, TTFT fell about 43%, and E2E fell about
+  46%.
+- This artifact is a performance playground rather than a behavior-qualified
+  checkpoint. The deterministic arithmetic probe stopped after one EOS token
+  with empty content instead of `703`; the earlier generic-kernel probe also
+  failed semantics. Kernel parity and the unchanged generation digest locate
+  that failure in checkpoint quality rather than the optimized math, and it
+  blocks any promotion. The final server tree `61153 -> 61156,61157,61158`
+  was stopped leaf-first. Those PIDs are absent, port 30000 is free, and no
+  Metal compiler or SGLang worker remains. The data volume has 172 GiB free.
 
 ### 2026-08-20 20:08 PDT - PERF-028 retained after adjacent exact-200K attribution
 
@@ -5036,3 +5166,317 @@ mean 13.929045  17.125658 446.051        39.730
   27,850 MiB used, **4,338 MiB free**, 2% utilization, and 33 C. Do not stop
   this tree unless explicitly replacing or shutting down the production
   server.
+### 2026-08-20 20:28 PDT - Q1 cache removed; conventional IQ2_XXS pinned and served
+
+- Continued on `main` commit `adf3a620ef64e11aea6159643f560c790327c57f`
+  with the existing Apple-lane worktree changes preserved. At explicit user
+  request, removed only the cached
+  `MarxistLeninist/Qwen3.8-27B-IQ1_M-GGUF` repository through `hf cache rm`.
+  The command reported one repository and one revision deleted and **7.9 GB**
+  reclaimed. Its immutable revision
+  `ce47f29f93ea828bf883f29bd59af3dd941c3b67` remains recoverable from the Hub;
+  the source changes and historical measurements were retained.
+- First downloaded Unsloth's
+  `Qwen3.8-27B-UD-IQ2_XXS.gguf` at revision
+  `4ca720788d1e01f1bff70c033e0d0028fd02e502`. The file was 7,266,070,528
+  bytes with SHA-256
+  `e792d8fb3142fe6d9171876d6da0f71f05a71028718debc72dbec93ff645e67d`.
+  Its exact inventory explained why this nominal Q2 artifact was smaller than
+  the earlier Q1: only 143 of 851 tensors were IQ2_XXS, while 100 were IQ1_S,
+  22 IQ1_M, 36 IQ2_S, 34 IQ2_XS, 40 IQ3_XXS, 9 IQ3_S, and the remainder mixed
+  IQ4_XS, Q2_K, Q3_K, Q4_K, Q8_0, and F32. Several formats are outside the
+  current Metal dispatch. The `UD` name denotes Unsloth Dynamic's per-layer
+  precision selection. Removed this unsuitable cache repository after
+  inspection, reclaiming **7.3 GB**; revision, checksum, and inventory here
+  preserve its recovery record.
+- Selected Bartowski's conventional
+  `Qwen3.8-27B-IQ2_XXS.gguf` at immutable revision
+  `f0eec4a4bb4975114a030d048952d83c0a53c034`. The retained snapshot is
+  `/Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-IQ2_XXS.gguf`.
+  Its 9,393,043,040-byte blob has verified SHA-256
+  `b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9`.
+  The 866 tensors are F32 456, IQ2_XXS 280, Q2_K 13, Q4_0 8, Q4_K 96,
+  Q5_K 1, and Q6_K 12, all covered by the native route.
+- Actual-file CPU-dequantized parity passed at batch sizes 1, 3, 4, and 8 with
+  17 output rows for IQ2_XXS, Q2_K, Q4_0, Q4_K, Q5_K, and Q6_K, plus Q2_K
+  embedding lookup. Worst absolute error was `2.86102e-06`; worst relative
+  error was `9.45619e-07`. A full `blk.8.ffn_gate.weight` IQ2_XXS
+  `17408x5120` microbenchmark measured **1.193958 ms / 17.994 GiB/s** at batch
+  one and **4.984750 ms / 4.428 GiB/s** at batch eight.
+- The controlled server used Python ingress and this exact resolved launch:
+
+  ```text
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-IQ2_XXS.gguf --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 --context-length 1024 --max-total-tokens 1024 --max-running-requests 1 --chunked-prefill-size 256 --max-prefill-tokens 512 --disable-radix-cache --disable-overlap-schedule --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Weight load took 15.28 s and reported **10.03 GB** residency. FP32 Mamba
+  cache was 0.29 GB and FP32 KV cache 0.12 GB, for roughly **10.44 GB** of
+  accounted model/cache allocation. The scheduler's `vmmap` physical footprint
+  was 12.3 GiB after warm-up, 12.4 GiB after serving, and 15.0 GiB peak, with
+  10.0 GiB in owned graphics mappings. `/model_info` reported generation true,
+  `Qwen3_5ForCausalLM`, and image/audio understanding false.
+- The first warmed `128+32` smoke measured **6.974 prompt / 3.186 generation
+  tok/s**, **18.353227 s TTFT**, and **28.082090 s E2E**. Five subsequent
+  cache-flushed samples were prompt `6.950, 6.947, 6.954, 6.945, 6.985`,
+  generation `3.189, 3.191, 3.188, 3.189, 3.189`, TTFT `18.416855,
+  18.424895, 18.406620, 18.431179, 18.324722 s`, and E2E `28.137249,
+  28.140966, 28.130234, 28.153505, 28.045252 s`. Means were **6.956 prompt /
+  3.189 generation tok/s**, **18.400854 s TTFT**, and **28.121441 s E2E**.
+  Every request completed exact `128+32`, `finish_reason=length`, and digest
+  `de899fc9d287564ebf4af2dc4fa1b990f7ede90d70128e5a5258374d989ae0e0`.
+- Behavior is improved enough to expose a precise formatting failure. With
+  thinking disabled, arithmetic emitted one EOS token and empty content. With
+  thinking enabled it repeatedly computed `703` correctly, closed `</think>`,
+  then emitted token 248046, the GGUF's `<|im_end|>`, before producing a final
+  answer segment. A deterministic probe used 86 of 128 tokens; a sampled probe
+  used 97 of 512; a request stripped of every optional sampling/format control
+  used 230 of 512. All stopped naturally, so the output ceiling is not the
+  cause in these decisive samples. No llama.cpp, Ollama, or other reference
+  GGUF runner is installed locally; a reference run remains the clean way to
+  separate checkpoint behavior from SGLang's chat-template path.
+- The exact server tree was `61795 -> 61798,61799,61800`. It was stopped
+  leaf-first after requests completed; the tracker and parent exited with
+  their children. All four PIDs are absent, port 30000 is free, no SGLang or
+  Metal compiler worker remains, memory pressure is 94% free, thermal and
+  performance warnings remain clear, and the data volume has 170 GiB free.
+  The retained next optimization target is the IQ2_XXS batch-one and batch-4/8
+  kernels, with behavior kept outside qualification until the reference split
+  is resolved.
+
+### 2026-08-20 20:50 PDT - Host cleanup retained only Q2 and archived Claude chats
+
+- Continued on `main` commit `adf3a620ef64e11aea6159643f560c790327c57f`
+  with every existing Apple-lane modification and untracked test preserved.
+  The data volume began with 170 GiB free. Read-only accounting could inspect
+  about 140 GB beneath the home directory; macOS privacy controls denied this
+  process access to several protected Library and user-data locations, so the
+  scan was not a complete accounting of all 732 GiB then in use. There were no
+  APFS snapshots on `/` or `/System/Volumes/Data`.
+- At explicit user request, deleted Colima's stopped `default` profile and
+  container data with `colima delete default --data --force`, selected the
+  ordinary Docker context with `docker context use default`, removed the stale
+  context with `docker context rm -f colima`, and ran `brew uninstall colima`.
+  Homebrew also removed the now-unused Lima dependency. The approximately
+  10 GiB `~/.colima` tree and its remaining 12 KiB of generated network/SSH
+  metadata were removed completely, `colima` is absent from `PATH`, and the
+  data volume rose to 181 GiB free. Deleted images, containers, volumes, and
+  writable VM state require an external backup for recovery; the tools and an
+  empty VM can be reinstalled.
+- At the user's direction to retain only Q2, removed seven other Hugging Face
+  repositories: `Qwen/Qwen3-0.6B`, `RadixArk/Qwen3.8-27B-DSpark`,
+  `Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed`,
+  `mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit`,
+  `mlx-community/Qwen3-0.6B-4bit`,
+  `mlx-community/Qwen3.8-27B-4bit`, and
+  `mlx-community/Qwen3.8-27B-MTP-4bit`. `hf cache rm` reported **49.8 GB**
+  reclaimed. Also removed the 7.6 GB standalone MTPLX model directory
+  `~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed-FP16`.
+  Those immutable/downloaded artifacts remain recoverable by downloading them
+  again. The data volume then had 235 GiB free.
+- At explicit user request, preserved Claude conversation material under
+  `/Users/dcazares/Claude-chat-history-backup-2026-08-20` and removed the rest
+  of the local Claude installation. The final **22 MB** archive contains 12
+  Claude Code JSONL history/transcript files with 4,720 total records, their
+  subagent metadata, the desktop app's opaque IndexedDB/local/session/web
+  storage, and the matching Chrome/Atlas `claude.ai` IndexedDB stores. Removed
+  copied memory files, Cowork plugins and settings, scheduled-task state, the
+  approximately 13 GB desktop application-support tree, the 673 MB native CLI
+  store and symlink, state/config/backups, preferences and HTTP storage, the
+  Chrome extension and native-messaging host, the VS Code Anthropic extension
+  and its active/synced registry entries, Claude-specific Code logs, the 10 MB
+  Claude log tree, and `~/Applications/Claude Code URL Handler.app`. No main
+  Claude application bundle or Homebrew cask was installed and no Claude or
+  Code process was live. Reinstallation or a backup is required to recover
+  deleted local app state; the retained conversation archive is directly
+  recoverable from its current path.
+- Ran the selected `brew cleanup --prune=all` and `uv cache clean` maintenance.
+  Homebrew's cache now occupies 37 MB. Post-cleanup verification found the
+  entire `~/.cache` tree empty, beyond the intended Homebrew/uv targets; this
+  also cleared reproducible Codex-runtime, SGLang/JIT, uv, Hugging Face, and
+  other user caches. The pinned Q2 was therefore restored immediately with
+  `.venv/bin/hf download bartowski/Qwen3.8-27B-GGUF
+  Qwen3.8-27B-IQ2_XXS.gguf --revision
+  f0eec4a4bb4975114a030d048952d83c0a53c034`. Its blob is again exactly
+  9,393,043,040 bytes and reverified as SHA-256
+  `b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9`.
+  `hf cache ls` reports it as the only cached model. The other cleared caches
+  will rebuild or redownload on demand.
+- Final data-volume accounting was **267 GiB free**, a net gain of about
+  **97 GiB** from the initial reading while retaining the exact Q2 blob and the
+  22 MB conversation archive. No model server was relaunched.
+
+### 2026-08-20 21:03 PDT - origin/main fast-forwarded around the Apple worktree
+
+- Began on local `main` at
+  `adf3a620ef64e11aea6159643f560c790327c57f`, seven commits behind the
+  freshly fetched `origin/main`, with 12 modified tracked paths and one
+  untracked test. Preserved the complete worktree in
+  `stash@{0}: sol-pre-merge-origin-main-2026-08-20`, then ran
+  `git merge --ff-only origin/main`. The branch fast-forwarded to
+  `e09e43171d46d4f5bdf35d3c8b3b56a628bafc0d`.
+- Reapplied the recovery stash. The only overlaps were
+  `notes/current-state.md` and this ledger. Reconciliation retained the
+  upstream Windows entries and the concurrent Apple entries in timestamp
+  order, selected the later 20:50 compact-state reconciliation time, and kept
+  the upstream qualified source line.
+- Final verification found `HEAD` exactly equal to `origin/main`, no unmerged
+  or staged paths, every non-note tracked worktree file byte-identical to the
+  recovery stash, and the untracked test at its original blob
+  `994c62de22b4c2784bf7c0b8cc7201adf4760bd2`. Before this entry, the resolved
+  experiment log differed from upstream by exactly the original 269 inserted
+  Apple-lane lines and from the stash by exactly the 620 inserted upstream
+  lines. `git diff --check` passed. The named stash remains intact as a
+  recovery copy; no server or benchmark was started.
+
+### 2026-08-20 21:11 PDT - recovered Apple worktree revalidated and IQ2 baseline refreshed
+
+- Continued on `main` at
+  `e09e43171d46d4f5bdf35d3c8b3b56a628bafc0d`, exactly matching
+  `origin/main`, with the recovered 12 modified tracked paths and one
+  untracked MPS dtype test preserved. The named recovery stash remained
+  intact. This entry and the root performance record were the only new edits
+  before selecting another kernel candidate.
+- The live host was a MacBookPro18,2 with an M1 Max, 32 GPU cores, 32 GiB
+  unified memory, and macOS 26.6.2 (25G83). It was on AC power with the display
+  asleep, 94% system memory free, no thermal or performance warning, and 266
+  GiB free on the data volume. Port 30000 had no listener and no SGLang,
+  model-runtime, benchmark, or Metal-compiler process was live.
+- The restored environment uses Python 3.11.15, PyTorch 2.11.0 with MPS
+  available, MLX 0.32.0, mlx-lm 0.31.3, and gguf 0.19.0. The immutable
+  Bartowski IQ2 blob remained exactly 9,393,043,040 bytes at the recorded
+  revision and checksum.
+- Ran the pre-candidate baseline:
+  `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py <immutable-blob>
+  --tensor blk.8.ffn_gate.weight --batch-size 1 --warmup 8 --iterations 25`.
+  The 25 IQ2_XXS `17408x5120` samples were
+  `1.255834, 1.215417, 1.204625, 1.227542, 1.184541, 1.191250, 1.215709,
+  1.201458, 1.185042, 1.189375, 1.208000, 1.189250, 1.179875, 1.190500,
+  1.200875, 1.186125, 1.183500, 1.168500, 1.179125, 1.187875, 1.187375,
+  1.194792, 1.175834, 1.189125, 1.214000 ms`; median **1.189375 ms** and
+  **18.064 GiB/s** effective packed bandwidth. This is within 0.4% of the
+  retained 1.193958 ms window.
+- Re-ran actual-file CPU-dequantized parity with 17 odd output rows at batch
+  sizes 1, 3, 4, and 8. Q4_0, Q2_K, Q4_K, Q5_K, Q6_K, IQ2_XXS, and the Q2_K
+  token embedding passed; the worst absolute and relative errors remained
+  `2.86102e-06` and `9.45619e-07`. The focused MPS convolution-state tests
+  passed 2/2 and the MLX quantized-KV suite passed 9/9. `git diff --check`
+  passed before this record edit.
+- The fresh baseline funds an IQ2-specific batch-one geometry experiment.
+  The checkpoint remains outside the behavior-qualified scoreboard until a
+  reference GGUF runner distinguishes checkpoint output from SGLang's
+  tokenizer/template/parser path.
+
+### 2026-08-20 21:14 PDT - recovered MPS and MLX mechanisms committed atomically
+
+- Staged only the native Metal GGUF implementation, MPS dispatch/loading,
+  convolution-state selection, focused benchmark/parity tools, and the new
+  MPS dtype test. `git diff --cached --check` passed. Signed commit
+  `7740cae69109d2f6a9f76d2854e5aa224d5407af` records
+  `perf: serve packed low-bit GGUF on MPS` with 1,017 insertions/deletions
+  across seven paths. Signature verification reports a good signature from
+  the configured repository identity.
+- Kept the independent MLX long-context mechanism out of that commit. Added a
+  complete Qwen3.5 gated-attention parity test against mlx-lm's established
+  quantized-cache forward, covering projections, Q/K normalization, RoPE,
+  causal masking, attention, output gate/projection, and cache offset. The
+  focused MLX suite then passed **10/10**. Python compilation and cached-diff
+  whitespace checks passed.
+- Staged only the environment surface, MLX attention helper/wrapper, export,
+  and focused tests. Signed commit
+  `1271610e0b` records `perf: tile long-context MLX quantized attention` with
+  316 insertions across four paths. Default tile size remains zero, so ordinary
+  inference behavior is unchanged until the process explicitly opts in.
+- Source-location audit: packed-weight ownership stays in the GGUF
+  quantization method and native MPS extension through which every supported
+  matrix/embedding passes; FP32 convolution-state selection lives in the
+  Mamba cache-dtype resolver that must satisfy the native kernel contract.
+  Quantized query tiling lives in the installed MLX attention wrapper, the
+  lowest repository-owned mechanism with projections, cache type/offset, mask,
+  and full-attention context. Its conditional expresses the measured
+  quantized-cache, long-prefill domain and preserves the dependency's original
+  path below the threshold.
+- The remaining modified paths were only the root performance record and the
+  compact/chronological handoff notes. No server or additional GPU workload
+  was started during the commits.
+
+### 2026-08-20 21:30 PDT - GGUF marker fidelity restores reasoning and tools
+
+- Continued from signed commits `7740cae691` and `1271610e0b` with only the
+  root performance/failed-path records, compact notebook, chronological
+  ledger, and an MLX dependency refinement modified. The named recovery stash
+  remained intact. Port 30000 was free and memory pressure reported 94% free
+  before launch.
+- Inspected the retained GGUF vocabulary and found the decisive tokenizer
+  mismatch. `<|im_end|>` is GGML CONTROL type 3 at id 248046, while
+  `<tool_call>`, `</tool_call>`, `<tool_response>`, `</tool_response>`,
+  `<think>`, and `</think>` are GGML USER_DEFINED type 4 at ids
+  `248058, 248059, 248066, 248067, 248068, 248069`. The native builder had
+  registered only CONTROL entries as added tokens. Before the repair,
+  `<think>\n` encoded as `[13314, 741, 29, 198]`, the paired thinking markers
+  encoded as `[13314, 741, 29, 271, 510, 26003, 29, 271]`, and
+  `<tool_call>\n` encoded as `[27, 13766, 13042, 29, 198]`.
+- Changed the native GGUF tokenizer owner so both CONTROL and USER_DEFINED
+  entries become added tokens while only CONTROL entries remain special.
+  This preserves USER_DEFINED markers when decoding with
+  `skip_special_tokens=True`. After the repair, the same three probes encoded
+  as `[248068, 198]`, `[248068, 271, 248069, 271]`, and `[248058, 198]`.
+  All six USER_DEFINED marker objects report `special=False`; the CONTROL
+  marker reports `special=True`.
+- The first diagnostic server used the exact 20:28 launch with context and
+  pool 1024, one request, chunk 256, prefill cap 512, float32 MPS, GGUF load,
+  radix/overlap/graphs disabled, and no explicit parser flags. Arithmetic now
+  produced a visible final `703`; thinking-disabled output was exact `READY`.
+  The model emitted a correct raw tool XML block, but the API did not parse it
+  because both resolved parser arguments were `None`. This separated the
+  tokenizer repair from launch configuration. That tree was stopped before
+  relaunch.
+- Relaunched exactly:
+
+  ```text
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-IQ2_XXS.gguf --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 --context-length 1024 --max-total-tokens 1024 --max-running-requests 1 --chunked-prefill-size 256 --max-prefill-tokens 512 --disable-radix-cache --disable-overlap-schedule --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  The verified listener tree was parent/listener 66827, resource tracker
+  66830, scheduler 66831, and detokenizer 66832. Weight residency remained
+  10.03 GB, with 0.29 GB Mamba state and 0.12 GB KV cache. `/model_info`
+  continued to report image and audio understanding false.
+- Deterministic arithmetic with thinking and preservation enabled returned
+  visible content `703`, coherent separate `reasoning_content`, no tool call,
+  `finish_reason=stop`, and matched stop id 248046. Usage was 71 prompt, 81
+  completion, and 76 reasoning tokens. The explicit tool request returned
+  exactly one parsed call named `multiply` with JSON arguments
+  `{"a": 37, "b": 19}`, separate reasoning content, and
+  `finish_reason=tool_calls`. Its tool-result continuation preserved the
+  boundary, verified the result in reasoning, and returned visible
+  `37 × 19 = **703**` with `finish_reason=stop`. A final
+  thinking-disabled request returned exactly `READY`, null reasoning, no tool
+  calls, two completion tokens, and matched stop id 248046.
+- Focused validation passed: native GGUF tokenizer/name-map tests **4/4**;
+  reasoning and Qwen3 Coder tool-parser tests **317/317 plus 64 subtests**;
+  and Python compilation. The tokenizer test proves atomic USER_DEFINED
+  markers, CONTROL-only special handling, and marker preservation through
+  `skip_special_tokens=True`.
+- Signed commit `8879ed3d0163e03bd6082bc47be31e9b77166d5e`
+  records `fix: preserve GGUF user-defined tokens`. Signature verification
+  reports a good signature from the configured repository identity.
+- Also replaced the MLX tiler's arithmetic `sum * 0` lifetime dependency with
+  `mx.depends`, the installed MLX 0.32.0 scheduling primitive. This preserves
+  query values, avoids a reduction/add kernel chain, and prevents a prior
+  tile's NaN or infinity from contaminating later independent rows. The full
+  quantized-KV suite passed **10/10**, Python compilation passed, and signed
+  commit `ea983f3120206246317d09686fb5fbae1b12dabd` records
+  `fix: serialize MLX attention tiles safely`.
+- Stopped only the verified server session after all requests. The normal
+  Ctrl-C path interrupted the scheduler/detokenizer receive loops and the
+  parent completed its registered tree cleanup. PIDs
+  `66827,66830,66831,66832` are absent, port 30000 is free, no SGLang worker
+  remains, and memory pressure returned to 94% free. `git diff --check` and
+  source compilation passed before both commits; only the performance and
+  recovery records remained modified afterward.
+- Decision: the retained IQ2 checkpoint is locally behavior-capable. Its old
+  missing final answer and empty thinking-disabled response were caused by
+  fragmented GGUF USER_DEFINED markers. Performance and maximum-context
+  promotion still require the full sampled benchmark, independent window,
+  capacity ladder, and OpenCode2 gate. A pinned llama.cpp comparison remains
+  the strongest supporting-dependency throughput control rather than a
+  prerequisite for explaining checkpoint semantics.
