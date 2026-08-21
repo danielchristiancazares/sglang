@@ -49,6 +49,7 @@
 | PERF-027 repaired exact `199000+16` prompt | 2960.228 tok/s PERF-028 fused arm | **2987.275 tok/s** | **+27.047 / +0.914%** | five exact requests after two warmups; eager-only fusion restored the established digest | 2026-08-20 21:58 PDT |
 | PERF-027 repaired exact `199000+16` TTFT | 67.229581 s PERF-028 fused arm | **66.622932 s** | **-0.606649 s / -0.902%** | same exact five-request window; all `199016`, `finish_reason=length` | 2026-08-20 21:58 PDT |
 | PERF-027 repaired exact `199000+512` support | 2974.600 prompt / 116.583 generation tok/s PERF-028 fused arm | **3001.344 prompt / 115.225 generation tok/s** | +0.899% prompt; decode within current variance | three exact requests; restored `cac0c6...a2092` digest | 2026-08-20 22:03 PDT |
+| PERF-029 compiled-semantics exact `199000+512` | 115.225 tok/s adjacent PERF-027 window | 116.192 tok/s | +0.966 / +0.839% client-observed | three exact requests, but 233 profiled device cycles retained a 16.045 ms median versus 16.058 ms control | 2026-08-20 22:30 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
 
@@ -626,6 +627,7 @@ tree throughput can be ranked for production.
 | PERF-026 | Specialize greedy EAGLE draft proposals and retain a sparse exact sampled p/q path. | EAGLE draft graphs, proposal buffers, rejection sampling | Survey | Temperature-zero target verification is greedy while the draft still samples stochastic top-k 20. Any change must preserve exact q(X), RNG, graph replay, and asynchronous output lifetimes. |
 | PERF-027 | Fuse Qwen SwiGLU output directly into byte-identical NVFP4 activation/scales for `down_proj`. | Native CUDA activation/quant producer and FP4 linear tuple input | Retained eager-prefill win | Exact across every finite BF16 gate value, production shapes, mutable graphs, and the ModelOpt consumer. Eager-only selection preserves the former compiled M3 function and restored both deterministic digests; exact short prompt improved 0.914% versus PERF-028. |
 | PERF-028 | Fuse the native-Windows BF16 residual add into the bit-exact Gemma RMSNorm direct-output kernel. | JIT CUDA half-width RMSNorm and Windows Gemma dispatch | Retained additive decode win | Exact at M1/M3/M7000/M7680 and under mutable CUDA-graph replay. Stable M1/M3 kernel-only A-B-A improved about `16.5 -> 9.5 us`; adjacent exact `199000+512` generation improved `115.194 -> 116.583 tok/s` (+1.205%) with identical output. Prefill was neutral. |
+| PERF-029 | Match the compiled M3 SiLU arithmetic while fusing activation and NVFP4 packing. | Separate fast-math native producer inside target `torch.compile` | Rejected; graph-neutral | Byte-exact and 70.848 -> 25.152 us in isolated launch timing, but full-cycle median was 16.045 ms versus the 16.058 ms control and long generation remained inside variance. The experiment was removed. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -878,3 +880,27 @@ tree throughput can be ranked for production.
   win. A compiled-semantics producer is a separate candidate and must match
   the old M3 tuple and outer graph exactly before it can replace the compile
   guard.
+
+### 2026-08-20 22:31 PDT - PERF-029 compiled producer rejected as graph-neutral
+
+- FlashInfer's raw expert producer exactly matched the compiled M1/M3 packed
+  values and scales when given caller-owned zeroed padding. A separate
+  PDL-safe dense specialization reproduced that one-rounding fast-math
+  contract and wrote deterministic padding.
+- The custom producer matched every byte and improved isolated M3 median
+  latency from **70.848 to 25.152 us**. Compiled graph replay, nested
+  fullgraph, and a captured producer-to-ModelOpt tuple chain passed; the
+  focused suites reached **16 CUDA / 10 CPU tests**.
+- Five exact short requests retained digest `cdf5bb57...f647d9` but averaged
+  only **2951.844 prompt / 97.653 short-generation tok/s** with
+  **67.419972/67.573812 s** TTFT/E2E. Three exact long requests retained
+  `cac0c6...a2092` and averaged **2983.961 prompt / 116.192 generation
+  tok/s**.
+- Device-cycle attribution closed the candidate. A 233-cycle M3 profile
+  measured **16.389 ms mean / 16.045 ms median**, against the current
+  **16.058 ms** control. The isolated launch removal was absorbed by the
+  compiled graph's existing overlap/cost topology. The +0.839% long client
+  movement is inside the observed variance and is not a win.
+- Decision: remove PERF-029 and preserve the compile guard. Reopen only if a
+  graph trace identifies serialized exposure rather than standalone launch
+  latency.

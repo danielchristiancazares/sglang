@@ -655,3 +655,31 @@
   outer CUDA-graph replay bit-for-bit.
 - Related commit or revert: PERF-027 is retained only outside
   `torch.compiler.is_compiling()`; the former compiled path remains selected.
+
+## PERF-F045 - Compiled-semantics SwiGLU-to-NVFP4 producer
+
+- Hypothesis: matching Inductor's one-final-rounding SiLU function in a
+  PDL-safe dense producer would remove the compiled activation and NVFP4
+  quantization launch boundary and materially reduce the M3 target cycle.
+- Scope: M1/M3 compiled target semantics, outer CUDA graph, selected M3 exact
+  `199000+16` and `199000+512`, unchanged 200K pools.
+- Attempted change: added a separately fast-math-compiled specialization using
+  the FlashInfer expert arithmetic while preserving deterministic dense scale
+  padding and PDL wait/trigger semantics.
+- Benchmark evidence: isolated M3 improved **70.848 -> 25.152 us**. Three
+  exact long requests moved **115.225 -> 116.192 tok/s**, only +0.839% and
+  within launch/WDDM variance.
+- Correctness evidence: exact packed/scale bytes, mutable graph replay, nested
+  fullgraph, tuple-consumer graph, both deterministic output digests, and exact
+  token counts all passed.
+- Failure mode: 233 profiled full cycles measured **16.045 ms median** versus
+  the existing **16.058 ms** control. The isolated launch saving was not
+  serialized on the serving critical path.
+- Why not to retry unchanged: standalone operator latency overstates value
+  inside the compiled multi-stream target graph; the cycle-level admission
+  result is neutral.
+- Reopen only if: a new target trace shows at least 0.25 ms of repeatable
+  serialized exposure at this boundary or a larger fusion removes adjacent
+  graph work as well.
+- Related commit or revert: all PERF-029 source and test changes were removed;
+  PERF-027 eager fusion remains retained.
