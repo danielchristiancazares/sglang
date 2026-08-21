@@ -23,6 +23,15 @@ struct RMSNormParams {
   float weight_offset;
 };
 
+struct GemmaFusedAddRMSNormParams {
+  void* input;
+  void* residual;
+  const void* __restrict__ weight;
+  int64_t input_stride;
+  int64_t residual_stride;
+  float eps;
+};
+
 template <int64_t kDim, bool kUsePDL, typename Float>
 __global__ void rmsnorm_cta(const RMSNormParams __grid_constant__ params) {
   using namespace device;
@@ -183,6 +192,170 @@ __global__ __launch_bounds__(kDim / 16) void rmsnorm_cta_wide(const RMSNormParam
   }
 
   gmem.store(output_ptr, output_vec);
+
+  PDLTriggerSecondary<kUsePDL>();
+}
+
+// Pre-Blackwell: 16B vector, each thread loads/stores twice.
+template <int64_t kDim, bool kUsePDL, typename Float>
+__global__ __launch_bounds__(kDim / 16) void gemma_fused_add_rmsnorm_cta_double(
+    const GemmaFusedAddRMSNormParams __grid_constant__ params) {
+  using namespace device;
+  using Float2 = packed_t<Float>;
+  using Storage = AlignedVector<Float2, 4>;
+
+  constexpr auto kNumThreads = kDim / 16;
+  constexpr auto kNumWarps = kNumThreads / kWarpThreads;
+
+  const auto& [input, residual, weight_ptr, input_stride, residual_stride, eps] = params;
+  const auto gmem = tile::Memory<Storage>::cta(kNumThreads);
+  __shared__ float smem[32];
+
+  PDLWaitPrimary<kUsePDL>();
+
+  const auto input_ptr = pointer::offset<Float>(input, blockIdx.x * input_stride);
+  const auto residual_ptr = pointer::offset<Float>(residual, blockIdx.x * residual_stride);
+
+  const auto input_first = gmem.load(input_ptr, 0);
+  const auto input_second = gmem.load(input_ptr, 1);
+  auto residual_first = gmem.load(residual_ptr, 0);
+  auto residual_second = gmem.load(residual_ptr, 1);
+  const auto weight_first = gmem.load(weight_ptr, 0);
+  const auto weight_second = gmem.load(weight_ptr, 1);
+
+#pragma unroll
+  for (auto j = 0u; j < 4u; ++j) {
+    const auto [ix, iy] = cast<fp32x2_t>(input_first[j]);
+    const auto [rx, ry] = cast<fp32x2_t>(residual_first[j]);
+    residual_first[j] = cast<Float2>(fp32x2_t{ix + rx, iy + ry});
+  }
+#pragma unroll
+  for (auto j = 0u; j < 4u; ++j) {
+    const auto [ix, iy] = cast<fp32x2_t>(input_second[j]);
+    const auto [rx, ry] = cast<fp32x2_t>(residual_second[j]);
+    residual_second[j] = cast<Float2>(fp32x2_t{ix + rx, iy + ry});
+  }
+
+  gmem.store(residual_ptr, residual_first, 0);
+  gmem.store(residual_ptr, residual_second, 1);
+
+  float sum_of_squares = 0.0f;
+#pragma unroll
+  for (auto j = 0u; j < 4u; ++j) {
+    const auto [x, y] = cast<fp32x2_t>(residual_first[j]);
+    sum_of_squares += x * x + y * y;
+  }
+#pragma unroll
+  for (auto j = 0u; j < 4u; ++j) {
+    const auto [x, y] = cast<fp32x2_t>(residual_second[j]);
+    sum_of_squares += x * x + y * y;
+  }
+
+  sum_of_squares = warp::reduce_sum(sum_of_squares);
+  float norm_factor;
+  if constexpr (kNumWarps == 1) {
+    norm_factor = math::rsqrt(sum_of_squares / kDim + eps);
+  } else {
+    const auto warp_id = threadIdx.x / kWarpThreads;
+    smem[warp_id] = sum_of_squares;
+    __syncthreads();
+    if (warp_id == 0) {
+      const auto tx = threadIdx.x;
+      const auto local_sum = tx < kNumWarps ? smem[tx] : 0.0f;
+      sum_of_squares = warp::reduce_sum(local_sum);
+      smem[tx] = math::rsqrt(sum_of_squares / kDim + eps);
+    }
+    __syncthreads();
+    norm_factor = smem[warp_id];
+  }
+
+  Storage output_first, output_second;
+#pragma unroll
+  for (auto j = 0u; j < 4u; ++j) {
+    const auto [ix, iy] = cast<fp32x2_t>(residual_first[j]);
+    const auto [wx, wy] = cast<fp32x2_t>(weight_first[j]);
+    output_first[j] = cast<Float2>(fp32x2_t{ix * norm_factor * (wx + 1.0f), iy * norm_factor * (wy + 1.0f)});
+  }
+#pragma unroll
+  for (auto j = 0u; j < 4u; ++j) {
+    const auto [ix, iy] = cast<fp32x2_t>(residual_second[j]);
+    const auto [wx, wy] = cast<fp32x2_t>(weight_second[j]);
+    output_second[j] = cast<Float2>(fp32x2_t{ix * norm_factor * (wx + 1.0f), iy * norm_factor * (wy + 1.0f)});
+  }
+
+  gmem.store(input_ptr, output_first, 0);
+  gmem.store(input_ptr, output_second, 1);
+
+  PDLTriggerSecondary<kUsePDL>();
+}
+
+// Blackwell: 32B vector, each thread loads/stores once.
+template <int64_t kDim, bool kUsePDL, typename Float>
+__global__ __launch_bounds__(kDim / 16) void gemma_fused_add_rmsnorm_cta_wide(
+    const GemmaFusedAddRMSNormParams __grid_constant__ params) {
+  using namespace device;
+  using Float2 = packed_t<Float>;
+  using Storage = AlignedVector<Float2, 8>;
+
+  constexpr auto kNumThreads = kDim / 16;
+  constexpr auto kNumWarps = kNumThreads / kWarpThreads;
+
+  const auto& [input, residual, weight_ptr, input_stride, residual_stride, eps] = params;
+  const auto gmem = tile::Memory<Storage>::cta(kNumThreads);
+  __shared__ float smem[32];
+
+  PDLWaitPrimary<kUsePDL>();
+
+  const auto input_ptr = pointer::offset<Float>(input, blockIdx.x * input_stride);
+  const auto residual_ptr = pointer::offset<Float>(residual, blockIdx.x * residual_stride);
+
+  const auto input_vec = gmem.load(input_ptr);
+  auto residual_vec = gmem.load(residual_ptr);
+  const auto weight_vec = gmem.load(weight_ptr);
+
+#pragma unroll
+  for (auto j = 0u; j < 8u; ++j) {
+    const auto [ix, iy] = cast<fp32x2_t>(input_vec[j]);
+    const auto [rx, ry] = cast<fp32x2_t>(residual_vec[j]);
+    residual_vec[j] = cast<Float2>(fp32x2_t{ix + rx, iy + ry});
+  }
+
+  gmem.store(residual_ptr, residual_vec);
+
+  float sum_of_squares = 0.0f;
+#pragma unroll
+  for (auto j = 0u; j < 8u; ++j) {
+    const auto [x, y] = cast<fp32x2_t>(residual_vec[j]);
+    sum_of_squares += x * x + y * y;
+  }
+
+  sum_of_squares = warp::reduce_sum(sum_of_squares);
+  float norm_factor;
+  if constexpr (kNumWarps == 1) {
+    norm_factor = math::rsqrt(sum_of_squares / kDim + eps);
+  } else {
+    const auto warp_id = threadIdx.x / kWarpThreads;
+    smem[warp_id] = sum_of_squares;
+    __syncthreads();
+    if (warp_id == 0) {
+      const auto tx = threadIdx.x;
+      const auto local_sum = tx < kNumWarps ? smem[tx] : 0.0f;
+      sum_of_squares = warp::reduce_sum(local_sum);
+      smem[tx] = math::rsqrt(sum_of_squares / kDim + eps);
+    }
+    __syncthreads();
+    norm_factor = smem[warp_id];
+  }
+
+  Storage output_vec;
+#pragma unroll
+  for (auto j = 0u; j < 8u; ++j) {
+    const auto [ix, iy] = cast<fp32x2_t>(residual_vec[j]);
+    const auto [wx, wy] = cast<fp32x2_t>(weight_vec[j]);
+    output_vec[j] = cast<Float2>(fp32x2_t{ix * norm_factor * (wx + 1.0f), iy * norm_factor * (wy + 1.0f)});
+  }
+
+  gmem.store(input_ptr, output_vec);
 
   PDLTriggerSecondary<kUsePDL>();
 }
@@ -373,6 +546,60 @@ struct RMSNormHalfKernel {
         .num_tokens = num_tokens,
         .eps = eps,
         .weight_offset = weight_offset,
+    };
+
+    LaunchKernel(num_tokens, kBlockSize, device.unwrap())  //
+        .enable_pdl(kUsePDL)(kernel, params);
+  }
+};
+
+template <int64_t kDim, bool kUsePDL, typename DType>
+struct GemmaFusedAddRMSNormHalfKernel {
+  static_assert(kDim % 512 == 0 && sizeof(DType) == 2);
+#if SGL_ARCH_BLACKWELL_OR_GREATER
+  static constexpr auto kernel = gemma_fused_add_rmsnorm_cta_wide<kDim, kUsePDL, DType>;
+#else
+  static constexpr auto kernel = gemma_fused_add_rmsnorm_cta_double<kDim, kUsePDL, DType>;
+#endif
+  static constexpr auto kBlockSize = static_cast<uint32_t>(kDim / 16);
+
+  static void
+  run(const tvm::ffi::TensorView input,
+      const tvm::ffi::TensorView residual,
+      const tvm::ffi::TensorView weight,
+      float eps) {
+    using namespace host;
+    auto N = SymbolicSize{"num_tokens"};
+    auto D = SymbolicSize{"hidden_size"};
+    auto SI = SymbolicSize{"input_stride"};
+    auto SR = SymbolicSize{"residual_stride"};
+    auto device = SymbolicDevice{};
+    D.set_value(kDim);
+    device.set_options<kDLCUDA>();
+
+    TensorMatcher({N, D})  // input
+        .with_strides({SI, 1})
+        .with_dtype<DType>()
+        .with_device(device)
+        .verify(input);
+    TensorMatcher({N, D})  // residual
+        .with_strides({SR, 1})
+        .with_dtype<DType>()
+        .with_device(device)
+        .verify(residual);
+    TensorMatcher({D})  // weight
+        .with_dtype<DType>()
+        .with_device(device)
+        .verify(weight);
+
+    const auto num_tokens = static_cast<uint32_t>(N.unwrap());
+    const auto params = GemmaFusedAddRMSNormParams{
+        .input = input.data_ptr(),
+        .residual = residual.data_ptr(),
+        .weight = weight.data_ptr(),
+        .input_stride = SI.unwrap(),
+        .residual_stride = SR.unwrap(),
+        .eps = eps,
     };
 
     LaunchKernel(num_tokens, kBlockSize, device.unwrap())  //

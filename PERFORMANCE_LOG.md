@@ -42,6 +42,8 @@
 | Current-source exact `199000+16` generation baseline | 112.499 tok/s record | **93.539 tok/s five-run mean** | -18.960 / -16.854% | same exact requests; only 15 post-first-token intervals | 2026-08-20 19:21 PDT |
 | Current-source exact `199000+16` TTFT baseline | 65.286869 s record | **67.749929 s five-run mean** | +2.463060 s / +3.772% slower | same exact requests | 2026-08-20 19:21 PDT |
 | Current-source exact `199000+16` E2E baseline | 65.420204 s record | **67.910954 s five-run mean** | +2.490750 s / +3.807% slower | same exact requests | 2026-08-20 19:21 PDT |
+| PERF-028 adjacent exact `199000+16` arm | 2967.386 prompt / 102.302 generation tok/s staged control | 2960.228 / 98.817 tok/s fused | -0.241% prompt; short generation inconclusive | three staged and five fused exact requests; identical digest; only 15 decode intervals | 2026-08-20 20:04 PDT |
+| PERF-028 adjacent exact `199000+512` generation | 115.194 tok/s staged control | **116.583 tok/s fused** | **+1.388 / +1.205%** | three exact requests per arm; identical `199512` count and digest | 2026-08-20 20:04 PDT |
 
 Target: at least **60 TPS** with real sampling. Achieved with a three-run end-to-end median of **62.034 TPS**; warmed decode windows sustain **72.15–72.83 TPS**.
 
@@ -618,6 +620,7 @@ tree throughput can be ranked for production.
 | PERF-025 | Evaluate the already-implemented FlashInfer TRT-LLM dense FP4 backend on native-Windows SM120. | `ModelOptFp4LinearMethod`, FP4 backend selector, launcher | Blocked by installed backend | The real layer-path test reaches FlashInfer and fails all three shapes with `mm_fp4 does not support backend 'trtllm' with capability 120`; see `PERF-F042`. |
 | PERF-026 | Specialize greedy EAGLE draft proposals and retain a sparse exact sampled p/q path. | EAGLE draft graphs, proposal buffers, rejection sampling | Survey | Temperature-zero target verification is greedy while the draft still samples stochastic top-k 20. Any change must preserve exact q(X), RNG, graph replay, and asynchronous output lifetimes. |
 | PERF-027 | Fuse Qwen SwiGLU output directly into byte-identical NVFP4 activation/scales for `down_proj`. | Native CUDA activation/quant producer and FP4 linear tuple input | Survey | Removes 64 BF16 intermediate write/read pairs per target pass; first gate is byte-identical packed output at M1/M3/M7000/M7680 and a whole-chain win. |
+| PERF-028 | Fuse the native-Windows BF16 residual add into the bit-exact Gemma RMSNorm direct-output kernel. | JIT CUDA half-width RMSNorm and Windows Gemma dispatch | Retained additive decode win | Exact at M1/M3/M7000/M7680 and under mutable CUDA-graph replay. Stable M1/M3 kernel-only A-B-A improved about `16.5 -> 9.5 us`; adjacent exact `199000+512` generation improved `115.194 -> 116.583 tok/s` (+1.205%) with identical output. Prefill was neutral. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -753,4 +756,44 @@ tree throughput can be ranked for production.
 - Decision: close on the installed native-Windows stack. Do not add the
   launcher choice or attempt a server launch until FlashInfer explicitly
   supports dense TRT-LLM FP4 on SM120.
-- Commit: pending evidence-only checkpoint.
+- Commit: `538be003dd` (`docs: record exact-200k baseline and blocked backend`).
+
+### 2026-08-20 19:30 PDT - PERF-028 bit-exact fused Gemma residual norm
+
+- Change: added a JIT CUDA half-width Gemma residual-norm specialization that
+  rounds `residual + input` to the output dtype before applying the existing
+  RMSNorm vector ownership and reduction order. It stores the rounded residual
+  and normalized input in place in one launch. Native Windows dispatch uses
+  the fused path only where the current exact half-width kernel applies and
+  retains the former two-launch fallback for every unsupported shape/dtype.
+- Correctness evidence: focused native-Windows CUDA coverage passed exact
+  equality for both mutated tensors at BF16 `H=5120`,
+  `M={1,3,7000,7680}`. A separate CUDA-graph test captured the direct JIT op,
+  changed both inputs before each replay, and passed exact equality at M1/M3.
+  The existing fullgraph smoke also remained exact.
+- Benchmark evidence: the established 5,000-iteration smoke measured the fused
+  path versus the staged residual-add plus direct-output norm at
+  **24.406 vs 40.812 us** (M1) and **25.280 vs 41.419 us** (M3), including
+  matched input resets. Kernel-only stable A-B-A windows measured
+  `9.554 / 16.705 / 9.505 us` at M1 and
+  `9.760 / 16.478 / 9.450 us` at M3. Large-row A-B-A measured
+  `195.403 / 193.696 / 195.809 us` at M7000 and
+  `217.110 / 245.719 / 213.329 us` at M7680.
+- Full-model fused evidence: five exact `199000+16` requests measured
+  `2976.028, 2988.295, 2947.764, 2916.429, 2972.626` prompt tok/s
+  (mean **2960.228**) and
+  `88.022, 98.132, 112.992, 93.347, 101.591` generation tok/s
+  (mean **98.817**). Mean TTFT/E2E were
+  **67.229581/67.382454 s**. Three exact `199000+512` requests measured
+  `116.100, 116.486, 117.162` generation tok/s (mean **116.583**) and
+  **2974.600 prompt tok/s**.
+- Adjacent staged control: three exact short requests averaged
+  **2967.386/102.302 tok/s** with **67.064823/67.212277 s** TTFT/E2E.
+  Three exact long requests measured
+  `116.226, 113.749, 115.608` generation tok/s (mean **115.194**) and
+  **2983.424 prompt tok/s**. Every fused and staged request preserved the
+  exact total, finish reason, and established deterministic digest.
+- Decision: retain as an additive decode win. The long adjacent arm improved
+  **1.205%**, consistent with the isolated M1/M3 launch reduction. Do not
+  attribute a prefill gain: the adjacent short and long prompt arms differed
+  by only -0.241% and -0.296%, respectively.

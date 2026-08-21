@@ -27,7 +27,7 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Proposal alignment | Draft top-k 20, captured inside one multi-step CUDA graph | Preserves exact q for rejection, improves acceptance, and avoids Python between draft depths |
 | Chain metadata | Native C++/CUDA fixed-chain path with distinct per-cycle outputs | 4.227x isolated metadata speedup while preserving asynchronous output lifetimes |
 | Sampling | FlashInfer | Native CUDA renormalization controls the speculative target path; fallback sampling remains available |
-| Native elementwise/norm | C++/CUDA SiLU, RMSNorm, Gemma RMSNorm, direct Gemma residual output, and qualified sigmoid-multiply dispatch | Direct output is bit-exact, removes a temporary/copy, and helped set the new exact-200K record |
+| Native elementwise/norm | C++/CUDA SiLU, RMSNorm, Gemma RMSNorm, fused Gemma residual-add norm, direct Gemma residual output, and qualified sigmoid-multiply dispatch | Both Gemma paths are bit-exact; the fused residual-add norm improved adjacent exact long generation from 115.194 to 116.583 tok/s |
 | GEMM tuning | FP4 autotune; skip FP8 GEMM autotune | FP4 tactics improved decode; selective large-EXTEND tuning is expert-opt-in and promotes only exercised target file hits |
 | Selective tactic cache | Keep the independently selected 20,928-byte cache | SHA-256 `8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`; fresh selection regressed long generation and requires requalification |
 | Workspace | 128 MiB | Wins decode and long prefill; 64 MiB fails required graph allocation |

@@ -3552,3 +3552,102 @@ mean 13.929045  17.125658 446.051        39.730
   FlashInfer `0.6.17` on the RTX 5090; reopen only when the dependency
   explicitly supports dense TRT-LLM FP4 on capability 120 and the focused
   numerics plus graph-replay gate passes.
+
+### 2026-08-20 19:30 PDT - fused Gemma residual norm passed isolated exactness and latency gates
+
+- Began from clean commit `538be003dd` with no server, CUDA/compiler worker,
+  or port-30000 listener. The RTX 5090 was at 1,135 MiB display residency,
+  31,053 MiB free, 11% transient utilization, and 30 C.
+- Added `GemmaFusedAddRMSNormHalfKernel` beside the existing exact JIT
+  `RMSNormHalfKernel`. The new kernel loads BF16 input and residual, performs
+  the FP32 add and BF16 rounding that `residual.add_(input)` exposed at the
+  former kernel boundary, stores that exact residual, then uses the same
+  thread/vector ownership, warp/CTA reduction, `rsqrt`, and
+  `input * norm * (weight + 1)` order as the current direct-output Gemma norm.
+  Both the pre-Blackwell 16-byte/two-vector and Blackwell
+  32-byte/one-vector geometries are present.
+- Added a mutating custom-op wrapper and narrowly selected it in the native
+  Windows Gemma path only for supported two-byte half-width shapes. The old
+  `residual.add_` plus direct-output JIT norm remains the explicit fallback.
+  No non-Windows dispatch changed.
+- Ran
+  `.\scripts\windows\invoke_cuda_pytest.ps1`
+  `test\registered\kernels\ops\layernorm\test_rmsnorm.py`
+  `-k qwen35_gemma -v -s`: **6 passed**, including exact BF16 equality for
+  both output buffers at `M={1,3,7000,7680}`, `H=5120`.
+  Ran the new graph-replay node directly: **2 passed** at M1/M3 after changing
+  both captured input buffers twice. Python compilation and
+  `git diff --check` also passed.
+- Ran
+  `.\scripts\windows\smoke_native_qwen35_hotpaths.ps1 -Iterations 5000`.
+  The fused candidate versus the staged sequence measured
+  **24.406 vs 40.812 us** at M1 and **25.280 vs 41.419 us** at M3, with
+  exact input/residual outputs; the fullgraph integration remained exact.
+- A kernel-only A-B-A without reset cost measured
+  `9.554 / 16.705 / 9.505 us` at M1,
+  `9.760 / 16.478 / 9.450 us` at M3,
+  `195.403 / 193.696 / 195.809 us` at M7000, and
+  `217.110 / 245.719 / 213.329 us` at M7680
+  (fused A / staged / fused B). M1/M3 have large repeatable launch and memory
+  savings; M7680 improved; M7000 was neutral within about 1%.
+- The source change is not yet retained or committed. Next gate is the
+  selected-checkpoint/chunk-7680 full-model exact-200K adjacent comparison
+  under the same seed and selected EXTEND cache.
+
+### 2026-08-20 20:08 PDT - PERF-028 retained after adjacent exact-200K attribution
+
+- Launched the fused worktree with:
+  `$env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND='1';`
+  `.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1`
+  `-ModelPath`
+  `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4`
+  `-ChunkedPrefillSize 7680 -RandomSeed 615388882`.
+  Both target and draft pools resolved to 200,000 tokens and all three
+  speculative graph phases captured. The target-verify capture took 15.39 s;
+  draft decode and draft extend took 1.04 and 0.81 s.
+- After two exact warmups, five fused `199000+16` scores produced prompt
+  `2976.028, 2988.295, 2947.764, 2916.429, 2972.626` tok/s (mean
+  **2960.228**), generation
+  `88.022, 98.132, 112.992, 93.347, 101.591` tok/s (mean **98.817**),
+  TTFT mean **67.229581 s**, and E2E mean **67.382454 s**. Every result
+  completed exact `199016`, `finish_reason=length`, with digest
+  `cdf5bb57b88deaa7515abaedf36406d10494599fce2e23eeaa400461d9f647d9`.
+- Three fused exact `199000+512` scores measured
+  `116.100, 116.486, 117.162` generation tok/s (mean **116.583**) and
+  `2966.772, 2966.291, 2990.736` prompt tok/s (mean **2974.600**).
+  All completed exact `199512` with digest
+  `cac0c6e4fab3115102a9a0c4163e4465068fba30cb09f0bb5556c7021e4a2092`.
+- Stopped that server, temporarily restored only the former Windows staged
+  dispatch, and relaunched the identical checkpoint, chunk, seed, and selected
+  cache. Three staged `199000+16` scores averaged
+  **2967.386 prompt / 102.302 generation tok/s**,
+  **67.064823 s TTFT**, and **67.212277 s E2E**. Three staged
+  `199000+512` scores measured
+  `116.226, 113.749, 115.608` generation tok/s (mean **115.194**) and
+  `2975.865, 2974.860, 2999.546` prompt tok/s (mean **2983.424**).
+  Counts, finish reasons, and digests matched the fused arm exactly.
+- Attribution: retain the fused kernel as a narrow additive decode win.
+  Adjacent exact long generation improved **1.388 tok/s / 1.205%**, in the
+  direction predicted by the isolated M1/M3 kernel A-B-A. Prefill remained
+  neutral within current WDDM variation: fused versus staged was -0.241% for
+  the short prompt arm and -0.296% for the long prompt arm. The 16-token
+  generation values remain too quantized and variable to attribute.
+- Artifacts:
+  `perf028-fused-server-20260820-1931.log`,
+  `perf028-fused-exact200k-20260820-1936.log`,
+  `perf028-fused-generation-20260820-1946.log`,
+  `perf028-fused-shutdown-20260820-1951.log`,
+  `perf028-control-server-20260820-1952.log`, and
+  `perf028-control-window-20260820-1955.log` under the session `files`
+  directory.
+- Re-resolved the control tree from port 30000 and stopped only verified PIDs
+  `49272, 38408, 44688, 39228, 36348`, leaf-first. Port 30000 was free,
+  no compiler worker remained, and the RTX 5090 returned to 1,047 MiB display
+  residency with 31,141 MiB free. Restored the fused Windows dispatch before
+  validation and retention.
+- With the fused dispatch restored, ran
+  `.\scripts\windows\invoke_cuda_pytest.ps1`
+  `test\registered\kernels\ops\layernorm\test_rmsnorm.py`
+  `-k "qwen35_gemma or qwen35_jit_gemma" -q`: **8 passed**. Python
+  compilation for both runtime modules and the test, plus
+  `git diff --check`, also passed.
