@@ -637,7 +637,7 @@ code changes, or process state matter.
   `READY`, one parsed multiply call, preserved tool-result continuation, and
   image/audio-disabled surface all pass. Batch-one decode is unchanged, so the
   compact Q2 scoreboard remains **14.661356 tok/s** through pinned llama.cpp;
-  exact SGLang `12+256` remains open.
+  exact SGLang `12+256` had not yet been measured in this phase.
 - Five matched exact-`128+1` controls with the new path process-disabled
   averaged **7.0234 prompt tok/s**. Two independent default five-run windows
   averaged **22.9556** and **22.8072 tok/s**, directly attributing a 3.258x
@@ -650,10 +650,29 @@ code changes, or process state matter.
   capability claims were deleted from the M1 Max benchmark authority.
 - Pinned llama.cpp build 10547 now owns the route-neutral M1 Max Q2
   `12+256` reference at **14.661356 tok/s aggregate** and **14.671473 tok/s**
-  best hit. Exact SGLang-ingress measurement remains open.
+  best hit. Exact SGLang ingress was still open at this point; the next phase
+  resolves it.
 - A mistaken partial q4 checkpoint restore was stopped and its isolated cache
   removed. The retained Bartowski Q2 artifact and every unrelated cache were
   preserved.
+
+### Exact native SGLang Q2 baseline establishes the decode gap
+
+- The Rust ingress requires a directory containing `tokenizer.json`; the
+  GGUF-only tokenizer path failed cleanly before serving. Qwen's official
+  tokenizer files were pinned at immutable revision
+  `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` without downloading dense model
+  weights.
+- One warmup and five exact `12+256` native SGLang requests reached
+  **7.001584 tok/s aggregate**, **7.015010 tok/s** best hit, and
+  **36.563154 s** mean E2E. Every request length-finished with identical token
+  IDs and the record's FNV `6d4d220de481f54e` output.
+- This window qualified fixed decode and `/model_info` only. The earlier
+  semantic, sampled, and restart evidence used Python ingress plus the GGUF
+  tokenizer; those gates remain open for the official-tokenizer Rust route.
+- The route-neutral llama.cpp Q2 record is **2.094006x** faster on the matched
+  fixture. Batch-one decode profiling now governs the next native C++/Metal
+  candidate; near-capacity and standalone OpenCode gates remain open.
 
 ## Supersession map
 

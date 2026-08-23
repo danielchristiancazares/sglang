@@ -85,6 +85,31 @@ record completes every fixed-length request and strictly exceeds both
 **14.661356 tok/s** aggregate generation and **14.671473 tok/s** best-hit
 generation in the same five-run window.
 
+### Repository-native SGLang baseline
+
+The first fully matched Rust-ingress SGLang window at
+`a35003d678b2363814a9c5e48d09e7abd3bd2a1a` used the same immutable IQ2_XXS
+weights plus Qwen's official tokenizer snapshot
+`1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`:
+
+| Metric | Native SGLang baseline |
+|---|---:|
+| Five-run aggregate generation | **7.001584 tok/s** |
+| Best request-observed generation | **7.015010 tok/s** |
+| Mean end-to-end time | **36.563154 s** |
+| Best end-to-end time | **36.493178 s** |
+| llama.cpp record / native SGLang | **2.094006x** |
+
+After one warmup, wall times were
+`36.493178, 36.605944, 36.580286, 36.584450, 36.551911 s`; the corresponding
+request rates were
+`7.015010, 6.993400, 6.998305, 6.997509, 7.003738 tok/s`. Every response
+reported 12 prompt and 256 completion tokens, stopped at the length limit,
+returned the same 256 token IDs, and matched the record's 878-character
+FNV-1a-64 `6d4d220de481f54e` output. The launch allocated the complete
+32,768-token BF16 KV pool; exact near-capacity execution remains a separate
+qualification gate.
+
 ## Qualification gates
 
 The measured reference loaded the full Q2 text model, reported image, video,

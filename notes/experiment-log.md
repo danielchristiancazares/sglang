@@ -6720,3 +6720,72 @@ mean 13.929045  17.125658 446.051        39.730
   13,635-token OpenCode request remain open. PERF-A014 leaves batch-one decode
   unchanged; fixed-memory native GQA and batch-one IQ2 kernel work remain the
   funded Q2 directions.
+
+### 2026-08-23 08:05 PDT - exact Rust-ingress native Q2 baseline measured
+
+- Began from clean signed
+  `HEAD=a35003d678b2363814a9c5e48d09e7abd3bd2a1a` on `main`, ahead of origin by
+  19 commits. Port 30000 and the SGLang/llama/client/compiler workload set were
+  empty. Four persistent system `MTLCompilerService` XPC processes were idle at
+  0.0% CPU. System memory was 90% free; swap was 1,068.12 MiB used; macOS had
+  recorded no thermal or performance warning.
+- The first exact launch used the retained GGUF file as both `--model-path`
+  and `--tokenizer-path`, with `SGLANG_RUST_SERVER=1`. Weight load completed in
+  15.50 s and allocated 9.03 GB weights, 0.29 GB Mamba state, and a 32,768-row
+  BF16 KV pool of 1.00 GB K plus 1.00 GB V. Rust initialization then failed
+  before serving with `ValueError: tokenizer.json not found`; the parent tree
+  exited, port 30000 was free, and memory returned to 90%.
+- Hub metadata identifies `Qwen/Qwen3.8-27B` as the source checkpoint. Downloaded
+  only `tokenizer.json`, `tokenizer_config.json`, `chat_template.jinja`,
+  `vocab.json`, `merges.txt`, `config.json`, and `generation_config.json` from
+  immutable revision `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`; no dense
+  weights were downloaded. SHA-256 values were respectively
+  `0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3`,
+  `b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27`,
+  `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041`,
+  `ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003`,
+  `a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d`,
+  `191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab`,
+  and `e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e`.
+- Successful exact launch:
+  ```text
+  env -u MTL_CAPTURE_ENABLED -u SGLANG_MPS_PROFILE_LAYERS -u SGLANG_MPS_PROFILE_STAGES SGLANG_USE_MLX=0 SGLANG_RUST_SERVER=1 SGLANG_RUST_BUILD_MODE=never SGLANG_MPS_IQ2_LARGE_BATCH=1 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 --kv-cache-dtype bfloat16 --context-length 32768 --max-total-tokens 32768 --max-running-requests 1 --chunked-prefill-size 4096 --max-prefill-tokens 8192 --disable-radix-cache --disable-overlap-schedule --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+  Weight load completed in 16.38 s. The resolved profile allocated 9.03 GB
+  weights, 0.29 GB Mamba state, and the complete 32,768-token BF16 KV pool.
+  Rust loaded the pinned tokenizer and listened on 127.0.0.1:30000. Parent PID
+  7510 owned scheduler/listener child PID 7516; no cargo, rustc, clang,
+  xctrace, llama.cpp, or competing benchmark process was present after startup.
+  `/model_info` reported `qwen3_5_text`, generation enabled, and image/audio
+  understanding false.
+- Request command for one warmup followed by five timed samples:
+  ```text
+  curl --max-time 120 -sS -w '\n%{time_total}\n' -X POST http://127.0.0.1:30000/generate -H 'Content-Type: application/json' -d '{"text":"Write a dense sequence of short Python identifiers separated by spaces.","sampling_params":{"temperature":0,"max_new_tokens":256,"ignore_eos":true}}'
+  ```
+  Warmup wall time was **37.956127 s** and populated first-request Metal work.
+  Timed wall samples were
+  `36.493178,36.605944,36.580286,36.584450,36.551911 s`, sum
+  **182.815769 s**, mean **36.5631538 s**. Request-observed generation was
+  `7.015009764,6.993399760,6.998305043,6.997508504,7.003737780 tok/s`;
+  aggregate throughput is **7.001584201 tok/s**, best hit **7.015009764**.
+- All six responses reported exactly 12 prompt tokens, 256 completion tokens,
+  and `finish_reason.type=length`. The five timed responses had identical
+  256-element `output_ids`; their 878-character text matches the llama.cpp
+  reference and independently reconstructs FNV-1a-64
+  `6d4d220de481f54e`. The native aggregate is **52.244634%** below the
+  **14.661356 tok/s** reference; equivalently, the reference is
+  **2.094005525x** faster.
+- This launch exercised fixed decode and `/model_info`; it did not repeat
+  reasoning, thinking-disabled, tool-call, preserved-tool-result,
+  required-sampling, independent-restart, near-capacity, or OpenCode gates.
+  The earlier behavior evidence used Python ingress with the tokenizer
+  embedded in GGUF and therefore does not qualify the official-tokenizer Rust
+  boundary.
+- Cleanup sent TERM to verified leaf/listener PID 7516. The scheduler exited
+  with `-15`, parent PID 7510 reaped the tree and exited cleanly, and both PIDs
+  are absent. Port 30000 is free; no server, client, workload-owned compiler,
+  xctrace, or llama.cpp process remains. The four persistent system
+  `MTLCompilerService` XPC processes remain present and idle at 0.0% CPU.
+  Memory is 90% free and macOS still reports no thermal or performance
+  warning. Next: profile batch-one native decode before choosing between IQ2
+  projection and fixed-memory BF16 GQA work.
