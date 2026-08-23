@@ -8,6 +8,7 @@
 | Mac Pro Qwen3.8-27B Q4_0, batch 24, 128 output tokens each, real top-k/top-p sampling | 49.500 TPS | **62.034 TPS** | **+12.534 TPS** | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_batched_request.py --url http://127.0.0.1:30001/generate --batch-size 24 --output-tokens 128` | 2026-08-16 22:35 PDT |
 | M1 Max Qwen3.8-27B IQ2_XXS, exact `12+256` fixed-decode scoreboard | unqualified cross-machine q4 entry deleted | **14.661356 tok/s aggregate; 14.671473 best hit** | route-neutral local Q2 authority | pinned llama.cpp build 10547 command in `BENCHMARK.md` | 2026-08-23 07:46 PDT |
 | M1 Max Qwen3.8-27B IQ2_XXS, native SGLang Rust `/generate`, exact `12+256` | llama.cpp **14.661356 tok/s** aggregate | **7.001584 tok/s aggregate; 7.015010 best hit** | **-52.2446%; reference is 2.094006x faster** | exact launch and request in the 2026-08-23 08:05 experiment-log entry | 2026-08-23 08:05 PDT |
+| M1 Max Qwen3.8-27B IQ2_XXS, synchronized batch-one decoder-layer profile | separate exact-request wall time **142.824820 ms/completion token** | **132.593 ms/token** topology projection from stable profiled layers | **10.232 ms/token cross-run numerical difference; no outside-layer attribution** | one-shot `SGLANG_MPS_PROFILE_LAYERS=1 SGLANG_MPS_PROFILE_STAGES=1` launch in the 08:14 experiment-log entry | 2026-08-23 08:14 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` batch-one projection | 1.176875 ms matched generic | **0.516000 ms** | **-0.660875 ms / -56.16%** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:25 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS Q5_K `248320x5120` head at batch one | 19.659291 ms matched generic | **3.754625 ms** | **-15.904666 ms / -80.90%; 5.24x** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor output.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:52 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS 48-layer F32 b/a projection sweep | 7.296667 ms selected custom Metal | **2.159000 / 2.051708 ms** native `torch.mm` A/B arms | **-70.41% / -71.88%; 3.38-3.56x** | `.venv/bin/python benchmark/mac/bench_mps_dense_ba.py $IQ2_GGUF --warmup 4 --iterations 9` | 2026-08-20 23:43 PDT |
@@ -1892,3 +1893,31 @@ tree throughput can be ranked for production.
   compiler process; four system `MTLCompilerService` XPC processes remained
   idle at 0.0% CPU. Port 30000 was free, memory 90% free, and no
   thermal/performance warning was recorded.
+
+### 2026-08-23 08:14 PDT - native Q2 batch-one decode diagnostic captured
+
+- A clean 32K Rust/official-tokenizer launch enabled the existing one-shot
+  synchronized layer and stage profilers at batch one. The built-in six-token
+  warmup consumed the profile after the same 9.03 GB weight, 0.29 GB Mamba,
+  and 2.00 GB BF16 KV allocations as the exact baseline.
+- The 64 raw layer timings summed to **164.266 ms**. Excluding layers 0-10
+  with clear first-use overhead, 14 full-attention samples averaged exactly
+  **3.130000 ms/layer** and 39 GDN samples averaged **1.719026 ms/layer**.
+  Using the raw sums, their model-topology projection is **50.080 + 82.513 =
+  132.593 ms/token**. The separate exact-request wall time is **142.824820
+  ms/completion token**; its **10.232 ms/token** numerical difference crosses
+  runs and context distributions and therefore does not isolate outside-layer
+  work.
+- The nested GDN layer-8 view measured 0.522 ms input projection, 0.354 ms
+  recurrent core plus convolution, 0.360 ms output projection, and 0.863 ms
+  MLP, with additional pack/norm/reorder stages. Nested synchronization
+  inflates that sum, and layer 8 belongs to the excluded first-use region. Its
+  broad proportions support a cheap batch-one IQ2 projection experiment; they
+  do not establish route-wide attribution.
+- Full-attention layers carry a **1.411 ms/layer** premium over the stable GDN
+  mean. This bounds the complete layer-family difference; fixed-memory BF16
+  GQA remains a separately measurable follow-on.
+- Verified leaf-first cleanup removed PIDs 7925 and 7921. Port 30000 is free,
+  no workload-owned compiler or server process remains, the four system Metal
+  compiler services are idle, memory is 90% free, and macOS records no thermal
+  or performance warning.

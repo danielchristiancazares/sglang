@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-23
-08:05 PDT.
+08:14 PDT.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -460,8 +460,20 @@ OpenCode 1.18.15 probe formed a **13,635-token** real agent prompt, proving the
 1,024-token diagnostic launch cannot satisfy that gate. No Apple server,
 client, or workload-owned compiler process is live; the four persistent system
 `MTLCompilerService` XPC processes remain idle at 0.0% CPU. Port 30000 is free,
-and memory returned to 90% free after verified cleanup. Batch-one decode
-profiling now precedes the next native C++/Metal candidate.
+and memory returned to 90% free after verified cleanup.
+
+A one-shot synchronized batch-one profile now supplies a candidate-selection
+diagnostic.
+After excluding layers 0-10 with visible first-use cost, full-attention layers
+average **3.130000 ms** and GDN layers average **1.719026 ms**. Extrapolated
+across the 16/48 topology from the raw sums, the stable profile projects to
+**132.593 ms/token**. The separate exact request amortizes to **142.824820
+ms/completion token**; their **10.232 ms/token** numerical difference crosses
+runs and context distributions, so it does not isolate an outside-layer
+budget. Nested layer-8 stages suggest that projection and MLP work outweigh
+the recurrent core, while that layer is itself inside the first-use region
+and nested synchronization perturbs its timing. These numbers guide a cheap
+hypothesis test and do not replace end-to-end timing.
 
 Both source-level context blockers are now retained. Exact source A/B at a
 `4096+4096` partial extend reduced the padded-query controls from
@@ -506,9 +518,13 @@ parity.
 
 The exact Rust/official-tokenizer route still needs its semantic, sampled,
 independent-restart, near-capacity, and standalone 13,635-token OpenCode gates
-before promotion. The exact `12+256` gap points to batch-one decode; a bounded
-native long-history GQA kernel and a new batch-one IQ2 projection design are
-the leading candidates pending direct attribution.
+before promotion. The exact `12+256` gap and layer diagnostic support testing
+a new batch-one IQ2 projection design first because the projection path spans
+both layer families and has a cheap actual-file falsification gate. This is a
+hypothesis, not route-wide attribution. Full-attention-specific work, including
+bounded native long-history GQA, remains an independent candidate; the measured
+**1.411 ms/layer** full-versus-GDN premium is an upper bound for that whole
+layer-family difference rather than an attention-kernel measurement.
 
 The deleted affine-q4 scoreboard belonged to a separate Mac Pro experiment
 and carries no M1 Max record standing. The retained MLX quantized-prefill query
