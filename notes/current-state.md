@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-23
-15:11 PDT.
+16:25 PDT.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -409,6 +409,10 @@ Signed commit `52b5326d8e` retains PERF-A016, a batch-one Q4_K tensor-family
 kernel for the mixed-format IQ2_XXS/Q2 checkpoint. It reuses each activation
 fragment across two output rows and admits complete four-block cohorts with
 safe compact-view alignment.
+Signed commit `4dfa1ad3ef` retains PERF-A021, a batch-one Q2_K tensor-family
+kernel that reuses each activation fragment across four output rows. It is the
+current Apple benchmark baseline and preserves generic aligned, tail, and
+multi-batch fallbacks.
 Signed commit `1ec20a0e87` widens the fixed-memory BF16 Metal decode fence to
 131,073 physical rows. Isolated native admission, the 131,074-row fallback,
 and active sequence length 131,072 all pass; served context qualification
@@ -458,8 +462,9 @@ The first native Rust `/generate` baseline remains **7.001584 tok/s** aggregate,
 official-tokenizer fixed-output boundary with exact token IDs and FNV
 `6d4d220de481f54e`.
 
-PERF-A016 is the selected repository-native result on the tool-capable Python
-ingress with the same official tokenizer. Its final-source five-run window is
+PERF-A016 remains the last named-client-qualified repository-native result on
+the tool-capable Python ingress with the same official tokenizer. Its
+final-source five-run window is
 **8.586948 tok/s** aggregate, **8.591773 tok/s** best hit, and **29.812688 s**
 mean E2E. The fresh disabled-kernel control is **7.009167 tok/s**, attributing
 a **22.510241%** full-model gain; an independent candidate restart reaches
@@ -471,21 +476,37 @@ Q4_K, batch one, four-row output alignment, four-block cohorts,
 capability. `Q4_K` names one internal tensor family among the checkpoint's 866
 mixed-format tensors; benchmark and checkpoint standing remain Q2.
 
-The selected 1,024-token-chunk route completed exact **32761+1** inside the
-32,768-token BF16 pool at **19.242 prompt tok/s** and **1702.563753 s E2E**.
-It also passes sampled reasoning, exact arithmetic `703`, thinking-disabled
-`READY`, one parsed multiply call, tool-result reasoning continuity, and
-image/audio-disabled reporting. Historical process-scoped OpenCode 1.18.15
-runs admitted 13,635 and 13,691-token agent prompts. The governing Apple real-
-client gate is now Codex CLI 0.149.0 through the machine-local
-`qwen38-local` Responses profile: one read-only `pwd` tool call returned the
+PERF-A021 is the current Apple native-SGLang benchmark baseline. Its
+independent exact-`12+256` window reaches **9.189086 tok/s** aggregate,
+**9.194647 tok/s** best hit, and **27.859136 s** mean E2E. The fresh generic-
+Q2_K control is **8.515065 tok/s**, giving a **7.532647%** matched gain and a
+**7.012249%** gain over PERF-A016. Actual Q2_K gate/down medians move from
+about **1.07/1.09 ms** to **0.455/0.454 ms**. The safe host rule requires Q2_K,
+batch one, eight-row output alignment, four-block cohorts,
+`weight_offset % 2 == 0`, `input_offset % 4 == 0`, and Apple7+ pipeline
+capability.
+
+The current five-sample reasoning-enabled `128+256` stream establishes all
+four latency metrics together: **22.945718 prompt / 9.156675 generation
+tok/s**, **5.578383 s TTFT**, and **33.426973 s E2E**. The current-source
+1,024-token-chunk route completed exact **32761+1** inside the 32,768-token
+BF16 pool at **18.942 observed prompt tok/s**, **1729.565719 s TTFT**, and
+**1729.565822 s E2E**. It passes sampled reasoning, exact arithmetic `703`,
+thinking-disabled `READY`, one parsed multiply call, tool-result reasoning
+continuity, and image/audio-disabled reporting.
+
+Historical process-scoped OpenCode 1.18.15 runs admitted 13,635 and
+13,691-token agent prompts. The governing Apple real-client gate is Codex CLI
+0.149.0 through the machine-local `qwen38-local` Responses profile. Its last
+execution remains on PERF-A016: one read-only `pwd` tool call returned the
 workspace, its result was consumed, visible final was exact
 `CODEX TOOL READY`, and the client accounted for 17,871 input, 96 output, and
 62 reasoning-output tokens before exiting zero. Profile/catalog SHA-256 values
 are `9706003ad8a43ad48e4260f282057c023214c9e66737eae3da88a49188079a1c`
 and `a67c491a1dd4d4df0f720fb966ac390bd20041d8ed29f02833dfca4424a013f0`.
-Verified cleanup leaves every server/client PID absent, port 30000 free, 94%
-memory free, and normal thermal/performance status.
+The PERF-A021 named-client rerun remains the final promotion gate. Verified
+cleanup leaves every server/client PID absent, port 30000 free, 93% memory
+free, and normal thermal/performance status.
 
 A one-shot synchronized batch-one profile now supplies a candidate-selection
 diagnostic.
@@ -541,10 +562,11 @@ the matched disabled prompt rate. Every request completed exact `128+1` with
 `finish_reason=length`; the true batch-eight fallback also passes actual-file
 parity.
 
-The selected native route has cleared its semantic, sampled, independent-
-restart, exact-capacity, and Codex-profile gates. Its **8.586948 tok/s**
-aggregate leaves a **41.431420%** gap to pinned llama.cpp and makes the next
-measured batch-one decode hotspot the compact-scoreboard handoff.
+The current PERF-A021 baseline has cleared its semantic, sampled, independent-
+restart, and exact-capacity gates. Its **9.189086 tok/s** aggregate leaves a
+**37.324447%** gap to pinned llama.cpp. The named Codex-profile rerun is open,
+and the next measured batch-one decode hotspot remains the compact-scoreboard
+handoff.
 
 Long-context EXTEND now has a qualified native mechanism. PERF-A017 implements
 batch-one BF16 paged GQA at 24 query heads, four KV heads, and dimension 256

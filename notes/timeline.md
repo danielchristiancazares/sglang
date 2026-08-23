@@ -813,6 +813,31 @@ code changes, or process state matter.
   synchronization is restored, and this shader-local branch is closed on the
   M1 Max/Metal 32023.883 toolchain.
 
+### PERF-A021 establishes the complete Apple five-metric baseline
+
+- Signed `4dfa1ad3ef` adds a four-row batch-one Q2_K Metal matvec at the
+  shared `quant_matmul` owner. Two SIMDgroups reuse each 32-value activation
+  fragment across eight output rows per threadgroup; aligned complete cohorts
+  admit the specialization, and every tail, offset, and multi-batch shape
+  retains the generic path.
+- Actual checkpoint gate/down medians move from about **1.07/1.09 ms** to
+  **0.455/0.454 ms** over 50-sample A/B/A windows. Actual-file candidate,
+  disabled-control, output-tail, and batch-eight parity pass.
+- The matched generic control aggregates **8.515065 tok/s** on exact
+  `12+256`; the first candidate window reaches **9.156475 tok/s** and an
+  independent candidate restart reaches **9.189086 tok/s**, with
+  **9.194647 tok/s** best hit and **27.859136 s** mean E2E. The matched gain is
+  **7.532647%**, and current aggregate standing is **7.012249%** above
+  PERF-A016.
+- Five exact reasoning-enabled `128+256` streams establish **22.945718 prompt
+  / 9.156675 generation tok/s**, **5.578383 s TTFT**, and **33.426973 s E2E**.
+  Every request length-finishes with one reasoning digest.
+- Current-source exact `32761+1` passes in the 32,768-token BF16 pool at
+  **18.942 prompt tok/s**, **1729.565719 s TTFT**, and **1729.565822 s E2E**.
+  Sampled reasoning, arithmetic, thinking-disabled, parsed tool call,
+  continuation, and language-only gates pass. The named Codex profile last
+  ran on PERF-A016 and remains PERF-A021's final promotion gate.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:

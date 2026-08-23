@@ -7,7 +7,7 @@ resolved launcher arguments.
 
 **Native-Windows reconciled through:** 2026-08-21 13:48 PDT.
 
-**Apple M1 Max Q2 addendum reconciled through:** 2026-08-23 13:45 PDT.
+**Apple M1 Max Q2 addendum reconciled through:** 2026-08-23 16:25 PDT.
 
 ## Primary performance scoreboard
 
@@ -197,12 +197,40 @@ the intended MSVC/CUDA 13.3 environment and cap compilation at two jobs.
 ## Apple M1 Max Q2 client-gate addendum
 
 [`../BENCHMARK.md`](../BENCHMARK.md) governs the separate Apple M1 Max Q2
-scoreboard. Its selected repository-native route uses Python ingress, Qwen's
-official tokenizer, a 32,768-token BF16 pool, one request, and 1,024-token
-prefill chunks. Signed PERF-A016 commit
-`52b5326d8e5140b72a26a3909316fb1f665bbd3d` specializes the Q4_K tensor
-family inside the mixed-format IQ2_XXS/Q2 checkpoint; the checkpoint and
-scoreboard remain Q2.
+scoreboard. Its repository-native route uses Python ingress, Qwen's official
+tokenizer, a 32,768-token BF16 pool, one request, and 1,024-token prefill
+chunks. Signed PERF-A016 commit
+`52b5326d8e5140b72a26a3909316fb1f665bbd3d` remains the last named-client-
+qualified result. Signed PERF-A021 commit
+`4dfa1ad3efdfe3f9236aa0ed0c841644ab513859` is the current performance and
+capacity baseline. It specializes the Q2_K tensor family inside the same
+mixed-format IQ2_XXS/Q2 checkpoint; checkpoint and scoreboard standing remain
+Q2.
+
+The complete Apple baseline has three exact workloads:
+
+1. Fixed decode uses `/generate` with the 12-token identifier prompt, 256
+   forced greedy output tokens, ignored EOS, and five consecutive requests.
+   Report aggregate generation as `1280 / sum(wall time)`, best request rate,
+   mean E2E, and best E2E.
+2. Reasoning-enabled OpenAI streaming uses exact `128+256` because the empty
+   reasoning-enabled chat template occupies 52 tokens. Run one 16-token
+   warmup, retain any stabilization measurement, then record five consecutive
+   cache-flushed requests. Report prompt throughput as
+   `640 / sum(TTFT)`, generation as 1,275 post-first-token intervals divided
+   by their total time, mean/best TTFT, and mean/best E2E. Preserve exact
+   token counts, length finish, nonempty-delta count, and output/reasoning
+   digests.
+3. Capacity uses one cache-flushed, reasoning-enabled exact `32761+1` stream
+   inside the allocated 32,768-token pool. Report exact usage and finish,
+   observed prompt throughput, TTFT, E2E, chunk/tail progress, digest,
+   process/runtime state, and post-run cache flush. A one-token completion has
+   zero post-first-token intervals, so generation throughput comes from the
+   fixed and 128+256 workloads.
+
+Prompt, Generation, TTFT, E2E, and Capacity must all appear together in root
+`BENCHMARK.md` for the same source checkpoint. Any workload change receives a
+fresh label and retains the preceding baseline.
 
 The Apple real-client gate is Codex CLI 0.149.0 with the machine-local
 `qwen38-local` profile over `/v1/responses`. Pin and record these overlay

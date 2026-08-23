@@ -8544,3 +8544,224 @@ mean 13.929045  17.125658 446.051        39.730
   source-build worker remained. Memory returned to 93% free, swap stayed
   1697.25/3072 MiB, pages throttled stayed zero, and macOS still reported no
   thermal or performance warning.
+
+### 2026-08-23 16:25 PDT - PERF-A021 four-row Q2_K decode and complete Apple baseline
+
+- Began from signed `main` at
+  `9e12fd0fbe9fdfd89de8dca888e8df0a7b4b9a28` (`docs: close Metal barrier
+  ablations`), ahead of `origin/main` by 30 commits. The opening worktree had
+  only the intended `gguf_q4_0.mm` and `THIRDPARTYNOTICES.txt` edits. Port
+  30000 was free, and no SGLang server, benchmark client, Metal compiler, or
+  native workload was live. The host remained the 32-GPU-core M1 Max with
+  32 GiB unified memory, macOS 26.6.2, PyTorch 2.11.0, and Metal compiler
+  32023.883. Memory was 92% free, encrypted swap was
+  1689.25/3072 MiB, pages throttled were zero, and macOS reported no thermal
+  or performance warning.
+- PERF-A021 adds `q2_K_batch_1_rows4` at the common Metal `quant_matmul`
+  owner. Two SIMDgroups each produce four output rows, reusing 32 activation
+  registers across the four rows and factoring Q2_K packed arithmetic before
+  the final SIMD reductions. Admission requires Q2_K type 10, batch one,
+  eight-row output alignment, four-block cohorts, even packed-weight origin,
+  four-byte-aligned float-input origin, 32-wide SIMD execution, and at least
+  64 threads per threadgroup. `SGLANG_MPS_Q2_K_BATCH1_ROWS4=0` selects the
+  generic matched control. All other shapes retain the existing dispatcher.
+  The implementation adapts pinned llama.cpp commit `749f688f`; its notice
+  was updated in the same change.
+- The live GGUF contains one Q2_K token embedding plus gate/up/down tensors in
+  four layers, yielding 12 decode-reachable FFN matvecs. Fifty synchronized
+  samples on actual gate and down tensors produced these matched A/B/A
+  medians:
+
+  ```text
+  blk.0.ffn_gate.weight generic A1 1.067353 ms
+  blk.0.ffn_gate.weight rows4      0.454833 ms
+  blk.0.ffn_gate.weight generic A2 1.065125 ms
+
+  blk.0.ffn_down.weight generic A1 1.085771 ms
+  blk.0.ffn_down.weight rows4      0.453563 ms
+  blk.0.ffn_down.weight generic A2 1.089750 ms
+  ```
+
+  Individual gate samples were:
+
+  ```text
+  generic A1:
+  1.105750,1.054708,1.075709,1.062333,1.066417,1.060000,1.076792,
+  1.041292,1.074500,1.061625,1.067666,1.063750,1.064666,1.047875,
+  1.057041,1.063209,1.059125,1.067041,1.045084,1.056958,1.071542,
+  1.053084,1.048750,1.053125,1.056584,1.041291,1.133375,1.076166,
+  1.066917,1.071542,1.075667,1.066250,1.061542,1.097583,1.068750,
+  1.061708,1.086292,1.078625,1.073792,1.068167,1.072250,1.080292,
+  1.071958,1.065708,1.086917,1.074666,1.074875,1.070458,1.074667,
+  1.073583
+
+  rows4:
+  0.483416,0.470958,0.451583,0.462500,0.449500,0.453833,0.472166,
+  0.485834,0.487208,0.434541,0.435583,0.430417,0.420583,0.417042,
+  0.415958,0.419292,0.415459,0.475791,0.474750,0.462167,0.461333,
+  0.460875,0.462792,0.468042,0.464791,0.455292,0.524875,0.411208,
+  0.421125,0.431375,0.429750,0.430959,0.418083,0.425542,0.414667,
+  0.428459,0.461083,0.457500,0.461042,0.463083,0.450500,0.468000,
+  0.464250,0.459209,0.462875,0.457625,0.454375,0.442042,0.450291,
+  0.421500
+
+  generic A2:
+  1.098750,1.089833,1.062750,1.072833,1.065042,1.065458,1.077875,
+  1.077000,1.049625,1.054541,1.060417,1.044125,1.069584,1.071583,
+  1.040791,1.049250,1.041209,1.061083,1.057292,1.039167,1.052000,
+  1.062666,1.054375,1.060375,1.067416,1.058666,1.046291,1.056500,
+  1.056292,1.076042,1.057833,1.052292,1.066416,1.055667,1.062333,
+  1.080333,1.075000,1.064250,1.065208,1.079833,1.072666,1.074750,
+  1.075708,1.103167,1.069834,1.073125,1.088334,1.077375,1.070542,
+  1.078042
+  ```
+
+  Individual down samples were:
+
+  ```text
+  generic A1:
+  1.100375,1.138166,1.063292,1.078708,1.068417,1.054917,1.078333,
+  1.078292,1.069459,1.068625,1.090417,1.062167,1.071583,1.055667,
+  1.071917,1.052583,1.065500,1.065667,1.059875,1.063333,1.074667,
+  1.057708,1.066500,1.068083,1.049875,1.091375,1.092750,1.112125,
+  1.086166,1.082209,1.085541,1.108500,1.177250,1.116666,1.102000,
+  1.101750,1.085833,1.089958,1.093584,1.101541,1.099750,1.106083,
+  1.086167,1.098791,1.093834,1.102334,1.094041,1.085709,1.126416,
+  1.110709
+
+  rows4:
+  0.494000,0.436167,0.416792,0.443875,0.456708,0.441083,0.439750,
+  0.429000,0.438208,0.452958,0.474375,0.468625,0.479750,0.478917,
+  0.460792,0.454167,0.448042,0.451208,0.465208,0.444250,0.428208,
+  0.417166,0.410125,0.417166,0.446500,0.411375,0.414375,0.428166,
+  0.596500,0.483875,0.471625,0.471958,0.524750,0.476917,0.498875,
+  0.469958,0.475584,0.473167,0.469208,0.461541,0.413250,0.451375,
+  0.406958,0.395667,0.430917,0.417584,0.575542,0.462625,0.469166,
+  0.470166
+
+  generic A2:
+  1.129959,1.087750,1.120500,1.102375,1.091375,1.072208,1.080167,
+  1.117209,1.089958,1.089458,1.072916,1.074625,1.100542,1.091167,
+  1.069958,1.073583,1.098416,1.088791,1.062667,1.074250,1.086917,
+  1.082333,1.069917,1.084041,1.088166,1.114959,1.079375,1.063584,
+  1.070084,1.089791,1.076625,1.089708,1.113625,1.119750,1.101125,
+  1.106500,1.093167,1.076500,1.096875,1.107334,1.096500,1.100375,
+  1.084875,1.086541,1.091750,1.112333,1.092500,1.155083,1.082291,
+  1.106375
+  ```
+- Focused correctness passed on the immutable actual checkpoint:
+  `test_mps_gguf_quant.py --rows 16 --batch-size 1` reported Q2_K maximum
+  error `5.36442e-07`; the generic environment control reported
+  `6.55651e-07`; rows 17 exercised the output-tail fallback; batch eight
+  exercised the established multi-batch path. The compact-view unit suite
+  passed three tests. The later full server launch rebuilt this exact Metal
+  source successfully.
+- Exact fixed `/generate` request:
+
+  ```text
+  curl -sS -w '\nWALL=%{time_total}\n' -X POST \
+    http://127.0.0.1:30000/generate -H 'Content-Type: application/json' \
+    -d '{"text":"Write a dense sequence of short Python identifiers separated by spaces.","sampling_params":{"temperature":0,"max_new_tokens":256,"ignore_eos":true}}'
+  ```
+
+  Candidate window one used
+  `27.893382,27.949060,27.979015,27.981408,27.988928 s`, aggregating
+  **9.156475 tok/s**. The matched generic-Q2_K control used
+  `29.992152,30.080830,30.080217,30.052984,30.115632 s`, aggregating
+  **8.515065 tok/s**. The matched gain is **7.532647%** and saves
+  **8.226580 ms/output token**. An independent candidate restart used
+  `27.842287,27.856282,27.867904,27.868737,27.860470 s`, aggregating
+  **9.189086 tok/s**, with **9.194647 tok/s** best hit and
+  **27.859136 s** mean E2E. This is **7.012249%** above PERF-A016's
+  selected **8.586948 tok/s** aggregate. Every arm completed exact `12+256`,
+  length-finished, and retained identical token IDs and text.
+- Candidate behavior gates passed on the tool-capable Python ingress:
+  required sampled arithmetic returned 108 reasoning tokens and final
+  `**703**`; tool use returned one `multiply({"a":37,"b":19})` call with
+  `finish_reason=tool_calls`; continuation preserved that reasoning/call and
+  returned `The result of 37 × 19 is **703**.`; thinking-disabled returned
+  exact `READY` with zero reasoning; `/model_info` reported generation true
+  and image/audio understanding false.
+- The complete benchmark launch was:
+
+  ```text
+  env -u MTL_CAPTURE_ENABLED -u SGLANG_MPS_PROFILE_LAYERS \
+    -u SGLANG_MPS_PROFILE_STAGES -u SGLANG_RUST_SERVER \
+    -u SGLANG_RUST_BUILD_MODE SGLANG_USE_MLX=0 \
+    SGLANG_MPS_IQ2_LARGE_BATCH=1 SGLANG_MPS_Q4_K_BATCH1_ROWS2=1 \
+    SGLANG_MPS_Q2_K_BATCH1_ROWS4=1 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 \
+    --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 32768 --max-total-tokens 32768 \
+    --max-running-requests 1 --chunked-prefill-size 1024 \
+    --max-prefill-tokens 8192 --disable-radix-cache --disable-overlap-schedule \
+    --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
+    --incremental-streaming-output --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved seed was `784022960`. Weight loading reported 9.03 GB; Mamba
+  state 0.29 GB; the 32,768-token BF16 KV pool 2.00 GB; and 19.97 GB
+  available afterward. Verified process ancestry was root/listener 40064,
+  resource tracker 40069, scheduler 40070, and detokenizer 40071, all in PGID
+  40064. No compiler worker or second model workload was live.
+- A reasoning-enabled OpenAI stream has a 52-token empty-template floor, so an
+  attempted exact 12-token stream exited during calibration with
+  `Target 12 is below the empty templated prompt length 52`. The fixed
+  `/generate` workload continues to own exact `12+256`; streaming latency uses
+  exact `128+256`. One 16-token warmup plus a retained stabilization request
+  measured 23.046 prompt tok/s, 8.811 generation tok/s, 5.554081 s TTFT, and
+  34.494110 s E2E. The following five cache-flushed measurements were:
+
+  ```text
+  sample  prompt tok/s  generation tok/s  TTFT s    E2E s
+  1       23.184        9.144             5.521153  33.409791
+  2       22.836        9.175             5.605249  33.398367
+  3       22.977        9.130             5.570890  33.501759
+  4       22.940        9.145             5.579890  33.464504
+  5       22.797        9.191             5.614732  33.360443
+  ```
+
+  Aggregate prompt processing was **22.945718 tok/s** (`640/sum(TTFT)`),
+  aggregate generation was **9.156675 tok/s** over 1,275 post-first-token
+  intervals, mean TTFT was **5.578383 s**, and mean E2E was **33.426973 s**.
+  Every stream completed exact `128+256`, `finish_reason=length`, 256
+  nonempty deltas, and reasoning SHA-256
+  `3ea6b02f01fa96ad84bc9e8b3027a2af280c58ae68e14b8ea8408a18682b95a9`.
+- Current-source capacity command:
+
+  ```text
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b-iq2 --input-tokens 32761 --output-tokens 1 \
+    --temperature 0 --skip-warmup --timeout 7200
+  ```
+
+  The cache-flushed request completed exact **32761 prompt + 1 completion =
+  32762 total tokens** with `finish_reason=length`, **18.942 observed prompt
+  tok/s**, **1729.565719 s TTFT**, and **1729.565822 s E2E**. The server
+  processed 31 1,024-token chunks plus a 1,017-token tail. The single output
+  delta carried reasoning SHA-256
+  `b344d80e24a3679999fa964450b34bc24d1578a35509f934c1418b0a20d21a67`.
+  One completion token supplies zero post-first-token intervals, leaving
+  decode throughput undefined for this gate. Chunk throughput ranged from
+  25.42 tok/s to 10.68 tok/s before the 7.40 tok/s tail; the full raw latency
+  is retained as measured evidence.
+- The first manually issued post-capacity cache-flush URL was unquoted and zsh
+  rejected its `?` glob before any request. The quoted retry returned
+  `Cache flushed.` and the server logged a successful reset at 16:23:08 PDT.
+  During the long request, swap expanded to 7168 MiB with 5746.56 MiB used;
+  memory remained 83% free and pages throttled remained zero. Leaf-first TERM
+  of detokenizer 40071 and scheduler 40070 triggered the root's normal child-
+  failure cleanup; all four verified PIDs then disappeared. Port 30000 was
+  free, no server/client/compiler worker remained, memory returned to 93%
+  free, swap contracted to 3072 MiB with 2284 MiB used, and macOS still
+  reported no thermal or performance warning.
+- Decision: retain PERF-A021 as the current Apple native-SGLang baseline. It
+  has complete Prompt, Generation, TTFT, E2E, and Capacity evidence in root
+  `BENCHMARK.md`, preserves the behavior surface, and passes current-source
+  near-limit execution. The validated kernel and notice were committed as
+  signed `4dfa1ad3efdfe3f9236aa0ed0c841644ab513859` (`perf: reuse Q2_K
+  activations across rows`). Documentation and recovery-ledger updates remain
+  a separate atomic checkpoint.
