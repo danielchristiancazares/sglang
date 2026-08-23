@@ -6789,3 +6789,95 @@ mean 13.929045  17.125658 446.051        39.730
   Memory is 90% free and macOS still reports no thermal or performance
   warning. Next: profile batch-one native decode before choosing between IQ2
   projection and fixed-memory BF16 GQA work.
+
+### 2026-08-23 08:14 PDT - native Q2 batch-one decode profile captured
+
+- Began from clean signed
+  `HEAD=ad2a9c30f14a62da81f7fe8d8226b26f012586da` on `main`, 20 commits
+  ahead of origin. Port 30000 was free; no SGLang, llama.cpp, benchmark,
+  xctrace, or workload-owned compiler process was running. The four persistent
+  system `MTLCompilerService` XPC processes were idle at 0.0% CPU. System
+  memory was 90% free and macOS reported no thermal or performance warning.
+- Launched the same 32K Rust-ingress, official-tokenizer, BF16-KV Q2 server as
+  the 08:05 exact baseline, adding only the existing one-shot synchronized
+  profiling controls:
+
+  ```text
+  env -u MTL_CAPTURE_ENABLED SGLANG_USE_MLX=0 SGLANG_RUST_SERVER=1 SGLANG_RUST_BUILD_MODE=never SGLANG_MPS_IQ2_LARGE_BATCH=1 SGLANG_MPS_PROFILE_LAYERS=1 SGLANG_MPS_PROFILE_STAGES=1 SGLANG_MPS_PROFILE_BATCH_SIZE=1 SGLANG_MPS_PROFILE_STAGE_LAYER=8 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 --kv-cache-dtype bfloat16 --context-length 32768 --max-total-tokens 32768 --max-running-requests 1 --chunked-prefill-size 4096 --max-prefill-tokens 8192 --disable-radix-cache --disable-overlap-schedule --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Load completed in 15.93 s with the same 9.03 GB weights, 0.29 GB Mamba
+  state, and complete 2.00 GB BF16 KV allocation. The server's built-in
+  six-token warmup reached batch-one decode and consumed the one-shot profile;
+  no client workload was required. Verified parent PID 7921 owned the
+  scheduler/listener PID 7925.
+- The synchronized outer-layer timings for layers 0 through 63 were:
+
+  ```text
+  7.032, 4.136, 3.987, 13.857,
+  4.181, 4.013, 4.023, 5.249,
+  3.359, 1.465, 2.102, 3.104,
+  1.431, 1.429, 2.087, 3.074,
+  1.485, 1.443, 2.076, 3.166,
+  1.472, 1.541, 2.106, 3.107,
+  1.453, 1.448, 2.091, 3.092,
+  1.456, 1.398, 2.083, 3.205,
+  1.452, 1.430, 2.075, 3.055,
+  1.452, 1.442, 2.069, 3.124,
+  1.439, 1.424, 2.086, 3.124,
+  1.431, 1.448, 2.043, 3.166,
+  1.417, 1.399, 2.041, 3.045,
+  1.413, 1.397, 2.048, 3.203,
+  2.103, 2.100, 2.072, 3.172,
+  2.109, 2.089, 2.064, 3.183 ms
+  ```
+
+  Their raw sum is **164.266 ms**. Layers 0-10 include visible first-use and
+  cold synchronization cost, so selection uses the stable layers 11-63:
+  14 full-attention samples sum to **43.820 ms**, exactly **3.130000
+  ms/layer**; 39 GDN samples sum to **67.042 ms**, **1.719026 ms/layer**.
+  The three recurrent GDN positions average **1.547154**, **1.537538**, and
+  **2.072385 ms/layer** across 13 samples each.
+- Extrapolating the raw stable sums to the model topology gives **50.080 ms**
+  for 16 full-attention layers, **82.513 ms** for 48 GDN layers, and
+  **132.593 ms/token** across the decoder layers. The separate exact native
+  request amortizes to **142.824820 ms/completion token**. Their **10.232
+  ms/token** numerical difference crosses runs and context-length distributions
+  and therefore does not isolate outside-layer work. This is diagnostic
+  synchronized evidence; it is not substituted for an end-to-end throughput
+  measurement.
+- Existing nested stage instrumentation on GDN layer 8 reported:
+
+  ```text
+  decoder input residual norm       0.282 ms
+  GDN input_proj                     0.522 ms
+  pack_qkvzba                        0.259 ms
+  gdn_core_and_conv                  0.354 ms
+  gated_norm_and_reorder             0.281 ms
+  out_proj                           0.360 ms
+  linear_attention_total             1.841 ms
+  post-attention residual norm       0.288 ms
+  mlp_total                          0.863 ms
+  postprocess                        0.018 ms
+  outer layer total                  3.359 ms
+  ```
+
+  Nested synchronization inflates the stage sum, and layer 8 belongs to the
+  excluded first-use region, so only its broad proportions motivate a cheap
+  hypothesis test. Projection and MLP work exceed the GDN core in this sample.
+  The stable full-attention premium is about **1.411 ms/layer**, or **22.576
+  ms/token** across 16 layers. This bounds the entire layer-family difference;
+  fixed-memory BF16 GQA is one separately measurable component rather than an
+  attribution of the full premium.
+- Batch-one IQ2 projection is the first implementation hypothesis because it
+  appears throughout both layer families and has a cheap actual-file
+  falsification gate. This profile does not establish its route-wide aggregate
+  or ranking. The existing `SGLANG_MPS_IQ2_LARGE_BATCH` candidate changes only
+  batches greater than eight and therefore did not affect this decode sample.
+  Fixed-memory BF16 GQA remains an independent candidate.
+- Cleanup sent TERM to the verified leaf/listener PID 7925. Parent PID 7921
+  reaped the scheduler and exited; both PIDs are absent. Port 30000 is free;
+  no SGLang, client, llama.cpp, xctrace, or workload-owned compiler process
+  remains. The persistent system `MTLCompilerService` processes remain idle at
+  0.0% CPU. Memory returned to 90% free and thermal/performance warnings remain
+  absent.
