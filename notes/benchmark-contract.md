@@ -7,7 +7,7 @@ resolved launcher arguments.
 
 **Native-Windows reconciled through:** 2026-08-21 13:48 PDT.
 
-**Apple M1 Max Q2 addendum reconciled through:** 2026-08-23 11:31 PDT.
+**Apple M1 Max Q2 addendum reconciled through:** 2026-08-23 13:45 PDT.
 
 ## Primary performance scoreboard
 
@@ -231,6 +231,16 @@ consumed `/Users/dcazares/sglang`, returned `CODEX TOOL READY`, and accounted
 for 17,871 input, 96 output, and 62 reasoning-output tokens. This gate
 qualifies the profile's read-only sequential shell surface. Windows production
 continues to use the standalone OpenCode2 provider/workload contract above.
+
+Every Apple request expected to run longer than five minutes remains under an
+active controller-side watchdog. Poll at intervals of at most 60 seconds and
+record the last completed prefill/decode progress, exact process ancestry and
+listener, free-memory percentage, swap use, page throttling, and thermal or
+performance warnings. Declare the per-forward deadline before launch from the
+preceding rung; it may not exceed eight minutes without a separately recorded
+calibration. A missed deadline, lost process/listener, throttled pages, or a
+thermal/performance warning triggers verified leaf-first cleanup. The client
+timeout is only the terminal request bound. It never substitutes for polling.
 
 ## Tree and SWOR experiments
 

@@ -34,7 +34,7 @@ def _sdpa(query, key, value, *, enable_gqa: bool, **kwargs):
 
 
 _MPS_DECODE_GQA_MAX_CACHE_SLOTS = 7936
-_MPS_BF16_DECODE_GQA_MAX_CACHE_SLOTS = 32769
+_MPS_BF16_DECODE_GQA_MAX_CACHE_SLOTS = 131073
 
 
 def _native_mps_bf16_decode_gqa_supported() -> bool:

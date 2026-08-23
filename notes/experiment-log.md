@@ -7788,3 +7788,129 @@ mean 13.929045  17.125658 446.051        39.730
   fences to exactly 131,073 physical rows, isolated parity, staged 64K/128K
   allocation and near-capacity requests, and new client limits; the estimated
   exact `131065+1` runtime is roughly 2.8-3.2 hours with 256-token chunks.
+
+### 2026-08-23 13:45 PDT - 128K decode bound passes parity; 64K extend swaps and stalls
+
+- Began from signed `HEAD`
+  `e3a2537336e671ce61dc02de91ffb07b9a6d5d22` (`perf: add fixed-memory BF16
+  GQA on Metal`) with a clean worktree. The branch changes only the two BF16
+  decode-admission fences from 32,769 to 131,073 physical cache rows in
+  `torch_native_backend.py` and `gguf_q4_0.mm`. No extend implementation was
+  changed. This two-file branch remains uncommitted while capacity is being
+  qualified.
+- The existing focused MPS decode harness passed all three staged checks:
+
+  ```text
+  .venv/bin/python benchmark/mac/test_mps_decode_fallback.py \
+    --cache-slots 131073 --cache-dtype bfloat16 --seq-len 257
+  status=ok ... max_error=1.1920929e-07
+
+  .venv/bin/python benchmark/mac/test_mps_decode_fallback.py \
+    --cache-slots 131074 --cache-dtype bfloat16 --seq-len 257
+  status=ok ... max_error=0
+
+  .venv/bin/python benchmark/mac/test_mps_decode_fallback.py \
+    --cache-slots 131073 --cache-dtype bfloat16 --seq-len 131072
+  status=ok ... max_error=8.33533704e-08
+  ```
+
+  The 131,073-row boundary selected the fixed-memory native BF16 kernel; the
+  131,074-row boundary retained SDPA fallback. The full active 131,072-token
+  decode case therefore proves isolated decode addressing and numerical
+  parity, not a served 128K request.
+- Staged a 65,536-token server using the same Bartowski Q2 checkpoint,
+  official Qwen tokenizer, BF16 KV, reasoning/tool parsers, language-only
+  surface, one running request, disabled radix/overlap schedule, and disabled
+  CUDA graph backends as the qualified 32K line. The first exact launch used:
+
+  ```text
+  env -u MTL_CAPTURE_ENABLED -u SGLANG_MPS_PROFILE_LAYERS \
+    -u SGLANG_MPS_PROFILE_STAGES -u SGLANG_RUST_SERVER \
+    -u SGLANG_RUST_BUILD_MODE SGLANG_USE_MLX=0 \
+    SGLANG_MPS_IQ2_LARGE_BATCH=1 SGLANG_MPS_Q4_K_BATCH1_ROWS2=1 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 \
+    --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 65536 --max-total-tokens 65536 \
+    --max-running-requests 1 --chunked-prefill-size 512 \
+    --max-prefill-tokens 8192 --disable-radix-cache --disable-overlap-schedule \
+    --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
+    --incremental-streaming-output --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Root/listener PID 20112 owned tracker 20115, scheduler 20116, and
+  detokenizer 20117. Readiness reported 9.03 GB weights, 0.29 GB Mamba state,
+  4.00 GB BF16 KV, and 17.96/17.97 GB available. `/get_server_info` resolved
+  both context and token pool to 65,536 with `max_req_input_len=65530`.
+  Client PID 20143 issued the calibrated exact request:
+
+  ```text
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b-iq2 --input-tokens 65529 --output-tokens 1 \
+    --temperature 0 --skip-warmup --timeout 14400
+  ```
+
+  It processed 22,016 prompt tokens and left 43,513 pending. Swap expanded
+  from about 4.5/6 GiB to 14.1/15 GiB by that point. The request was canceled
+  before further desktop pressure, cache flush succeeded, scheduler 20116 was
+  stopped leaf-first, all five exact PIDs disappeared, port 30000 became free,
+  and memory returned to 94% free without a thermal warning.
+- Repeated the launch with only `--chunked-prefill-size 1024` changed. Root
+  and listener PID 20728 owned tracker 20731, scheduler 20732, and detokenizer
+  20733; client PID 20753 issued the same exact `65529+1` request. Readiness
+  again reported a 4.00 GB KV allocation and 17.96 GB available. The request
+  advanced through 32,768 processed tokens by 13:17:20 PDT and 37,888 by
+  13:34:46, leaving 27,641 pending. Later chunks stretched from roughly 174 s
+  to 309 s while swap reached about 12.8 GiB. No further chunk completed for
+  more than eight minutes after 13:34:46; scheduler 20732 remained in state
+  `U+` at 22.4% CPU, the listener remained live, and the machine had recovered
+  to 41% free memory with 12.54/14 GiB swap still resident. macOS reported no
+  thermal warning and no throttled pages. This exceeded the 300-second
+  per-forward envelope and was classified as a stalled, memory-pressured
+  extend gate rather than a slow success.
+- The second client had a four-hour timeout without a corresponding
+  agent-side polling loop. A user check-in at 46 minutes prompted the live
+  inspection that identified the eight-minute lack of progress. This was an
+  operational monitoring failure. Every remaining long gate now requires an
+  active 60-second poll of request progress, exact ancestry/listener, memory,
+  swap, and thermals, with leaf-first shutdown after eight minutes without
+  forward progress or earlier loss of a health gate. The client timeout is a
+  final bound, not the monitoring mechanism.
+- Sent `SIGTERM` to client 20753 and then scheduler 20732. The scheduler
+  recorded signal `-15` at 13:43:15, parent cleanup completed at 13:43:20,
+  PIDs 20728/20731/20732/20733/20753 all disappeared, and port 30000 became
+  free. Follow-up checks found no SGLang server, benchmark client, compiler,
+  or Metal workload. Memory was 93% free, swap had contracted to 2.80/4 GiB
+  and was draining, pages throttled remained zero, and macOS reported no
+  thermal or performance warning.
+- Conclusion: the widened fixed-memory decode kernel itself works through an
+  active 131,072-token sequence, and a 65,536-token BF16 server allocates its
+  persistent pool cleanly. Served exact capacity remains qualified only at
+  **32,768 tokens** (`32761+1`). The unchanged extend path still gathers the
+  growing BF16 K/V history, converts both tensors to FP32, builds a
+  lower-right causal mask, and invokes shape-varying MPS SDPA at every layer
+  and chunk. Its residency/swap behavior must be bounded before another 64K
+  or 128K capacity attempt.
+
+### 2026-08-23 13:50 PDT - 128K decode fence revalidated for checkpoint commit
+
+- Resumed from `main` at signed `e3a2537336e671ce61dc02de91ffb07b9a6d5d22`
+  with the two widened BF16 decode fences plus the 13:45 recovery and watchdog
+  documentation as the only worktree changes. Port 30000 was free, no SGLang,
+  benchmark, Metal compiler, or test workload was live, memory was 93% free,
+  swap was 1.75/3.00 GiB, and macOS reported no thermal or performance warning.
+- Re-ran the three isolated MPS boundary probes sequentially against the exact
+  uncommitted source. `--cache-slots 131073 --cache-dtype bfloat16 --seq-len
+  257` passed with maximum error `1.1920929e-07`; the 131,074-slot fallback
+  boundary passed with zero observed error; and `--cache-slots 131073
+  --cache-dtype bfloat16 --seq-len 131072` passed with maximum error
+  `8.33533704e-08`. These reproduce native admission, fallback, and full active
+  128K-sequence addressing respectively.
+- The focused host-dispatch suite passed all **3** tests, the touched Python
+  module compiled, and `git diff --check` passed. This establishes the widened
+  decode fence as a narrow, independently recoverable capacity mechanism. It
+  does not qualify served capacity above the retained exact 32,768-token gate.
+  The next branch remains a bounded-memory native BF16 EXTEND path before any
+  further 64K or 128K server attempt.

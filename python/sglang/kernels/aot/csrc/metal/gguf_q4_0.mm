@@ -4522,8 +4522,8 @@ torch::Tensor decode_gqa(
                 "native Metal float32 decode attention supports at most 7936 cache slots");
     TORCH_CHECK(!cache_is_bf16 || head_dim == 256,
                 "native Metal bfloat16 decode attention requires head_dim 256");
-    TORCH_CHECK(!cache_is_bf16 || cache_slots <= 32769,
-                "native Metal bfloat16 decode attention supports at most 32769 cache slots");
+    TORCH_CHECK(!cache_is_bf16 || cache_slots <= 131073,
+                "native Metal bfloat16 decode attention supports at most 131073 cache slots");
     TORCH_CHECK(!cache_is_bf16 ||
                     (batch_size == 1 && num_q_heads == 24 && num_kv_heads == 4),
                 "native Metal bfloat16 decode attention requires batch 1, 24 query heads, and 4 KV heads");
