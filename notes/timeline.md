@@ -621,6 +621,28 @@ code changes, or process state matter.
   funded afterward because the fallback enables capacity rather than solving
   long-history decode cost.
 
+### Shared-dequant IQ2 prefill clears the 300-second watchdog
+
+- PERF-A014 adds an Apple7-gated FP32 SIMD-matrix kernel for IQ2_XXS batches
+  above eight. A 64x32 dequantized weight tile is shared across 32 input rows;
+  the selected batch-one/four/eight kernels remain intact.
+- On the actual `17408x5120` gate projection, batch 128 changed from a matched
+  **70.074833 ms** control to **4.250250/4.277125 ms** candidate A/B/A arms.
+  Batch 4096 changed from **1971.539875 -> 124.838125 ms**. Aligned and odd
+  output/batch tails pass with maximum relative error `2.27121e-06`.
+- The 32K-configured BF16 model now completes cache-flushed `4096+2` at **24.828
+  prompt tok/s**, **164.975078 s TTFT**, after the former source crossed its
+  300-second watchdog. The independent `5000+1` two-chunk rung reaches
+  **24.845 prompt tok/s** and **201.251071 s E2E**.
+- Required sampled reasoning, final arithmetic `703`, thinking-disabled
+  `READY`, one parsed multiply call, preserved tool-result continuation, and
+  image/audio-disabled surface all pass. Decode remains below the Rust/MLX
+  record, so the compact Apple scoreboards stay unchanged.
+- Five matched exact-`128+1` controls with the new path process-disabled
+  averaged **7.0234 prompt tok/s**. Two independent default five-run windows
+  averaged **22.9556** and **22.8072 tok/s**, directly attributing a 3.258x
+  full-model prefill gain while leaving small-batch decode unchanged.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:

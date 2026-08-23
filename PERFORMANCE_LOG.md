@@ -11,7 +11,7 @@
 | Qwen3.8-27B IQ2_XXS, native-MPS 48-layer F32 b/a projection sweep | 7.296667 ms selected custom Metal | **2.159000 / 2.051708 ms** native `torch.mm` A/B arms | **-70.41% / -71.88%; 3.38-3.56x** | `.venv/bin/python benchmark/mac/bench_mps_dense_ba.py $IQ2_GGUF --warmup 4 --iterations 9` | 2026-08-20 23:43 PDT |
 | Torch-native MPS GQA partial extend, `4096+4096`, FP32 | 542.376416 / 641.256125 ms padded-query controls | **176.066500 ms** lower-right-causal source path | **-67.54% / -72.54%; 3.08-3.64x** | `.venv/bin/python benchmark/mac/bench_mps_sdpa_extend.py --prefix-len 4096 --extend-len 4096 --warmups 1 --repeats 5` | 2026-08-21 00:15 PDT |
 | Torch-native MPS decode at unsupported physical pool/dtype boundaries | Runtime error for BF16 or more than 7,936 cache rows | **SDPA fallback, max error 0** at BF16/32,769 and FP32/7,937; fused FP32/7,936 preserved at `2.5331974e-07` | long-pool decode admitted without widening the native kernel contract | `.venv/bin/python benchmark/mac/test_mps_decode_fallback.py --cache-slots {32769,7937,7936} --cache-dtype {bfloat16,float32,float32} --seq-len 257` | 2026-08-21 00:24 PDT |
-| Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` large-batch projection | 65.359958 ms at batch 128 | **1967.899583 ms at batch 4096** | 30.109x latency for 32x rows; current batch-eight tiles reread/dequantize the matrix 512 times | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size {128,512,1024,2048,4096} --warmup 1 --iterations 3` | 2026-08-21 00:41 PDT |
+| Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` large-batch projection | 65.578125 / 1971.539875 ms at batch 128 / 4096 | **4.277125 / 124.838125 ms** | **-93.48% / -93.67%; 15.33x / 15.79x** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size {128,4096} --warmup 1 --iterations 5` | 2026-08-23 07:06 PDT |
 | Qwen3.8-27B IQ2_XXS, 32K/BF16 required sampled `128+32` served workload | 8.2942 generation tok/s selected FP32/fused restart mean | **6.963 prompt / 6.772 generation tok/s** | BF16 fallback generation is 18.35% below the selected short-pool mean; long-pool execution is functional | same sampled command on the 32,768 context/token-pool launch with BF16 KV | 2026-08-21 00:36 PDT |
 | Qwen3.8-27B IQ2_XXS, deterministic `128+32` served workload | 6.979 prompt / 3.1858 generation tok/s | **7.0444 prompt / 8.4406 generation tok/s** | **+0.937% / +164.94%** | `.venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 128 --output-tokens 32` | 2026-08-20 23:42 PDT |
 | Qwen3.8-27B IQ2_XXS, required sampled `128+32` served workload | 7.0562 generation tok/s after PERF-A002 | **8.3094 / 8.2942 tok/s** in two PERF-A009 restart windows | **+4.59% / +4.26% over matched PERF-A011 windows** | same command with `--temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` | 2026-08-20 23:59 PDT |
@@ -687,7 +687,7 @@ tree throughput can be ranked for production.
 | PERF-A011 | Vectorize the Q5_K vocabulary head across four eight-lane row cohorts per SIMDgroup at batch one. | `gguf_q4_0.mm` Q5_K kernel and aligned host dispatch | Retained in `b19cf4acf3` | Matched candidate/control/candidate medians were `3.737000 / 19.659291 / 3.754625 ms`. Five-run deterministic served generation rose `7.1748 -> 8.0284 tok/s` (+11.90%) with the exact digest; a committed restart and two required-sampling windows passed. |
 | PERF-A012 | Run torch-native partial extend on only the new query rows with an offset causal mask. | Shared torch-native SDPA extend mechanism | Retained in `210a214c12`; full long-context model gate open | Exact source A/B at `4096+256` changed `97.995583/97.847500 -> 12.608125 ms`; at `4096+4096` it changed `542.376416/641.256125 -> 176.066500 ms`. Outputs were exact on MPS, and six focused CPU cases cover causal isolation, GQA, shuffled cache locations, ragged batches, sliding windows, noncausal attention, and empty extend. |
 | PERF-A013 | Admit BF16 and long physical pools through the established torch-native decode fallback while preserving eligible fused Metal decode. | Torch-native MPS decode dispatch | Retained in `b2b8ab4af8`; full-model 32K gate open | The pre-change BF16/32,769 and FP32/7,937 probes raised at the native binding. Both now reach pool-write plus SDPA with zero observed error; the FP32/7,936 boundary remains fused with maximum error `2.5331974e-07`. Nine focused CPU tests plus PyCompile, Black, Ruff, and diff checks pass. |
-| PERF-A014 | Reuse each quantized weight tile across large activation batches with native simdgroup matrix multiplication. | `quant_matmul` Metal kernels and host dispatch | Active implementation candidate | Actual IQ2_XXS `17408x5120` medians scale from 65.359958 ms at batch 128 to 1967.899583 ms at batch 4096. The current batch-eight path makes 512 complete matrix traversals at 4096; first qualify a 64x32 shared-dequant tile against actual formats and tails. |
+| PERF-A014 | Reuse each quantized weight tile across large activation batches with native simdgroup matrix multiplication. | `quant_matmul` Metal kernels and host dispatch | Isolated kernel winner; full-model qualification pending | The FP32 64-output by 32-batch Metal path changed actual IQ2_XXS `17408x5120` medians from 65.578125 to 4.277125 ms at batch 128 and from 1971.539875 to 124.838125 ms at batch 4096. Aligned/tail actual-format cases pass unchanged tolerance; batch 1/4/8 and pre-Apple7 retain the established kernels. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1743,3 +1743,110 @@ tree throughput can be ranked for production.
   selected batch-one/four/eight paths intact and require an actual-tensor
   matched A/B before another long server request.
 - Commit: pending evidence commit.
+
+### 2026-08-23 06:57 PDT - PERF-A014 baseline reproduced before implementation
+
+- Change: measurement only from clean `11b2b33613`; no source or dependency
+  changed before this window.
+- Benchmark evidence: the actual IQ2_XXS `blk.8.ffn_gate.weight`
+  (`17408x5120`) measured **65.578125 ms** at batch 128 (five synchronized
+  samples), **249.418209 ms** at batch 512, and **1971.539875 ms** at batch
+  4096 (three samples each). Raw samples and the exact commands are preserved
+  in `notes/experiment-log.md`.
+- Environment: Apple M1 Max, 32 GPU cores, Metal 4, PyTorch 2.11.0, GGUF
+  0.19.0. Port 30000 was free, no SGLang/llama/benchmark/compiler process was
+  live, memory pressure was 93% free, and macOS reported no thermal or
+  performance warning.
+- Decision: continue PERF-A014. The fresh medians reproduce the prior
+  repeated-weight-traversal curve closely enough to serve as the adjacent
+  implementation baseline.
+- Commit: pending candidate evidence.
+
+### 2026-08-23 07:06 PDT - PERF-A014 FP32 simdgroup kernel clears isolated gate
+
+- Change: added an Apple7-gated IQ2_XXS matrix-matrix path for batches above
+  eight. Four SIMD groups share FP32 dequantized `64x32` weights and FP32
+  `32x32` activations from 12 KiB of threadgroup memory, accumulate and store
+  FP32, and preserve the existing batch-one/four/eight paths. A process-scoped
+  `SGLANG_MPS_IQ2_LARGE_BATCH=0` control selects the prior implementation.
+- Benchmark evidence: on the actual `blk.8.ffn_gate.weight` (`17408x5120`),
+  batch 128 changed from a matched disabled median of **70.074833 ms** to
+  **4.250250/4.277125 ms** in A/B/A candidate arms. Batch 512 changed from the
+  adjacent **249.418209 ms** baseline to **16.009833 ms**; batch 4096 changed
+  from **1971.539875 ms** to **124.838125 ms**. Candidate medians at batch
+  9/16 were **2.160166/1.700792 ms**, versus matched disabled medians
+  **6.439458/9.281000 ms**. Batch eight remains on the selected path and
+  measured **4.671791 ms**.
+- Correctness evidence: the existing actual-file suite passes unchanged at
+  aligned `64x32`, output/batch tails `63x33`, `65x33`, and `65x31`, the
+  minimal one-output tail at batch 32, and the true batch-eight fallback at
+  `65x8`. IQ2_XXS maximum relative error was at most `2.27121e-06`; the
+  aligned `64x32` case
+  was exact. All other exercised quant formats and token embedding parity
+  remained green.
+- Decision: retain for full-forward and serving qualification. The isolated
+  win is large enough to fund one controlled 32K full-model gate while the
+  implementation remains uncommitted.
+- Commit: pending full-model evidence.
+
+### 2026-08-23 07:19 PDT - PERF-A014 full-model prefill qualification
+
+- Launch: the uncommitted candidate loaded the immutable 9.393 GB IQ2_XXS
+  artifact into the native torch/MPS 32K-configured profile with FP32 compute,
+  BF16 KV, one request, 4,096-token chunks, reasoning and Qwen3 Coder tool parsing,
+  and every graph backend disabled. Weight load used 9.03 GB; the exact
+  32,768-token KV pool used 2.00 GB; the server reached ready with 19.97 GB
+  available and no thermal or performance warning.
+- Short sampled evidence: exact `128+32` completed at **23.093 prompt / 6.736
+  generation tok/s**, **5.542854 s TTFT**, and **10.144946 s E2E**. Decode is
+  expectedly unchanged because batch one retains the selected kernel.
+- Long sampled evidence: cache-flushed exact `4096+2` completed at **24.828
+  prompt tok/s**, **164.975078 s TTFT**, and **165.438140 s E2E**. The former
+  source crossed the 300-second scheduler watchdog on the same shape. Exact
+  `5000+1` then completed two chunks at **24.845 prompt tok/s** and
+  **201.251071 s TTFT/E2E**.
+- Behavior: sampled reasoning remained in `reasoning_content`; arithmetic
+  stopped normally with final `703`; thinking-disabled output was exactly
+  `READY` with zero reasoning tokens; the parser returned one
+  `multiply({"a":37,"b":19})` call; and the preserved tool-result turn
+  stopped with `37 × 19 = 703`. `/model_info` reported image and audio
+  understanding false.
+- Cleanup: after an explicit cache flush, the verified `3807/3806/3805/3800`
+  process tree was stopped leaf-first. All PIDs disappeared, port 30000 and
+  Metal compiler workers were clear, memory returned to 90% free, and macOS
+  still reported no thermal or performance warning.
+- Decision: retain. This removes the native IQ2 prefill watchdog blocker and
+  qualifies the governing large-batch dispatch end to end. The Apple
+  Rust/MLX decode and maximum-context records remain unchanged; a bounded
+  native long-history GQA path and the exact Rust ingress scoreboard remain
+  separate funded work.
+- Commit: pending signed evidence commit.
+
+### 2026-08-23 07:30 PDT - PERF-A014 repeated full-model control closes review
+
+- Scope correction: `65x31` is a guarded candidate batch tail under the
+  batch-greater-than-eight rule. A fresh `65x8` actual-file suite exercised
+  the retained fallback and passed every quant format; IQ2_XXS maximum
+  absolute/relative error was `8.58307e-06/2.27121e-06`.
+- Matched control: a fresh 32K-configured server with only
+  `SGLANG_MPS_IQ2_LARGE_BATCH=0` changed measured exact `128+1` required-
+  sampling prompt rates to `7.018,7.013,7.021,7.029,7.036 tok/s`, mean
+  **7.0234**. TTFT samples were
+  `18.238450,18.252279,18.231962,18.211360,18.191226 s`, mean
+  **18.225055 s**. Every cache-flushed request completed exact `128+1` with
+  `finish_reason=length`.
+- First default window after an independent launch produced prompt
+  `22.675,23.191,23.060,22.916,22.936 tok/s`, mean **22.9556**, and mean TTFT
+  **5.576266 s**. A second independent default launch produced
+  `22.621,22.857,22.795,22.901,22.862 tok/s`, mean **22.8072**, and mean TTFT
+  **5.612339 s**.
+- The two default windows combine to **22.8814 prompt tok/s** and
+  **5.594303 s TTFT**: 3.258x the matched disabled prompt rate and 69.30%
+  less TTFT. The process-scoped switch is the only server variable, directly
+  tying the full-model delta to the new shared-dequant dispatch. The earlier
+  exact `4096+2` and `5000+1` requests retain the long/multi-chunk gates.
+- Each verified server tree was cleaned leaf-first between arms. Final state:
+  no server, client, or Metal compiler process; port 30000 free; memory 90%
+  free; no macOS thermal or performance warning.
+- Decision: the default-enabled native IQ2 dispatch now satisfies repeated
+  full-model measurement and independent-restart evidence. Retain and commit.
