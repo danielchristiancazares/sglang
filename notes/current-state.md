@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-23
-11:31 PDT.
+14:15 PDT.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -409,6 +409,10 @@ Signed commit `52b5326d8e` retains PERF-A016, a batch-one Q4_K tensor-family
 kernel for the mixed-format IQ2_XXS/Q2 checkpoint. It reuses each activation
 fragment across two output rows and admits complete four-block cohorts with
 safe compact-view alignment.
+Signed commit `1ec20a0e87` widens the fixed-memory BF16 Metal decode fence to
+131,073 physical rows. Isolated native admission, the 131,074-row fallback,
+and active sequence length 131,072 all pass; served context qualification
+remains the exact 32,768-token gate.
 Host cleanup leaves this artifact as the only Hugging Face model cache and no
 MTPLX model cache. A broader cache cleanup also removed the first retained
 copy, so the same immutable revision was downloaded again and its byte size
@@ -538,10 +542,26 @@ parity.
 The selected native route has cleared its semantic, sampled, independent-
 restart, exact-capacity, and Codex-profile gates. Its **8.586948 tok/s**
 aggregate leaves a **41.431420%** gap to pinned llama.cpp and makes the next
-measured batch-one decode hotspot the active handoff. Full-attention-specific
-work, including bounded native long-history GQA, remains an independent
-candidate; the measured **1.411 ms/layer** full-versus-GDN premium bounds the
-whole layer-family difference, leaving attention-kernel cost unresolved.
+measured batch-one decode hotspot the compact-scoreboard handoff.
+
+Long-context EXTEND now has a qualified native mechanism. PERF-A017 implements
+batch-one BF16 paged GQA at 24 query heads, four KV heads, and dimension 256
+with Q8/C64 Metal online softmax in 20,800 bytes of threadgroup storage. At
+`E=17,L=131072`, its final-source three-sample median is **137.906625 ms**, its measured
+post-input driver-residency delta is **0 MiB**, and dense MPS SDPA takes
+**424.528292 ms** while adding **8,088.515625 MiB**. Maximum error is
+`4.3120235e-07`; shuffled mappings, nonzero offsets, tile tails, query length
+1,024, invalid metadata, and host safety guards pass. The shader lives in a
+separate lazy Metal library, leaving the ordinary extension pipeline cache and
+its failure boundary unchanged.
+
+The raw native binding is outside `TorchNativeAttnBackend.forward_extend`.
+The explicit no-new-Python rule makes clean C++ dispatch ownership the active
+architecture gate. The measured 64K generic route remains closed by swap and
+forward-progress limits, so served capacity stays qualified at exact
+`32761+1`. The next native rung is direct BF16 matrix loading for consecutive
+eight-slot cache runs, followed by fragmented-map fallback parity and the same
+131K timing/residency probe.
 
 The deleted affine-q4 scoreboard belonged to a separate Mac Pro experiment
 and carries no M1 Max record standing. The retained MLX quantized-prefill query

@@ -12,6 +12,7 @@
 | Qwen3.8-27B IQ2_XXS, native-MPS Q5_K `248320x5120` head at batch one | 19.659291 ms matched generic | **3.754625 ms** | **-15.904666 ms / -80.90%; 5.24x** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor output.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:52 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS 48-layer F32 b/a projection sweep | 7.296667 ms selected custom Metal | **2.159000 / 2.051708 ms** native `torch.mm` A/B arms | **-70.41% / -71.88%; 3.38-3.56x** | `.venv/bin/python benchmark/mac/bench_mps_dense_ba.py $IQ2_GGUF --warmup 4 --iterations 9` | 2026-08-20 23:43 PDT |
 | Torch-native MPS GQA partial extend, `4096+4096`, FP32 | 542.376416 / 641.256125 ms padded-query controls | **176.066500 ms** lower-right-causal source path | **-67.54% / -72.54%; 3.08-3.64x** | `.venv/bin/python benchmark/mac/bench_mps_sdpa_extend.py --prefix-len 4096 --extend-len 4096 --warmups 1 --repeats 5` | 2026-08-21 00:15 PDT |
+| Native Metal BF16 GQA EXTEND, isolated `E=17,L=131072` | dense MPS SDPA **424.528292 ms**, **+8,088.515625 MiB** driver residency | final-source **137.906625 ms** median, **+0 MiB** measured driver residency | **-67.52% latency; -8,088.515625 MiB residency** | raw `_extension().extend_gqa_bf16` harness recorded in the 2026-08-23 14:15 experiment-log entry | 2026-08-23 14:15 PDT |
 | Torch-native MPS decode at unsupported physical pool/dtype boundaries | Runtime error for BF16 or more than 7,936 cache rows | **SDPA fallback, max error 0** at BF16/32,769 and FP32/7,937; fused FP32/7,936 preserved at `2.5331974e-07` | long-pool decode admitted without widening the native kernel contract | `.venv/bin/python benchmark/mac/test_mps_decode_fallback.py --cache-slots {32769,7937,7936} --cache-dtype {bfloat16,float32,float32} --seq-len 257` | 2026-08-21 00:24 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` large-batch projection | 65.578125 / 1971.539875 ms at batch 128 / 4096 | **4.277125 / 124.838125 ms** | **-93.48% / -93.67%; 15.33x / 15.79x** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size {128,4096} --warmup 1 --iterations 5` | 2026-08-23 07:06 PDT |
 | Qwen3.8-27B IQ2_XXS, 32K/BF16 required sampled `128+32` served workload | 8.2942 generation tok/s selected FP32/fused restart mean | **6.963 prompt / 6.772 generation tok/s** | BF16 fallback generation is 18.35% below the selected short-pool mean; long-pool execution is functional | same sampled command on the 32,768 context/token-pool launch with BF16 KV | 2026-08-21 00:36 PDT |
@@ -692,6 +693,7 @@ tree throughput can be ranked for production.
 | PERF-A013 | Admit BF16 and long physical pools through the established torch-native decode fallback while preserving eligible fused Metal decode. | Torch-native MPS decode dispatch | Retained in `b2b8ab4af8`; full-model 32K gate passed | The pre-change BF16/32,769 and FP32/7,937 probes raised at the native binding. Both now reach pool-write plus SDPA with zero observed error; the FP32/7,936 boundary remains fused with maximum error `2.5331974e-07`. Nine focused CPU tests pass, and the selected route later completes exact `32761+1`. |
 | PERF-A014 | Reuse each quantized weight tile across large activation batches with native simdgroup matrix multiplication. | `quant_matmul` Metal kernels and host dispatch | Qualified in signed `1676c71bed` | The FP32 64-output by 32-batch path changes the actual IQ2_XXS `17408x5120` median **70.074833 -> 4.250250/4.277125 ms** at batch 128. Matched served exact-`128+1` prompt changes **7.0234 -> 22.8814 tok/s** across a control and two independent default windows; multi-chunk prefill, parity, behavior, and cleanup gates pass. |
 | PERF-A016 | Reuse each activation fragment across two eligible Q4_K output rows inside the retained mixed-format IQ2_XXS/Q2 checkpoint. | `quant_matmul` Metal kernel and aligned compact-view dispatch | Qualified in signed `52b5326d8e` | Final Python A/B changes exact-`12+256` generation **7.009167 -> 8.586948 tok/s** (**+22.510241%**); an independent restart reaches **8.578205 tok/s**. Candidate/tail parity, exact `32761+1`, behavior, Codex Responses tool integration, and cleanup pass. `Q4_K` names the tensor family; record standing remains M1 Max Q2. |
+| PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1953,3 +1955,69 @@ tree throughput can be ranked for production.
   selected SGLang aggregate remains **41.431420%** below pinned llama.cpp's
   **14.661356 tok/s** Q2 reference, so the next measured batch-one decode
   hotspot owns the continuing performance handoff.
+
+### 2026-08-23 14:15 PDT - PERF-A017 bounded native Metal EXTEND mechanism
+
+- Change: added an Apple7+ BF16 paged-GQA EXTEND kernel specialized for batch
+  one, 24 query heads, four KV heads, dimension 256, and query lengths through
+  1,024. The Q8/C64, four-SIMD-group design keeps FP32 online-softmax state in
+  exactly 20,800 bytes of threadgroup memory and writes caller-owned FP32
+  output. The host binding preserves tensor storage offsets, validates every
+  dimension and narrowed scale, accounts for static plus dynamic threadgroup
+  memory, and rejects output aliasing. Its material tiling provenance is the
+  pinned llama.cpp `kernel_flash_attn_ext_impl`; the source comment and MIT
+  notice record that adaptation.
+- Correctness evidence: seven shuffled-cache cases spanning `E=1,7,8,9,17,
+  256,1024`, prefixes `0,1,63,64,65,257`, partial Q8/C64 tiles, and invalid
+  metadata all passed the dense lower-right-causal MPS reference. Maximum
+  absolute error was `1.1064112e-06`. A separate nonzero-offset case reached
+  `1.3113022e-06`. Existing torch-native EXTEND coverage passed six tests.
+  Invalid sequence metadata produced exact zeros. A nondefault scale of
+  `0.0375` matched at `5.3644180e-07`; zero, negative, nonfinite,
+  FP32-overflow/underflow scales and direct/offset-view output aliasing were
+  rejected before dispatch.
+- Adversarial arithmetic evidence: invalid physical slots `[-1,0,4,2]`
+  matched the filtered-key oracle exactly. A forced new maximum in the third
+  C64 tile at `L=129` matched an analytic online-rescale oracle within
+  `1.9073486e-06`. Equal-logit lengths `63,64,65,127,128,129` matched causal
+  means within `2.9802322e-08`. Negative/short/oversized sequence metadata and
+  negative/out-of-range/uint32-overflow request rows each produced exact zero
+  output.
+- Maximum-address evidence: analytic `E=5,L=131073` placed the sole marked
+  K/V at physical row 131,072. The first four rows excluded that future value
+  exactly; the fifth matched the closed-form softmax at maximum error
+  `1.1920929e-07`. The call took **137.202250 ms** with zero measured driver
+  growth. A 131,074-row view was rejected at the host fence.
+- Long-context evidence: at physical pool 131,073 and active `L=131072`, an
+  `E=1` five-sample window was
+  `139.039291,138.983250,139.011958,138.997958,139.037042 ms` with median
+  **139.011958 ms** and maximum error `1.7136335e-07` against the qualified
+  fixed-memory decode kernel. SHA-256 was
+  `81f55f2e2fe19a1c4e6dc697e79757a43519bfcb0f017a916fef15914311f508`.
+- Independent dense-oracle evidence: `E=17,L=131072` native samples were
+  `137.940500,137.931875,137.871750 ms`, median **137.931875 ms**. Dense MPS
+  SDPA took **424.528292 ms**. Maximum/mean error was
+  `4.3120235e-07/2.9860754e-08`. Native current/driver allocation deltas were
+  exactly `0/0 MiB` after the caller-owned tensors were resident; the dense
+  path added `1,027.125/8,088.515625 MiB`.
+- Regression hardening: the new shader now compiles from a separate lazy Metal
+  library. Ordinary extension initialization keeps its original compile
+  options, leaves `SGLANG_EXTEND_GQA` undefined, preprocesses the experimental
+  block away, and creates only the established pipelines. The hardware
+  capability query returned `True` without creating
+  the new pipeline; an isolated first call compiled it in **259.783416 ms**
+  and retained parity. The ordinary BF16 decode capability/pipeline still
+  returned `True` in a fresh process. Decode output remained bitwise identical
+  before and after lazy EXTEND initialization; five-sample medians were
+  `0.831250/0.838167 ms`. Final-source `E=17,L=131072` samples
+  were `137.968875,137.906625,137.869250 ms`, median **137.906625 ms**, with
+  exact `0/0 MiB` current/driver deltas.
+- Decision: retain the bounded native mechanism as a capacity-critical
+  checkpoint. Its raw pybind surface remains outside the live
+  `TorchNativeAttnBackend.forward_extend` call chain. Production activation,
+  served capacity, reasoning/tools, real-client behavior, and an independent
+  restart remain open. An adversarial location review rejects import-time
+  C++ monkeypatching and global aten override as hidden or overly broad policy
+  ownership. The explicit repository rule against adding Python code makes an
+  owner-approved dispatch seam the next architectural gate.
+- Commit: pending signed checkpoint.

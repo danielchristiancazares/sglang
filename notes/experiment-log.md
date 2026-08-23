@@ -7914,3 +7914,170 @@ mean 13.929045  17.125658 446.051        39.730
   does not qualify served capacity above the retained exact 32,768-token gate.
   The next branch remains a bounded-memory native BF16 EXTEND path before any
   further 64K or 128K server attempt.
+
+### 2026-08-23 14:15 PDT - fixed-memory Metal BF16 EXTEND reaches 131K in isolation
+
+- Began from clean signed `main` at
+  `1ec20a0e871d335b294f3fa125057a5b84ef82e6` (`perf: extend native MPS
+  decode capacity`), ahead of `origin/main` by 25 commits. Port 30000 was
+  free, the Python/SGLang/Metal compiler workload process set was empty,
+  system memory was 93% free, swap used 1,697.25 MiB of 3,072 MiB, and macOS
+  reported ordinary thermal and performance status. GPU work in this entry
+  remained sequential and server-free.
+- Source inspection localized the 64K stalls to the generic EXTEND path. At
+  `E=1024,L=65536`, its source-visible per-layer envelope is 256 MiB of
+  gathered BF16 K/V, 512 MiB of compact FP32 K/V, 3,072 MiB of PyTorch GQA
+  expansion, 64 MiB of Boolean mask, 256 MiB of additive FP32 mask, 6,144 MiB
+  of FP32 attention scores, 48 MiB of query/inner output, and 24 MiB of outer
+  output: **10,376 MiB / 10.1328125 GiB**, plus graph-private state. At
+  `L=131072`, the same visible envelope is **20,680 MiB / 20.1953125 GiB**.
+- Added `extend_gqa_bf16_tiled_256` to the existing Objective-C++/Metal
+  extension. Its exact contract is Apple7+, one request, FP32 contiguous
+  query/output `[E,24,256]`, BF16 contiguous NHD caches `[slots,4,256]`,
+  int32 `req_to_token`, int64 request/sequence metadata, `1<=E<=1024`, and
+  total active `L<=131073`. The Q8/C64 grid is
+  `ceil(E*6/8) x 4` threadgroups with 128 threads each. FP32 query, output,
+  scores, online max/sum, four SIMD stages, and mapped slots consume exactly
+  **20,800 bytes** per threadgroup; history-dependent global auxiliary
+  allocation is zero. Invalid device metadata produces finite zero output in
+  bounded work.
+- The host binding writes caller-owned output and validates geometry, dtype,
+  device, contiguity, request-map narrowing, the narrowed FP32 scale, distinct
+  output storage, Apple family, SIMD width, thread count, and static plus
+  dynamic threadgroup memory. Cache and request-map addresses use 64-bit
+  arithmetic. The host and MSL `ExtendAttentionArgs` layouts are both eight
+  four-byte fields. Material Q8/C64/four-SIMD tiling provenance is pinned to
+  llama.cpp commit `749f688fcaa4c472ec034b08cb8a907c45cfaa02`; the adjacent
+  source comment and existing ggml MIT notice now cover the attention
+  adaptation.
+- Native build/capability command:
+
+  ```text
+  env MAX_JOBS=2 .venv/bin/python -c 'from sglang.srt.hardware_backend.mps.ops import _extension; extension = _extension(); print(extension.supports_bf16_extend_gqa())'
+  ```
+
+  It rebuilt the extension successfully and printed `True`. The final source
+  repeated this build after the dedicated argument struct, static-memory
+  admission, alias guard, and narrowed-scale repairs.
+- Raw parity harnesses used seed `20260823`, scale `1/sqrt(256)=0.0625`,
+  `_extension().extend_gqa_bf16(query, output, key_cache, value_cache,
+  req_to_token, req_pool_indices, seq_lens, scale)`, BF16-rounded cache values,
+  shuffled physical mappings, and dense lower-right-causal MPS SDPA as the
+  oracle. The staged `(E,prefix,L)` cases and maximum absolute errors were:
+
+  ```text
+  (1,0,1)       0
+  (7,1,8)       1.1064112186431885e-06
+  (8,63,71)     1.0132789611816406e-06
+  (9,64,73)     8.642673492431641e-07
+  (17,65,82)    5.364418029785156e-07
+  (256,257,513) 6.556510925292969e-07
+  (1024,65,1089) 8.940696716308594e-07
+  ```
+
+  Every case passed `atol=2e-5,rtol=2e-4` with finite output. A separate
+  nonzero-storage-offset case at `E=7,prefix=17` reached maximum/mean error
+  `1.3113021850585938e-06 / 9.253746213744307e-08`; offsets for query, output,
+  K, V, map, request, and sequence were `12288,6144,3072,5120,24,1,1`.
+  Sequence metadata shorter than the query overwrote the output with exact
+  zeros. A nondefault scale of `0.0375` matched at maximum error
+  `5.364418029785156e-07`. Zero, negative, NaN, infinite, FP32-overflowing,
+  and FP32-underflowing scales all raised before dispatch, as did both direct
+  and offset-view query/output storage aliasing.
+- Adversarial arithmetic probes then forced the cases random parity can hide.
+  With `E=4,L=4` and map `[-1,0,4,2]`, the kernel exactly matched an oracle
+  that filters negative and out-of-range physical slots. With `E=2,L=129`,
+  an early score-4 key and a final score-8 key forced online-output rescaling
+  when the third C64 tile changed the maximum; analytic maximum error was
+  `1.9073486328125e-06`. Zero-logit causal averages at lengths
+  `63,64,65,127,128,129` had maximum errors
+  `1.4901161e-08,0,0,2.9802322e-08,0,2.9802322e-08`. Negative and short
+  sequence lengths, lengths above cache or request stride, a `2^32+1`
+  sequence, and request rows `-1`, out of range, and `2^32` all overwrote the
+  full output with exact zeros.
+- The maximum-address harness used `E=1`, active `L=131072`, physical slots
+  `131073`, a shuffled int32 map that explicitly covered physical row 131072,
+  direct BF16 cache allocation, and five synchronized samples. Native times
+  were
+  `139.039291,138.983250,139.011958,138.997958,139.037042 ms`, median
+  **139.011958 ms**. The established fixed-memory decode kernel served as the
+  bounded reference and matched at maximum/mean error
+  `1.7136335372924805e-07 / 2.4632409889591145e-08`. Output SHA-256 was
+  `81f55f2e2fe19a1c4e6dc697e79757a43519bfcb0f017a916fef15914311f508`.
+  Caller-resident current/driver allocation was `513.559570/1052.671875 MiB`;
+  post-kernel values were `513.708008/1052.687500 MiB`. Cache cleanup returned
+  them to `0.023438/12.687500 MiB`.
+- The independent long dense-oracle harness used `E=17,L=131072`, the same
+  maximum physical pool and shuffled mapping, three synchronized native
+  samples, and one synchronized MPS SDPA oracle. Native samples were
+  `137.940500,137.931875,137.871750 ms`, median **137.931875 ms**. Dense SDPA
+  took **424.528292 ms**. Maximum/mean error was
+  `4.3120235204696655e-07 / 2.9860753869570544e-08`. After caller inputs were
+  resident, native current/driver deltas were exactly `0/0 MiB`; the dense
+  oracle added `1027.125/8088.515625 MiB`. Cleanup returned allocator values
+  to `0.398438/422.218750 MiB` without a server or persistent workload.
+- Two internal shader candidates closed during development. A simpler QK
+  lane map passed parity and measured approximately **63.08 ms** at
+  `E=256,prefix=4096`; the selected four-consecutive-dimension lane map
+  measured approximately **51.57 ms**. A paired-PV stage failed numerical
+  parity before timing and was reverted. `FAILED_PATHS.md` records the reopen
+  conditions for both.
+- An adversarial regression pass found that placing the new pipeline inside
+  the established eager `Pipelines` cache would expose every ordinary native
+  MPS operation to its compilation cost and failure path. The final source
+  keeps the shared library's original compile options, leaves
+  `SGLANG_EXTEND_GQA` undefined, and preprocesses the experimental shader block
+  away. `extend_pipeline()` compiles a separate
+  library and pipeline once, on the first direct call, after Apple-family and
+  threadgroup-memory checks. Its compilation errors remain local to the new
+  operation. The capability query reads hardware properties only.
+- After this isolation change, the standard extension rebuild/capability
+  command completed in **10.681054 s** and printed `True` without initializing
+  the EXTEND pipeline. A fresh direct `E=9,prefix=64` call lazily compiled and
+  executed in **259.783416 ms**, then matched dense SDPA at maximum error
+  `1.6689300537109375e-06`. A separate fresh process initialized the ordinary
+  shared pipeline cache through `supports_bf16_decode_gqa()` and printed
+  `True`, proving the experimental block is absent from that library build.
+  Final-source `E=17,L=131072` samples were
+  `137.968875,137.906625,137.869250 ms`, median **137.906625 ms**, with finite
+  output and exact `0/0 MiB` current/driver allocation deltas after inputs were
+  resident.
+- The exact maximum-address analytic probe allocated a 131,074-row BF16 K/V
+  backing, verified host rejection of the full view, and admitted its
+  131,073-row prefix. `E=5,L=131073` mapped logical row 131,072 to physical row
+  131,072, placed a score-16 K and marked V there, and left every background
+  value zero. The first four output rows were exact zero because the marked
+  row was causally future. The fifth matched
+  `exp(16)/(131072+exp(16))*V` at maximum/mean error
+  `1.1920928955078125e-07 / 7.070775964734821e-09`. Wall time was
+  **137.202250 ms** and measured driver growth was zero.
+- A same-process isolation A/B initialized ordinary BF16 decode first, ran five
+  samples, lazily compiled/executed EXTEND, then ran five more decode samples.
+  Decode medians were **0.831250/0.838167 ms** and outputs were bitwise
+  identical. This directly covers established-pipeline reuse across lazy
+  experimental initialization; the small timing difference remains inside
+  the individual `0.810542-0.894209 ms` sample range.
+- Final focused checks:
+
+  ```text
+  .venv/bin/python -m pytest -q test/registered/unit/layers/attention/test_torch_native_extend.py
+  6 passed
+
+  .venv/bin/python -m py_compile python/sglang/srt/hardware_backend/mps/ops.py python/sglang/srt/layers/attention/torch_native_backend.py
+  success
+
+  git diff --check
+  success
+  ```
+
+- Reachability remains the governing activation gate. The pybind symbol is a
+  compiled and measured native mechanism; `TorchNativeAttnBackend.forward_extend`
+  currently reaches the generic gather/cast/mask/SDPA helper. The repository's
+  explicit no-new-Python rule reserves the next step for an owner-approved
+  dispatch seam. Import-time C++ monkeypatching was rejected because extension
+  bootstrap does not own attention-backend policy; a global aten override was
+  rejected because its schema lacks the raw cache and request metadata.
+  Served capacity qualification therefore remains exact
+  **32761+1** inside the 32,768-token pool. The next isolated optimization is
+  a consecutive-eight-slot direct BF16 matrix-load fast path, followed by
+  shuffled-map fallback parity and the same 131K timing/residency rung.
