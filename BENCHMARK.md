@@ -141,6 +141,73 @@ behavior, parsed tool use and continuation, image/audio-disabled reporting,
 exact `32761+1` capacity, and the named Codex profile gate below. The remaining
 aggregate gap to the route-neutral llama.cpp Q2 record is **41.431420%**.
 
+### Current PERF-A021 native SGLang baseline
+
+Signed commit `4dfa1ad3efdfe3f9236aa0ed0c841644ab513859` adds a
+four-row batch-one Q2_K Metal matvec. This is the current Apple native-SGLang
+baseline.
+
+| Required baseline metric | Current PERF-A021 evidence | Workload |
+|---|---:|---|
+| Prompt processing | **22.945718 tok/s aggregate** | five exact `128+256` streaming requests |
+| Generation | **9.156675 tok/s streaming**; **9.189086 tok/s fixed** | five exact `128+256` streams; five exact `12+256` fixed requests |
+| Time to first token | **5.578383 s mean**; **5.521153 s best** | five exact `128+256` streaming requests |
+| End-to-end time | **33.426973 s streaming mean**; **33.360443 s best**; **27.859136 s fixed mean** | exact `128+256` streams and `12+256` fixed requests |
+| Capacity | **32,768-token pool; exact `32761+1` passed** | 32,762 total tokens, reasoning enabled |
+
+The reasoning-enabled OpenAI chat template has a 52-token minimum, so the
+streaming latency workload uses an exact 128-token prompt. After one internal
+16-token warmup and one retained stabilization request, the five consecutive
+cache-flushed streaming measurements were:
+
+| Sample | Prompt tok/s | Generation tok/s | TTFT (s) | E2E (s) |
+|---:|---:|---:|---:|---:|
+| 1 | 23.184 | 9.144 | 5.521153 | 33.409791 |
+| 2 | 22.836 | 9.175 | 5.605249 | 33.398367 |
+| 3 | 22.977 | 9.130 | 5.570890 | 33.501759 |
+| 4 | 22.940 | 9.145 | 5.579890 | 33.464504 |
+| 5 | 22.797 | 9.191 | 5.614732 | 33.360443 |
+
+Aggregate prompt throughput is `640 / sum(TTFT)`. Aggregate streaming
+generation is `1275 / sum(last-token time - first-token time)`, measuring the
+255 post-first-token intervals in each request. All five streams completed
+exact `128+256` usage with `finish_reason=length`, 256 nonempty deltas, and
+reasoning SHA-256
+`3ea6b02f01fa96ad84bc9e8b3027a2af280c58ae68e14b8ea8408a18682b95a9`.
+
+The cache-flushed current-source capacity request completed exact
+`32761+1` usage with `finish_reason=length`, **18.942 observed prompt tok/s**,
+**1729.565719 s TTFT**, and **1729.565822 s E2E**. It processed 31 full
+1,024-token chunks plus a 1,017-token tail and returned reasoning SHA-256
+`b344d80e24a3679999fa964450b34bc24d1578a35509f934c1418b0a20d21a67`.
+Generation throughput is undefined for this one-token gate because it has
+zero post-first-token intervals. The server cache was flushed immediately
+afterward.
+
+Reproduce the streaming and capacity rows against the launch above with:
+
+```bash
+.venv/bin/python scripts/windows/bench_openai_stream.py \
+  --model qwen3.8-27b-iq2 --input-tokens 128 --output-tokens 256 \
+  --temperature 0 --skip-warmup --timeout 600
+
+.venv/bin/python scripts/windows/bench_openai_stream.py \
+  --model qwen3.8-27b-iq2 --input-tokens 32761 --output-tokens 1 \
+  --temperature 0 --skip-warmup --timeout 7200
+```
+
+The independent five-request window used wall times
+`27.842287, 27.856282, 27.867904, 27.868737, 27.860470 s`; its best
+request-observed generation was **9.194647 tok/s**. The preceding candidate
+window used `27.893382, 27.949060, 27.979015, 27.981408, 27.988928 s` and
+aggregated **9.156475 tok/s**. Every response reported exact `12+256` usage,
+length finish, and identical output IDs and text.
+
+The matched generic-Q2_K control used wall times
+`29.992152, 30.080830, 30.080217, 30.052984, 30.115632 s` and aggregated
+**8.515065 tok/s**. PERF-A021's matched gain is **7.532647%**, and its gain
+over the selected PERF-A016 aggregate is **7.012249%**.
+
 ## Qualification gates
 
 The measured reference loaded the full Q2 text model, reported image, video,

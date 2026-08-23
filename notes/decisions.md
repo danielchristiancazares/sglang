@@ -186,7 +186,7 @@ has not.
 
 | Candidate | Status | Why |
 |---|---|---|
-| Bartowski Qwen3.8-27B IQ2_XXS checkpoint | Retained native playground | The selected official-tokenizer/Python-ingress route reaches **8.586948 tok/s** aggregate on exact `12+256`, passes sampled behavior and tool continuity, completes exact `32761+1` in the 32K BF16 pool, and passes the named Codex Responses-profile gate |
+| Bartowski Qwen3.8-27B IQ2_XXS checkpoint | Retained native playground | The current official-tokenizer/Python-ingress baseline reaches **9.189086 tok/s** aggregate on exact `12+256`, passes sampled behavior and tool continuity, and completes exact `32761+1` in the 32K BF16 pool. The named Codex Responses gate last passed on PERF-A016 and remains open on PERF-A021 |
 | Compact heterogeneous merged GGUF storage on MPS | Retained | Signed `13bea403d6` removes 40 packed copies / 478.125 MiB per forward, improves adjacent `128+32` generation **3.1858 -> 3.309 tok/s**, lowers reported weights **10.03 -> 9.03 GB**, and preserves the exact digest |
 | IQ2_XXS batch-one four-row Metal kernel | Retained | Signed `16b2bf7a06` changes matched projection time **1.176875 -> 0.516000 ms** and served generation **3.309 -> 7.1748 tok/s** with exact behavior across two restarts |
 | Q5_K batch-one four-cohort vocabulary head | Retained | Signed `b19cf4acf3` changes matched head time **19.659291 -> 3.754625 ms**; served deterministic generation reaches **8.0284 tok/s**, with an independent 8.114 tok/s confirmation and exact digest |
@@ -195,17 +195,19 @@ has not.
 | Native MPS decode capability gate | Retained | Signed `b2b8ab4af8` sends BF16 or more than 7,936 physical cache rows through the established cache-write plus SDPA fallback. BF16/32,769 and FP32/7,937 report zero observed error; eligible FP32/7,936 remains fused |
 | IQ2_XXS Apple7 large-batch SIMD-matrix kernel | Retained | PERF-A014 changes actual `17408x5120` medians **70.074833 -> 4.250250/4.277125 ms** at batch 128 and **1971.539875 -> 124.838125 ms** at batch 4096. Served exact-`128+1` prompt improves **7.0234 -> 22.8814 tok/s** across a matched disabled control and two independent default windows. Exact `4096+2` completes inside the former watchdog; candidate/fallback tails and all behavior gates pass |
 | Q4_K batch-one two-row reuse inside the retained IQ2_XXS checkpoint | Retained | Signed `52b5326d8e` specializes aligned complete-cohort Q4_K tensors within the mixed-format Q2 artifact. Final Python A/B is **7.009167 -> 8.586948 tok/s** (**+22.510241%**), the independent window is **8.578205 tok/s**, actual-file/tail parity passes, and record standing remains the M1 Max Q2 lane |
+| Q2_K batch-one four-row reuse inside the retained IQ2_XXS checkpoint | Retained; current Apple baseline | Signed `4dfa1ad3ef` specializes aligned complete-cohort Q2_K tensors at the common Metal matmul owner. Actual gate/down medians fall from about **1.07/1.09 ms** to **0.455/0.454 ms**; matched exact-`12+256` generation changes **8.515065 -> 9.156475 tok/s**, and the independent window reaches **9.189086 tok/s**. Exact streaming Prompt/Generation/TTFT/E2E and current-source `32761+1` capacity are recorded in root `BENCHMARK.md` |
 | Direct Metal BF16 matrix-load barrier elision | Rejected | PV-only, QK-only, combined, leading-only, and trailing-only `mem_none` removals were exact but moved the two primary raw-kernel medians by less than **0.720%**; the restored PERF-A020 control was faster at the diagnostic shape. Reopen only for materially different generated code on another compiler/GPU family |
 | F32 custom-kernel cross-row reuse | Rejected | Exact-shape medians `0.484833`, `0.504208`, and `0.556667 ms` all trail the selected one-row-per-SIMD custom control at `0.390083 ms`; native MPS matrix multiplication is faster still |
 | IQ2 constant-table and four-SIMD/two-row ablations | Rejected | Constant-table windows `0.546042/0.576833 ms` and alternate-geometry windows `0.560625/0.550667 ms` trail the selected staged two-SIMD/four-row path around `0.523625 ms` |
-| Pinned llama.cpp build 10547 IQ2 route | Current M1 Max Q2 reference | Exact five-run `12+256` aggregate is **14.661356 tok/s**, with a **14.671473 tok/s** best hit. The original native SGLang baseline is **7.001584 tok/s**; selected PERF-A016 reaches **8.586948 tok/s**, leaving the reference **1.707400x** faster |
+| Pinned llama.cpp build 10547 IQ2 route | Current M1 Max Q2 reference | Exact five-run `12+256` aggregate is **14.661356 tok/s**, with a **14.671473 tok/s** best hit. The original native SGLang baseline is **7.001584 tok/s**; current PERF-A021 reaches **9.189086 tok/s**, leaving a **1.595518x** route gap |
 | Thresholded MLX quantized-query tiling | Retained source mechanism; Mac Pro evidence only | The cross-machine measurements carry no M1 Max record standing. Fresh dependency, parity, memory, and capacity gates are required before M1 use |
 | Always-on MLX quantized-query tiling | Rejected on its measured machine | The process-wide policy regressed the measured 5K prompt while only larger score shapes benefited |
 
 Large-batch native-IQ2 prefill is qualified through exact `5000+1` and
 `32761+1` requests. The Apple real-client selection is Codex CLI 0.149.0 via
 the machine-local `qwen38-local` Responses profile; its fixed read-only shell
-round trip consumed the tool result and returned exact `CODEX TOOL READY`.
+round trip consumed the tool result and returned exact `CODEX TOOL READY` on
+PERF-A016. The PERF-A021 rerun remains open.
 The earlier 13,635/13,691-token process-scoped OpenCode runs remain historical
 admission evidence. The safe long-pool fallback is retained, and the next
 measured batch-one decode hotspot governs funding. The deleted affine-q4

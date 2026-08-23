@@ -7,6 +7,9 @@
 | M1 Max Qwen3.8-27B IQ2_XXS, exact `12+256` fixed-decode scoreboard | unqualified cross-machine q4 entry deleted | **14.661356 tok/s aggregate; 14.671473 best hit** | route-neutral local Q2 authority | pinned llama.cpp build 10547 command in `BENCHMARK.md` | 2026-08-23 07:46 PDT |
 | M1 Max Qwen3.8-27B IQ2_XXS, historical native SGLang Rust `/generate` baseline, exact `12+256` | llama.cpp **14.661356 tok/s** aggregate | **7.001584 tok/s aggregate; 7.015010 best hit** | **-52.2446%; reference is 2.094006x faster** | exact launch and request in the 2026-08-23 08:05 experiment-log entry | 2026-08-23 08:05 PDT |
 | M1 Max Qwen3.8-27B IQ2_XXS, selected native SGLang Python `/generate`, exact `12+256` | **7.009167 tok/s** matched disabled-kernel control | **8.586948 tok/s aggregate; 8.591773 best hit** | **+22.510241%; llama.cpp reference is 1.707400x faster** | final PERF-A016 launch and request in the 2026-08-23 11:31 experiment-log entry | 2026-08-23 11:31 PDT |
+| M1 Max Qwen3.8-27B IQ2_XXS, current PERF-A021 native SGLang `/generate`, exact `12+256` | **8.515065 tok/s** matched generic-Q2_K control | **9.189086 tok/s aggregate; 9.194647 best hit** | **+7.532647% matched; +7.012249% over PERF-A016** | fixed command and raw windows in `BENCHMARK.md` and the 2026-08-23 16:25 experiment-log entry | 2026-08-23 16:25 PDT |
+| M1 Max Qwen3.8-27B IQ2_XXS, current PERF-A021 reasoning-enabled stream, exact `128+256` | new explicit four-metric Apple baseline | **22.945718 prompt / 9.156675 generation tok/s; 5.578383 s TTFT; 33.426973 s E2E** | five cache-flushed requests; exact counts and one reasoning digest | `.venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 128 --output-tokens 256 --temperature 0 --skip-warmup --timeout 600` | 2026-08-23 16:25 PDT |
+| M1 Max Qwen3.8-27B IQ2_XXS, current PERF-A021 capacity | historical PERF-A016 exact `32761+1` pass | **32,768-token BF16 pool; exact `32761+1` passed; 18.942 prompt tok/s; 1729.565719 s TTFT; 1729.565822 s E2E** | capacity preserved on current source | same client with `--input-tokens 32761 --output-tokens 1 --temperature 0 --skip-warmup --timeout 7200` | 2026-08-23 16:25 PDT |
 | M1 Max Qwen3.8-27B IQ2_XXS, synchronized batch-one decoder-layer profile | separate exact-request wall time **142.824820 ms/completion token** | **132.593 ms/token** topology projection from stable profiled layers | **10.232 ms/token cross-run numerical difference; no outside-layer attribution** | one-shot `SGLANG_MPS_PROFILE_LAYERS=1 SGLANG_MPS_PROFILE_STAGES=1` launch in the 08:14 experiment-log entry | 2026-08-23 08:14 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` batch-one projection | 1.176875 ms matched generic | **0.516000 ms** | **-0.660875 ms / -56.16%** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:25 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS Q5_K `248320x5120` head at batch one | 19.659291 ms matched generic | **3.754625 ms** | **-15.904666 ms / -80.90%; 5.24x** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor output.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:52 PDT |
@@ -696,6 +699,7 @@ tree throughput can be ranked for production.
 | PERF-A013 | Admit BF16 and long physical pools through the established torch-native decode fallback while preserving eligible fused Metal decode. | Torch-native MPS decode dispatch | Retained in `b2b8ab4af8`; full-model 32K gate passed | The pre-change BF16/32,769 and FP32/7,937 probes raised at the native binding. Both now reach pool-write plus SDPA with zero observed error; the FP32/7,936 boundary remains fused with maximum error `2.5331974e-07`. Nine focused CPU tests pass, and the selected route later completes exact `32761+1`. |
 | PERF-A014 | Reuse each quantized weight tile across large activation batches with native simdgroup matrix multiplication. | `quant_matmul` Metal kernels and host dispatch | Qualified in signed `1676c71bed` | The FP32 64-output by 32-batch path changes the actual IQ2_XXS `17408x5120` median **70.074833 -> 4.250250/4.277125 ms** at batch 128. Matched served exact-`128+1` prompt changes **7.0234 -> 22.8814 tok/s** across a control and two independent default windows; multi-chunk prefill, parity, behavior, and cleanup gates pass. |
 | PERF-A016 | Reuse each activation fragment across two eligible Q4_K output rows inside the retained mixed-format IQ2_XXS/Q2 checkpoint. | `quant_matmul` Metal kernel and aligned compact-view dispatch | Qualified in signed `52b5326d8e` | Final Python A/B changes exact-`12+256` generation **7.009167 -> 8.586948 tok/s** (**+22.510241%**); an independent restart reaches **8.578205 tok/s**. Candidate/tail parity, exact `32761+1`, behavior, Codex Responses tool integration, and cleanup pass. `Q4_K` names the tensor family; record standing remains M1 Max Q2. |
+| PERF-A021 | Reuse one activation fragment across four eligible Q2_K output rows. | `quant_matmul` Metal kernel, aligned batch-one dispatch, and generic environment control | Retained in signed `4dfa1ad3ef`; current Apple baseline | Actual Q2_K gate/down medians fall from about **1.07/1.09 ms** to **0.455/0.454 ms**. Matched exact-`12+256` generation changes **8.515065 -> 9.156475 tok/s**; the independent current window reaches **9.189086 tok/s**. Streaming Prompt/Generation/TTFT/E2E and current-source exact `32761+1` capacity are recorded in `BENCHMARK.md`. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -2184,3 +2188,38 @@ tree throughput can be ranked for production.
 - Decision: reject and revert PERF-FA059 through PERF-FA063. The signed
   PERF-A020 synchronization remains selected, and the direct-load barrier
   branch is closed on this Apple M1 Max/Metal toolchain.
+
+### 2026-08-23 16:25 PDT - PERF-A021 four-row Q2_K batch-one matvec
+
+- Baseline: the live generic-Q2_K control produced actual gate/down medians
+  **1.067353/1.085771 ms** before the candidate and
+  **1.065125/1.089750 ms** after it. Its five exact `12+256` wall times were
+  `29.992152,30.080830,30.080217,30.052984,30.115632 s`, aggregating
+  **8.515065 tok/s**.
+- Change: two 32-wide SIMDgroups each compute four Q2_K output rows while
+  reusing the same 32 activation values. The default-on dispatch is confined
+  to aligned complete batch-one cohorts and retains the generic path through
+  `SGLANG_MPS_Q2_K_BATCH1_ROWS4=0`.
+- Kernel evidence: actual gate/down medians are **0.454833/0.453563 ms** over
+  50 synchronized samples per arm. The experiment ledger retains all 300
+  individual A/B/A timings.
+- Full-model evidence: candidate window one aggregates **9.156475 tok/s**;
+  an independent candidate restart aggregates **9.189086 tok/s**, reaches
+  **9.194647 tok/s** best hit, and averages **27.859136 s E2E**. The matched
+  full-model gain is **7.532647%**; current aggregate standing is
+  **7.012249%** above PERF-A016.
+- Complete baseline: five exact reasoning-enabled `128+256` streams aggregate
+  **22.945718 prompt / 9.156675 generation tok/s**, with **5.578383 s TTFT**
+  and **33.426973 s E2E**. Current-source exact `32761+1` passes inside the
+  32,768-token BF16 pool at **18.942 prompt tok/s**, **1729.565719 s TTFT**,
+  and **1729.565822 s E2E**.
+- Correctness: actual-file candidate/control/tail/multi-batch parity, three
+  compact-view tests, exact fixed and streaming token counts/digests, sampled
+  reasoning, arithmetic `703`, thinking-disabled `READY`, one parsed multiply
+  call, tool continuation, and image/audio-disabled reporting pass. The full
+  launch rebuilt the exact shader source successfully.
+- Decision: retain. Signed commit
+  `4dfa1ad3efdfe3f9236aa0ed0c841644ab513859` owns the Metal kernel and
+  third-party notice. Root `BENCHMARK.md` owns the current Prompt, Generation,
+  TTFT, E2E, and Capacity baseline; the full commands, samples, process state,
+  and cleanup are in `notes/experiment-log.md`.
