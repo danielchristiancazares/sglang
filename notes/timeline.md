@@ -801,6 +801,18 @@ code changes, or process state matter.
   branch and cohort-leader online-softmax broadcast were exact and missed
   their timing gates; they remain closed as `PERF-FA057/058`.
 
+### PERF-FA059 through PERF-FA063 close direct-load barrier elision
+
+- PV-only, QK-only, combined, leading-only, and trailing-only removals of the
+  direct BF16 matrix-load `mem_none` barriers all preserved exact output and
+  zero measured current-allocation growth.
+- Against an opening PERF-A020 control at **25.686792/63.915500 ms**, the best
+  apparent candidate movement was only **0.720%**. A final independently
+  rebuilt PERF-A020 control reached **25.520083/63.745709 ms**.
+- Every candidate missed the predeclared reproduced 1% floor. Signed PERF-A020
+  synchronization is restored, and this shader-local branch is closed on the
+  M1 Max/Metal 32023.883 toolchain.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:

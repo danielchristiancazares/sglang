@@ -1658,3 +1658,44 @@ standing.
 - Reopen only if: profiling demonstrates active-lane transcendental pressure
   on a different Apple family and a matched window clears 0.75%.
 - Related commit or revert: reverted before PERF-A020.
+
+## PERF-FA059 through PERF-FA063 - Direct device-matrix-load barrier ablations
+
+- Hypothesis: the `simdgroup_barrier(mem_flags::mem_none)` calls immediately
+  before and after direct BF16 `simdgroup_load` operations could be removed
+  because the QK/PV branches are SIMDgroup-uniform and each loaded fragment is
+  consumed by a dependent SIMDgroup matrix multiply.
+- Scope: PERF-A020's direct QK and PV routes on the M1 Max, with fallback
+  `mem_threadgroup` synchronization, arithmetic, operands, tiling, scratch,
+  and host dispatch unchanged.
+- Attempted changes:
+  - `PERF-FA059`: removed the PV leading/trailing pair;
+  - `PERF-FA060`: removed both QK and PV pairs;
+  - `PERF-FA061`: removed the QK leading/trailing pair;
+  - `PERF-FA062`: removed only the QK/PV trailing consumer barriers;
+  - `PERF-FA063`: removed only the QK/PV leading barriers.
+- Benchmark evidence: opening PERF-A020 medians were
+  **25.686792/63.915500 ms** at `E=256,L=4352` and `E=17,L=131072`.
+  The five arms measured respectively
+  **25.591584/63.552417**, **25.847500/63.455208**,
+  **25.624625/63.901375**, **25.907875/63.845042**, and
+  **25.575896/63.756833 ms**. The largest apparent reduction was only
+  **0.720%**, while the final independently rebuilt PERF-A020 control reached
+  **25.520083/63.745709 ms**.
+- Correctness evidence: all arms retained exact SHA-256
+  `7ec60bdc0d473fba047e79855bb9f95c54358cb1c281135797e2950756116a42`
+  and `820241644b85aaa0fed24caf91cffef2254cd1bfd6cb93fab2aaf2b6727d1992`,
+  unchanged checksums, and zero current-memory growth.
+- Failure mode: the selected Metal compiler/GPU makes these execution-only
+  barriers too cheap, already scheduled effectively, or beneficial enough to
+  offset their source-visible count. None of the five isolations reached the
+  predeclared reproduced 1% timing floor, and several diagnostic arms
+  regressed.
+- Why not to retry unchanged: leading, trailing, QK-only, PV-only, and combined
+  removals exhaust the source-local synchronization combinations without a
+  qualifying signal.
+- Reopen only if: generated AIR/ISA on a different Metal compiler or Apple GPU
+  proves materially different barrier code generation and a matched direct
+  workload clears 1% in two windows.
+- Related commit or revert: every shader edit was reverted; signed PERF-A020 at
+  `5fe532b41c` is restored. The record-only closure commit follows this entry.
