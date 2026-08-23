@@ -7676,3 +7676,115 @@ mean 13.929045  17.125658 446.051        39.730
 - No workload was relaunched for documentation. Exact server/client PIDs from
   the prior gate remain absent, port 30000 remains free, and the last observed
   cleanup state was 94% free memory with normal thermal/performance status.
+
+### 2026-08-23 12:22 PDT - PERF-A008 fixed-memory BF16 GQA A/B and occupancy ladder
+
+- Began from clean `main` at signed
+  `652a9ecaaaad1527032ae20c665f8a904ca2e264`. The candidate changes only
+  the native Metal extension, its thin MPS binding/capability surface, and the
+  torch-native decode admission predicate. No server or benchmark process was
+  initially live and port 30000 was free.
+- Added a narrow BF16 NHD decode route for the production batch-one
+  24-query-head / 4-KV-head / D256 geometry. A native Metal store converts the
+  current FP32 K/V row to BF16 with round-to-nearest-even, a buffer barrier
+  preserves write-before-read ordering, and one query-head threadgroup performs
+  ragged logical-to-physical attention directly from the BF16 cache. Four
+  32-lane SIMDgroups keep FP32 query, online-softmax, and value accumulation
+  state and merge through fixed `(4 * 256 + 8) * 4 = 4,128` byte
+  threadgroup scratch. The pre-existing FP32 route remains bounded at 7,936
+  physical rows and every shape outside the exact BF16 contract retains the
+  cache-write plus SDPA fallback.
+- Metal uses portable `ushort` BF16 storage rather than unguarded MSL 3.1
+  `bfloat`. Final admission requires Apple7+, pipeline execution width 32,
+  and at least 128 threads per group. The binding also records request-row and
+  request-stride bounds, clamps sequence length before indexing, compares
+  signed 64-bit cache/request metadata in 64-bit space before narrowing, and
+  emits zeros for an empty or invalid BF16 request path. A focused overflow
+  probe verified that cache location `4294967297` does not wrap/write row one
+  and request row `4294967296` returns an all-zero output.
+- Final four-SIMD parity passed at active lengths
+  `1,3,4,5,7,8,9,257,4097,32768` with a 32,769-row BF16 cache. Maximum
+  absolute errors were respectively
+  `0,4.76837158e-07,7.15255737e-07,3.57627869e-07,4.76837158e-07,`
+  `3.57627869e-07,3.57627869e-07,1.1920929e-07,1.11758709e-07,`
+  and `8.38190317e-08`, all inside the retained `2e-5` gate. A direct
+  probe with request row two, nine shuffled physical slots, the current token
+  in physical row 400, and nonzero query/K/V/cache/request-map storage offsets
+  passed with `4.76837158e-07` maximum error and exact BF16 cache mutation.
+  The retained FP32 batch-two/nonzero-request-row test passed at
+  `5.96046e-07`; FP32 7,937 rows and BF16 32,770 rows still used fallback
+  with zero observed error in the earlier boundary pass. The CPU dispatch
+  suite passed all three tests, both touched Python modules compiled, the
+  extension reported the local capability true, and `git diff --check`
+  passed.
+- Used this exact launch for every full-model window, changing only the
+  temporary admission predicate or occupancy geometry where stated:
+
+  ```text
+  env -u MTL_CAPTURE_ENABLED -u SGLANG_MPS_PROFILE_LAYERS \
+    -u SGLANG_MPS_PROFILE_STAGES -u SGLANG_RUST_SERVER \
+    -u SGLANG_RUST_BUILD_MODE SGLANG_USE_MLX=0 \
+    SGLANG_MPS_IQ2_LARGE_BATCH=1 SGLANG_MPS_Q4_K_BATCH1_ROWS2=1 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 \
+    --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 32768 --max-total-tokens 32768 \
+    --max-running-requests 1 --chunked-prefill-size 1024 \
+    --max-prefill-tokens 8192 --disable-radix-cache --disable-overlap-schedule \
+    --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
+    --incremental-streaming-output --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  The exact request remained:
+
+  ```text
+  curl -sS -w '\nWALL=%{time_total}\n' -X POST \
+    http://127.0.0.1:30000/generate -H 'Content-Type: application/json' \
+    -d '{"text":"Write a dense sequence of short Python identifiers separated by spaces.","sampling_params":{"temperature":0,"max_new_tokens":256,"ignore_eos":true}}'
+  ```
+
+- The first four-SIMD candidate warmup was **30.743116 s**. Five consecutive
+  walls were `29.682655,29.707606,29.764494,29.752320,29.735326` s;
+  sum 148.642401 s, mean 29.7284802 s, aggregate **8.611271019 tok/s**,
+  and best **8.624565424 tok/s**. A matched fallback restart temporarily
+  disabled only BF16 native admission. Its warmup was **30.985648 s** and
+  walls were `29.928492,29.966496,30.007650,29.977013,30.036752` s;
+  aggregate **8.538091726 tok/s** and best **8.553721985 tok/s**. The
+  candidate's matched gain was **0.857091914%**, saving 0.2548004 s/request,
+  about 0.995314 ms/output token or 0.0622 ms/full-attention layer. All
+  candidate/control responses reproduced the established exact 12 prompt
+  tokens, 256 output tokens, length finish, IDs, and text.
+- An eight-SIMD/256-thread occupancy ablation used 8,256 bytes of scratch.
+  Its 31.000939 s warmup and first 29.882014 s measured request trailed the
+  four-SIMD window, so it was rejected. A two-SIMD/64-thread ablation passed
+  length-257 parity at `2.08616257e-07`, then used root/listener PID 19675
+  with tracker 19690, scheduler 19691, and detokenizer 19692. Its
+  31.264437 s warmup and **30.001617 s** measured request missed the
+  predeclared 29.65 s admission threshold. It was rejected, scheduler 19691
+  was stopped leaf-first, the registered parent cleanup removed all four
+  PIDs, and the source returned to four SIMDgroups.
+- A clean independent final-source restart used root/listener PID 19899 with
+  tracker 19903, scheduler 19904, and detokenizer 19905. Allocation remained
+  9.03 GB weights, 0.29 GB Mamba state, and 2.00 GB BF16 KV with 19.97 GB
+  reported available; `/model_info` retained generation and image/audio
+  disabled. Warmup was **30.978493 s**. Five walls were
+  `29.946639,29.895850,29.893633,29.911125,29.859635` s; sum
+  149.506882 s, mean 29.9013764 s, aggregate **8.561478795 tok/s**, and best
+  **8.573447063 tok/s**. Exact output remained unchanged. This independent
+  window is 0.296603% below the selected PERF-A016 aggregate, so PERF-A008
+  does **not** promote the short-work scoreboard; **8.586947946 tok/s**
+  remains selected. The matched local win and fixed-memory capacity mechanism
+  remain evidence for a long-context branch.
+- Scheduler PID 19904 was stopped leaf-first after the independent window.
+  All exact PIDs disappeared, port 30000 became free, memory returned to 93%
+  free, and macOS recorded no thermal or performance warning. No server,
+  benchmark, compiler, or client remains live.
+- Source-grounded 128K arithmetic shows a 131,072-token BF16 pool would add
+  exactly **6.00146484375 GiB** over this 32K lane and should leave roughly
+  13.97 GiB available at readiness. No 128K server or request has been
+  launched yet. A qualified 128K branch requires widening both 32,769-row
+  fences to exactly 131,073 physical rows, isolated parity, staged 64K/128K
+  allocation and near-capacity requests, and new client limits; the estimated
+  exact `131065+1` runtime is roughly 2.8-3.2 hours with 256-token chunks.
