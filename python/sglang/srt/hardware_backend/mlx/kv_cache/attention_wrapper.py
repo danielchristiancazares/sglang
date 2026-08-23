@@ -31,7 +31,9 @@ _thread_local = threading.local()
 
 # Leave compact quantized-prefill matrices on mlx-lm's single-call path.  The
 # query tiles begin once the estimated score/mask temporary crosses 1 GiB,
-# where bounded residency matters more than dispatch count on a 32 GB M1 Max.
+# where bounded residency mattered more than dispatch count in the historical
+# Mac Pro experiment.  The threshold remains opt-in and needs fresh hardware
+# qualification before use elsewhere.
 _QUANTIZED_PREFILL_SCORE_LIMIT_BYTES = 1 << 30
 
 

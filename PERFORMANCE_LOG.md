@@ -4,8 +4,9 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
-| Qwen3.8-27B Q4_0, 8 concurrent requests, 32 output tokens each | 32.953 TPS | 38.016 TPS | +5.063 TPS | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_sampling.py --concurrency 8 --output-tokens 32` | 2026-08-16 22:26 PDT |
-| Qwen3.8-27B Q4_0, batch 24, 128 output tokens each, real top-k/top-p sampling | 49.500 TPS | **62.034 TPS** | **+12.534 TPS** | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_batched_request.py --url http://127.0.0.1:30001/generate --batch-size 24 --output-tokens 128` | 2026-08-16 22:35 PDT |
+| Mac Pro Qwen3.8-27B Q4_0, 8 concurrent requests, 32 output tokens each | 32.953 TPS | 38.016 TPS | +5.063 TPS | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_sampling.py --concurrency 8 --output-tokens 32` | 2026-08-16 22:26 PDT |
+| Mac Pro Qwen3.8-27B Q4_0, batch 24, 128 output tokens each, real top-k/top-p sampling | 49.500 TPS | **62.034 TPS** | **+12.534 TPS** | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_batched_request.py --url http://127.0.0.1:30001/generate --batch-size 24 --output-tokens 128` | 2026-08-16 22:35 PDT |
+| M1 Max Qwen3.8-27B IQ2_XXS, exact `12+256` fixed-decode scoreboard | unqualified cross-machine q4 entry deleted | **14.661356 tok/s aggregate; 14.671473 best hit** | route-neutral local Q2 authority | pinned llama.cpp build 10547 command in `BENCHMARK.md` | 2026-08-23 07:46 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` batch-one projection | 1.176875 ms matched generic | **0.516000 ms** | **-0.660875 ms / -56.16%** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:25 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS Q5_K `248320x5120` head at batch one | 19.659291 ms matched generic | **3.754625 ms** | **-15.904666 ms / -80.90%; 5.24x** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor output.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:52 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS 48-layer F32 b/a projection sweep | 7.296667 ms selected custom Metal | **2.159000 / 2.051708 ms** native `torch.mm` A/B arms | **-70.41% / -71.88%; 3.38-3.56x** | `.venv/bin/python benchmark/mac/bench_mps_dense_ba.py $IQ2_GGUF --warmup 4 --iterations 9` | 2026-08-20 23:43 PDT |
@@ -610,7 +611,7 @@ tree throughput can be ranked for production.
 
 | ID | Hypothesis | Scope | Status | Evidence |
 |---|---|---|---|---|
-| PERF-001 | Add a Q4_0 batch-8 Metal specialization so steady batch-8 decode reads each packed matrix once instead of twice. | `gguf_q4_0.mm` Q4_0 kernel and host dispatch | Rejected | Correct but regressed representative MLP Q4_0 median from `0.345 ms` to `0.778 ms`; removed. See `FAILED_PATHS.md`. |
+| PERF-001 | On Mac Pro/W6900X, add a Q4_0 batch-8 Metal specialization so steady batch-8 decode reads each packed matrix once instead of twice. | `gguf_q4_0.mm` Q4_0 kernel and host dispatch | Rejected | Correct but regressed representative MLP Q4_0 median from `0.345 ms` to `0.778 ms`; removed. See `FAILED_PATHS.md`. |
 | PERF-002 | Fuse or remove remaining GDN pack, normalization, and reorder launches. | Qwen3.5 GDN MPS path and native Metal extension | Pending profile | Production path launches native packing and gated-norm/reorder around native recurrent attention for most decoder layers. |
 | PERF-003 | Reduce full-vocabulary PyTorch sampling overhead on MPS. | `sampler.py` / native sampling | Pending profile | Every decode step performs top-p sampling over the full vocabulary; impact relative to model kernels remains unmeasured. |
 | PERF-004 | Remove proven-redundant `.contiguous()` conversions and metadata copies in native MPS wrappers. | `mps/ops.py`, attention and GDN callers | Pending trace | Calls are production-reachable, but views may already be contiguous and therefore free. |
@@ -618,7 +619,7 @@ tree throughput can be ranked for production.
 | PERF-006 | Reduce Q5_K/Q6_K batch-8 accumulator pressure by reusing smaller or batch-24 tiles. | `gguf_q4_0.mm` quantized matmul dispatch | Rejected | Q5_K tile-4 regressed `0.809 -> 0.888 ms`; Q6_K tile-4 regressed `27.227 -> 32.446 ms`; batch-24 vec4 regressed Q6_K to `34.166 ms`. |
 | PERF-007 | Vectorize Q6_K dequantization across four adjacent weights with four two-request SIMD subgroups. | `gguf_q4_0.mm` Q6_K batch-8 kernel | Retained | LM-head microbenchmark improved `27.227 -> 9.186 ms` (`35.7 -> 105.7 GiB/s`); Q6_K reference relative error `4.64191e-07`. |
 | PERF-008 | Apply the same vec4/subgroup geometry to the repeated Q5_K GDN output projections. | `gguf_q4_0.mm` Q5_K batch-8 kernel | Retained | Representative projection improved `0.809 -> 0.356 ms` (`24.9 -> 56.6 GiB/s`); combined end-to-end median is `38.016 TPS`. |
-| PERF-009 | Apply batch-subgroup reuse or alter unroll depth in the Q4_0 batch-eight kernel. | `gguf_q4_0.mm` Q4_0 kernels | Rejected | Four-subgroup vec4 regressed `0.350 -> 0.686 ms`; existing split kernel gave `0.390 ms`; unroll 2 and 8 gave `0.402` and `0.405 ms`. |
+| PERF-009 | On Mac Pro/W6900X, apply batch-subgroup reuse or alter unroll depth in the Q4_0 batch-eight kernel. | `gguf_q4_0.mm` Q4_0 kernels | Rejected | Four-subgroup vec4 regressed `0.350 -> 0.686 ms`; existing split kernel gave `0.390 ms`; unroll 2 and 8 gave `0.402` and `0.405 ms`. |
 | PERF-010 | Fuse GDN projection packing with the decode causal convolution. | `gguf_q4_0.mm` GDN glue kernels | Rejected | Correct fused kernel measured `0.151 ms` versus `0.147 ms` for the separate chain; experimental kernel and benchmark removed. |
 | PERF-011 | Coalesce near-simultaneous requests into one idle prefill batch. | MPS normal scheduler loop | Rejected | A 2 ms window produced `4 + 4` prefills and `37.876 TPS`; even a single prebatched size-eight request reached only `39.053 TPS`. |
 | PERF-010 | Use the checkpoint's bundled NEXTN block for speculative decoding. | SGLang speculative control plane + MPS GDN state verify | Functional, rejected for throughput | Fully served coherent sampled output; batch-1 measured `4.872 TPS`, with accept length `2.80/4` and draft acceptance rate `0.60`. |
@@ -676,18 +677,18 @@ tree throughput can be ranked for production.
 | PERF-062 | Use Cutlass for prefill and in-place Marlin for target gate/up decode. | 64 target gate/up projections plus native draft-k1 q | Promoted launcher default in `03ba3d2e27` | Accepted exact score **3078.058/114.617**, TTFT **64.651152 s**, E2E **64.782022 s**; independent no-override launch **3052.437/114.053**. Both beat all four prior record metrics. |
 | PERF-A001 | Keep Q2_K, Q4_K, IQ2_XXS, and IQ1_M GGUF weights packed through native Metal matmul and embedding kernels. | MPS GGUF loader, Metal kernels, convolution-state selection | Retained in `7740cae691` | Actual Bartowski IQ2 rows pass batch 1/3/4/8 parity; prior immutable IQ1 evidence is retained in the experiment log. Packed serving reduces model residency and makes the retained Q2 checkpoint runnable. |
 | PERF-A002 | Reuse each IQ2_XXS unpack and input load across multiple output rows at batch one. | `gguf_q4_0.mm` IQ2_XXS kernel and host dispatch | Retained in `16b2bf7a06` | Matched generic/candidate medians reached `1.176875 -> 0.516000 ms`; complementary long-K projection reached `1.234667 -> 0.540791 ms`. Two served restart windows preserved exact behavior while deterministic generation rose `3.309 -> 7.1748 tok/s`. Multi-batch prefill remains on its established kernels. |
-| PERF-A003 | Bound quantized-KV prefill score residency by tiling independent query rows above a measured threshold. | MLX quantized attention wrapper and environment surface | Retained opt-in in `1271610e0b`; safety follow-up `ea983f3120` | Helper and full Qwen3.5 wrapper parity pass; `1024x32768` changed 0.258692 s / 1.732 GB peak to 0.229053 s / 0.701 GB. Cross-tile ordering now uses `mx.depends`. The advertised 262K profile still requires explicit flag wiring, dependency verification, cache policy, and a completed capacity run. |
+| PERF-A003 | Bound quantized-KV prefill score residency by tiling independent query rows above a measured threshold. | MLX quantized attention wrapper and environment surface | Retained source mechanism in `1271610e0b`; safety follow-up `ea983f3120`; Mac Pro evidence only | Helper and full Qwen3.5 wrapper parity pass. The cross-machine timing and allocation measurements carry no M1 Max record standing; fresh dependency, parity, memory, and capacity gates are required before local use. |
 | PERF-A004 | Separate GGUF checkpoint behavior from SGLang formatting before qualifying the retained IQ2 route. | native GGUF tokenizer, reasoning parser, Qwen3 Coder tool parser | Correctness fix retained in `8879ed3d01` | GGUF USER_DEFINED reasoning/tool markers now encode atomically without becoming skippable specials. Live gates return final `703`, exact thinking-off `READY`, one parsed multiply call, and a preserved tool-result continuation. Performance/capacity qualification remains open. |
-| PERF-A005 | Bound MLX's recycled Metal buffer cache during monotonically growing long-context prefill. | `SGLANG_MLX_CACHE_LIMIT_GB`, outer prefill boundary, 262K profile | Active survey | The runner supports a pre-load cache cap, but no recorded long-context launch sets it and no cache clear occurs between outer chunks. This is distinct from the now-bounded active score tile. |
-| PERF-A006 | Compare the retained IQ2 GGUF through a pinned current llama.cpp Metal server. | Supporting dependency, exact Apple benchmark and behavior gates | Measured; below scoreboard | Official build 10547 at `749f688f` completed the exact `12+256` workload at **14.661356 tok/s aggregate** over five warmed runs, 21.9% below the 18.782925 record. It returned correct preserved reasoning and final `703`; retain it as a dependency ceiling, not an optimization target. |
+| PERF-A005 | Bound MLX's recycled Metal buffer cache during monotonically growing long-context prefill. | `SGLANG_MLX_CACHE_LIMIT_GB`, outer prefill boundary, former 262K profile | Mac Pro mechanism survey only | The source supports a pre-load cache cap. The deleted cross-machine profile supplies no M1 Max capacity or performance record. |
+| PERF-A006 | Compare the retained IQ2 GGUF through a pinned current llama.cpp Metal server. | Supporting dependency, exact Apple benchmark and behavior gates | Current route-neutral M1 Max Q2 reference | Official build 10547 at `749f688f` completed the exact `12+256` workload at **14.661356 tok/s aggregate** with a **14.671473 tok/s** best hit over five warmed runs. It returned correct preserved reasoning and final `703`; exact SGLang ingress remains open. |
 | PERF-A007 | Eliminate per-forward materialization of heterogeneous merged GGUF projection shards. | `GGUFLinearMethod` storage/apply and packed Metal storage offsets | Retained in `13bea403d6` | One compact MPS backing allocation removes 40 copies / 478.125 MiB of packed-weight materialization per full forward. Five exact `128+32` samples improved generation **3.1858 -> 3.309 tok/s** (+3.867%), prompt **6.979 -> 7.0224** (+0.622%), and reported weight residency **10.03 -> 9.03 GB**, with the identical output digest. |
 | PERF-A008 | Replace native MPS score-array GQA with fixed-memory online or split-K softmax. | `decode_gqa` Metal kernel, KV indirection, cache write | Capacity-critical native candidate | Current native decode allocates `(cache_slots + 256) * 4` bytes of threadgroup scratch and rejects `cache_slots > 7936`. Fixed-size online state removes the configured-pool occupancy cost and this absolute context ceiling; split-K adds long-history parallelism. |
 | PERF-A009 | Specialize the 96x5120 batch-one F32 b/a projection, then remove GDN input packing only if it remains funded. | GGUF F32 dispatch and Qwen3.5 GDN producer/consumer boundary | Retained in `4d1641fdcd`; two windows passed; full context/OpenCode gate open | Native `torch.mm` reduced the actual 48-layer sweep from `7.296667` to `2.159000/2.051708 ms`. Deterministic served generation improved `8.0284 -> 8.4406 tok/s`; sampled restart windows reached `8.3094/8.2942 tok/s`, with behavior and multi-batch fallback intact. |
-| PERF-A010 | Add native affine-q4 quantized SDPA and GQA-aware KV reuse to MLX. | Supporting MLX C++/Metal dependency | Long-horizon dependency candidate | Query tiling bounds materialized scores but leaves repeated qMM and q4 KV reads. A fused online-softmax route can dequantize K/V in tiles, reuse each KV head across six Q heads, and improve both long prefill and decode without full score storage. |
+| PERF-A010 | Add native affine-q4 quantized SDPA and GQA-aware KV reuse to MLX. | Supporting MLX C++/Metal dependency | Mac Pro-only design; outside the M1 Q2 lane | The source design remains recoverable. It carries no local performance, capacity, or record authority. |
 | PERF-A011 | Vectorize the Q5_K vocabulary head across four eight-lane row cohorts per SIMDgroup at batch one. | `gguf_q4_0.mm` Q5_K kernel and aligned host dispatch | Retained in `b19cf4acf3` | Matched candidate/control/candidate medians were `3.737000 / 19.659291 / 3.754625 ms`. Five-run deterministic served generation rose `7.1748 -> 8.0284 tok/s` (+11.90%) with the exact digest; a committed restart and two required-sampling windows passed. |
 | PERF-A012 | Run torch-native partial extend on only the new query rows with an offset causal mask. | Shared torch-native SDPA extend mechanism | Retained in `210a214c12`; full long-context model gate open | Exact source A/B at `4096+256` changed `97.995583/97.847500 -> 12.608125 ms`; at `4096+4096` it changed `542.376416/641.256125 -> 176.066500 ms`. Outputs were exact on MPS, and six focused CPU cases cover causal isolation, GQA, shuffled cache locations, ragged batches, sliding windows, noncausal attention, and empty extend. |
 | PERF-A013 | Admit BF16 and long physical pools through the established torch-native decode fallback while preserving eligible fused Metal decode. | Torch-native MPS decode dispatch | Retained in `b2b8ab4af8`; full-model 32K gate open | The pre-change BF16/32,769 and FP32/7,937 probes raised at the native binding. Both now reach pool-write plus SDPA with zero observed error; the FP32/7,936 boundary remains fused with maximum error `2.5331974e-07`. Nine focused CPU tests plus PyCompile, Black, Ruff, and diff checks pass. |
-| PERF-A014 | Reuse each quantized weight tile across large activation batches with native simdgroup matrix multiplication. | `quant_matmul` Metal kernels and host dispatch | Isolated kernel winner; full-model qualification pending | The FP32 64-output by 32-batch Metal path changed actual IQ2_XXS `17408x5120` medians from 65.578125 to 4.277125 ms at batch 128 and from 1971.539875 to 124.838125 ms at batch 4096. Aligned/tail actual-format cases pass unchanged tolerance; batch 1/4/8 and pre-Apple7 retain the established kernels. |
+| PERF-A014 | Reuse each quantized weight tile across large activation batches with native simdgroup matrix multiplication. | `quant_matmul` Metal kernels and host dispatch | Qualified in signed `1676c71bed` | The FP32 64-output by 32-batch path changes the actual IQ2_XXS `17408x5120` median **70.074833 -> 4.250250/4.277125 ms** at batch 128. Matched served exact-`128+1` prompt changes **7.0234 -> 22.8814 tok/s** across a control and two independent default windows; multi-chunk prefill, parity, behavior, and cleanup gates pass. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
 | PERF-010 | Reproduce vLLM MTP-3 with TurboQuant K+1 verification. | isolated vLLM 0.27.1 lane, same checkpoint/GPU, exact client contract | Highest-priority comparison | External ~160 TPS claim lifts the path ceiling above 200 but lacks comparable workload evidence. |
@@ -1414,12 +1415,13 @@ tree throughput can be ranked for production.
   (`perf: serve packed low-bit GGUF on MPS`). Committed thresholded,
   process-opt-in quantized-KV query tiling as signed commit `1271610e0b`
   (`perf: tile long-context MLX quantized attention`).
-- Benchmark evidence: the packed Bartowski IQ2 lane retains the fresh
+- Benchmark evidence: the packed Bartowski IQ2 lane retains the fresh M1 Max
   **1.189375 ms / 18.064 GiB/s** batch-one projection baseline and the prior
-  **6.956 prompt / 3.189 generation tok/s** model-level window. The MLX helper
-  retains the measured `1024x32768` reduction from **0.258692 s / 1.732 GB**
-  to **0.229053 s / 0.701 GB**; exact 5K behavior remains on the established
-  path under the 1 GiB threshold.
+  **6.956 prompt / 3.189 generation tok/s** model-level window. Separately,
+  the Mac Pro-only MLX helper evidence retains the measured `1024x32768`
+  reduction from **0.258692 s / 1.732 GB** to **0.229053 s / 0.701 GB**;
+  its exact 5K behavior remains cross-machine history under the 1 GiB
+  threshold and carries no M1 Max record standing.
 - Correctness evidence: actual-file packed parity passed at batch 1/3/4/8,
   MPS convolution-state tests passed 2/2, GGUF metadata/name-map tests passed
   3/3, and the MLX quantized-KV suite passed 10/10. The added Qwen3.5 test
@@ -1460,9 +1462,10 @@ tree throughput can be ranked for production.
   `sum(previous) * 0` lifetime edge with MLX's `mx.depends` scheduling
   primitive. Signed commit `ea983f3120` preserves the intended serialized
   allocation lifetime without modifying query values.
-- Benchmark evidence: no new speed claim; the retained long-shape evidence is
-  **0.258692 -> 0.229053 s** with peak allocation
-  **1,732,382,776 -> 701,499,056 bytes**. The ordinary path remains default.
+- Benchmark evidence: no new speed claim; the retained Mac Pro-only
+  long-shape evidence is **0.258692 -> 0.229053 s** with peak allocation
+  **1,732,382,776 -> 701,499,056 bytes**. The ordinary path remains default,
+  and these measurements carry no M1 Max record standing.
 - Correctness evidence: the full quantized-KV helper and Qwen wrapper suite
   passed **10/10** after the change; Python compilation and whitespace checks
   passed.
@@ -1489,12 +1492,12 @@ tree throughput can be ranked for production.
   `reasoning_content` and visible final `703`; `/props` reported vision,
   video, and audio false. The exact tool/preserved-result gate was already
   established on the corrected SGLang path and was not repeated after the
-  throughput miss.
-- Decision: close as a record candidate. Aggregate throughput is **21.943%**
-  below the 18.782925 scoreboard and best hit is **22.046%** below 18.820713.
-  Retain the pinned checkout as a supporting dependency oracle. Its 4.60x
-  advantage over the current native-MPS decode confirms substantial kernel
-  and dispatch headroom remains in the repository path.
+  decisive benchmark window.
+- Decision: this window establishes the route-neutral M1 Max Q2 frontier at
+  **14.661356 tok/s** aggregate and **14.671473 tok/s** best hit. Retain the
+  pinned checkout as both the benchmark reference and a supporting dependency
+  oracle. Its 4.60x advantage over the contemporaneous native-MPS decode
+  confirms substantial kernel and dispatch headroom in the repository path.
 
 ### 2026-08-20 21:45 PDT - PERF-A007 adjacent native-MPS control
 
@@ -1816,11 +1819,10 @@ tree throughput can be ranked for production.
   Metal compiler workers were clear, memory returned to 90% free, and macOS
   still reported no thermal or performance warning.
 - Decision: retain. This removes the native IQ2 prefill watchdog blocker and
-  qualifies the governing large-batch dispatch end to end. The Apple
-  Rust/MLX decode and maximum-context records remain unchanged; a bounded
-  native long-history GQA path and the exact Rust ingress scoreboard remain
-  separate funded work.
-- Commit: pending signed evidence commit.
+  qualifies the governing large-batch dispatch end to end. Batch-one decode is
+  unchanged; a bounded native long-history GQA path and the exact SGLang
+  `12+256` scoreboard remain separate funded work.
+- Commit: signed `1676c71bed` (`perf: accelerate large IQ2 prefills on Metal`).
 
 ### 2026-08-23 07:30 PDT - PERF-A014 repeated full-model control closes review
 
@@ -1850,3 +1852,17 @@ tree throughput can be ranked for production.
   free; no macOS thermal or performance warning.
 - Decision: the default-enabled native IQ2 dispatch now satisfies repeated
   full-model measurement and independent-restart evidence. Retain and commit.
+
+### 2026-08-23 07:46 PDT - invalid cross-machine q4 scoreboard removed
+
+- Provenance correction: the affine-q4 results came from a separate Mac Pro
+  experiment and were incorrectly attributed to this M1 Max. The q4 decode,
+  maximum-context, speculative, and winner-capability entries have been
+  removed from the local Apple benchmark authority.
+- The measured M1 Max Q2 `12+256` frontier is pinned llama.cpp build 10547 at
+  **14.661356 tok/s aggregate**, **14.671473 tok/s** best hit, **17.460868 s**
+  mean E2E, and **17.448827 s** best E2E. Every sample completed exact
+  `12+256` with stable digest.
+- Decision: use that route-neutral Q2 result as the benchmark. Exact SGLang
+  ingress remains open; PERF-A014 leaves batch-one decode unchanged and keeps
+  fixed-memory GQA plus batch-one IQ2 optimization funded.

@@ -8,9 +8,10 @@ stream of the trunk (verify logits run through the batched Metal matvec,
 whose fp32 accumulation order differs from MLX's single-token kernel at
 ~1e-3 relative — the same numerics class as chunked prefill).
 
-Engine-level wins on an M1 Max (paired in-process, August 2026): +1.4 to
-+6.3 tok/s on coding-agent generation, ~breakeven on the adversarial dense-
-identifier control, with the adaptive policy bounding hostile prompts.
+Historical Mac Pro engine-level measurements (paired in-process, August
+2026): +1.4 to +6.3 tok/s on coding-agent generation, ~breakeven on the
+adversarial dense-identifier control, with the adaptive policy bounding
+hostile prompts. These cross-machine results carry no M1 Max qualification.
 
 Constraints (validated by the runner at startup):
   * greedy requests only, no logit edits/hooks/logprobs, one running request;

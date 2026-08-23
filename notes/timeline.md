@@ -540,16 +540,15 @@ code changes, or process state matter.
   reasoning/tool markers. Live gates now return preserved thinking, final
   `703`, exact thinking-off `READY`, and one parsed multiply call.
 - A pinned current llama.cpp Metal build completed the exact `12+256`
-  scoreboard at **14.661356 tok/s aggregate**, below the 18.782925 record, and
-  became a dependency oracle.
+  scoreboard at **14.661356 tok/s aggregate** with a **14.671473 tok/s** best
+  hit, establishing the measured M1 Max Q2 reference.
 - The repository path's mixed merged projections were rebuilding 478.125 MiB
   of packed weights per token. Compact MPS storage in `13bea403d6` removed all
   40 copies, reduced reported weight residency **10.03 -> 9.03 GB**, and
   improved five-run `128+32` generation **3.1858 -> 3.309 tok/s** with the
   identical digest.
-- Native IQ2 kernel reuse is next. The independent 262K MLX lane retains
-  thresholded quantized-query tiling and still needs dependency pinning,
-  cache-limit wiring, and the remaining exact capacity rungs.
+- Native IQ2 kernel reuse is next. The former affine-q4 scoreboard came from a
+  separate Mac Pro and has been deleted from the M1 Max record.
 
 ### Native IQ2 and Q5 batch-one kernels cross 8 tok/s
 
@@ -569,9 +568,9 @@ code changes, or process state matter.
   **7.9450** and **7.9552 tok/s**. Reasoning, thinking-disabled, parsed tool,
   preserved tool-result, and language-only gates passed. Signed
   `b19cf4acf3` retains the kernel and alignment/extrema test.
-- The exact Apple Rust/MLX `12+256` record remains **18.782925 tok/s**. The
-  next native hotspot is the 48-call batch-one F32 GDN b/a path; maximum
-  context remains an independent MLX q4-KV qualification lane.
+- The route-neutral M1 Max Q2 `12+256` reference remains **14.661356 tok/s**.
+  The next native hotspot is the 48-call batch-one F32 GDN b/a path; exact
+  SGLang-ingress qualification remains open.
 
 ### Native F32 projection reaches 8.3 sampled tok/s and exposes the client-capacity gate
 
@@ -589,7 +588,7 @@ code changes, or process state matter.
 - A process-scoped OpenCode 1.18.15 request reached the exact endpoint with a
   13,635-token main agent prompt. The 1,024-token diagnostic launch rejected
   it at admission, making native context enablement the next funded step. The
-  exact Apple scoreboard record remains **18.782925 tok/s** and is unchanged.
+  exact M1 Max Q2 reference remains **14.661356 tok/s**.
 
 ### Torch-native partial prefill stops recomputing prefix queries
 
@@ -636,12 +635,25 @@ code changes, or process state matter.
   **24.845 prompt tok/s** and **201.251071 s E2E**.
 - Required sampled reasoning, final arithmetic `703`, thinking-disabled
   `READY`, one parsed multiply call, preserved tool-result continuation, and
-  image/audio-disabled surface all pass. Decode remains below the Rust/MLX
-  record, so the compact Apple scoreboards stay unchanged.
+  image/audio-disabled surface all pass. Batch-one decode is unchanged, so the
+  compact Q2 scoreboard remains **14.661356 tok/s** through pinned llama.cpp;
+  exact SGLang `12+256` remains open.
 - Five matched exact-`128+1` controls with the new path process-disabled
   averaged **7.0234 prompt tok/s**. Two independent default five-run windows
   averaged **22.9556** and **22.8072 tok/s**, directly attributing a 3.258x
   full-model prefill gain while leaving small-batch decode unchanged.
+
+### Cross-machine q4 record removed; local Q2 frontier restored
+
+- User-authoritative provenance established that the affine-q4 record came
+  from a separate Mac Pro. Its decode, maximum-context, speculative, and
+  capability claims were deleted from the M1 Max benchmark authority.
+- Pinned llama.cpp build 10547 now owns the route-neutral M1 Max Q2
+  `12+256` reference at **14.661356 tok/s aggregate** and **14.671473 tok/s**
+  best hit. Exact SGLang-ingress measurement remains open.
+- A mistaken partial q4 checkpoint restore was stopped and its isolated cache
+  removed. The retained Bartowski Q2 artifact and every unrelated cache were
+  preserved.
 
 ## Supersession map
 

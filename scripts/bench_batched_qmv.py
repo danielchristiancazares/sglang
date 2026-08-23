@@ -13,7 +13,8 @@ The candidate is any callable ``f(x, w, scales, biases, *, group_size, bits)``
 returning [N, M], e.g. a wrapper around ``mx.fast.metal_kernel``.
 
 MEASUREMENT NOTES -- these are not stylistic, they are the difference between
-a real result and a fake one (all learned the hard way on this machine):
+a real result and a fake one (all learned on the original Mac Pro measurement
+host):
 
   * Reps are CHAINED through a scalar tap of the previous output so kernels run
     strictly serially, matching the layer-by-layer decode graph.  Timing
@@ -45,7 +46,7 @@ SHAPES = {
     "small": (1024, 5120, 32),      # 94 MB/token
     "tiny": (48, 5120, 96),         # 13 MB/token -- M < one row tile, handle it
 }
-STREAM_CEILING = 368e9      # measured sequential-read ceiling, M1 Max 32-core
+STREAM_CEILING = 368e9      # historical Mac Pro sequential-read measurement
 
 
 def serial_time(op, x0, reps=12, iters=3, warmup=3):

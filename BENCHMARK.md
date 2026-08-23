@@ -1,176 +1,111 @@
-# Apple Silicon 32K Decode Benchmark
+# Apple Silicon M1 Max Q2 32K Decode Benchmark
 
-This is the primary performance scoreboard for the Apple Silicon
-Qwen3.8-27B serving lane. The numbers that matter are measured on the warmed
-fixed-decode workload: **12 prompt tokens plus 256 generated tokens** through
-the Rust server with greedy sampling and one running request.
+This is the primary performance scoreboard for the local Apple Silicon
+Qwen3.8-27B lane. The fixed workload is **12 prompt tokens plus 256 generated
+tokens**, greedy sampling, ignored EOS, and one running request.
 
-## Current record
+The former affine-q4 entry came from a separate Mac Pro experiment and was
+incorrectly attributed to this M1 Max. That cross-machine record and its
+derived thresholds have been removed.
+
+## Current measured Q2 record
 
 | Metric | Current record |
 |---|---:|
-| Steady server decode | **19.58 tok/s** |
-| End-to-end generation | **18.820713 tok/s** |
-| Time to first token | **Unknown** |
-| End-to-end time | **13.602035 s** |
-| Five-run aggregate generation | **18.782925 tok/s** |
+| Five-run aggregate generation | **14.661356 tok/s** |
+| Best request-observed generation | **14.671473 tok/s** |
+| Mean end-to-end time | **17.460868 s** |
+| Best end-to-end time | **17.448827 s** |
+| Mean internal decode | **14.784682 tok/s** |
 
-The five request-observed generation samples were
-`18.761785, 18.772786, 18.820713, 18.774448, 18.784999 tok/s`, with a
-**13.629400 s** mean end-to-end time. The direct `mlx-lm` engine result of
-**20.458 tok/s** used a different `58+27` workload and remains a ceiling
-reference rather than a server record.
-
-This record was measured on an Apple M1 Max with 32 GPU cores and 32 GB of
-unified memory using the full text side of Qwen3.8-27B.
+The five request-observed samples were
+`14.642054, 14.671473, 14.660470, 14.665758, 14.667059 tok/s`. Wall times were
+`17.483886, 17.448827, 17.461923, 17.455627, 17.454079 s`. Every response
+used the exact 12-token prompt, generated exactly 256 tokens, stopped at the
+length limit, and retained FNV-1a-64 `6d4d220de481f54e`.
 
 | Area | Record profile |
 |---|---|
-| OS and hardware | macOS 26.6.1; M1 Max, 10 CPU cores, 32 GPU cores, 32 GB unified memory |
-| Checkpoint | `mlx-community/Qwen3.8-27B-4bit` snapshot `3e6447f082e89cc7f0bc6e5441afd38dfce760ff` |
-| Runtime | Python 3.11.15, MLX 0.32.0, mlx-lm 0.31.3, repository-pinned Rust 1.92 |
-| Control plane | In-process Axum/Tokio Rust server with native OpenAI chat, template, reasoning, tool-call, and streaming paths |
-| Source | SGLang base `e577394a9bb7e86a0f8b34c3575ee02d899d2915` plus the Apple Silicon worktree |
-| Capacity and KV | 32,768-token context and pool; BF16 attention KV across 16 full-attention layers, approximately 2.0 GB at 32K |
-| Cache and concurrency | Unified FULL radix plus recurrent auxiliary-state caching; one running request |
-| Prefill | 4,096-token chunks; headless text trunk enabled for discarded chunks |
-| Sampling and graphs | Native MLX sampling; benchmark temperature 0; optional Metal RoPE and CUDA graph backends disabled |
-| Memory policy | `SGLANG_MLX_CLEAR_CACHE_STEPS=0`; 25.0 GB wired-memory limit |
+| OS and hardware | macOS 26.6.2; Apple M1 Max; 32 GPU cores; 32 GiB unified memory |
+| Checkpoint | Bartowski `Qwen3.8-27B-IQ2_XXS.gguf`, revision `f0eec4a4bb4975114a030d048952d83c0a53c034` |
+| Checkpoint SHA-256 | `b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9` |
+| Runtime | Official llama.cpp build 10547 at commit `749f688fcaa4c472ec034b08cb8a907c45cfaa02` |
+| Capacity and KV | 32,768-token context; one slot; FP16 K/V cache |
+| Model surface | Full 27B text model; all layers on Metal; multimodal projector disabled |
+| Sampling | Temperature zero; 256 forced output tokens; EOS ignored |
 
-Launch this profile with:
+Launch the measured reference with:
 
 ```bash
-env \
-  SGLANG_USE_MLX=1 \
-  SGLANG_RUST_SERVER=1 \
-  SGLANG_MLX_CLEAR_CACHE_STEPS=0 \
-  .venv-mps/bin/python -m sglang.launch_server \
-  --model-path "$MODEL_SNAPSHOT" \
-  --served-model-name qwen3.8-27b \
-  --language-model-only \
-  --context-length 32768 \
-  --max-total-tokens 32768 \
-  --max-running-requests 1 \
-  --chunked-prefill-size 4096 \
-  --max-prefill-tokens 8192 \
-  --mlx-enable-sampling \
-  --sampling-defaults model \
-  --reasoning-parser qwen3 \
-  --tool-call-parser qwen3_coder \
-  --incremental-streaming-output \
-  --cuda-graph-backend-decode disabled \
-  --cuda-graph-backend-prefill disabled \
+/Users/dcazares/llama.cpp-749f688f/build-metal-release/bin/llama-server \
+  --model /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 \
+  --alias qwen3.8-27b-iq2 \
+  --ctx-size 32768 \
+  --parallel 1 \
+  --batch-size 4096 \
+  --ubatch-size 512 \
+  --n-gpu-layers all \
+  --fit off \
+  --flash-attn on \
+  --cache-type-k f16 \
+  --cache-type-v f16 \
+  --no-mmproj \
+  --jinja \
+  --reasoning-format deepseek \
+  --reasoning on \
+  --reasoning-preserve \
+  --perf \
+  --metrics \
+  --offline \
+  --no-webui \
   --host 127.0.0.1 \
-  --port 30000
+  --port 30000 \
+  --timeout 600
 ```
 
 ## Benchmark command
 
-Run this fixed decode request five consecutive times after server warmup:
+Warm the exact request once, then run it five consecutive times while
+preserving the response body and full-precision wall time:
 
 ```bash
-curl -sS -o /dev/null -w '%{time_total}\n' \
-  -X POST http://127.0.0.1:30000/generate \
+curl -sS -w '\n%{time_total}\n' \
+  -X POST http://127.0.0.1:30000/v1/completions \
   -H 'Content-Type: application/json' \
-  -d '{"text":"Write a dense sequence of short Python identifiers separated by spaces.","sampling_params":{"temperature":0,"max_new_tokens":256,"ignore_eos":true}}'
+  -d '{"model":"qwen3.8-27b-iq2","prompt":"Write a dense sequence of short Python identifiers separated by spaces.","temperature":0,"max_tokens":256,"ignore_eos":true,"stream":false}'
 ```
 
-A target result must complete all five fixed-length requests, exceed both
-**18.782925 tok/s** aggregate generation and **18.820713 tok/s** best-hit
-generation, and preserve every capability gate below. Long prefill,
-maximum-context capacity, and direct-engine results remain independent records
-because they measure different workloads.
+For the repository-native SGLang route, send the same text through `/generate`
+with `temperature=0`, `max_new_tokens=256`, and `ignore_eos=true`. Preserve
+`meta_info`, `output_ids`, and the length finish; the Rust OpenAI completions
+schema does not carry `ignore_eos`.
 
-## Maximum-context record
+Compute aggregate throughput as `1280 / sum(the five wall times)`. A new
+record completes every fixed-length request and strictly exceeds both
+**14.661356 tok/s** aggregate generation and **14.671473 tok/s** best-hit
+generation in the same five-run window.
 
-The independent capacity winner advertises the full **262,144-token** native
-context with affine q4 attention KV. Its cache grows geometrically from 4,096
-tokens to the configured cap, avoiding repeated 256-token reallocations.
+## Qualification gates
 
-| Metric | Best qualified hit | Workload |
-|---|---:|---|
-| Verified q4 long prefill | **84.493486 prompt tok/s** | 5,000 exact prompt tokens + 1 output, 59.176159 s |
-| Largest completed exact probe | **32,768 prompt tokens** | 1 output, 425.299138 s, 77.046947 prompt tok/s |
-| Short steady decode | **19.46 tok/s** | fixed short control under native 262K allocation |
+The measured reference loaded the full Q2 text model, reported image, video,
+and audio disabled, preserved separate reasoning, and returned final `703` for
+`37 * 19`. A promoted SGLang route must also retain:
 
-Maximum-context configuration differences:
+- the exact 32,768-token context and token-pool allocation;
+- sampled reasoning at temperature `1.0`, top-p `0.95`, top-k `20`, and
+  presence penalty `1.5`;
+- thinking-disabled exact `READY` with zero reasoning tokens;
+- exactly one parsed `multiply({"a":37,"b":19})` tool call;
+- preserved reasoning through the tool-result continuation;
+- image and audio understanding disabled;
+- an independent restart and second performance window;
+- a 5,000-token two-chunk prefill and exact near-capacity evidence for changes
+  that affect allocation, cache layout, or residency;
+- standalone OpenCode integration before production promotion.
 
-- `--context-length 262144 --max-total-tokens 262144`
-- `--disable-radix-cache`
-- `--mlx-kv-cache-bits 4 --mlx-kv-cache-group-size 64`
-- affine q4 KV size: 18,432 bytes/token across 16 full-attention layers,
-  exactly 4.5 GiB at 262,144 tokens
-- one running request, with the same Rust control plane, chunked prefill,
-  reasoning, tool, and sampling settings as the speed winner
-
-Verified exact-token capacity rungs under this profile:
-
-| Prompt tokens | Output tokens | End-to-end time | Prompt throughput |
-|---:|---:|---:|---:|
-| 5,000 | 1 | 59.176159 s | **84.493486 tok/s** |
-| 16,384 | 1 | 204.230414 s | **80.223115 tok/s** |
-| 32,768 | 1 | 425.299138 s | **77.046947 tok/s** |
-
-## Opt-in speculative profile
-
-`--mlx-mtp-path <mtp.safetensors>` loads the Qwen3.8 multi-token-prediction
-head (`Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed`, q4-quantized at load)
-and speculates depth-3 with single-forward batched verification. Output is a
-greedy trunk stream: drafts are accepted only when they equal the trunk's own
-argmax (verify logits come from a batched Metal matvec whose fp32 reduction
-order differs from single-token decode at ~1e-3 relative). An adaptive policy
-(trailing 12-round acceptance vs. the ~3.0 tokens/round breakeven, doubling
-AR fallback stretches) bounds hostile prompts. Requires
-`--disable-radix-cache`, BF16 attention KV, greedy single-request decode.
-
-Measured through `MlxModelRunner` (paired in-process, 96 tokens, coding
-prompt): **20.94 vs 18.22 tok/s (+2.72, 1.15x), outputs identical to the
-runner's own greedy decode in all pairs.** Engine-level suite (160 tokens,
-4 pairs each, adaptive on): write-code +1.37, explain -0.59, refactor +4.41,
-tool-JSON +6.30, dense-identifier control -0.68 (breakeven +-0.7 across
-runs); mean +2.16, coding-workload mean +2.87 tok/s.
-
-Through the full server (Rust control plane, `/generate`, temperature 0,
-`ignore_eos`, radix off in both arms, medians of 3):
-
-| Workload | Flag off | Flag on | Delta |
-|---|---:|---:|---:|
-| LRU-cache prompt, 768 tokens | 19.05 tok/s | **19.88 tok/s** | +0.83 |
-| Tool-JSON edit commands, 384 tokens | 18.68 tok/s | **19.26 tok/s** | +0.58 |
-| LRU-cache prompt, 256 tokens | 18.32 tok/s | 18.86 best | +0.5 best, noisy |
-
-The engine-to-server gap is quantified: scheduler/streaming overhead
-serializes with GPU work during buffer pops (~4-5 ms/round; launching the
-next round during pops was measured to cost MORE via the extra Metal
-command-buffer split), and think-prose stretches sit at the acceptance
-breakeven, tripping the adaptive policy. The engine logs per-request round
-stats (`mtp[...]` lines) for further tuning.
-
-The fixed decode control and both incumbents above run with the flag OFF and
-are unaffected. Promotion of this profile into the speed winner would
-require the five-run control with the flag ON to clear the rule above plus
-all capability gates; the control prompt sits at breakeven, so the flag
-stays opt-in for agent workloads.
-
-## Capability gates passed by this winner
-
-- Full 27B text model loaded; no layer or expert offload.
-- Language-only loading disables the image and audio model paths. Live Rust
-  `/model_info` reports `has_image_understanding` and
-  `has_audio_understanding` as false.
-- Thinking enabled returns parsed `reasoning_content` and a correct final answer.
-- Thinking disabled returns `READY` with zero reasoning tokens.
-- `qwen3_coder` emits exactly one parsed
-  `multiply({"a": 37, "b": 19})` tool call.
-- A preserved-thinking tool-result turn returns the correct final value, `703`.
-- Unified radix FULL + recurrent-state caching remains enabled.
-- Repeated unrelated requests survive recurrent-state pool pressure and evict
-  retained checkpoints for admission.
-- A 5,000-token, two-chunk prefill completes; an identical follow-up reports a
-  4,096-token device-cache hit.
-
-The broader inherited workload and acceptance definitions remain in
-[`notes/benchmark-contract.md`](notes/benchmark-contract.md).
+Raw samples, exact process state, and the current native-SGLang Q2 handoff are
+preserved in [`notes/experiment-log.md`](notes/experiment-log.md) and
+[`notes/current-state.md`](notes/current-state.md).
 
 ---
 

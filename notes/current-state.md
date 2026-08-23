@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-23
-07:30 PDT.
+07:46 PDT.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -441,17 +441,16 @@ continues to report image/audio understanding false. The focused tokenizer,
 reasoning-parser, and tool-parser suites passed 321 tests plus 64 subtests.
 
 This clears the local behavior, sampled-workload, and independent-restart
-gates. The native route remains outside the Apple scoreboard until it runs the
-exact `12+256` fixture through the Rust ingress under the qualified 32K
-profile, then completes capacity and standalone OpenCode checks. A
-process-scoped OpenCode 1.18.15 probe formed a **13,635-token** real agent
-prompt, proving the 1,024-token diagnostic launch cannot satisfy that gate.
-No Apple server, client, or Metal compiler is live, port 30000 is free, and
-memory returned to 93% free after verified cleanup. Pinned llama.cpp build
-10547 reached **14.661356 tok/s** aggregate on the exact Apple benchmark,
-21.943% below the record, and is closed as a record route under that revision.
-PERF-A008's fixed-memory GQA remains the funded native throughput work after
-the long-pool fallback completes its full-model capacity gate.
+gates. Pinned llama.cpp build 10547 owns the measured M1 Max Q2 `12+256`
+reference at **14.661356 tok/s** aggregate and **14.671473 tok/s** best hit.
+The native SGLang route still needs that exact fixture under the qualified 32K
+profile, followed by capacity and standalone OpenCode checks. A process-scoped
+OpenCode 1.18.15 probe formed a **13,635-token** real agent prompt, proving the
+1,024-token diagnostic launch cannot satisfy that gate. No Apple server,
+client, or Metal compiler is live, port 30000 is free, and memory returned to
+93% free after verified cleanup. PERF-A008's fixed-memory GQA remains the
+funded native throughput work after the long-pool fallback completes its
+full-model capacity gate.
 
 Both source-level context blockers are now retained. Exact source A/B at a
 `4096+4096` partial extend reduced the padded-query controls from
@@ -464,9 +463,10 @@ first controlled 32K-configured BF16 launch reached ready state with an
 allocated 32,768-token pool and exposed large-batch IQ2_XXS projection as the
 remaining prefill blocker.
 
-PERF-A014 now routes Apple7+ IQ2_XXS batches above eight through an FP32
-SIMD-matrix kernel that shares each dequantized 64x32 weight tile across 32
-input rows. The actual `blk.8.ffn_gate.weight` (`17408x5120`) improved from
+Signed commit `1676c71bed` retains PERF-A014, which routes Apple7+ IQ2_XXS
+batches above eight through an FP32 SIMD-matrix kernel that shares each
+dequantized 64x32 weight tile across 32 input rows. The actual
+`blk.8.ffn_gate.weight` (`17408x5120`) improved from
 matched medians **70.074833 -> 4.250250/4.277125 ms** at batch 128, from the
 adjacent **249.418209 -> 16.009833 ms** at batch 512, and from
 **1971.539875 -> 124.838125 ms** at batch 4096. Aligned, odd output/batch,
@@ -493,19 +493,16 @@ the matched disabled prompt rate. Every request completed exact `128+1` with
 `finish_reason=length`; the true batch-eight fallback also passes actual-file
 parity.
 
-The native route still needs the exact Rust `12+256` ingress and standalone
-13,635-token OpenCode gate before it can enter the primary Apple scoreboard.
-Its decode rate remains below the selected Rust/MLX route. A bounded native
-long-history GQA kernel is the next native-IQ2 candidate; primary-scoreboard
-work remains focused on the Rust/MLX decode path.
+The native route still needs the exact `12+256` SGLang ingress and standalone
+13,635-token OpenCode gate before it can replace the route-neutral Q2
+reference. A bounded native long-history GQA kernel is the next native-IQ2
+candidate.
 
-The MLX long-context lane also retains adaptive quantized-prefill query tiling
-behind `SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE`. Its 1 GiB automatic threshold
-preserves small-prefill behavior while bounding the score temporary that caused
-the original 98K-context Metal allocation failure. Promotion still requires
-pinning an MLX build with the relevant quantized GQA tail-tile correction,
-wiring an explicit maximum-context profile, selecting a recycled-buffer cache
-limit, and completing the exact capacity ladder.
+The deleted affine-q4 scoreboard belonged to a separate Mac Pro experiment
+and carries no M1 Max record standing. The retained MLX quantized-prefill query
+tiler remains mechanism code behind
+`SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE`; any future M1 use requires fresh
+dependency, correctness, performance, memory, and capacity qualification.
 
 ## Behavior and capacity invariants
 
