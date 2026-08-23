@@ -1461,3 +1461,99 @@ standing.
   mechanism; then rerun with diagnostic ownership and an appropriate bound.
 - Related commit or revert: no source change; full evidence is in the
   2026-08-21 00:36 and 00:41 experiment-log entries.
+
+## PERF-FA051 - Simplified QK cache-staging lane map
+
+- Hypothesis: assigning each lane one `(key_column, dimension)` pair with the
+  simple `key_column=index/8`, `dimension=index&7` mapping would improve
+  coalescing and reduce the address work in the Q8/C64 Metal EXTEND kernel.
+- Scope: isolated BF16 paged-GQA attention at query length 256, prefix 4096,
+  24 query heads, four KV heads, and dimension 256.
+- Attempted change: replaced the selected four-consecutive-dimensions-per-lane
+  QK staging map with the simpler eight-dimension lane mapping while retaining
+  the same FP32 matrix arithmetic and online softmax.
+- Benchmark evidence: the simplified mapping produced an approximately
+  **63.08 ms** median in the matched isolated harness. The restored selected
+  mapping produced approximately **51.57 ms** at the same shape.
+- Correctness evidence: both mappings passed the dense MPS SDPA reference.
+- Failure mode: the simpler mapping increases steady kernel time by about
+  22%; its source-level coalescing intuition did not translate to the selected
+  Apple7 matrix-stage geometry.
+- Why not to retry unchanged: the same arithmetic and shape were measured
+  directly, and the selected mapping won decisively.
+- Reopen only if: a direct BF16 matrix-load path or a changed staging slab
+  materially changes the cache-load transaction pattern.
+- Related commit or revert: removed before the PERF-A017 checkpoint.
+
+## PERF-FA052 - Paired PV matrix staging
+
+- Hypothesis: staging two adjacent value matrices together would halve PV
+  staging barriers in the Q8/C64 Metal EXTEND kernel.
+- Scope: isolated BF16 paged-GQA attention with the same four-SIMD-group,
+  dimension-256 production geometry.
+- Attempted change: packed two 8x8 V fragments into each per-SIMD staging
+  partition and consumed both before reusing the partition.
+- Benchmark evidence: no timing score was retained because correctness failed
+  at the first parity gate.
+- Correctness evidence: output diverged materially from the dense causal SDPA
+  reference, far outside the `atol=2e-5`, `rtol=2e-4` admission bound.
+- Failure mode: the paired stage's row/stride interpretation did not preserve
+  the required V matrix layout across both fragments.
+- Why not to retry unchanged: a barrier reduction cannot fund a numerically
+  invalid layout.
+- Reopen only if: the fallback uses one explicit row-major `8x64` slab with
+  stride 64 and independently validates every 8x8 matrix origin before timing.
+- Related commit or revert: reverted before the PERF-A017 checkpoint; the
+  selected kernel retains one 8x8 value stage at a time.
+
+## PERF-FA053 - Import-time C++ hook for Metal EXTEND dispatch
+
+- Hypothesis: a C++ `HookRegistry` or pybind monkeypatch installed during
+  extension initialization could activate the direct-cache Metal kernel while
+  satisfying the literal no-new-Python rule.
+- Scope: `TorchNativeAttnBackend.forward_extend`, its private SDPA helper, and
+  the lazy native Metal extension import.
+- Attempted change: design review traced a paired outer/inner hook. The outer
+  hook would carry `save_kv_cache=True` through thread-local state; the inner
+  hook would gate the raw cache signature and delegate every other call.
+- Benchmark evidence: no runtime score was taken because the architecture
+  failed ownership and initialization review before implementation.
+- Correctness evidence: shape-only inner hooking is insufficient because the
+  private helper lacks `save_kv_cache`; direct callers and save-false calls can
+  otherwise read stale cache state.
+- Failure mode: extension bootstrap would own attention-backend policy through
+  import-order-dependent mutation. HookRegistry late registration can conflict
+  with its `_patched` set, class reload/subclass/compile behavior becomes
+  implicit, and method-signature drift bypasses ordinary type checking.
+- Why not to retry unchanged: implementing a Python dispatch mutation in C++
+  satisfies the language restriction while placing policy outside its owning
+  backend mechanism.
+- Reopen only if: the backend owner explicitly approves a stable native hook
+  contract with load-order, composition, save-false, exception, and fallback
+  semantics.
+- Related commit or revert: design rejected; no source change.
+
+## PERF-FA054 - Global MPS aten SDPA override for EXTEND
+
+- Hypothesis: registering a C++ MPS implementation of top-level aten scaled
+  dot-product attention could activate bounded Metal attention without a new
+  Python call site.
+- Scope: every MPS SDPA caller in the process, including SGLang EXTEND and
+  unrelated framework/model uses.
+- Attempted change: source and dispatcher review confirmed an available MPS
+  registration slot and a CompositeImplicitAutograd fallback route.
+- Benchmark evidence: no kernel score was taken because the seam loses the
+  direct BF16 cache and request-map provenance before dispatch.
+- Correctness evidence: this boundary receives gathered FP32 dense K/V. It
+  cannot call PERF-A017 and would require a second kernel plus complete
+  autograd, compile, alias, mask, dropout, causality, and fallback coverage.
+- Failure mode: the global operator owns a much broader semantic domain than
+  the Qwen batch-one EXTEND rule. It retains roughly 0.5 GiB of BF16 gather
+  plus 1 GiB of compact FP32 K/V at 128K and expands regression scope to every
+  MPS attention caller.
+- Why not to retry unchanged: the available schema lacks the metadata that
+  makes the direct-cache mechanism safe and memory-flat.
+- Reopen only if: a separately funded dense-input kernel implements the full
+  aten contract and matched profiling shows that retained gather/cast traffic
+  still clears memory and throughput gates.
+- Related commit or revert: design rejected; no source change.

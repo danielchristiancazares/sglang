@@ -717,6 +717,31 @@ code changes, or process state matter.
   process-scoped OpenCode requests remain chronological admission evidence;
   the named Codex profile owns the current Apple real-client decision.
 
+### Fixed-memory Metal EXTEND reaches the 131K isolated rung
+
+- The generic Apple EXTEND route's source-visible working set reaches
+  **10.1328125 GiB** per full-attention layer at `E=1024,L=65536` and
+  **20.1953125 GiB** at `L=131072`, explaining the measured 64K swap and
+  forward-progress collapse.
+- PERF-A017 adds an Apple7+ BF16 paged-GQA Metal kernel for the production
+  batch-one, 24-query-head, four-KV-head, dimension-256 geometry. Q8/C64
+  online softmax uses 20,800 bytes of threadgroup memory and caller-owned
+  output, giving zero history-dependent global auxiliary allocation.
+- Shuffled mappings, nonzero storage offsets, Q8/C64 tails, query lengths
+  through 1,024, strict invalid metadata, and host admission guards pass. The
+  maximum observed dense-reference error is `1.3113022e-06`.
+- At `E=17,L=131072`, final-source native samples have a **137.906625 ms** median and
+  add `0 MiB` measured driver residency after inputs are resident. Dense MPS
+  SDPA takes **424.528292 ms**, adds **8,088.515625 MiB** of driver residency,
+  and matches the native output within `4.3120235e-07`.
+- The shader and pipeline are isolated in a lazy Metal library; established
+  native MPS operations keep their original shared-library initialization and
+  pipeline cache.
+- Production routing remains open under the no-new-Python constraint because
+  the raw binding is outside the live backend call chain. Served context
+  qualification remains 32,768 tokens while C++ dispatch ownership and the
+  consecutive-cache-run fast path proceed.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:

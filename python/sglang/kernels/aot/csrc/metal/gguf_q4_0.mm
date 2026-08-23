@@ -5,7 +5,9 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -2233,6 +2235,17 @@ struct AttentionArgs {
     float scale;
 };
 
+struct ExtendAttentionArgs {
+    uint query_tokens;
+    uint num_q_heads;
+    uint num_kv_heads;
+    uint head_dim;
+    uint cache_slots;
+    uint req_rows;
+    uint req_stride;
+    float scale;
+};
+
 struct NormArgs {
     uint rows;
     uint columns;
@@ -2778,6 +2791,292 @@ inline ushort f32_to_bf16_rne(float value) {
     return ushort(bits >> 16);
 }
 
+#if defined(SGLANG_EXTEND_GQA) && SGLANG_SIMDGROUP_MATRIX && SGLANG_EXTEND_GQA
+inline float simd_max_16(float value) {
+    value = max(value, simd_shuffle_xor(value, 8));
+    value = max(value, simd_shuffle_xor(value, 4));
+    value = max(value, simd_shuffle_xor(value, 2));
+    return max(value, simd_shuffle_xor(value, 1));
+}
+
+inline float simd_sum_16(float value) {
+    value += simd_shuffle_xor(value, 8);
+    value += simd_shuffle_xor(value, 4);
+    value += simd_shuffle_xor(value, 2);
+    return value + simd_shuffle_xor(value, 1);
+}
+
+// The 8-query/64-cache-token, four-SIMD-group QK/online-softmax/PV tiling
+// adapts kernel_flash_attn_ext_impl and OP_FLASH_ATTN_EXT_* geometry from
+// ggml-org/llama.cpp commit 749f688fcaa4c472ec034b08cb8a907c45cfaa02.
+// SGLang adds paged-cache indirection, GQA/causal mapping, FP32 staging and
+// accumulation, and caller-owned output; see THIRDPARTYNOTICES.txt.
+// Eight query/head rows share each mapped K/V tile. The complete online-
+// softmax state remains in bounded threadgroup storage; no tensor scales with
+// query_rows * sequence_length.
+kernel void extend_gqa_bf16_tiled_256(
+        device const float * query,
+        device const ushort * key_cache,
+        device const ushort * value_cache,
+        device const int * req_to_token,
+        device const long * req_pool_indices,
+        device const long * seq_lens,
+        device float * output,
+        constant ExtendAttentionArgs & args,
+        threadgroup uchar * shared [[threadgroup(0)]],
+        uint2 group [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr ushort query_tile = 8;
+    constexpr ushort key_tile = 64;
+    constexpr ushort heads_per_kv = 6;
+    constexpr ushort head_dim = 256;
+
+    threadgroup float * shared_query =
+        reinterpret_cast<threadgroup float *>(shared);
+    threadgroup float * shared_output = shared_query + query_tile * head_dim;
+    threadgroup float * shared_scores = shared_output + query_tile * head_dim;
+    threadgroup float * shared_stage = shared_scores + query_tile * key_tile;
+    threadgroup int * shared_slots =
+        reinterpret_cast<threadgroup int *>(shared_stage + 4 * 8 * 16);
+    threadgroup float * shared_stats =
+        reinterpret_cast<threadgroup float *>(shared_slots + key_tile);
+
+    const uint kv_head = group.y;
+    const uint attention_row_start = group.x * query_tile;
+    const uint attention_rows = args.query_tokens * heads_per_kv;
+    const long raw_seq_len = seq_lens[0];
+    const bool metadata_valid = raw_seq_len >= long(args.query_tokens) &&
+        ulong(raw_seq_len) <= ulong(args.cache_slots) &&
+        ulong(raw_seq_len) <= ulong(args.req_stride);
+    const uint seq_len = metadata_valid ? uint(raw_seq_len) : 0;
+    const uint prefix_len = metadata_valid
+        ? seq_len - args.query_tokens
+        : 0;
+    const long req_slot = req_pool_indices[0];
+    const bool req_valid = metadata_valid &&
+        req_slot >= 0 && ulong(req_slot) < ulong(args.req_rows);
+    const uint cache_row_size = args.num_kv_heads * head_dim;
+    const uint last_attention_row = min(
+        attention_rows - 1, attention_row_start + query_tile - 1);
+    const uint group_kv_len = req_valid
+        ? min(seq_len, prefix_len + last_attention_row / heads_per_kv + 1)
+        : 0;
+
+    for (uint index = tid; index < query_tile * head_dim; index += 128) {
+        const uint row = index / head_dim;
+        const uint dim = index - row * head_dim;
+        const uint attention_row = attention_row_start + row;
+        float value = 0.0f;
+        if (attention_row < attention_rows) {
+            const uint query_token = attention_row / heads_per_kv;
+            const uint query_head =
+                kv_head * heads_per_kv + attention_row % heads_per_kv;
+            value = query[
+                (query_token * args.num_q_heads + query_head) * head_dim + dim];
+        }
+        shared_query[index] = value;
+        shared_output[index] = 0.0f;
+    }
+    if (tid < query_tile) {
+        shared_stats[2 * tid] = -INFINITY;
+        shared_stats[2 * tid + 1] = 0.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint key_start = 0; key_start < group_kv_len; key_start += key_tile) {
+        if (tid < key_tile) {
+            const uint logical_token = key_start + tid;
+            int slot = -1;
+            if (req_valid && logical_token < seq_len) {
+                const int candidate = req_to_token[
+                    ulong(req_slot) * ulong(args.req_stride) + logical_token];
+                if (candidate >= 0 && uint(candidate) < args.cache_slots) {
+                    slot = candidate;
+                }
+            }
+            shared_slots[tid] = slot;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        simdgroup_float8x8 score_left =
+            make_filled_simdgroup_matrix<float, 8>(0.0f);
+        simdgroup_float8x8 score_right =
+            make_filled_simdgroup_matrix<float, 8>(0.0f);
+        threadgroup float * score_stage = shared_stage + simd_id * 8 * 16;
+
+        for (ushort dim_start = 0; dim_start < head_dim; dim_start += 16) {
+            simdgroup_float8x8 query_low;
+            simdgroup_float8x8 query_high;
+            simdgroup_load(
+                query_low, shared_query + dim_start, head_dim, 0, false);
+            simdgroup_load(
+                query_high, shared_query + dim_start + 8,
+                head_dim, 0, false);
+
+#pragma unroll
+            for (ushort key_half = 0; key_half < 2; ++key_half) {
+                const ushort key_row = lane / 4;
+                const ushort dim_quad = lane & 3;
+                const int slot = shared_slots[
+                    simd_id * 16 + key_half * 8 + key_row];
+#pragma unroll
+                for (ushort dim = 0; dim < 4; ++dim) {
+                    score_stage[
+                        key_row * 16 + dim_quad * 4 + dim] = slot >= 0
+                        ? bf16_to_f32(key_cache[
+                              ulong(uint(slot)) * ulong(cache_row_size) +
+                              kv_head * head_dim + dim_start +
+                              dim_quad * 4 + dim])
+                        : 0.0f;
+                }
+                simdgroup_barrier(mem_flags::mem_threadgroup);
+
+                simdgroup_float8x8 key_low;
+                simdgroup_float8x8 key_high;
+                simdgroup_load(key_low, score_stage, 16, 0, true);
+                simdgroup_load(key_high, score_stage + 8, 16, 0, true);
+                if (key_half == 0) {
+                    simdgroup_multiply_accumulate(
+                        score_left, query_low, key_low, score_left);
+                    simdgroup_multiply_accumulate(
+                        score_left, query_high, key_high, score_left);
+                } else {
+                    simdgroup_multiply_accumulate(
+                        score_right, query_low, key_low, score_right);
+                    simdgroup_multiply_accumulate(
+                        score_right, query_high, key_high, score_right);
+                }
+                simdgroup_barrier(mem_flags::mem_threadgroup);
+            }
+        }
+
+        simdgroup_store(
+            score_left, shared_scores + simd_id * 16, key_tile, 0, false);
+        simdgroup_store(
+            score_right, shared_scores + simd_id * 16 + 8,
+            key_tile, 0, false);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        const ushort softmax_row = tid / 16;
+        const ushort softmax_lane = tid & 15;
+        const uint attention_row = attention_row_start + softmax_row;
+        const bool row_valid = attention_row < attention_rows;
+        const uint query_token = row_valid
+            ? attention_row / heads_per_kv
+            : 0;
+        const uint causal_limit = row_valid
+            ? min(seq_len, prefix_len + query_token + 1)
+            : 0;
+
+        float row_max = -INFINITY;
+        float scaled_scores[4];
+#pragma unroll
+        for (ushort index = 0; index < 4; ++index) {
+            const ushort key_column = softmax_lane + 16 * index;
+            const uint logical_token = key_start + key_column;
+            const bool score_valid = row_valid &&
+                logical_token < causal_limit &&
+                shared_slots[key_column] >= 0;
+            const float score = score_valid
+                ? shared_scores[softmax_row * key_tile + key_column] * args.scale
+                : -INFINITY;
+            scaled_scores[index] = score;
+            row_max = max(row_max, score);
+        }
+        row_max = simd_max_16(row_max);
+
+        const float old_max = shared_stats[2 * softmax_row];
+        const float old_sum = shared_stats[2 * softmax_row + 1];
+        const bool block_valid = row_max != -INFINITY;
+        const float next_max = block_valid ? max(old_max, row_max) : old_max;
+        const float old_scale = old_sum == 0.0f
+            ? 0.0f
+            : (block_valid ? exp(old_max - next_max) : 1.0f);
+        float block_sum = 0.0f;
+#pragma unroll
+        for (ushort index = 0; index < 4; ++index) {
+            const ushort key_column = softmax_lane + 16 * index;
+            const float probability = scaled_scores[index] == -INFINITY
+                ? 0.0f
+                : exp(scaled_scores[index] - next_max);
+            shared_scores[softmax_row * key_tile + key_column] = probability;
+            block_sum += probability;
+        }
+        block_sum = simd_sum_16(block_sum);
+        for (ushort dim = softmax_lane; dim < head_dim; dim += 16) {
+            shared_output[softmax_row * head_dim + dim] *= old_scale;
+        }
+        if (softmax_lane == 0 && row_valid) {
+            shared_stats[2 * softmax_row] = next_max;
+            shared_stats[2 * softmax_row + 1] =
+                old_sum * old_scale + block_sum;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        simdgroup_float8x8 output_fragments[8];
+#pragma unroll
+        for (ushort output_block = 0; output_block < 8; ++output_block) {
+            simdgroup_load(
+                output_fragments[output_block],
+                shared_output + simd_id * 64 + output_block * 8,
+                head_dim, 0, false);
+        }
+        threadgroup float * value_stage = shared_stage + simd_id * 8 * 16;
+        for (ushort key_block = 0; key_block < key_tile; key_block += 8) {
+            simdgroup_float8x8 probability_fragment;
+            simdgroup_load(
+                probability_fragment, shared_scores + key_block,
+                key_tile, 0, false);
+#pragma unroll
+            for (ushort output_block = 0; output_block < 8; ++output_block) {
+                for (ushort index = lane; index < 8 * 8; index += 32) {
+                    const ushort key_row = index / 8;
+                    const ushort output_column = index & 7;
+                    const int slot = shared_slots[key_block + key_row];
+                    value_stage[index] = slot >= 0
+                        ? bf16_to_f32(value_cache[
+                              ulong(uint(slot)) * ulong(cache_row_size) +
+                              kv_head * head_dim +
+                              simd_id * 64 + output_block * 8 + output_column])
+                        : 0.0f;
+                }
+                simdgroup_barrier(mem_flags::mem_threadgroup);
+                simdgroup_float8x8 value_fragment;
+                simdgroup_load(value_fragment, value_stage, 8, 0, false);
+                simdgroup_multiply_accumulate(
+                    output_fragments[output_block], probability_fragment,
+                    value_fragment, output_fragments[output_block]);
+                simdgroup_barrier(mem_flags::mem_threadgroup);
+            }
+        }
+#pragma unroll
+        for (ushort output_block = 0; output_block < 8; ++output_block) {
+            simdgroup_store(
+                output_fragments[output_block],
+                shared_output + simd_id * 64 + output_block * 8,
+                head_dim, 0, false);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    for (uint index = tid; index < query_tile * head_dim; index += 128) {
+        const uint row = index / head_dim;
+        const uint dim = index - row * head_dim;
+        const uint attention_row = attention_row_start + row;
+        if (attention_row < attention_rows) {
+            const uint query_token = attention_row / heads_per_kv;
+            const uint query_head =
+                kv_head * heads_per_kv + attention_row % heads_per_kv;
+            const float sum = shared_stats[2 * row + 1];
+            output[(query_token * args.num_q_heads + query_head) * head_dim + dim] =
+                sum == 0.0f ? 0.0f : shared_output[index] / sum;
+        }
+    }
+}
+#endif
+
 kernel void store_decode_kv_bf16(
         device const float * key,
         device const float * value,
@@ -3049,6 +3348,17 @@ struct AttentionArgs {
     float scale;
 };
 
+struct ExtendAttentionArgs {
+    uint32_t query_tokens;
+    uint32_t num_q_heads;
+    uint32_t num_kv_heads;
+    uint32_t head_dim;
+    uint32_t cache_slots;
+    uint32_t req_rows;
+    uint32_t req_stride;
+    float scale;
+};
+
 struct NormArgs {
     uint32_t rows;
     uint32_t columns;
@@ -3254,6 +3564,67 @@ Pipelines & pipelines() {
     return value;
 }
 
+struct ExtendPipeline {
+    id<MTLComputePipelineState> state = nil;
+    std::string error = "native Metal BF16 extend pipeline is unavailable";
+};
+
+ExtendPipeline & extend_pipeline() {
+    static ExtendPipeline value;
+    static std::once_flag once;
+    std::call_once(once, [&] {
+        id<MTLDevice> device = at::mps::getCurrentMPSStream()->device();
+        if (![device supportsFamily:MTLGPUFamilyApple7] ||
+            device.maxThreadgroupMemoryLength < 20800) {
+            value.error =
+                "native Metal BF16 extend requires Apple7+ and 20800 bytes of threadgroup memory";
+            return;
+        }
+
+        NSError * error = nil;
+        MTLCompileOptions * options = [MTLCompileOptions new];
+        options.fastMathEnabled = YES;
+        options.preprocessorMacros = @{
+            @"SGLANG_SIMDGROUP_MATRIX": @YES,
+            @"SGLANG_EXTEND_GQA": @YES
+        };
+        id<MTLLibrary> library = [device newLibraryWithSource:@(kQ4Source)
+                                                      options:options
+                                                        error:&error];
+        if (library == nil) {
+            value.error = error == nil
+                ? "native Metal BF16 extend library compilation failed"
+                : std::string(error.localizedDescription.UTF8String);
+            return;
+        }
+        id<MTLFunction> function =
+            [library newFunctionWithName:@"extend_gqa_bf16_tiled_256"];
+        if (function == nil) {
+            value.error = "native Metal BF16 extend function is missing";
+            return;
+        }
+        value.state = [device newComputePipelineStateWithFunction:function
+                                                            error:&error];
+        if (value.state == nil) {
+            value.error = error == nil
+                ? "native Metal BF16 extend pipeline creation failed"
+                : std::string(error.localizedDescription.UTF8String);
+            return;
+        }
+        if (value.state.threadExecutionWidth != 32 ||
+            value.state.maxTotalThreadsPerThreadgroup < 128 ||
+            value.state.staticThreadgroupMemoryLength >
+                device.maxThreadgroupMemoryLength - 20800) {
+            value.state = nil;
+            value.error =
+                "native Metal BF16 extend pipeline does not satisfy the SIMD or threadgroup-memory contract";
+            return;
+        }
+        value.error.clear();
+    });
+    return value;
+}
+
 bool supports_bf16_decode_gqa() {
     static const bool supported = [] {
         id<MTLDevice> device = at::mps::getCurrentMPSStream()->device();
@@ -3262,6 +3633,15 @@ bool supports_bf16_decode_gqa() {
             p.decode_gqa_bf16 != nil &&
             p.decode_gqa_bf16.threadExecutionWidth == 32 &&
             p.decode_gqa_bf16.maxTotalThreadsPerThreadgroup >= 128;
+    }();
+    return supported;
+}
+
+bool supports_bf16_extend_gqa() {
+    static const bool supported = [] {
+        id<MTLDevice> device = at::mps::getCurrentMPSStream()->device();
+        return [device supportsFamily:MTLGPUFamilyApple7] &&
+            device.maxThreadgroupMemoryLength >= 20800;
     }();
     return supported;
 }
@@ -4595,11 +4975,133 @@ torch::Tensor decode_gqa(
     return output;
 }
 
+torch::Tensor extend_gqa_bf16(
+    const torch::Tensor & query,
+    const torch::Tensor & output,
+    const torch::Tensor & key_cache,
+    const torch::Tensor & value_cache,
+    const torch::Tensor & req_to_token,
+    const torch::Tensor & req_pool_indices,
+    const torch::Tensor & seq_lens,
+    double scale) {
+    TORCH_CHECK(query.device().is_mps(),
+                "native Metal extend query must be on MPS");
+    TORCH_CHECK(query.scalar_type() == torch::kFloat32,
+                "native Metal extend query must have dtype float32");
+    TORCH_CHECK(query.is_contiguous(),
+                "native Metal extend query must be contiguous");
+    TORCH_CHECK(query.dim() == 3 && query.size(1) == 24 && query.size(2) == 256,
+                "native Metal extend query must have shape [tokens, 24, 256]");
+    const int64_t query_tokens = query.size(0);
+    TORCH_CHECK(query_tokens >= 1 && query_tokens <= 1024,
+                "native Metal extend requires between 1 and 1024 query tokens");
+    TORCH_CHECK(output.device().is_mps() &&
+                    output.scalar_type() == torch::kFloat32 &&
+                    output.is_contiguous() && output.sizes() == query.sizes(),
+                "native Metal extend output must match the contiguous float32 MPS query");
+
+    for (const auto & tensor : {key_cache, value_cache}) {
+        TORCH_CHECK(tensor.device().is_mps(),
+                    "native Metal extend caches must be on MPS");
+        TORCH_CHECK(tensor.scalar_type() == torch::kBFloat16,
+                    "native Metal extend caches must have dtype bfloat16");
+        TORCH_CHECK(tensor.is_contiguous(),
+                    "native Metal extend caches must be contiguous");
+    }
+    TORCH_CHECK(key_cache.dim() == 3 &&
+                    key_cache.sizes() == value_cache.sizes(),
+                "native Metal extend K/V cache shapes must match");
+    TORCH_CHECK(key_cache.size(1) == 4 && key_cache.size(2) == 256,
+                "native Metal extend caches must have shape [slots, 4, 256]");
+    const int64_t cache_slots = key_cache.size(0);
+    TORCH_CHECK(cache_slots >= 1 && cache_slots <= 131073,
+                "native Metal extend supports at most 131073 cache slots");
+
+    TORCH_CHECK(req_to_token.device().is_mps() &&
+                    req_to_token.scalar_type() == torch::kInt32 &&
+                    req_to_token.is_contiguous() && req_to_token.dim() == 2,
+                "native Metal extend req_to_token must be contiguous int32 MPS [rows, context]");
+    for (const auto & tensor : {req_pool_indices, seq_lens}) {
+        TORCH_CHECK(tensor.device().is_mps() &&
+                        tensor.scalar_type() == torch::kInt64 &&
+                        tensor.is_contiguous() && tensor.numel() == 1,
+                    "native Metal extend request metadata must be contiguous int64 MPS data");
+    }
+    TORCH_CHECK(req_to_token.size(0) >= 1 && req_to_token.size(1) >= 1,
+                "native Metal extend requires a non-empty request map");
+    TORCH_CHECK(
+        static_cast<uint64_t>(req_to_token.size(0)) <=
+                std::numeric_limits<uint32_t>::max() &&
+            static_cast<uint64_t>(req_to_token.size(1)) <=
+                std::numeric_limits<uint32_t>::max(),
+        "native Metal extend request-map dimensions must fit uint32");
+    const float scale_f32 = static_cast<float>(scale);
+    TORCH_CHECK(std::isfinite(scale_f32) && scale_f32 > 0.0f,
+                "native Metal extend scale must be finite, positive, and representable as float32");
+    TORCH_CHECK(supports_bf16_extend_gqa(),
+                "native Metal BF16 extend requires Apple7+ SIMD-group matrices");
+
+    auto buffer_of = [](const torch::Tensor & tensor) {
+        return (__bridge id<MTLBuffer>)tensor.storage().data_ptr().get();
+    };
+    auto offset_of = [](const torch::Tensor & tensor) -> NSUInteger {
+        return tensor.storage_offset() * tensor.element_size();
+    };
+    TORCH_CHECK(buffer_of(output) != buffer_of(query) &&
+                    buffer_of(output) != buffer_of(key_cache) &&
+                    buffer_of(output) != buffer_of(value_cache) &&
+                    buffer_of(output) != buffer_of(req_to_token) &&
+                    buffer_of(output) != buffer_of(req_pool_indices) &&
+                    buffer_of(output) != buffer_of(seq_lens),
+                "native Metal extend output must use distinct storage");
+
+    ExtendAttentionArgs args = {
+        static_cast<uint32_t>(query_tokens),
+        24,
+        4,
+        256,
+        static_cast<uint32_t>(cache_slots),
+        static_cast<uint32_t>(req_to_token.size(0)),
+        static_cast<uint32_t>(req_to_token.size(1)),
+        scale_f32,
+    };
+
+    at::mps::MPSStream * stream = at::mps::getCurrentMPSStream();
+    ExtendPipeline & p = extend_pipeline();
+    TORCH_CHECK(p.state != nil,
+                "native Metal BF16 extend pipeline failed: ", p.error);
+    dispatch_sync(stream->queue(), ^{
+        id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+        [encoder setComputePipelineState:p.state];
+        [encoder setBuffer:buffer_of(query) offset:offset_of(query) atIndex:0];
+        [encoder setBuffer:buffer_of(key_cache)
+                 offset:offset_of(key_cache) atIndex:1];
+        [encoder setBuffer:buffer_of(value_cache)
+                 offset:offset_of(value_cache) atIndex:2];
+        [encoder setBuffer:buffer_of(req_to_token)
+                 offset:offset_of(req_to_token) atIndex:3];
+        [encoder setBuffer:buffer_of(req_pool_indices)
+                 offset:offset_of(req_pool_indices) atIndex:4];
+        [encoder setBuffer:buffer_of(seq_lens)
+                 offset:offset_of(seq_lens) atIndex:5];
+        [encoder setBuffer:buffer_of(output) offset:offset_of(output) atIndex:6];
+        [encoder setBytes:&args length:sizeof(args) atIndex:7];
+        [encoder setThreadgroupMemoryLength:20800 atIndex:0];
+        const NSUInteger attention_rows = query_tokens * 6;
+        [encoder dispatchThreadgroups:
+                     MTLSizeMake((attention_rows + 7) / 8, 4, 1)
+                    threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+    });
+    return output;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
     module.def("supports_bf16_decode_gqa", &supports_bf16_decode_gqa,
                "Whether the active Metal device supports native BF16 GQA decode");
+    module.def("supports_bf16_extend_gqa", &supports_bf16_extend_gqa,
+               "Whether the active Metal device supports native BF16 GQA extend");
     module.def("q4_0_matmul", &q4_0_matmul, "Native Metal GGUF Q4_0 matmul");
     module.def("quant_matmul", &quant_matmul,
                "Native Metal GGUF low-bit matmul");
@@ -4617,6 +5119,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
     module.def("gdn_prefill", &gdn_prefill, "Native Metal Gated DeltaNet prefill");
     module.def("decode_gqa", &decode_gqa,
                "Native Metal fused KV write and grouped-query decode attention");
+    module.def("extend_gqa_bf16", &extend_gqa_bf16,
+               "Native Metal bounded-memory BF16 grouped-query extend attention");
     module.def("gemma_rmsnorm", &gemma_rmsnorm,
                "Native Metal Gemma RMSNorm");
     module.def("gemma_fused_add_rmsnorm", &gemma_fused_add_rmsnorm,
