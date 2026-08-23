@@ -765,6 +765,25 @@ code changes, or process state matter.
   remains outside the serving call chain, so the Apple production/capacity
   record is unchanged pending an approved backend dispatch seam.
 
+### PERF-A019 publishes run flags from slot-loader registers
+
+- Two slot-loader SIMDgroups now classify their own eight-lane cohorts with a
+  first-slot broadcast and three XOR reductions. Cohort leaders publish run
+  starts, and one threadgroup barrier makes slots plus run flags visible to all
+  consumers. This removes one barrier and 64 shared classifier reads per C64
+  tile without changing the 20,832-byte scratch contract.
+- At `E=256,L=4352`, a restored signed-checkpoint arm measured
+  **27.009396 ms**; candidate arms measured **26.398334/26.592563 ms**. The
+  zero-eligible map moved only **58.832500 -> 58.874062 ms**.
+- At `E=17,L=131072`, matched medians are
+  **66.577542 -> 65.565041/65.493667 ms**, with exact digest parity and zero
+  measured current/driver allocation growth. Every broken cohort position,
+  duplicates, invalid slots, a run at the upper cache boundary, a run crossing
+  physical row 64, and a repeated two-tile hybrid map pass.
+- A full 32-query-matrix hoist was bitwise exact and regressed direct and
+  fragmented maps by roughly 3.4-6.5%; its expanded live-register design is
+  closed as `PERF-FA056`.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
