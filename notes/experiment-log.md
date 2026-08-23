@@ -8407,3 +8407,140 @@ mean 13.929045  17.125658 446.051        39.730
   test whether direct device-matrix-load synchronization can be reduced under
   Metal's SIMDgroup contract; any parity or sub-1% result closes that branch.
   Production activation remains gated at the backend-owned dispatch seam.
+
+### 2026-08-23 15:11 PDT - direct-load barrier sweep closes below one percent
+
+- Began from clean signed `main` at
+  `5fe532b41c7209562eb5ede918e6305d588f6a23` (`perf: hoist Metal cache run
+  addresses`), ahead of `origin/main` by 29 commits. Port 30000 was free and
+  no SGLang server, Python benchmark, Metal compiler, or native workload was
+  live. The machine was the 32-core-GPU M1 Max with 32 GiB unified memory,
+  macOS 26.6.2 (`25G83`), PyTorch 2.11.0, Xcode 26.6 (`17F113`), and Apple
+  Metal compiler 32023.883. Memory was 93% free, encrypted swap usage was
+  1697.25/3072 MiB, pages throttled were zero, and macOS reported no thermal
+  or performance warning.
+- The exact extension rebuild/capability command before every source arm was:
+
+  ```text
+  env MAX_JOBS=2 .venv/bin/python -c 'from sglang.srt.hardware_backend.mps.ops import _extension; extension = _extension(); print(extension.supports_bf16_extend_gqa())'
+  ```
+
+  Every rebuild succeeded and printed `True`. Compilation and GPU timing were
+  sequential; no server or second GPU workload overlapped them.
+- The deterministic raw-extension timing harness used seed
+  `20260823 + E + L`, FP32 query/output `[E,24,256]`, BF16 K/V
+  `[L,4,256]`, an ascending int32 one-row request map, int64 request row zero
+  and sequence length, scale `0.0625`, three synchronized warmups, then ten
+  synchronized samples at `E=256,L=4352` and five at
+  `E=17,L=131072`. It called the existing
+  `_extension().extend_gqa_bf16(...)` binding directly and recorded wall
+  milliseconds, checksum, complete FP32-output SHA-256, and MPS current/driver
+  allocation deltas.
+- Fresh signed PERF-A020 opening control:
+
+  ```text
+  E=256,L=4352
+  25.713125,25.759291,25.643875,25.679750,25.693834,
+  25.479375,25.697375,25.661625,25.704625,25.675333
+  median 25.686792 ms
+
+  E=17,L=131072
+  63.793166,63.869417,63.925416,63.915500,63.940541
+  median 63.915500 ms
+  ```
+
+  Digests were
+  `7ec60bdc0d473fba047e79855bb9f95c54358cb1c281135797e2950756116a42`
+  and `820241644b85aaa0fed24caf91cffef2254cd1bfd6cb93fab2aaf2b6727d1992`;
+  checksums were `-754.9365844726562` and `-8.521577835083008`.
+- `PERF-FA059` removed both `mem_none` barriers around only the direct PV
+  matrix load. Samples were:
+
+  ```text
+  E=256: 25.576167,26.025709,25.533542,25.608708,25.516750,
+         25.623125,25.568334,25.607000,25.489125,25.746375
+         median 25.591584 ms
+  E=17:  63.287458,63.552417,63.451291,63.597209,63.765417
+         median 63.552417 ms
+  ```
+
+  The apparent opening-control reductions were **0.371%/0.568%**.
+- `PERF-FA060` additionally removed both QK barriers, eliminating all four
+  direct-load barriers. Samples were:
+
+  ```text
+  E=256: 26.033166,25.847834,25.787042,25.491042,25.794625,
+         26.019083,26.210792,26.136041,25.847166,25.827083
+         median 25.847500 ms
+  E=17:  63.889209,63.455208,63.159042,63.908083,63.328875
+         median 63.455208 ms
+  ```
+
+  This was a **0.626%** diagnostic regression and **0.720%** apparent long
+  reduction.
+- `PERF-FA061` restored PV synchronization and removed only the QK pair.
+  Samples were:
+
+  ```text
+  E=256: 25.977542,25.512208,25.702166,25.547084,25.469000,
+         25.509375,25.781875,26.050084,25.799042,25.402666
+         median 25.624625 ms
+  E=17:  63.990125,63.898375,63.848833,63.911042,63.901375
+         median 63.901375 ms
+  ```
+
+  Apparent reductions were **0.242%/0.022%**.
+- `PERF-FA062` retained both leading barriers and removed only the QK/PV
+  consumer-side barriers. Samples were:
+
+  ```text
+  E=256: 25.952125,25.902666,25.921042,25.861542,26.028166,
+         25.797500,25.873917,25.792833,26.024208,25.913084
+         median 25.907875 ms
+  E=17:  63.926792,63.832792,63.845042,63.764625,63.887500
+         median 63.845042 ms
+  ```
+
+  This was a **0.861%** diagnostic regression and **0.110%** apparent long
+  reduction.
+- `PERF-FA063` retained both trailing barriers and removed only the QK/PV
+  leading barriers. Samples were:
+
+  ```text
+  E=256: 25.663291,25.499500,25.893958,25.918041,25.523083,
+         25.586125,25.565667,25.564000,25.451625,25.609375
+         median 25.575896 ms
+  E=17:  63.935708,63.756833,63.687041,63.741416,63.906208
+         median 63.756833 ms
+  ```
+
+  Apparent reductions were **0.432%/0.248%**.
+- Every arm retained both opening-control digests and checksums. Current MPS
+  allocation growth was zero; driver movement was zero or `-0.015625 MiB`.
+  The arithmetic and buffer topology were unchanged, and fallback
+  `mem_threadgroup` barriers were never edited.
+- Restored signed PERF-A020 byte-for-byte, rebuilt independently, and measured:
+
+  ```text
+  E=256: 25.514500,25.816000,25.476000,25.418917,25.495667,
+         25.493125,25.525666,25.840459,25.531459,25.627875
+         median 25.520083 ms
+  E=17:  63.719917,63.367792,63.791833,63.745709,63.782084
+         median 63.745709 ms
+  ```
+
+  The exact digests and checksums remained stable. This final control was
+  faster than every candidate at the diagnostic shape and placed the apparent
+  long movements inside sub-percent build/run drift.
+- Decision: reject `PERF-FA059` through `PERF-FA063` and close direct-load
+  barrier elision on this toolchain. Source was fully restored before ledger
+  edits. The raw native binding also remains structurally outside
+  `TorchNativeAttnBackend.forward_extend`: with new Python forbidden, no clean
+  C++-only call edge owns the complete raw-cache/map tuple, and import-time or
+  global-aten interception remains rejected. The next source investigation
+  must establish a distinct reachable mechanism before modifying this shader
+  again.
+- Cleanup: port 30000 remained free; no server, benchmark, Metal compiler, or
+  source-build worker remained. Memory returned to 93% free, swap stayed
+  1697.25/3072 MiB, pages throttled stayed zero, and macOS still reported no
+  thermal or performance warning.

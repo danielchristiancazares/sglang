@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-23
-14:56 PDT.
+15:11 PDT.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -588,9 +588,17 @@ architecture gate. The measured 64K generic route remains closed by swap and
 forward-progress limits, so served capacity stays qualified at exact
 `32761+1`. Hoisting all query matrices, a fully-causal history branch, and a
 cohort-leader softmax broadcast were bitwise exact and missed their timing
-gates; those designs are closed. The next isolated native candidate tests the
-SIMDgroup barriers around direct device matrix loads, with exact parity and a
-1% reproduced timing floor.
+gates; those designs are closed.
+
+Direct device-matrix-load synchronization is now closed as well. PV-only,
+QK-only, combined, leading-only, and trailing-only `mem_none` barrier
+ablations all preserved exact output, but their best apparent movement was
+only **0.720%** and the independently rebuilt source-restored control reached
+**25.520083/63.745709 ms** at the diagnostic/131K shapes. Signed PERF-A020 is
+restored. Because the raw binding has no clean C++-only executable edge from
+the policy-owning backend under the no-new-Python constraint, further shader
+work first requires a distinct reachable consumer or materially new compiler
+evidence.
 
 The deleted affine-q4 scoreboard belonged to a separate Mac Pro experiment
 and carries no M1 Max record standing. The retained MLX quantized-prefill query

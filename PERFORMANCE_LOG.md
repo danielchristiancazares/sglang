@@ -2153,3 +2153,34 @@ tree throughput can be ranked for production.
 - Focused generic torch-native EXTEND coverage passes all six tests.
 - Decision: retain PERF-A020. Serving reachability and qualified Apple context
   remain unchanged because this is still an isolated raw native mechanism.
+
+### 2026-08-23 15:11 PDT - PERF-FA059 through PERF-FA063 direct-load barrier sweep
+
+- Baseline: clean signed PERF-A020 at `5fe532b41c`. A fresh rebuild measured
+  `E=256,L=4352` at **25.686792 ms** and `E=17,L=131072` at
+  **63.915500 ms**. An independent final source-restored rebuild measured
+  **25.520083/63.745709 ms**. Both controls retained SHA-256
+  `7ec60bdc0d473fba047e79855bb9f95c54358cb1c281135797e2950756116a42`
+  and `820241644b85aaa0fed24caf91cffef2254cd1bfd6cb93fab2aaf2b6727d1992`.
+- PERF-FA059 removed both leading and trailing `mem_none` barriers around the
+  direct PV matrix load. Medians were **25.591584/63.552417 ms**, apparent
+  reductions of **0.371%/0.568%** against the opening control.
+- PERF-FA060 also removed the QK pair, leaving all direct matrix loads without
+  explicit `mem_none` barriers. Medians were **25.847500/63.455208 ms**,
+  a **0.626% diagnostic regression** and **0.720%** apparent long reduction.
+- PERF-FA061 restored PV synchronization and removed only the QK pair.
+  Medians were **25.624625/63.901375 ms**, apparent reductions of
+  **0.242%/0.022%**.
+- PERF-FA062 retained the leading QK/PV barriers and removed both consumer-side
+  barriers. Medians were **25.907875/63.845042 ms**, a **0.861% diagnostic
+  regression** and **0.110%** apparent long reduction.
+- PERF-FA063 retained the trailing QK/PV barriers and removed both leading
+  barriers. Medians were **25.575896/63.756833 ms**, apparent reductions of
+  **0.432%/0.248%**.
+- Every arm produced the exact opening-control digests and checksum, and each
+  reported zero current-memory growth with `0` or `-0.015625 MiB` driver
+  movement. The restored final control was faster than every diagnostic arm;
+  no arm reached the predeclared reproduced **1%** floor at either shape.
+- Decision: reject and revert PERF-FA059 through PERF-FA063. The signed
+  PERF-A020 synchronization remains selected, and the direct-load barrier
+  branch is closed on this Apple M1 Max/Metal toolchain.
