@@ -107,8 +107,39 @@ request rates were
 reported 12 prompt and 256 completion tokens, stopped at the length limit,
 returned the same 256 token IDs, and matched the record's 878-character
 FNV-1a-64 `6d4d220de481f54e` output. The launch allocated the complete
-32,768-token BF16 KV pool; exact near-capacity execution remains a separate
-qualification gate.
+32,768-token BF16 KV pool. The later selected Python-ingress route also passed
+exact `32761+1` execution in that pool.
+
+### Selected repository-native SGLang result
+
+Signed commit `52b5326d8e5140b72a26a3909316fb1f665bbd3d` adds PERF-A016,
+which reuses each activation fragment across two output rows for eligible
+batch-one **Q4_K tensors inside this mixed-format IQ2_XXS/Q2 checkpoint**.
+Record standing remains the Q2 checkpoint and M1 Max Q2 scoreboard; `Q4_K`
+names the internal tensor family.
+
+| Metric | Selected native SGLang |
+|---|---:|
+| Five-run aggregate generation | **8.586948 tok/s** |
+| Best request-observed generation | **8.591773 tok/s** |
+| Mean end-to-end time | **29.812688 s** |
+| Best end-to-end time | **29.795946 s** |
+| Gain over matched disabled-kernel control | **22.510241%** |
+| llama.cpp Q2 record / selected SGLang | **1.707400x** |
+
+After a 30.893266-second warmup, final-source Python-ingress wall times were
+`29.801688, 29.820932, 29.824091, 29.795946, 29.820783 s`. The fresh matched
+control aggregated **7.009167 tok/s** from
+`36.534536, 36.515441, 36.531541, 36.523822, 36.512639 s`. An independent
+candidate restart aggregated **8.578205 tok/s**. Every response retained the
+same exact `12+256` usage, length finish, token IDs, text, and digest.
+
+The selected route uses Qwen's official tokenizer, Python ingress, a 32,768-
+token BF16 KV pool, one request, and 1,024-token prefill chunks. It passed
+actual-file candidate/tail parity, sampled reasoning, thinking-disabled
+behavior, parsed tool use and continuation, image/audio-disabled reporting,
+exact `32761+1` capacity, and the named Codex profile gate below. The remaining
+aggregate gap to the route-neutral llama.cpp Q2 record is **41.431420%**.
 
 ## Qualification gates
 
@@ -126,7 +157,16 @@ and audio disabled, preserved separate reasoning, and returned final `703` for
 - an independent restart and second performance window;
 - a 5,000-token two-chunk prefill and exact near-capacity evidence for changes
   that affect allocation, cache layout, or residency;
-- standalone OpenCode integration before production promotion.
+- standalone Codex CLI integration through the machine-local
+  `qwen38-local` profile and `/v1/responses`, including one read-only
+  `shell_command` round trip and its consumed result.
+
+The selected client gate uses Codex CLI 0.149.0 with
+`$CODEX_HOME/qwen38-local.config.toml` and
+`$CODEX_HOME/qwen38-local.models.json`. The qualified task invoked `pwd`
+exactly once, consumed `/Users/dcazares/sglang`, returned exact visible
+`CODEX TOOL READY`, accounted for 62 reasoning-output tokens, and exited zero.
+The earlier process-scoped OpenCode runs remain historical admission evidence.
 
 Raw samples, exact process state, and the current native-SGLang Q2 handoff are
 preserved in [`notes/experiment-log.md`](notes/experiment-log.md) and

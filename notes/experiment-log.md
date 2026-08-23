@@ -7593,7 +7593,7 @@ mean 13.929045  17.125658 446.051        39.730
   candidate, control warmup, and five samples had one unique value: every
   response contained 12 prompt tokens, 256 completion tokens, length finish,
   and the same output IDs/text. The first final candidate window is therefore
-  a matched **22.510240600%** full-model improvement.
+  a matched **22.510240606%** full-model improvement.
 - Flushed the cache, sent `SIGTERM` only to scheduler PID 14539, and let the
   registered parent cleanup reap the tree. All four exact PIDs disappeared,
   port 30000 became free, memory returned to 93%, and macOS recorded no thermal
@@ -7608,7 +7608,7 @@ mean 13.929045  17.125658 446.051        39.730
   `8.584799780,8.553362743,8.584787689,8.588921405,8.579247751` tok/s. Sum was
   149.215371 s, mean wall 29.8430742 s, aggregate **8.578204721 tok/s**, and
   best **8.588921405 tok/s**. This is **22.385500754%** above the fresh matched
-  control and 0.101819934% below the first final-source window. All seven
+  control and 0.101819939% below the first final-source window. All seven
   candidate/projection records again collapsed to one exact token result.
 - Qualified the selected real client on this clean independent restart with
   Codex CLI **0.149.0**. The machine-local overlay identities were:
@@ -7644,3 +7644,35 @@ mean 13.929045  17.125658 446.051        39.730
   capacity, preserved reasoning/tools, and the selected Codex profile. Its
   fastest aggregate is **8.586947946 tok/s**, leaving a **41.431420%** gap to
   the pinned llama.cpp M1 Max Q2 aggregate of 14.661356 tok/s.
+
+### 2026-08-23 11:34 PDT - PERF-A016 signed; compact records select Codex profile
+
+- Staged only `gguf_q4_0.mm` and this recovery ledger. Cached and working-tree
+  `git diff --check` passed. Signed commit
+  `52b5326d8e5140b72a26a3909316fb1f665bbd3d`
+  (`perf: accelerate Q4_K tensors on Metal`) contains the final aligned-view
+  kernel, host dispatch, controls, and complete experiment record. GPG
+  verification reported a good EDDSA signature from the repository owner.
+- Reconciled `BENCHMARK.md`, `PERFORMANCE_LOG.md`, `notes/current-state.md`,
+  `notes/decisions.md`, `notes/benchmark-contract.md`, and `notes/timeline.md`.
+  The compact layer now preserves the llama.cpp 14.661356 tok/s route-neutral
+  M1 Max Q2 record, selects the 8.586948 tok/s PERF-A016 repository-native
+  result, identifies Q4_K solely as an internal tensor family in the
+  mixed-format Q2 checkpoint, records exact `32761+1`, and selects Codex CLI
+  0.149.0 with the named machine-local `qwen38-local` Responses profile as the
+  Apple real-client gate. The former Mac Pro Q4 rows and 60-TPS target were
+  retired from `PERFORMANCE_LOG.md`'s active scoreboard while their detailed
+  chronological evidence remains recoverable in history. Windows continues
+  under its established OpenCode2 contract.
+- Recomputed from the six-decimal wall samples, the exact candidate/control
+  gain is **22.510240606%** and the independent window is **0.101819939%**
+  below the first final candidate. Compact records use correctly rounded
+  22.510241%. The machine-local profile/catalog remain outside the repository
+  with their qualified hashes unchanged.
+- Final record review changed the Codex wording from “preserved” to the
+  directly observed “accounted for” 62 reasoning-output tokens. The Apple
+  contract now pins the static catalog and observed `shell_command` surface,
+  matching the evidence available from the machine-local profile overlay.
+- No workload was relaunched for documentation. Exact server/client PIDs from
+  the prior gate remain absent, port 30000 remains free, and the last observed
+  cleanup state was 94% free memory with normal thermal/performance status.

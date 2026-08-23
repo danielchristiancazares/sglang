@@ -674,6 +674,49 @@ code changes, or process state matter.
   fixture. Batch-one decode profiling now governs the next native C++/Metal
   candidate; near-capacity and standalone OpenCode gates remain open.
 
+### PERF-A016 accelerates the Q4_K tensor family inside the Q2 checkpoint
+
+- Signed `52b5326d8e` adapts pinned llama.cpp's two-row Q4_K activation reuse
+  into the native Metal `quant_matmul` owner. The default path requires batch
+  one, four-row output alignment, complete four-block cohorts, aligned compact
+  weight/input origins, and Apple7+ pipeline capability; the generic kernel
+  owns every remaining shape.
+- Production-view tracing showed that a temporary zero-offset guard excluded
+  27.173913% of packed Q4_K traffic. The final `%2` packed-weight and `%4`
+  float-input alignment rule restores 24 GDN QKV shards plus eight full-
+  attention K projections. Candidate and output-tail actual-file parity pass
+  with maximum Q4_K relative error `5.35063e-07`.
+- The final official-tokenizer/Python-ingress candidate reaches
+  **8.586948 tok/s** aggregate and **8.591773 tok/s** best hit on exact
+  `12+256`. Its fresh disabled-kernel control is **7.009167 tok/s**, a matched
+  **22.510241%** full-model gain. An independent candidate restart reaches
+  **8.578205 tok/s**, and every arm reproduces the same token stream and
+  digest.
+- The selected 1K-chunk route completes exact `32761+1`, required sampled
+  reasoning, arithmetic `703`, thinking-disabled `READY`, one parsed multiply
+  call, preserved tool-result continuation, and image/audio-disabled reporting.
+  `Q4_K` identifies internal tensors in the mixed-format Bartowski IQ2_XXS
+  artifact; the machine, checkpoint, and record remain the M1 Max Q2 lane.
+
+### Named Codex profile becomes the Apple real-client gate
+
+- The machine-local `$CODEX_HOME/qwen38-local.config.toml` profile selects the
+  local Q2 model, SGLang's Responses endpoint, 32,768 context, medium reasoning,
+  a 900-second stream-idle bound, read-only sandboxing, and sequential tools.
+  Its static catalog identifies a text-only `shell_command` surface. Codex CLI
+  is 0.149.0; profile/catalog SHA-256 values begin `9706003a` and `a67c491a`.
+- A fixed no-tool run first admitted 8,839 input tokens, preserved 38 reasoning-
+  output tokens, returned exact visible `CODEX READY`, and exited zero. The
+  final read-only tool gate then issued `/bin/zsh -lc pwd` exactly once,
+  consumed `/Users/dcazares/sglang`, returned exact visible
+  `CODEX TOOL READY`, and exited zero with 17,871 input, 96 output, and 62
+  reasoning-output tokens across two Responses turns.
+- The worktree remained unchanged across the Codex tool run, the server stayed
+  healthy, cache flush succeeded, and verified leaf-first cleanup returned
+  port 30000, 94% free memory, and normal thermal status. The earlier
+  process-scoped OpenCode requests remain chronological admission evidence;
+  the named Codex profile owns the current Apple real-client decision.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:

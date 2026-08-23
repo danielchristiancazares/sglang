@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-23
-08:14 PDT.
+11:31 PDT.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -405,11 +405,16 @@ chunks.
 Signed commit `b2b8ab4af8` gates fused native MPS decode on its actual dtype,
 physical-pool, layout, and head-dimension contract so BF16 and long pools use
 the established cache-write plus SDPA path.
+Signed commit `52b5326d8e` retains PERF-A016, a batch-one Q4_K tensor-family
+kernel for the mixed-format IQ2_XXS/Q2 checkpoint. It reuses each activation
+fragment across two output rows and admits complete four-block cohorts with
+safe compact-view alignment.
 Host cleanup leaves this artifact as the only Hugging Face model cache and no
 MTPLX model cache. A broader cache cleanup also removed the first retained
 copy, so the same immutable revision was downloaded again and its byte size
 and SHA-256 were reverified. SGLang, Codex-runtime, uv, and other rebuildable
-user caches are cold. The data volume had 267 GiB free after restoration.
+user caches were cold at that cleanup checkpoint. The data volume had 267 GiB
+free after restoration.
 
 The selected native-IQ2 `128+32` deterministic window averages **7.0444
 prompt / 8.4406 generation tok/s**, **18.170302 s TTFT**, and **21.842957 s
@@ -440,27 +445,41 @@ tool-result continuation ending in `37 × 19 = **703**`. `/model_info`
 continues to report image/audio understanding false. The focused tokenizer,
 reasoning-parser, and tool-parser suites passed 321 tests plus 64 subtests.
 
-Those behavior, sampled-workload, and independent-restart gates belong to the
-earlier Python-ingress/GGUF-tokenizer profile. They do not yet qualify the
-Rust-ingress/official-tokenizer boundary. Pinned llama.cpp build 10547 owns the
-measured M1 Max Q2 `12+256` reference at **14.661356 tok/s** aggregate and
-**14.671473 tok/s** best hit.
-The native SGLang route now has a fully matched Rust `/generate` baseline:
-**7.001584 tok/s** five-run aggregate, **7.015010 tok/s** best hit, and
-**36.563154 s** mean E2E. It used Qwen's immutable official tokenizer snapshot
-`1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, because the GGUF-only snapshot
-cannot initialize the Rust tokenizer. Every request completed exact `12+256`
-with the same token IDs and FNV `6d4d220de481f54e`. The route is 52.2446%
-below the reference, which is 2.094006x faster.
+Pinned llama.cpp build 10547 owns the route-neutral M1 Max Q2 `12+256`
+reference at **14.661356 tok/s** aggregate and **14.671473 tok/s** best hit.
+The first native Rust `/generate` baseline remains **7.001584 tok/s** aggregate,
+**7.015010 tok/s** best hit, and **36.563154 s** mean E2E. It established the
+official-tokenizer fixed-output boundary with exact token IDs and FNV
+`6d4d220de481f54e`.
 
-Rust-profile reasoning, thinking-disabled, tool, preserved-tool-result,
-required-sampling, independent-restart, exact near-capacity, and standalone
-OpenCode checks remain. A process-scoped
-OpenCode 1.18.15 probe formed a **13,635-token** real agent prompt, proving the
-1,024-token diagnostic launch cannot satisfy that gate. No Apple server,
-client, or workload-owned compiler process is live; the four persistent system
-`MTLCompilerService` XPC processes remain idle at 0.0% CPU. Port 30000 is free,
-and memory returned to 90% free after verified cleanup.
+PERF-A016 is the selected repository-native result on the tool-capable Python
+ingress with the same official tokenizer. Its final-source five-run window is
+**8.586948 tok/s** aggregate, **8.591773 tok/s** best hit, and **29.812688 s**
+mean E2E. The fresh disabled-kernel control is **7.009167 tok/s**, attributing
+a **22.510241%** full-model gain; an independent candidate restart reaches
+**8.578205 tok/s**. Candidate, control, and restart all reproduce exact
+`12+256` token IDs, text, length finish, and digest. Final parity covers the
+enabled complete cohort and output-tail fallback. The safe host rule requires
+Q4_K, batch one, four-row output alignment, four-block cohorts,
+`weight_offset % 2 == 0`, `input_offset % 4 == 0`, and Apple7+ pipeline
+capability. `Q4_K` names one internal tensor family among the checkpoint's 866
+mixed-format tensors; benchmark and checkpoint standing remain Q2.
+
+The selected 1,024-token-chunk route completed exact **32761+1** inside the
+32,768-token BF16 pool at **19.242 prompt tok/s** and **1702.563753 s E2E**.
+It also passes sampled reasoning, exact arithmetic `703`, thinking-disabled
+`READY`, one parsed multiply call, tool-result reasoning continuity, and
+image/audio-disabled reporting. Historical process-scoped OpenCode 1.18.15
+runs admitted 13,635 and 13,691-token agent prompts. The governing Apple real-
+client gate is now Codex CLI 0.149.0 through the machine-local
+`qwen38-local` Responses profile: one read-only `pwd` tool call returned the
+workspace, its result was consumed, visible final was exact
+`CODEX TOOL READY`, and the client accounted for 17,871 input, 96 output, and
+62 reasoning-output tokens before exiting zero. Profile/catalog SHA-256 values
+are `9706003ad8a43ad48e4260f282057c023214c9e66737eae3da88a49188079a1c`
+and `a67c491a1dd4d4df0f720fb966ac390bd20041d8ed29f02833dfca4424a013f0`.
+Verified cleanup leaves every server/client PID absent, port 30000 free, 94%
+memory free, and normal thermal/performance status.
 
 A one-shot synchronized batch-one profile now supplies a candidate-selection
 diagnostic.
@@ -516,15 +535,13 @@ the matched disabled prompt rate. Every request completed exact `128+1` with
 `finish_reason=length`; the true batch-eight fallback also passes actual-file
 parity.
 
-The exact Rust/official-tokenizer route still needs its semantic, sampled,
-independent-restart, near-capacity, and standalone 13,635-token OpenCode gates
-before promotion. The exact `12+256` gap and layer diagnostic support testing
-a new batch-one IQ2 projection design first because the projection path spans
-both layer families and has a cheap actual-file falsification gate. This is a
-hypothesis, not route-wide attribution. Full-attention-specific work, including
-bounded native long-history GQA, remains an independent candidate; the measured
-**1.411 ms/layer** full-versus-GDN premium is an upper bound for that whole
-layer-family difference rather than an attention-kernel measurement.
+The selected native route has cleared its semantic, sampled, independent-
+restart, exact-capacity, and Codex-profile gates. Its **8.586948 tok/s**
+aggregate leaves a **41.431420%** gap to pinned llama.cpp and makes the next
+measured batch-one decode hotspot the active handoff. Full-attention-specific
+work, including bounded native long-history GQA, remains an independent
+candidate; the measured **1.411 ms/layer** full-versus-GDN premium bounds the
+whole layer-family difference, leaving attention-kernel cost unresolved.
 
 The deleted affine-q4 scoreboard belonged to a separate Mac Pro experiment
 and carries no M1 Max record standing. The retained MLX quantized-prefill query
