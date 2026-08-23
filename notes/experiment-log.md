@@ -8081,3 +8081,146 @@ mean 13.929045  17.125658 446.051        39.730
   **32761+1** inside the 32,768-token pool. The next isolated optimization is
   a consecutive-eight-slot direct BF16 matrix-load fast path, followed by
   shuffled-map fallback parity and the same 131K timing/residency rung.
+
+### 2026-08-23 14:38 PDT - consecutive BF16 cache runs halve isolated EXTEND latency
+
+- Began from signed `main` at
+  `0d1d0ea6437514d4e3d79065c2d27cd5cccba60d` (`perf: add bounded Metal
+  extend attention`), ahead of `origin/main` by 26 commits. The initial
+  worktree contained only the in-progress
+  `python/sglang/kernels/aot/csrc/metal/gguf_q4_0.mm` change. Before the 131K
+  gates, port 30000 was free; no SGLang, benchmark, Python EXTEND, or
+  workload-owned Metal compiler process was live; memory was 93% free; swap
+  used 1,697.25 MiB of 3,072 MiB; and macOS reported no thermal, performance,
+  or CPU-power warning. GPU work remained sequential and server-free.
+- PERF-A018 reinterprets the validated contiguous BF16 K/V buffers as Metal
+  `bfloat` data. For every C64 tile, eight threads each prove one ordered
+  eight-slot physical run with nonnegative and upper-bound checks, then
+  publish either its first slot or `-1`. Eligible QK loads use transposed
+  BF16 8x8 matrices at the 1,024-element cache-row stride; eligible PV loads
+  use row-major BF16 8x8 matrices at the same stride. Query, scores, online
+  softmax, output, and accumulators remain FP32. Every ineligible or partial
+  run retains the established scalar BF16-to-FP32 staging path.
+- The selected classifier adds eight int32 run entries between the 64 mapped
+  slots and 16 FP32 online statistics. Exact dynamic threadgroup storage is
+  now `8192 + 8192 + 2048 + 2048 + 256 + 32 + 64 = 20,832` bytes. Host
+  capability, static-plus-dynamic admission, error text, and dispatch length
+  were all updated to the same value. The ordinary lazy-library isolation
+  and zero history-dependent global allocation remain unchanged.
+- The first implementation classified runs repeatedly inside QK/PV
+  consumers. Its ascending `E=256,L=4352` median was **44.449479 ms**, versus
+  **57.989729 ms** with direct admission forced off. The same design moved a
+  one-swap-per-eight zero-eligible map from a staged **59.839625 ms** median
+  to about **66.746 ms**. This roughly 11.5% fragmented-map regression closed
+  the per-consumer classifier. The final source classifies once cooperatively
+  per C64 tile and crosses one publication barrier before matrix consumption.
+- Native rebuild/capability was repeated after every temporary attribution
+  source arm:
+
+  ```text
+  env MAX_JOBS=2 .venv/bin/python -c 'from sglang.srt.hardware_backend.mps.ops import _extension; extension = _extension(); print(extension.supports_bf16_extend_gqa())'
+  ```
+
+  Each rebuild completed in about 10.8-10.9 seconds and printed `True`. The
+  forced-staged attribution arm preserved the full classifier computation and
+  made admission runtime-false with the impossible validated head count 25;
+  that temporary condition was removed, the candidate rebuilt, and the final
+  diff contains only production admission.
+- A same-values small comparison used seed `20260823`, `E=17,L=129`, scale
+  `0.0625`, an ascending physical layout for direct loads, and a cache
+  placement with one pair swapped in every eight-slot cohort for fallback.
+  The two outputs were bitwise equal with SHA-256
+  `ce5c8c0b7a07a04eac7c1063c1412ac38a80550ce67392b42bef591cc3d77418`.
+  Both matched a dense lower-right-causal reference built from the exact
+  resident BF16 values at maximum error `5.364418029785156e-07`; all values
+  were finite.
+- Final cooperative-classifier timing at `E=256,L=4352` used identical
+  seeded inputs and an identical ascending map across source arms. The
+  forced-staged ten samples were
+  `59.514333,59.850917,59.306000,59.403542,59.781000,59.539042,59.571667,
+  59.404750,59.627458,59.482666 ms`, median **59.5266875 ms**. Direct windows
+  in the surrounding candidate builds were:
+
+  ```text
+  A1: 27.187166,27.304750,26.848917,26.801542,26.741375,
+      26.763334,26.791250,26.968750,26.801666,26.747583
+      median 26.801604 ms
+  A2: 26.952541,26.848583,26.803500,26.963458,27.292917,
+      27.107583,26.871542,26.898542,26.902750,26.750667
+      median 26.900646 ms
+  ```
+
+  All three builds produced checksum `-441.633056640625` and SHA-256
+  `7209fefe46186dbbc09aa0ce1a675b5c3056d6add4091d1bf7622aff84236371`.
+  The reproduced same-map latency reduction is **54.81-54.97%**.
+- The selected candidate's one-swap-per-eight zero-eligible samples were
+  `58.792583,58.860792,58.660459,58.608000,58.772959,58.774167,58.576333,
+  58.781916,58.815083,58.412500 ms`, median **58.773563 ms**. They were
+  bitwise equal to the same logical ascending result. This clears the measured
+  regression that rejected the repeated-classifier placement.
+- The matched long-context arm used `E=17,L=131072`, identity placement,
+  direct BF16 caches, five synchronized samples, and a fresh process per
+  source build. Forced staged samples were
+  `148.002792,148.063042,147.958209,148.010125,147.939625 ms`, median
+  **148.002792 ms**. Direct samples were
+  `66.655875,66.553042,66.553000,66.457125,66.630042 ms`, median
+  **66.553042 ms**, a **55.03%** reduction. Both produced SHA-256
+  `0a550d0baacf2a6bbc67c252a7b849db9ae0a227206ccdf725c0b4ecc68306df`.
+  Candidate current/driver allocation was `513.297363/1049.171875 MiB`
+  before and after the scored window, an exact `0/0 MiB` delta.
+- Direct-address qualification used `E=9,L=65` and swept BF16 cache storage
+  offsets `0..7`, independent complementary V offsets, FP32 query/output
+  offsets, physical run starts `0..7`, and a final logical token at the last
+  physical cache row. Every arm produced SHA-256
+  `0739f2cec9c4f3d36d9c743a30504e2afd671a98a4fd0ea84291f6cb3a8baece`
+  and maximum dense error `1.0728836059570312e-06`.
+- Topology qualification covered ascending, reverse, one interior swap,
+  duplicate slots, a discontinuity across adjacent runs, half direct/half
+  broken cohorts, and negative/out-of-range slots. All outputs were finite;
+  maximum dense-reference errors by case were at most
+  `6.556510925292969e-07`. A causal/tile sweep then covered query lengths
+  `1,7,8,9,15,16,17`, total lengths `63,64,65`, and all prefix residues
+  modulo eight. Every output was finite and the maximum observed error was
+  `2.2649765014648438e-06`. With `E=17,prefix=65`, replacing every cache row
+  future to query row zero with large finite K/V sentinels left that row
+  bitwise identical, directly covering masked values read by a full physical
+  run.
+- Focused follow-ups placed a valid eight-slot run exactly at
+  `cache_slots-8` and another at physical rows `60..67` across the 64-row
+  boundary; dense maximum errors were `1.0654330e-06` and `1.3709068e-06`.
+  An alternating direct/fallback `E=17,L=129` map spanning two full C64 tiles
+  plus a tail reproduced one digest across 20 calls and matched dense
+  attention within `4.7683716e-07`. A zero-prefix `E=8,L=8` direct block with
+  large future K/V sentinels again left query row zero bitwise invariant.
+- The maximum-address analytic gate allocated 131,074 backing rows, confirmed
+  host rejection of that full view, then passed its 131,073-row prefix with
+  `E=5,L=131073`. A score-16 K and marked V occupied physical row 131,072.
+  The first four query rows remained exact zero; the final row matched
+  `exp(16)/(131072+exp(16))*V` at maximum/mean error
+  `4.76837158203125e-07/1.8085120245814323e-07`. Samples were
+  `67.022416,65.627500,66.350709 ms`, median **66.350709 ms**, with finite
+  output.
+- Final checks on the restored candidate source:
+
+  ```text
+  .venv/bin/python -m pytest -q test/registered/unit/layers/attention/test_torch_native_extend.py
+  6 passed
+
+  .venv/bin/python -m py_compile python/sglang/srt/hardware_backend/mps/ops.py python/sglang/srt/layers/attention/torch_native_backend.py
+  success
+
+  git diff --check
+  success
+  ```
+
+- Decision: retain PERF-A018. It materially improves the fixed-memory native
+  mechanism and keeps direct, mixed, fragmented, partial, and invalid maps
+  correct without adding Python. The raw operation remains outside the live
+  backend call chain, so served context, reasoning/tools, and real-client
+  standing remain unchanged. Existing source inspection still finds
+  `TorchNativeAttnBackend.forward_extend` as the sole clean owner of every raw
+  operand needed for activation; the repository's no-new-Python instruction
+  keeps that dispatch at an explicit owner-approval gate. The next isolated
+  source candidate is hoisting invariant query matrix fragments outside the
+  C64 loop, with register pressure and fragmented-map timing as its decisive
+  falsifiers.

@@ -2840,8 +2840,9 @@ kernel void extend_gqa_bf16_tiled_256(
     threadgroup float * shared_stage = shared_scores + query_tile * key_tile;
     threadgroup int * shared_slots =
         reinterpret_cast<threadgroup int *>(shared_stage + 4 * 8 * 16);
+    threadgroup int * shared_runs = shared_slots + key_tile;
     threadgroup float * shared_stats =
-        reinterpret_cast<threadgroup float *>(shared_slots + key_tile);
+        reinterpret_cast<threadgroup float *>(shared_runs + key_tile / 8);
 
     const uint kv_head = group.y;
     const uint attention_row_start = group.x * query_tile;
@@ -2858,6 +2859,10 @@ kernel void extend_gqa_bf16_tiled_256(
     const bool req_valid = metadata_valid &&
         req_slot >= 0 && ulong(req_slot) < ulong(args.req_rows);
     const uint cache_row_size = args.num_kv_heads * head_dim;
+    device const bfloat * key_cache_bf16 =
+        reinterpret_cast<device const bfloat *>(key_cache);
+    device const bfloat * value_cache_bf16 =
+        reinterpret_cast<device const bfloat *>(value_cache);
     const uint last_attention_row = min(
         attention_rows - 1, attention_row_start + query_tile - 1);
     const uint group_kv_len = req_valid
@@ -2899,6 +2904,20 @@ kernel void extend_gqa_bf16_tiled_256(
             shared_slots[tid] = slot;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid < key_tile / 8) {
+            const uint run_offset = tid * 8;
+            const int first_slot = shared_slots[run_offset];
+            bool consecutive = first_slot >= 0 &&
+                uint(first_slot) + 7 < args.cache_slots;
+#pragma unroll
+            for (ushort key_row = 1; key_row < 8; ++key_row) {
+                consecutive = consecutive &&
+                    shared_slots[run_offset + key_row] ==
+                        first_slot + key_row;
+            }
+            shared_runs[tid] = consecutive ? first_slot : -1;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
         simdgroup_float8x8 score_left =
             make_filled_simdgroup_matrix<float, 8>(0.0f);
@@ -2917,10 +2936,38 @@ kernel void extend_gqa_bf16_tiled_256(
 
 #pragma unroll
             for (ushort key_half = 0; key_half < 2; ++key_half) {
+                const ushort run_offset = simd_id * 16 + key_half * 8;
+                const int run_start = shared_runs[run_offset / 8];
+                if (run_start >= 0) {
+                    device const bfloat * key_run = key_cache_bf16 +
+                        ulong(uint(run_start)) * ulong(cache_row_size) +
+                        kv_head * head_dim + dim_start;
+                    simdgroup_bfloat8x8 key_low;
+                    simdgroup_bfloat8x8 key_high;
+                    simdgroup_barrier(mem_flags::mem_none);
+                    simdgroup_load(
+                        key_low, key_run, cache_row_size, 0, true);
+                    simdgroup_load(
+                        key_high, key_run + 8,
+                        cache_row_size, 0, true);
+                    simdgroup_barrier(mem_flags::mem_none);
+                    if (key_half == 0) {
+                        simdgroup_multiply_accumulate(
+                            score_left, query_low, key_low, score_left);
+                        simdgroup_multiply_accumulate(
+                            score_left, query_high, key_high, score_left);
+                    } else {
+                        simdgroup_multiply_accumulate(
+                            score_right, query_low, key_low, score_right);
+                        simdgroup_multiply_accumulate(
+                            score_right, query_high, key_high, score_right);
+                    }
+                    continue;
+                }
+
                 const ushort key_row = lane / 4;
                 const ushort dim_quad = lane & 3;
-                const int slot = shared_slots[
-                    simd_id * 16 + key_half * 8 + key_row];
+                const int slot = shared_slots[run_offset + key_row];
 #pragma unroll
                 for (ushort dim = 0; dim < 4; ++dim) {
                     score_stage[
@@ -3029,8 +3076,25 @@ kernel void extend_gqa_bf16_tiled_256(
             simdgroup_load(
                 probability_fragment, shared_scores + key_block,
                 key_tile, 0, false);
+            const int run_start = shared_runs[key_block / 8];
 #pragma unroll
             for (ushort output_block = 0; output_block < 8; ++output_block) {
+                if (run_start >= 0) {
+                    device const bfloat * value_run = value_cache_bf16 +
+                        ulong(uint(run_start)) * ulong(cache_row_size) +
+                        kv_head * head_dim +
+                        simd_id * 64 + output_block * 8;
+                    simdgroup_bfloat8x8 value_fragment;
+                    simdgroup_barrier(mem_flags::mem_none);
+                    simdgroup_load(
+                        value_fragment, value_run,
+                        cache_row_size, 0, false);
+                    simdgroup_barrier(mem_flags::mem_none);
+                    simdgroup_multiply_accumulate(
+                        output_fragments[output_block], probability_fragment,
+                        value_fragment, output_fragments[output_block]);
+                    continue;
+                }
                 for (ushort index = lane; index < 8 * 8; index += 32) {
                     const ushort key_row = index / 8;
                     const ushort output_column = index & 7;
@@ -3575,9 +3639,9 @@ ExtendPipeline & extend_pipeline() {
     std::call_once(once, [&] {
         id<MTLDevice> device = at::mps::getCurrentMPSStream()->device();
         if (![device supportsFamily:MTLGPUFamilyApple7] ||
-            device.maxThreadgroupMemoryLength < 20800) {
+            device.maxThreadgroupMemoryLength < 20832) {
             value.error =
-                "native Metal BF16 extend requires Apple7+ and 20800 bytes of threadgroup memory";
+                "native Metal BF16 extend requires Apple7+ and 20832 bytes of threadgroup memory";
             return;
         }
 
@@ -3614,7 +3678,7 @@ ExtendPipeline & extend_pipeline() {
         if (value.state.threadExecutionWidth != 32 ||
             value.state.maxTotalThreadsPerThreadgroup < 128 ||
             value.state.staticThreadgroupMemoryLength >
-                device.maxThreadgroupMemoryLength - 20800) {
+                device.maxThreadgroupMemoryLength - 20832) {
             value.state = nil;
             value.error =
                 "native Metal BF16 extend pipeline does not satisfy the SIMD or threadgroup-memory contract";
@@ -3641,7 +3705,7 @@ bool supports_bf16_extend_gqa() {
     static const bool supported = [] {
         id<MTLDevice> device = at::mps::getCurrentMPSStream()->device();
         return [device supportsFamily:MTLGPUFamilyApple7] &&
-            device.maxThreadgroupMemoryLength >= 20800;
+            device.maxThreadgroupMemoryLength >= 20832;
     }();
     return supported;
 }
@@ -5086,7 +5150,7 @@ torch::Tensor extend_gqa_bf16(
                  offset:offset_of(seq_lens) atIndex:5];
         [encoder setBuffer:buffer_of(output) offset:offset_of(output) atIndex:6];
         [encoder setBytes:&args length:sizeof(args) atIndex:7];
-        [encoder setThreadgroupMemoryLength:20800 atIndex:0];
+        [encoder setThreadgroupMemoryLength:20832 atIndex:0];
         const NSUInteger attention_rows = query_tokens * 6;
         [encoder dispatchThreadgroups:
                      MTLSizeMake((attention_rows + 7) / 8, 4, 1)
