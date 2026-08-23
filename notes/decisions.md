@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-21 13:48 PDT.
+**Reconciled through:** 2026-08-23 07:30 PDT.
 
 ## Selected production choices
 
@@ -193,17 +193,18 @@ has not.
 | F32 batch-one native MPS projection | Retained | Signed `4d1641fdcd` changes the 48-layer actual b/a sweep **7.296667 -> 2.159000/2.051708 ms**; deterministic generation reaches **8.4406 tok/s** and sampled restart windows average **8.3094/8.2942 tok/s** |
 | Lower-right torch-native partial extend | Retained | Signed `210a214c12` submits only new query rows. Exact MPS `4096+4096` source medians change **542.376416/641.256125 -> 176.066500 ms**; focused causal, ragged, sliding, noncausal, and empty-extend tests pass |
 | Native MPS decode capability gate | Retained | Signed `b2b8ab4af8` sends BF16 or more than 7,936 physical cache rows through the established cache-write plus SDPA fallback. BF16/32,769 and FP32/7,937 report zero observed error; eligible FP32/7,936 remains fused |
+| IQ2_XXS Apple7 large-batch SIMD-matrix kernel | Retained | PERF-A014 changes actual `17408x5120` medians **70.074833 -> 4.250250/4.277125 ms** at batch 128 and **1971.539875 -> 124.838125 ms** at batch 4096. Served exact-`128+1` prompt improves **7.0234 -> 22.8814 tok/s** across a matched disabled control and two independent default windows. Exact `4096+2` completes inside the former watchdog; candidate/fallback tails and all behavior gates pass |
 | F32 custom-kernel cross-row reuse | Rejected | Exact-shape medians `0.484833`, `0.504208`, and `0.556667 ms` all trail the selected one-row-per-SIMD custom control at `0.390083 ms`; native MPS matrix multiplication is faster still |
 | IQ2 constant-table and four-SIMD/two-row ablations | Rejected | Constant-table windows `0.546042/0.576833 ms` and alternate-geometry windows `0.560625/0.550667 ms` trail the selected staged two-SIMD/four-row path around `0.523625 ms` |
 | Pinned llama.cpp build 10547 IQ2 route | Rejected as record route | Exact five-run `12+256` aggregate is **14.661356 tok/s**, 21.943% below the Apple record; retain only as a dependency/kernel oracle |
 | Thresholded MLX quantized-query tiling | Retained opt-in | Large synthetic quantized prefill improves time and peak allocation while the 1 GiB threshold preserves the exact 5K path; maximum-context qualification remains open |
 | Always-on MLX quantized-query tiling | Rejected | Exact 5K prompt throughput regressed while only larger score shapes benefited |
 
-The current funded native step is full-model context qualification. A real
-process-scoped OpenCode request measured 13,635 input tokens and cannot enter
-the 1,024-token diagnostic launch. The safe long-pool fallback is retained;
-the next launch must prove 32K BF16 capacity before the fixed-memory native
-GQA kernel is evaluated for throughput. The separate MLX
+Large-batch native-IQ2 prefill is qualified through an exact two-chunk 5K
+request. Exact near-capacity and the measured 13,635-token process-scoped
+OpenCode request remain admission gates. The safe long-pool fallback is
+retained, and fixed-memory native GQA is the next funded throughput path. The
+separate MLX
 long-context route still requires a pinned dependency with the quantized-GQA
 tail correction, an explicit cache limit, presence-penalty semantics, and a
 completed capacity ladder.

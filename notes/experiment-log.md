@@ -6385,3 +6385,274 @@ mean 13.929045  17.125658 446.051        39.730
   at `749f688f` is the implementation oracle and is already covered by the
   repository's ggml MIT notice. First gates are actual-format CPU parity,
   row/batch tails, and matched actual-tensor A/B before another server launch.
+
+### 2026-08-23 06:57 PDT - PERF-A014 adjacent baseline reproduced
+
+- Resumed from clean `main`, `HEAD=11b2b33613843859bdd67426306a38651b15fa53`,
+  ahead of `origin/main` by 17 commits. Port 30000 was free; no matching
+  SGLang, llama-server, benchmark, OpenCode, Metal compiler, or Clang process
+  was live. The M1 Max reported 32 GPU cores and Metal 4. Memory pressure was
+  93% free with zero throttled pages, and `pmset -g therm` reported no thermal
+  or performance warning. The active native environment contains PyTorch
+  2.11.0 and GGUF 0.19.0.
+- Reverified the immutable 9,393,043,040-byte IQ2 GGUF blob at
+  `/Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9`.
+  Each command used `blk.8.ffn_gate.weight`, shape `17408x5120`, one isolated
+  process, and the retained native `quant_matmul` dispatch:
+
+  ```text
+  .venv/bin/python benchmark/mac/bench_mps_gguf_quant.py <IQ2-GGUF> --tensor blk.8.ffn_gate.weight --batch-size 128 --warmup 1 --iterations 5
+  samples_ms=65.578125,68.912667,64.901875,63.274666,67.220583
+  median_ms=65.578125 effective_gib_s=0.490
+
+  .venv/bin/python benchmark/mac/bench_mps_gguf_quant.py <IQ2-GGUF> --tensor blk.8.ffn_gate.weight --batch-size 512 --warmup 1 --iterations 3
+  samples_ms=249.418209,248.544542,249.740375
+  median_ms=249.418209 effective_gib_s=0.258
+
+  .venv/bin/python benchmark/mac/bench_mps_gguf_quant.py <IQ2-GGUF> --tensor blk.8.ffn_gate.weight --batch-size 4096 --warmup 1 --iterations 3
+  samples_ms=1971.539875,1967.972209,1972.328583
+  median_ms=1971.539875 effective_gib_s=0.185
+  ```
+
+- The medians reproduce the 2026-08-21 curve within ordinary drift and keep
+  the mechanism intact: every batch above eight uses the batch-eight kernel,
+  so batch 4096 performs 512 full packed-matrix traversals. This window is the
+  required clean adjacent baseline for the shared-dequant matrix-matrix
+  candidate. No server was launched and no source was changed during it.
+
+### 2026-08-23 07:06 PDT - PERF-A014 shared-dequant FP32 path wins isolated A-B-A
+
+- Implemented a native Metal IQ2_XXS matrix-matrix path in
+  `python/sglang/kernels/aot/csrc/metal/gguf_q4_0.mm`, following the classic
+  `kernel_mul_mm_iq2_xxs_f32` layout from pinned official llama.cpp commit
+  `749f688fcaa4c472ec034b08cb8a907c45cfaa02`. The repository's existing MIT
+  notice already covers that provenance. The new kernel uses four 32-lane
+  SIMD groups to compute one 64-output by 32-batch tile at each K32 step. It
+  stages dequantized weights and input in FP32, retains FP32 SIMD-matrix
+  operands/accumulators/output, and reuses 12,288 bytes of threadgroup memory
+  for guarded output tails after the final fragment load.
+- Host admission is narrow: IQ2_XXS, batch greater than eight, an Apple7-or-
+  later family, a compiled pipeline with thread width 32 and at least 128
+  threads per group, and the existing contiguous FP32 binding contract.
+  Batch one/four/eight, older devices, and
+  `SGLANG_MPS_IQ2_LARGE_BATCH=0` retain the prior kernels. The source macro
+  prevents the SIMD-matrix function from entering the runtime library on
+  unsupported devices.
+- The first compile and combined-tail gate used exact command:
+
+  ```text
+  .venv/bin/python benchmark/mac/test_mps_gguf_quant.py <IQ2-GGUF> --rows 65 --batch-size 33
+  IQ2_XXS max_error=5.24521e-06 relative=1.06228e-06
+  ```
+
+  Additional exact commands changed only `--rows/--batch-size` to `64/32`,
+  `63/33`, `65/31`, and `1/32`. The `65/31` command is a guarded candidate
+  batch-tail case. IQ2 results were respectively
+  `0/0`, `7.15256e-06/1.44856e-06`,
+  `9.05991e-06/2.12351e-06`, and
+  `3.8147e-06/1.5217e-06` maximum absolute/relative error. Every suite run
+  passed unchanged `rtol=2e-4, atol=2e-3`; all other present quant formats and
+  the Q2_K token-embedding gate also passed.
+- Actual immutable `blk.8.ffn_gate.weight` (`17408x5120`) A/B/A at batch 128,
+  one warmup and five synchronized samples per arm:
+
+  ```text
+  candidate A: 4.780792,4.250250,4.223667,4.223791,4.290042 ms
+  median 4.250250 ms
+
+  SGLANG_MPS_IQ2_LARGE_BATCH=0 control:
+  67.422750,71.582167,71.431917,70.074833,65.494208 ms
+  median 70.074833 ms
+
+  candidate A2: 5.299500,4.277125,4.339083,4.255959,4.247416 ms
+  median 4.277125 ms
+  ```
+
+- Candidate large-batch samples were:
+
+  ```text
+  batch 512: 16.004750,16.009833,15.989375,16.084958,16.039208 ms
+  median 16.009833 ms (adjacent baseline 249.418209 ms)
+
+  batch 4096: 124.838125,124.796417,124.832459,124.850625,124.874042 ms
+  median 124.838125 ms (adjacent baseline 1971.539875 ms)
+  ```
+
+- The N>8 crossover was also positive on the same tensor. Batch nine
+  candidate/control medians were **2.160166/6.439458 ms**; batch sixteen were
+  **1.700792/9.281000 ms**. The retained batch-eight kernel independently
+  measured **4.671791 ms** and remains unchanged by dispatch.
+- These are isolated synchronized gates. Full-forward attribution, the exact
+  32K/BF16 model launch, a long prefill, semantic behavior, capacity, and
+  cleanup remain pending. No server or unrelated GPU process was active
+  during this window.
+
+### 2026-08-23 07:19 PDT - PERF-A014 serves 5K prefill and clears behavior/cleanup gates
+
+- Pre-launch state remained `main`, `HEAD=11b2b33613843859bdd67426306a38651b15fa53`.
+  Only `python/sglang/kernels/aot/csrc/metal/gguf_q4_0.mm`,
+  `PERFORMANCE_LOG.md`, and this recovery ledger were modified. Port 30000
+  was free; no SGLang, benchmark, or Metal compiler process was live; memory
+  pressure was 93% free; and `pmset -g therm` reported no thermal or
+  performance warning.
+- Launched exactly one server in PTY session `61592`:
+
+  ```text
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-IQ2_XXS.gguf --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 --kv-cache-dtype bfloat16 --context-length 32768 --max-total-tokens 32768 --max-running-requests 1 --chunked-prefill-size 4096 --max-prefill-tokens 8192 --disable-radix-cache --disable-overlap-schedule --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments preserved FP32 compute, BF16 KV, exact context/pool
+  32,768, one request, chunk 4,096, torch-native attention, PyTorch sampling,
+  graphs disabled, and no speculative worker. Weight load completed in
+  34.24 s using 9.03 GB. Mamba allocation was 0.29 GB, KV was exactly 2.00
+  GB/32,768 tokens, and 19.97 GB remained after pool allocation. Ready state
+  arrived normally. Listener PID `3800` owned `127.0.0.1:30000`; verified
+  children were resource tracker `3805`, scheduler `3806`, and detokenizer
+  `3807`.
+- Live `/model_info` identified `Qwen3_5ForCausalLM`, model type
+  `qwen3_5_text`, generation enabled, and both
+  `has_image_understanding=false` and `has_audio_understanding=false`.
+  `/server_info` reported SGLang `0.5.18.dev685+gadf3a620e`, the configured 32K
+  token capacity, 9.032 GB weights, 2.0 GB KV, and every graph allocation at
+  zero. `/health` returned 200.
+- Required-sampling short gate:
+
+  ```text
+  .venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 128 --output-tokens 32 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5
+  prompt=23.093 tok/s decode=6.736 tok/s TTFT=5.542854 s E2E=10.144946 s
+  exact usage=128+32 finish_reason=length reasoning_chars=139
+  output_sha256=8a84af0846c4f675babe57fdf2205e4f659ec6a1a7d3656288f13d38184cd4d2
+  ```
+
+- After explicit cache flush, the exact shape that previously crossed the
+  300-second watchdog completed well inside it:
+
+  ```text
+  .venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 4096 --output-tokens 2 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup --timeout 1800
+  prompt=24.828 tok/s decode=2.160 tok/s TTFT=164.975078 s E2E=165.438140 s
+  exact usage=4096+2 finish_reason=length reasoning_chars=8
+  output_sha256=d7e67fcd81077c6152b86899d4ba6fcbb9f055e25c1b7a1b76fd3f93d6549159
+  ```
+
+  This is a successful result against a censored former-source observation;
+  it does not assign an exact speedup to the incomplete control. Scheduler
+  logs reported the complete 4,096-token prefill at 23.19 tok/s.
+- The independent two-chunk capability rung also completed:
+
+  ```text
+  .venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 5000 --output-tokens 1 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup --timeout 1800
+  prompt=24.845 tok/s TTFT=201.251027 s E2E=201.251071 s
+  exact usage=5000+1 finish_reason=length reasoning_chars=3
+  output_sha256=b344d80e24a3679999fa964450b34bc24d1578a35509f934c1418b0a20d21a67
+  ```
+
+  Scheduler chunks were exact 4,096 plus 904 tokens. The 32K pools remained
+  healthy; this run proves the required multi-chunk route, while an exact
+  near-capacity request was not spent because the kernel does not alter pool
+  sizing or persistent residency.
+- Semantic gates, all at the selected sampling profile unless stated:
+  - arithmetic: 77 coherent reasoning tokens, normal stop, final content
+    `703` for `37 * 19`;
+  - tool: 42 reasoning tokens and exactly one parsed `multiply` call with
+    `{"a":37,"b":19}`, `finish_reason=tool_calls`;
+  - thinking disabled: exact `READY`, normal stop, zero reasoning tokens;
+  - preserved tool result: the prior reasoning and parsed call plus tool
+    content `703` produced new coherent reasoning, normal stop, and final
+    `37 × 19 = **703**`.
+- Before the long rung and again before cleanup, memory pressure reported
+  88% free and no throttled pages; macOS recorded no thermal or performance
+  warning. After the final explicit cache flush, `/health` remained 200.
+  Verified leaf PIDs `3807`, `3806`, and `3805` received SIGTERM; parent
+  `3800` observed the scheduler exit and completed its own process-tree
+  cleanup. All four PIDs are absent, port 30000 is free, no SGLang or Metal
+  compiler worker remains, memory returned to 90% free, and thermal/performance
+  warnings remain absent.
+- PERF-A014 is retained. Its governing rule is owned by the common native
+  `quant_matmul` dispatch: supported Apple7+ IQ2_XXS matrix products with more
+  than eight rows use the shared-dequant matrix kernel; the established
+  small-batch kernels and unsupported-device fallback cover every other
+  applicable path. Exact format/tail parity, matched source A/B, real full
+  forward, multi-chunk serving, semantics, allocation, and cleanup now agree.
+  The native IQ2 route remains below the Apple Rust/MLX decode and q4-KV
+  maximum-context records, so neither compact scoreboard changes.
+
+### 2026-08-23 07:30 PDT - PERF-A014 matched served control and second window pass
+
+- A skeptical pre-commit review identified that the earlier recovery prose
+  mislabeled `rows=65,batch=31` as fallback. The host rule is batch greater
+  than eight, so that case correctly exercised the candidate batch tail.
+  With port 30000 free, no server/client/compiler process, 90% free memory,
+  and no macOS warning, the actual-file suite ran the true batch-eight
+  fallback:
+
+  ```text
+  .venv/bin/python benchmark/mac/test_mps_gguf_quant.py <IQ2-GGUF> --rows 65 --batch-size 8
+  IQ2_XXS max_error=8.58307e-06 relative=2.27121e-06
+  Q4_0/Q2_K/Q4_K/Q5_K/Q6_K and token-embedding parity also passed
+  ```
+
+  This closes candidate batch 9/16/31/32/33 plus retained batch eight with
+  output tails at 1/63/64/65 rows. The governing dispatch domain and the
+  documented coverage now agree.
+- Launched one 32K-configured matched control with the same exact command and
+  resolved arguments as the 07:19 server, adding only process-scoped
+  `SGLANG_MPS_IQ2_LARGE_BATCH=0`. Listener/verified tree was
+  `4218 -> 4223/4224/4225`; random seed `20913215`; weights/pool remained
+  9.03/2.00 GB. Five consecutive cache-flushed exact `128+1` requests used:
+
+  ```text
+  .venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 128 --output-tokens 1 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup --timeout 600
+
+  prompt tok/s: 7.018, 7.013, 7.021, 7.029, 7.036; mean 7.0234
+  TTFT s:       18.238450, 18.252279, 18.231962, 18.211360, 18.191226
+  mean TTFT:    18.225055 s
+  E2E s:        18.238493, 18.252322, 18.232009, 18.211406, 18.191271
+  mean E2E:     18.225100 s
+  ```
+
+  Every request reported exact `128+1`, one reasoning fragment,
+  `finish_reason=length`, and no delayed response closure.
+- After leaf-first cleanup and a verified free port/90%-free/no-warning host,
+  launched the default candidate under tree `4268 -> 4274/4275/4276`, seed
+  `1025657942`. The same five commands produced:
+
+  ```text
+  prompt tok/s: 22.675, 23.191, 23.060, 22.916, 22.936; mean 22.9556
+  TTFT s:       5.645057, 5.519279, 5.550848, 5.585520, 5.580628
+  mean TTFT:    5.576266 s
+  E2E s:        5.645100, 5.519324, 5.550886, 5.585564, 5.580678
+  mean E2E:     5.576310 s
+  ```
+
+- Cleaned that tree leaf-first, reverified the host, then launched a second
+  independent default window under tree `4303 -> 4307/4308/4309`, seed
+  `206537114`. Results:
+
+  ```text
+  prompt tok/s: 22.621, 22.857, 22.795, 22.901, 22.862; mean 22.8072
+  TTFT s:       5.658444, 5.599977, 5.615174, 5.589297, 5.598804
+  mean TTFT:    5.612339 s
+  E2E s:        5.658487, 5.600015, 5.615222, 5.589340, 5.598851
+  mean E2E:     5.612383 s
+  ```
+
+  Combined default mean is **22.8814 prompt tok/s**, **5.594303 s TTFT**, and
+  **5.594347 s E2E**. Against the matched process-switch-disabled control,
+  this is **3.258x prompt throughput** and **69.30% less TTFT**. The switch is
+  read once by the common `quant_matmul` dispatch and restores only the prior
+  IQ2_XXS batch-greater-than-eight path; the actual prompt batch is 128. This
+  supplies direct full-model attribution without a diagnostic-only source
+  change.
+- Each candidate request completed exact `128+1`, one reasoning fragment,
+  and `finish_reason=length`; the stable post-first output digest was
+  `b344d80e24a3679999fa964450b34bc24d1578a35509f934c1418b0a20d21a67`.
+  The previously completed semantic, `4096+2`, and `5000+1` gates remain from
+  the same final source.
+- Final cleanup is complete: PIDs `4303/4307/4308/4309` are absent, port 30000
+  is free, no benchmark/server/Metal compiler worker remains, memory pressure
+  is 90% free with no throttled pages, and macOS records no thermal or
+  performance warning. This closes all three skeptical pre-commit findings:
+  dispatch coverage is precise, served performance has a five-sample matched
+  control plus two independent five-sample default windows, and every compact
+  record describes a 32K-configured server rather than claiming a near-limit
+  capacity request.

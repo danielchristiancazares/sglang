@@ -1,7 +1,7 @@
 # Current state
 
-**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-21
-13:48 PDT.
+**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-23
+07:30 PDT.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -460,23 +460,44 @@ Both source-level context blockers are now retained. Exact source A/B at a
 decode probes failed at BF16/32,769 rows and FP32/7,937 rows. Both now reach
 the cache-write plus SDPA fallback with zero observed error, while the fused
 FP32/7,936 boundary remains active with maximum error `2.5331974e-07`. The
-next gate is one controlled 32K BF16 full-model launch through capacity and
-the measured 13,635-token OpenCode prompt. The first controlled 32K/BF16
-launch reached ready state with exact 32,768-token pools and completed sampled
-`128+32` at **6.963 prompt / 6.772 generation tok/s**. Its exact `4096+2`
-request crossed the scheduler's 300-second watchdog without returning a token;
-that censored result is consistent with the completed short-prompt rate and
-does not establish a hang.
+first controlled 32K-configured BF16 launch reached ready state with an
+allocated 32,768-token pool and exposed large-batch IQ2_XXS projection as the
+remaining prefill blocker.
 
-The next native bottleneck is large-batch quantized projection. On the actual
-IQ2_XXS `blk.8.ffn_gate.weight` (`17408x5120`), synchronized medians at batch
-128/512/1024/2048/4096 were **65.359958/250.314041/493.479750/983.834750/
-1967.899583 ms**. Current host dispatch uses the batch-eight kernel above four
-rows, so a 4,096-row projection launches 512 groups that each traverse and
-dequantize the packed matrix. PERF-A014 will preserve the selected small-batch
-decode paths and qualify a shared-dequant simdgroup matrix-matrix route for
-large prefills. A bounded native long-context GQA kernel remains the subsequent
-decode-throughput candidate.
+PERF-A014 now routes Apple7+ IQ2_XXS batches above eight through an FP32
+SIMD-matrix kernel that shares each dequantized 64x32 weight tile across 32
+input rows. The actual `blk.8.ffn_gate.weight` (`17408x5120`) improved from
+matched medians **70.074833 -> 4.250250/4.277125 ms** at batch 128, from the
+adjacent **249.418209 -> 16.009833 ms** at batch 512, and from
+**1971.539875 -> 124.838125 ms** at batch 4096. Aligned, odd output/batch,
+minimal-tail, and fallback-boundary parity pass with maximum IQ2 relative
+error `2.27121e-06`; batch one/four/eight remain unchanged.
+
+The same 32K-configured BF16 full model completed sampled `128+32` at
+**23.093 prompt / 6.736 generation tok/s**. Cache-flushed `4096+2`, which
+formerly crossed the
+300-second watchdog, now completes at **24.828 prompt tok/s** with
+**164.975078 s TTFT**. Exact `5000+1` completes two chunks at **24.845 prompt
+tok/s** and **201.251071 s E2E**. Arithmetic `703`, thinking-disabled `READY`,
+one parsed `multiply({"a":37,"b":19})`, preserved tool-result continuation,
+and image/audio-disabled gates all pass. Verified cleanup leaves port 30000
+free, no server/compiler process, 90% free memory, and no recorded thermal or
+performance warning.
+
+A process-scoped served control then isolated the large-batch dispatch on
+exact `128+1`. Disabling it produced **7.0234 prompt tok/s** and
+**18.225055 s TTFT** over five cache-flushed samples. Two independent default
+launches produced **22.9556** and **22.8072 prompt tok/s** five-sample means;
+their combined mean is **22.8814**, with **5.594303 s TTFT**. This is 3.258x
+the matched disabled prompt rate. Every request completed exact `128+1` with
+`finish_reason=length`; the true batch-eight fallback also passes actual-file
+parity.
+
+The native route still needs the exact Rust `12+256` ingress and standalone
+13,635-token OpenCode gate before it can enter the primary Apple scoreboard.
+Its decode rate remains below the selected Rust/MLX route. A bounded native
+long-history GQA kernel is the next native-IQ2 candidate; primary-scoreboard
+work remains focused on the Rust/MLX decode path.
 
 The MLX long-context lane also retains adaptive quantized-prefill query tiling
 behind `SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE`. Its 1 GiB automatic threshold

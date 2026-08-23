@@ -5,6 +5,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <cstdlib>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -13,6 +14,9 @@ namespace {
 
 constexpr const char * kQ4Source = R"METAL(
 #include <metal_stdlib>
+#if SGLANG_SIMDGROUP_MATRIX
+#include <metal_simdgroup_matrix>
+#endif
 using namespace metal;
 
 struct block_q4_0 {
@@ -578,6 +582,213 @@ INSTANTIATE_QUANT_BATCH("q6_K_batch_8", block_q6_K, 256, 8)
 INSTANTIATE_QUANT_BATCH("iq2_xxs_batch_4", block_iq2_xxs, 256, 4)
 INSTANTIATE_QUANT_BATCH("iq2_xxs_batch_8", block_iq2_xxs, 256, 8)
 #undef INSTANTIATE_QUANT_BATCH
+
+#if SGLANG_SIMDGROUP_MATRIX
+inline void dequant_iq2_xxs_16(
+        device const block_iq2_xxs * block,
+        short chunk16,
+        thread float4x4 & values) {
+    const uint group32 = uint(chunk16) / 2;
+    const uint half32 = uint(chunk16) & 1;
+    device const ushort * q2 = block->qs + 4 * group32;
+    const uint packed_grids = uint(q2[0]) | (uint(q2[1]) << 16);
+    const uint packed_aux = uint(q2[2]) | (uint(q2[3]) << 16);
+    const float scale = float(block->d) *
+        (0.5f + float(packed_aux >> 28)) * 0.25f;
+
+#pragma unroll
+    for (ushort grid_group = 0; grid_group < 2; ++grid_group) {
+        const uint source_group = 2 * half32 + grid_group;
+        const uint grid_index =
+            (packed_grids >> (8 * source_group)) & 0xff;
+        const ulong grid = kIQ2XXSGrid[grid_index];
+        const uchar signs =
+            kIQ2Signs[(packed_aux >> (7 * source_group)) & 127];
+#pragma unroll
+        for (ushort lane = 0; lane < 8; ++lane) {
+            const ushort index = 8 * grid_group + lane;
+            const float magnitude =
+                float((grid >> (8 * lane)) & 0xfful);
+            values[index / 4][index & 3] = scale * magnitude *
+                ((signs & (1u << lane)) != 0 ? -1.0f : 1.0f);
+        }
+    }
+}
+
+// Large prefills reuse one dequantized 64x32 weight tile across 32 input
+// rows. The 4-SIMD-group layout follows kernel_mul_mm_iq2_xxs_f32 from
+// ggml-org/llama.cpp@749f688fcaa4c472ec034b08cb8a907c45cfaa02;
+// see THIRDPARTYNOTICES.txt. Small-batch decode keeps its dedicated kernels.
+kernel void iq2_xxs_large_batch(
+        device const block_iq2_xxs * weights,
+        device const float * input,
+        device float * output,
+        constant Q4Args & args,
+        threadgroup uchar * shared [[threadgroup(0)]],
+        uint2 group [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr ushort output_tile = 64;
+    constexpr ushort batch_tile = 32;
+    constexpr ushort k_tile = 32;
+    constexpr ushort weight_chunks = k_tile / 16;
+    constexpr ushort input_chunks = k_tile / 8;
+
+    threadgroup float * staged_weights =
+        reinterpret_cast<threadgroup float *>(shared);
+    threadgroup float * staged_input =
+        reinterpret_cast<threadgroup float *>(shared + 8192);
+
+    const uint output_start = group.x * output_tile;
+    const uint batch_start = group.y * batch_tile;
+    const ushort valid_outputs = ushort(min(
+        uint(output_tile), args.output_size - output_start));
+    const ushort valid_batches = ushort(min(
+        uint(batch_tile), args.batch_size - batch_start));
+    const ushort local_output = ushort(min(
+        uint(tid / weight_chunks), uint(valid_outputs - 1)));
+    const ushort local_batch = ushort(min(
+        uint(tid / input_chunks), uint(valid_batches - 1)));
+    const ushort initial_chunk = tid % weight_chunks;
+    short chunk16 = short(initial_chunk);
+
+    device const block_iq2_xxs * weight_block =
+        weights + (output_start + local_output) * args.blocks_per_row;
+    const ushort input_column = 8 * (tid % input_chunks);
+    device const float * input_row =
+        input + (batch_start + local_batch) * args.input_size + input_column;
+
+    simdgroup_float8x8 weight_fragments[4];
+    simdgroup_float8x8 input_fragments[2];
+    simdgroup_float8x8 accumulators[8];
+#pragma unroll
+    for (ushort i = 0; i < 8; ++i) {
+        accumulators[i] = make_filled_simdgroup_matrix<float, 8>(0.0f);
+    }
+
+    for (uint loop_k = 0; loop_k < args.input_size; loop_k += k_tile) {
+        float4x4 dequantized;
+        dequant_iq2_xxs_16(weight_block, chunk16, dequantized);
+
+        // Protect the preceding iteration's fragment loads before this
+        // iteration overwrites the shared tiles.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+#pragma unroll
+        for (ushort i = 0; i < 16; ++i) {
+            const ushort matrix_x = 2 * initial_chunk + i / 8;
+            const ushort matrix_y = (tid / weight_chunks) / 8;
+            const ushort matrix_block = 8 * matrix_x + matrix_y;
+            const ushort matrix_row = i & 7;
+            const ushort matrix_column = (tid / weight_chunks) & 7;
+            staged_weights[
+                64 * matrix_block + 8 * matrix_row + matrix_column] =
+                dequantized[i / 4][i & 3];
+        }
+
+#pragma unroll
+        for (ushort i = 0; i < 8; ++i) {
+            const ushort matrix_x = tid % input_chunks;
+            const ushort matrix_y = (tid / input_chunks) / 8;
+            const ushort matrix_block = 4 * matrix_x + matrix_y;
+            const ushort matrix_row = (tid / input_chunks) & 7;
+            staged_input[
+                64 * matrix_block + 8 * matrix_row + i] =
+                input_row[i];
+        }
+
+        chunk16 = (chunk16 + 2 < 16) ? chunk16 + 2 : chunk16 % 2;
+        if (chunk16 < 2) {
+            ++weight_block;
+        }
+        input_row += k_tile;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        threadgroup const float * weight_tile_ptr =
+            staged_weights + 4 * 64 * (simd_id & 1);
+        threadgroup const float * input_tile_ptr =
+            staged_input + 2 * 64 * (simd_id >> 1);
+
+#pragma unroll
+        for (ushort k_step = 0; k_step < k_tile / 8; ++k_step) {
+            simdgroup_barrier(mem_flags::mem_none);
+#pragma unroll
+            for (ushort i = 0; i < 4; ++i) {
+                simdgroup_load(
+                    weight_fragments[i], weight_tile_ptr + 64 * i,
+                    8, 0, false);
+            }
+            simdgroup_barrier(mem_flags::mem_none);
+#pragma unroll
+            for (ushort i = 0; i < 2; ++i) {
+                simdgroup_load(
+                    input_fragments[i], input_tile_ptr + 64 * i,
+                    8, 0, false);
+            }
+            simdgroup_barrier(mem_flags::mem_none);
+#pragma unroll
+            for (ushort i = 0; i < 8; ++i) {
+                simdgroup_multiply_accumulate(
+                    accumulators[i], input_fragments[i / 4],
+                    weight_fragments[i & 3], accumulators[i]);
+            }
+            weight_tile_ptr += 8 * 64;
+            input_tile_ptr += 4 * 64;
+        }
+    }
+
+    if (valid_outputs == output_tile && valid_batches == batch_tile) {
+        device float * tile_output = output +
+            output_start + 32 * (simd_id & 1) +
+            (batch_start + 16 * (simd_id >> 1)) * args.output_size;
+#pragma unroll
+        for (ushort i = 0; i < 8; ++i) {
+            simdgroup_store(
+                accumulators[i],
+                tile_output + 8 * (i & 3) +
+                    8 * args.output_size * (i / 4),
+                args.output_size, 0, false);
+        }
+        return;
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup float * tail_output =
+        reinterpret_cast<threadgroup float *>(shared) +
+        32 * (simd_id & 1) + 16 * (simd_id >> 1) * output_tile;
+#pragma unroll
+    for (ushort i = 0; i < 8; ++i) {
+        simdgroup_store(
+            accumulators[i],
+            tail_output + 8 * (i & 3) + 8 * output_tile * (i / 4),
+            output_tile, 0, false);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd_id == 0) {
+        for (ushort batch = tid; batch < valid_batches; batch += batch_tile) {
+            device float * destination = output +
+                output_start + (batch_start + batch) * args.output_size;
+            threadgroup float * source =
+                reinterpret_cast<threadgroup float *>(shared) +
+                batch * output_tile;
+            device float4 * destination4 =
+                reinterpret_cast<device float4 *>(destination);
+            threadgroup float4 * source4 =
+                reinterpret_cast<threadgroup float4 *>(source);
+            ushort output_index = 0;
+            for (; output_index < valid_outputs / 4; ++output_index) {
+                destination4[output_index] = source4[output_index];
+            }
+            output_index *= 4;
+            for (; output_index < valid_outputs; ++output_index) {
+                destination[output_index] = source[output_index];
+            }
+        }
+    }
+}
+#endif
 
 // Batch-one IQ2_XXS matrix-vector products reuse each 32-value input chunk
 // across four output rows. Staging the compact lookup tables once per
@@ -2614,6 +2825,7 @@ struct Pipelines {
     id<MTLComputePipelineState> iq2_xxs_batch1 = nil;
     id<MTLComputePipelineState> iq2_xxs_batch4 = nil;
     id<MTLComputePipelineState> iq2_xxs_batch8 = nil;
+    id<MTLComputePipelineState> iq2_xxs_large_batch = nil;
     id<MTLComputePipelineState> iq1_m_batch1 = nil;
     id<MTLComputePipelineState> iq1_m_batch4 = nil;
     id<MTLComputePipelineState> iq1_m_batch8 = nil;
@@ -2644,9 +2856,14 @@ Pipelines & pipelines() {
     static std::once_flag once;
     std::call_once(once, [&] {
         id<MTLDevice> device = at::mps::getCurrentMPSStream()->device();
+        const bool supports_simdgroup_matrix =
+            [device supportsFamily:MTLGPUFamilyApple7];
         NSError * error = nil;
         MTLCompileOptions * options = [MTLCompileOptions new];
         options.fastMathEnabled = YES;
+        options.preprocessorMacros = @{
+            @"SGLANG_SIMDGROUP_MATRIX": @(supports_simdgroup_matrix)
+        };
         id<MTLLibrary> library = [device newLibraryWithSource:@(kQ4Source)
                                                       options:options
                                                         error:&error];
@@ -2706,6 +2923,9 @@ Pipelines & pipelines() {
         value.iq2_xxs_batch1 = compile(@"iq2_xxs_batch_1");
         value.iq2_xxs_batch4 = compile(@"iq2_xxs_batch_4");
         value.iq2_xxs_batch8 = compile(@"iq2_xxs_batch_8");
+        if (supports_simdgroup_matrix) {
+            value.iq2_xxs_large_batch = compile(@"iq2_xxs_large_batch");
+        }
         value.iq1_m_batch1 = compile(@"iq1_m_batch_1");
         value.iq1_m_batch4 = compile(@"iq1_m_batch_4");
         value.iq1_m_batch8 = compile(@"iq1_m_batch_8");
@@ -2919,9 +3139,18 @@ torch::Tensor quant_matmul(
     const bool use_q5_vec4_batch1 =
         weight_type == 13 && batch_size == 1 &&
         weight_offset % 4 == 0 && input_offset % 16 == 0;
+    static const bool iq2_large_batch_enabled = [] {
+        const char * value = std::getenv("SGLANG_MPS_IQ2_LARGE_BATCH");
+        return value == nullptr || std::string(value) != "0";
+    }();
+    Pipelines & p = pipelines();
+    const bool use_iq2_large_batch = iq2_large_batch_enabled &&
+        weight_type == 16 && batch_size > 8 &&
+        p.iq2_xxs_large_batch != nil &&
+        p.iq2_xxs_large_batch.threadExecutionWidth == 32 &&
+        p.iq2_xxs_large_batch.maxTotalThreadsPerThreadgroup >= 128;
     const int64_t batch_tile = (use_q6_batch24 || use_q5_vec24)
         ? 24 : (batch_size == 1 ? 1 : (batch_size <= 4 ? 4 : 8));
-    Pipelines & p = pipelines();
     id<MTLComputePipelineState> pipeline = nil;
     if (weight_type == 3) {
         pipeline = batch_tile == 1 ? p.q4_1_batch1
@@ -2948,8 +3177,9 @@ torch::Tensor quant_matmul(
                     : (batch_size == 8 ? p.q6_K_batch8_vec4
                                        : p.q6_K_batch8))));
     } else if (weight_type == 16) {
-        pipeline = batch_tile == 1 ? p.iq2_xxs_batch1
-            : (batch_tile == 4 ? p.iq2_xxs_batch4 : p.iq2_xxs_batch8);
+        pipeline = use_iq2_large_batch ? p.iq2_xxs_large_batch
+            : (batch_tile == 1 ? p.iq2_xxs_batch1
+                : (batch_tile == 4 ? p.iq2_xxs_batch4 : p.iq2_xxs_batch8));
     } else if (weight_type == 29) {
         pipeline = batch_tile == 1 ? p.iq1_m_batch1
             : (batch_tile == 4 ? p.iq1_m_batch4 : p.iq1_m_batch8);
@@ -2969,15 +3199,21 @@ torch::Tensor quant_matmul(
         [encoder setBuffer:input_buffer offset:input_offset atIndex:1];
         [encoder setBuffer:output_buffer offset:output_offset atIndex:2];
         [encoder setBytes:&args length:sizeof(args) atIndex:3];
+        if (use_iq2_large_batch) {
+            [encoder setThreadgroupMemoryLength:12288 atIndex:0];
+        }
         const bool use_four_row_batch1 =
             (weight_type == 16 || weight_type == 29) && batch_size == 1;
-        const NSUInteger output_groups = use_q5_vec4_batch1
-            ? (output_size + 15) / 16
-            : (use_four_row_batch1
-                ? (output_size + 7) / 8 : (output_size + 3) / 4);
-        const NSUInteger batch_groups =
-            (use_q5_vec4_batch1 || use_four_row_batch1)
-            ? 1 : (batch_size + batch_tile - 1) / batch_tile;
+        const NSUInteger output_groups = use_iq2_large_batch
+            ? (output_size + 63) / 64
+            : (use_q5_vec4_batch1
+                ? (output_size + 15) / 16
+                : (use_four_row_batch1
+                    ? (output_size + 7) / 8 : (output_size + 3) / 4));
+        const NSUInteger batch_groups = use_iq2_large_batch
+            ? (batch_size + 31) / 32
+            : ((use_q5_vec4_batch1 || use_four_row_batch1)
+                ? 1 : (batch_size + batch_tile - 1) / batch_tile);
         const NSUInteger threads = use_four_row_batch1 ? 64 : 128;
         [encoder dispatchThreadgroups:MTLSizeMake(output_groups, batch_groups, 1)
                     threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
