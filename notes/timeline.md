@@ -742,6 +742,29 @@ code changes, or process state matter.
   qualification remains 32,768 tokens while C++ dispatch ownership and the
   consecutive-cache-run fast path proceed.
 
+### PERF-A018 loads consecutive BF16 cache runs directly
+
+- Eight threads now classify the eight possible consecutive runs once per
+  C64 tile. Direct BF16 SIMD-matrix loads serve eligible QK/PV operands, while
+  the established FP32 staging route continues to own fragmented, invalid,
+  and partial runs. The shared run table raises dynamic threadgroup storage by
+  32 bytes to **20,832 bytes**.
+- At `E=256,L=4352`, identical seeded inputs and an identical ascending map
+  measured **59.526688 ms** with direct admission forced off and
+  **26.801604/26.900646 ms** in surrounding direct-load builds. All arms
+  produced one exact SHA-256 digest. A zero-eligible one-swap map measured
+  **58.773563 ms**, clearing the 11.5% fragmented-map regression of the
+  rejected per-consumer classifier.
+- At `E=17,L=131072`, matched same-map medians are
+  **148.002792 -> 66.553042 ms**, a **55.03%** reduction with exact digest
+  parity and `0/0 MiB` measured current/driver allocation growth after inputs
+  are resident.
+- Storage offsets and physical starts `0..7`, direct/fallback and half-mixed
+  maps, duplicates/gaps/invalid slots, Q8/C64 tails, every prefix residue,
+  causal future sentinels, and physical row 131,072 pass. The raw mechanism
+  remains outside the serving call chain, so the Apple production/capacity
+  record is unchanged pending an approved backend dispatch seam.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:

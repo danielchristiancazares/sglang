@@ -13,6 +13,7 @@
 | Qwen3.8-27B IQ2_XXS, native-MPS 48-layer F32 b/a projection sweep | 7.296667 ms selected custom Metal | **2.159000 / 2.051708 ms** native `torch.mm` A/B arms | **-70.41% / -71.88%; 3.38-3.56x** | `.venv/bin/python benchmark/mac/bench_mps_dense_ba.py $IQ2_GGUF --warmup 4 --iterations 9` | 2026-08-20 23:43 PDT |
 | Torch-native MPS GQA partial extend, `4096+4096`, FP32 | 542.376416 / 641.256125 ms padded-query controls | **176.066500 ms** lower-right-causal source path | **-67.54% / -72.54%; 3.08-3.64x** | `.venv/bin/python benchmark/mac/bench_mps_sdpa_extend.py --prefix-len 4096 --extend-len 4096 --warmups 1 --repeats 5` | 2026-08-21 00:15 PDT |
 | Native Metal BF16 GQA EXTEND, isolated `E=17,L=131072` | dense MPS SDPA **424.528292 ms**, **+8,088.515625 MiB** driver residency | final-source **137.906625 ms** median, **+0 MiB** measured driver residency | **-67.52% latency; -8,088.515625 MiB residency** | raw `_extension().extend_gqa_bf16` harness recorded in the 2026-08-23 14:15 experiment-log entry | 2026-08-23 14:15 PDT |
+| Native Metal BF16 GQA EXTEND, consecutive-cache direct load, `E=17,L=131072` | **148.002792 ms** matched same-map forced-staged median | **66.553042 ms** median, **+0 MiB** measured current/driver residency | **-81.449750 ms / -55.03%** | raw `_extension().extend_gqa_bf16` A/B/A harness recorded in the 2026-08-23 14:38 experiment-log entry | 2026-08-23 14:38 PDT |
 | Torch-native MPS decode at unsupported physical pool/dtype boundaries | Runtime error for BF16 or more than 7,936 cache rows | **SDPA fallback, max error 0** at BF16/32,769 and FP32/7,937; fused FP32/7,936 preserved at `2.5331974e-07` | long-pool decode admitted without widening the native kernel contract | `.venv/bin/python benchmark/mac/test_mps_decode_fallback.py --cache-slots {32769,7937,7936} --cache-dtype {bfloat16,float32,float32} --seq-len 257` | 2026-08-21 00:24 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` large-batch projection | 65.578125 / 1971.539875 ms at batch 128 / 4096 | **4.277125 / 124.838125 ms** | **-93.48% / -93.67%; 15.33x / 15.79x** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size {128,4096} --warmup 1 --iterations 5` | 2026-08-23 07:06 PDT |
 | Qwen3.8-27B IQ2_XXS, 32K/BF16 required sampled `128+32` served workload | 8.2942 generation tok/s selected FP32/fused restart mean | **6.963 prompt / 6.772 generation tok/s** | BF16 fallback generation is 18.35% below the selected short-pool mean; long-pool execution is functional | same sampled command on the 32,768 context/token-pool launch with BF16 KV | 2026-08-21 00:36 PDT |
@@ -2020,4 +2021,64 @@ tree throughput can be ranked for production.
   C++ monkeypatching and global aten override as hidden or overly broad policy
   ownership. The explicit repository rule against adding Python code makes an
   owner-approved dispatch seam the next architectural gate.
-- Commit: pending signed checkpoint.
+- Commit: signed checkpoint `0d1d0ea643` (`perf: add bounded Metal extend
+  attention`).
+
+### 2026-08-23 14:38 PDT - PERF-A018 direct BF16 cache-run loads
+
+- Starting point: signed commit `0d1d0ea643` (`perf: add bounded Metal extend
+  attention`), clean except for this Metal candidate. Eight-lane cache runs
+  are classified once per C64 tile, published in 32 bytes of threadgroup
+  storage, and consumed by direct BF16 SIMD-matrix loads for both QK and PV.
+  Ordered adjacency, nonnegative slots, and the upper cache bound govern
+  admission; the established staged FP32 path owns every other run.
+- Resource change: dynamic threadgroup storage increases from **20,800** to
+  **20,832 bytes**. Global auxiliary allocation remains zero, query and
+  output accumulation remain FP32, and the operation still writes the
+  caller-owned output.
+- Attribution at `E=256,L=4352`: an identical ascending map and identical
+  seeded inputs produced SHA-256
+  `7209fefe46186dbbc09aa0ce1a675b5c3056d6add4091d1bf7622aff84236371`
+  in every build. With direct admission forced off at runtime, ten samples
+  were `59.514333,59.850917,59.306000,59.403542,59.781000,59.539042,
+  59.571667,59.404750,59.627458,59.482666 ms`, median **59.526688 ms**.
+  Direct-load windows around that control reached medians **26.801604** and
+  **26.900646 ms**, a reproduced **54.81-54.97%** same-map reduction.
+- Fragmentation: the first design recomputed eight-slot eligibility inside
+  every QK/PV consumer and moved a one-swap-per-eight map from a staged
+  **59.839625 ms** median to about **66.746 ms**. The selected cooperative
+  classifier removes that repeated work. Its zero-eligible one-swap map
+  measured `58.792583,58.860792,58.660459,58.608000,58.772959,58.774167,
+  58.576333,58.781916,58.815083,58.412500 ms`, median **58.773563 ms**,
+  with output bitwise equal to the direct ascending placement.
+- Long-context same-map attribution used `E=17,L=131072`. Forced staged
+  samples were `148.002792,148.063042,147.958209,148.010125,147.939625 ms`,
+  median **148.002792 ms**. Direct samples were
+  `66.655875,66.553042,66.553000,66.457125,66.630042 ms`, median
+  **66.553042 ms**, a **55.03%** reduction. Both produced SHA-256
+  `0a550d0baacf2a6bbc67c252a7b849db9ae0a227206ccdf725c0b4ecc68306df`;
+  post-input current/driver allocation deltas were exactly `0/0 MiB`.
+- Correctness: direct and staged paths were bitwise equal at `E=17,L=129`;
+  both matched dense attention over the exact BF16 cache values within
+  `5.3644180e-07`. Cache storage offsets `0..7`, independent K/V offsets,
+  physical run starts `0..7`, and a final run at the allocation boundary all
+  produced one identical digest and maximum dense error `1.0728836e-06`.
+  Ascending, reverse, interior-swap, duplicate, cross-run-gap, half-mixed,
+  and invalid-slot maps were finite and stayed within `6.5565109e-07` of
+  dense attention.
+- Causal/tile coverage swept `E=1,7,8,9,15,16,17`, total lengths around
+  `63/64/65`, and every prefix residue modulo eight. All cases were finite;
+  maximum error was `2.2649765e-06`. Replacing later future-cache rows with
+  large finite sentinels left the earliest query row bitwise unchanged.
+  The analytic `E=5,L=131073` maximum-address case kept the first four rows
+  exact zero and matched the final marked physical row within
+  `4.7683716e-07`; its three-sample median was **66.350709 ms**, and a
+  131,074-row view remained rejected.
+- Focused validation rebuilt the native extension with `MAX_JOBS=2`, reported
+  capability `True`, passed all six generic torch-native EXTEND tests,
+  compiled the two existing Python dispatch modules, and passed
+  `git diff --check`.
+- Decision: retain PERF-A018 as the selected isolated mechanism. The raw
+  binding remains outside `TorchNativeAttnBackend.forward_extend`; production
+  serving and context standing remain unchanged while the explicit
+  no-new-Python rule keeps activation at an owner-approved dispatch gate.

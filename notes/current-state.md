@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-23
-14:15 PDT.
+14:38 PDT.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -413,6 +413,8 @@ Signed commit `1ec20a0e87` widens the fixed-memory BF16 Metal decode fence to
 131,073 physical rows. Isolated native admission, the 131,074-row fallback,
 and active sequence length 131,072 all pass; served context qualification
 remains the exact 32,768-token gate.
+Signed commit `0d1d0ea643` owns PERF-A017's fixed-memory BF16 paged-GQA
+EXTEND mechanism and its separate lazy Metal pipeline.
 Host cleanup leaves this artifact as the only Hugging Face model cache and no
 MTPLX model cache. A broader cache cleanup also removed the first retained
 copy, so the same immutable revision was downloaded again and its byte size
@@ -546,22 +548,29 @@ measured batch-one decode hotspot the compact-scoreboard handoff.
 
 Long-context EXTEND now has a qualified native mechanism. PERF-A017 implements
 batch-one BF16 paged GQA at 24 query heads, four KV heads, and dimension 256
-with Q8/C64 Metal online softmax in 20,800 bytes of threadgroup storage. At
-`E=17,L=131072`, its final-source three-sample median is **137.906625 ms**, its measured
-post-input driver-residency delta is **0 MiB**, and dense MPS SDPA takes
-**424.528292 ms** while adding **8,088.515625 MiB**. Maximum error is
-`4.3120235e-07`; shuffled mappings, nonzero offsets, tile tails, query length
-1,024, invalid metadata, and host safety guards pass. The shader lives in a
-separate lazy Metal library, leaving the ordinary extension pipeline cache and
-its failure boundary unchanged.
+with Q8/C64 Metal online softmax. PERF-A018 classifies consecutive eight-slot
+cache runs once per C64 tile and loads their BF16 K/V matrices directly while
+retaining the staged path for fragmented, invalid, and partial runs. The run
+table raises threadgroup storage from 20,800 to **20,832 bytes**.
+
+At `E=17,L=131072`, PERF-A018's median is **66.553042 ms** against a matched
+same-map forced-staged **148.002792 ms**, a **55.03%** reduction, with exact
+output SHA-256 parity and `0/0 MiB` post-input current/driver allocation
+growth. The prior dense MPS oracle took **424.528292 ms** and added
+**8,088.515625 MiB** of driver residency. Direct/fallback bitwise parity,
+independent K/V storage offsets `0..7`, every prefix residue modulo eight,
+mixed and malformed maps, causal sentinels, and the physical row 131,072 gate
+pass. The maximum ordinary random dense-reference error in the expanded sweep
+is `2.2649765e-06`. The shader lives in a separate lazy Metal library, leaving
+the ordinary extension pipeline cache and its failure boundary unchanged.
 
 The raw native binding is outside `TorchNativeAttnBackend.forward_extend`.
 The explicit no-new-Python rule makes clean C++ dispatch ownership the active
 architecture gate. The measured 64K generic route remains closed by swap and
 forward-progress limits, so served capacity stays qualified at exact
-`32761+1`. The next native rung is direct BF16 matrix loading for consecutive
-eight-slot cache runs, followed by fragmented-map fallback parity and the same
-131K timing/residency probe.
+`32761+1`. The next isolated native candidate hoists invariant query matrix
+fragments outside the C64 loop; register pressure, bitwise output, and matched
+direct/fragmented timing govern retention.
 
 The deleted affine-q4 scoreboard belonged to a separate Mac Pro experiment
 and carries no M1 Max record standing. The retained MLX quantized-prefill query

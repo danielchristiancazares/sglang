@@ -1557,3 +1557,29 @@ standing.
   aten contract and matched profiling shows that retained gather/cast traffic
   still clears memory and throughput gates.
 - Related commit or revert: design rejected; no source change.
+
+## PERF-FA055 - Per-consumer consecutive-run classification
+
+- Hypothesis: each QK/PV consumer could recognize its own consecutive
+  eight-slot cache run immediately before issuing a direct BF16 SIMD-matrix
+  load, avoiding shared classifier state.
+- Scope: PERF-A018's Q8/C64 native Metal BF16 paged-GQA EXTEND kernel.
+- Attempted change: every SIMDgroup repeatedly loaded and compared the same
+  eight-slot cohorts inside the dimension and value-fragment loops.
+- Benchmark evidence: the direct ascending path improved, reaching a median
+  of **44.449479 ms** at `E=256,L=4352`, while a zero-eligible shuffled map
+  regressed from a matched staged **59.839625 ms** median to about
+  **66.746 ms**, roughly **11.5%**.
+- Correctness evidence: direct and staged outputs were bitwise equal for the
+  exercised sequential and shuffled placements. This branch closed on its
+  fragmented-map performance cost.
+- Failure mode: identical eligibility work was repeated across QK dimension
+  slices and PV output fragments, taxing every fallback run without changing
+  the classification result.
+- Why not to retry unchanged: classifier cost must be amortized per C64 tile,
+  especially for recycled or fragmented paged-cache maps.
+- Reopen only if: a new design proves one bounded classification pass per tile
+  or a cheaper producer-register publication scheme, with a zero-eligible
+  regression below 1%.
+- Related commit or revert: superseded before the PERF-A018 checkpoint by one
+  cooperative eight-thread classifier pass and a 32-byte shared run table.
