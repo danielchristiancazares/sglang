@@ -6881,3 +6881,766 @@ mean 13.929045  17.125658 446.051        39.730
   remains. The persistent system `MTLCompilerService` processes remain idle at
   0.0% CPU. Memory returned to 90% free and thermal/performance warnings remain
   absent.
+
+### 2026-08-23 08:24 PDT - PERF-A015 aligned IQ2 hot-loop specialization rejected
+
+- Began from clean signed
+  `HEAD=e494293a0ebf01d516811f8e2d48de3ef51398a5` on `main`, 21 commits
+  ahead of origin. Port 30000 was free, no server or benchmark workload was
+  live, system memory was 90% free, and macOS reported no thermal or
+  performance warning. The four persistent system `MTLCompilerService`
+  processes were idle at 0.0% CPU.
+- The pinned llama.cpp IQ2_XXS oracle and selected SGLang kernel already share
+  the substantive batch-one algorithm: two SIMD groups, four output rows per
+  group, the 2,176-byte staged lookup tables, lane-strided 32-value input
+  chunks, four-row reuse, `simd_sum`, and final `0.25f` scaling. The residual
+  source difference was a compute-side output-tail predicate.
+- Added a temporary Apple7-only template specialization for output counts
+  divisible by eight. It compiled the same 64-thread/two-SIMD/four-row kernel
+  with the outer and per-row compute guards constant-folded away, retained the
+  selected kernel for every tail, and exposed
+  `SGLANG_MPS_IQ2_BATCH1_ALIGNED=0` as the process-scoped matched control.
+- Each arm used a fresh process, eight warmups, and 25 synchronized samples:
+
+  ```text
+  env SGLANG_MPS_IQ2_BATCH1_ALIGNED={0,1} .venv/bin/python benchmark/mac/bench_mps_gguf_quant.py <IQ2-GGUF> --tensor <tensor> --batch-size 1 --warmup 8 --iterations 25
+
+  blk.8.ffn_gate.weight, 17408x5120:
+    control A median  0.506875 ms, 42.386 GiB/s
+    candidate median  0.513042 ms, 41.876 GiB/s
+    control B median  0.521000 ms, 41.237 GiB/s
+
+  blk.8.ffn_down.weight, 5120x17408:
+    control A median  0.527209 ms, 40.751 GiB/s
+    candidate median  0.538875 ms, 39.869 GiB/s
+    control B median  0.530292 ms, 40.514 GiB/s
+  ```
+
+  Individual samples in that same arm order were:
+
+  ```text
+  gate control A:
+  0.635583,0.561125,0.530875,0.544375,0.553209,0.490834,0.489875,0.484875,0.487000,0.483792,0.469125,0.468166,0.483750,0.519542,0.542750,0.528041,0.525208,0.533583,0.525000,0.510541,0.506875,0.465625,0.470792,0.457042,0.461834
+  gate candidate:
+  0.829416,0.594542,0.522417,0.567334,0.529917,0.570416,0.522083,0.531166,0.509667,0.513042,0.465250,0.471042,0.469416,0.470125,0.450917,0.458292,0.439667,0.462000,0.519750,0.514084,0.519417,0.502792,0.511417,0.512167,0.517042
+  gate control B:
+  0.557834,0.541542,0.549500,0.533958,0.528334,0.463209,0.453708,0.463000,0.490166,0.477708,0.481708,0.638333,0.553583,0.543791,0.524791,0.524833,0.527042,0.525000,0.519625,0.521000,0.489416,0.457083,0.457334,0.473292,0.466417
+  down control A:
+  0.556209,0.546375,0.554833,0.540709,0.543250,0.478709,0.476458,0.490667,0.484041,0.478417,0.485250,0.589667,0.543750,0.533625,0.538334,0.527209,0.547708,0.527667,0.525000,0.528291,0.487792,0.466959,0.476000,0.466875,0.475333
+  down candidate:
+  0.878084,0.846792,0.847709,0.534209,0.554875,0.522625,0.557208,0.538875,0.554958,0.539458,0.546584,0.509625,0.497083,0.497125,0.458583,0.470791,0.477875,0.471333,0.463416,0.683250,0.546209,0.530875,0.529250,0.542584,0.542083
+  down control B:
+  0.613167,0.546917,0.539625,0.561333,0.559042,0.551459,0.558000,0.512375,0.491292,0.489250,0.496375,0.503125,0.484417,0.490083,0.467416,0.658041,0.527708,0.549583,0.535833,0.544833,0.545458,0.530292,0.526750,0.503375,0.482167
+  ```
+
+  The candidate missed the faster control by **1.217%** on gate and **2.213%**
+  on down. It also remained far above the approximately 0.27 ms isolated gate
+  needed for useful whole-model leverage. The Metal compiler either already
+  removes the relevant predicate cost or the saved instructions are immaterial.
+- Removed the specialization, pipeline, dispatch guard, and environment switch
+  completely. The source and worktree returned byte-for-byte to signed HEAD;
+  no server run or parity spend was warranted. Every benchmark process exited,
+  port 30000 remains free, no server/client/xctrace workload is live, the four
+  system compiler services are idle, memory is 90% free, and macOS still
+  reports no warning.
+
+### 2026-08-23 08:27 PDT - PERF-A015 expanded-float IQ2 lookup rejected
+
+- Tested the next economically distinct IQ2 batch-one design without a server.
+  An Apple7-only, 128-thread kernel expanded the 256 packed magnitude grids
+  once per threadgroup into 512 `float4` values, staged the 128 sign bytes,
+  processed 16 aligned output rows per group, reused two input `float4`s across
+  four rows, applied sign bits with exact FP32 sign-bit XOR, and replaced eight
+  per-grid scalar multiply-adds with two `dot(float4,float4)` operations.
+  Static threadgroup storage was 8,320 bytes. The current 64-thread kernel
+  remained selectable through `SGLANG_MPS_IQ2_BATCH1_FLOAT4=0`.
+- The candidate compiled successfully. On the actual
+  `blk.8.ffn_gate.weight` shape `17408x5120`, eight warmups and 25 synchronized
+  samples produced:
+
+  ```text
+  candidate samples_ms:
+  0.722708,0.610542,0.598250,0.621542,0.622416,0.603333,0.613958,0.543583,0.536333,0.537291,0.545666,0.530625,0.534625,0.700709,0.597042,0.599083,0.596166,0.594875,0.588250,0.578416,0.575416,0.515375,0.516708,0.519791,0.530375
+  median 0.588250 ms, 36.523 GiB/s
+
+  matched selected-kernel samples_ms:
+  0.858292,0.856917,0.843250,0.819625,0.565334,0.532750,0.561625,0.547292,0.544709,0.533834,0.538750,0.536542,0.469916,0.469750,0.468833,0.470209,0.473625,0.480292,0.474000,0.607750,0.536291,0.520708,0.542875,0.512375,0.527625
+  median 0.536291 ms, 40.061 GiB/s
+  ```
+
+  Expanded lookup traffic and/or the four-SIMD resource geometry regressed the
+  median by **9.688%**. The candidate also missed the approximately 0.27 ms
+  whole-model admission target by more than twofold, so the down projection,
+  parity, and server gates were not spent.
+- Removed the kernel, pipeline, dispatch, and environment switch completely;
+  the only remaining worktree change is this recovery record. Both processes
+  exited, port 30000 is free, no server/client/xctrace workload remains, the
+  four persistent system compiler services are idle at 0.0% CPU, memory is 90%
+  free, and macOS reports no thermal or performance warning. The selected
+  staged two-SIMD/four-row IQ2 kernel remains authoritative. Next: measure and
+  port the pinned vectorized Q4_K batch-one kernel used by the mixed-format Q2
+  checkpoint; this is a tensor-family optimization, not a Q4 model benchmark.
+
+### 2026-08-23 08:34 PDT - PERF-A016 vectorized Q4_K batch-one kernel clears isolated gate
+
+- The retained Q2 checkpoint is mixed-format: its active batch-one matvecs
+  include 96 Q4_K tensors that stream 2,170,552,320 packed bytes per output
+  token. This experiment optimizes those tensors inside the Q2 model; it is not
+  a Q4-model run and creates no Q4 benchmark record on the M1 Max.
+- Before editing, the existing scalar-dequant kernel measured the actual
+  `blk.0.attn_qkv.weight` (`10240x5120`) at **1.085833 ms / 25.347 GiB/s**.
+  Samples were
+  `1.332750,1.037000,0.997333,0.984083,0.980333,1.148125,1.138709,1.130209,1.128333,0.966000,0.969834,0.967167,1.018458,1.138667,1.125000,1.104875,1.111708,0.992125,0.960042,0.938208,0.996792,1.100167,1.085833,1.091000,1.145375`.
+- Added an Apple7-only 64-thread kernel adapted from pinned llama.cpp
+  `kernel_mul_mv_q4_K_f32_impl` at commit
+  `749f688fcaa4c472ec034b08cb8a907c45cfaa02`. Two SIMD groups process two
+  output rows each, reuse their 16+16 input fragments across both rows, unpack
+  paired nibbles and scale/min fields from 16-bit words, accumulate FP32, and
+  write four aligned rows per threadgroup. The common `quant_matmul` dispatcher
+  owns admission for Q4_K, batch one, four-row-aligned output, two-byte weight
+  alignment, four-byte input alignment, and the pipeline capability. The
+  generic kernel remains the tail/older-device fallback and
+  `SGLANG_MPS_Q4_K_BATCH1_ROWS2=0` is the process-scoped matched control.
+- Fresh-process shape coverage, each with eight warmups and 25 synchronized
+  samples:
+
+  ```text
+  blk.0.attn_qkv.weight, Q4_K 10240x5120
+    candidate A median 0.435083 ms, 63.259 GiB/s
+    control A   median 0.708041 ms, 38.872 GiB/s
+    candidate B median 0.420208 ms, 65.499 GiB/s
+    control B   median 0.863333 ms, 31.880 GiB/s
+    conservative slower-candidate/faster-control improvement: 38.551%
+
+  blk.0.ssm_out.weight, Q4_K 5120x6144
+    control median   0.697458 ms, 23.688 GiB/s
+    candidate median 0.487542 ms, 33.887 GiB/s; improvement 30.097%
+
+  blk.3.attn_q.weight, Q4_K 12288x5120
+    control median   0.811042 ms, 40.718 GiB/s
+    candidate median 0.482708 ms, 68.414 GiB/s; improvement 40.483%
+
+  blk.3.attn_k.weight, Q4_K 1024x5120
+    control median   0.423791 ms, 6.535 GiB/s
+    candidate median 0.297542 ms, 9.308 GiB/s; improvement 29.790%
+
+  blk.0.ffn_gate.weight, Q4_K 17408x5120
+    control median   1.043792 ms, 44.813 GiB/s
+    candidate median 0.550958 ms, 84.899 GiB/s; improvement 47.216%
+  ```
+
+  Individual samples were:
+
+  ```text
+  qkv candidate A:
+  0.828375,0.445667,0.458709,0.446458,0.448958,0.441000,0.445792,0.433959,0.437500,0.433750,0.495209,0.406917,0.392625,0.369417,0.364667,0.376000,0.373875,0.371875,0.349583,0.363166,0.468750,0.431916,0.438416,0.435083,0.445292
+  qkv control A:
+  0.896584,0.863291,0.854167,0.754834,0.721667,0.718167,0.715167,0.718416,0.705625,0.708041,0.721500,0.700792,0.701708,0.687167,0.695542,0.696125,0.707416,0.709125,0.697791,0.706708,0.703750,0.706083,0.710708,0.701000,0.718667
+  qkv candidate B:
+  0.478541,0.449042,0.446000,0.448666,0.488750,0.431625,0.445584,0.530000,0.390625,0.400000,0.411958,0.398125,0.386708,0.397584,0.383125,0.389917,0.510125,0.428625,0.413792,0.409167,0.420208,0.422500,0.421375,0.405750,0.401208
+  qkv control B:
+  0.905875,0.879583,0.862041,0.872750,0.876333,0.883167,0.874208,0.863916,0.863333,0.862458,0.884458,0.779875,0.703750,0.806584,0.928750,0.869208,0.851291,0.862375,0.862084,0.859833,0.868416,0.857875,0.854375,1.140166,0.858208
+  ssm control:
+  0.772625,0.624833,0.627000,0.638750,0.638375,0.630542,0.646250,0.697458,0.733917,0.713542,0.724500,0.723917,0.739166,0.645125,0.658958,0.635625,0.620917,0.613709,0.622000,0.714375,0.732125,0.738083,0.701667,0.707000,0.721709
+  ssm candidate:
+  0.541375,0.506250,0.509250,0.502916,0.490875,0.494375,0.506458,0.493500,0.499042,0.490375,0.492708,0.484125,0.449708,0.424209,0.430083,0.422667,0.420667,0.436708,0.437875,0.453000,0.487542,0.491000,0.483916,0.473750,0.484833
+  attention-q control:
+  1.045833,1.009959,0.850541,0.828375,0.819208,0.811042,0.819834,0.816417,0.817708,0.818792,0.815958,0.806333,0.823083,0.826917,0.796125,0.785708,0.799917,0.798833,0.789792,0.803792,0.795666,0.806291,0.797042,0.789542,0.800000
+  attention-q candidate:
+  0.524625,0.504083,0.486625,0.492167,0.496125,0.488833,0.504500,0.489125,0.490042,0.459042,0.465500,0.434417,0.458291,0.456625,0.449375,0.425041,0.562583,0.486083,0.479959,0.479250,0.463709,0.469708,0.482708,0.476708,0.484250
+  attention-k control:
+  0.466667,0.423791,0.438958,0.442708,0.453542,0.436625,0.446083,0.447125,0.426417,0.420417,0.431667,0.495625,0.409125,0.387792,0.392166,0.392416,0.395042,0.386458,0.401417,0.388542,0.519542,0.422709,0.424125,0.407292,0.410875
+  attention-k candidate:
+  0.334709,0.289000,0.298708,0.317625,0.303709,0.327958,0.281625,0.305875,0.299917,0.289959,0.303666,0.290083,0.287042,0.279750,0.270500,0.286542,0.304250,0.287542,0.380667,0.302000,0.296375,0.317125,0.283083,0.276834,0.297542
+  FFN gate control:
+  1.103667,1.048625,1.036916,1.055375,1.038375,1.047958,1.047083,1.039333,1.053417,1.043792,1.052834,1.052834,1.032750,1.063958,1.027042,1.034959,1.037167,1.048209,1.038542,1.026708,1.045917,1.019625,1.034708,1.028083,1.043792
+  FFN gate candidate:
+  0.641250,0.608167,0.582750,0.611750,0.538500,0.541834,0.534042,0.542459,0.550958,0.521250,0.549583,0.597667,0.619542,0.605000,0.588292,0.595042,0.577125,0.589291,0.570458,0.532666,0.516458,0.518959,0.521709,0.524625,0.519750
+  ```
+
+- Weighting the faster controls and slower candidates by the exact Q4_K
+  inventory gives a synchronized diagnostic sum of **65.229968 -> 41.415000
+  ms/token**, a **23.814968 ms** reduction. Applying that barrier-biased sum to
+  the separate exact-request wall time projects **8.402666 tok/s**; this is an
+  admission estimate rather than end-to-end evidence.
+- Existing actual-file parity passed at batch one for rows 1/3/4/5/16/17 and
+  at batches 3/4/8 for 16 rows. Rows divisible by four exercised the candidate;
+  the others exercised the retained fallback. Candidate Q4_K maximum error was
+  `7.15256e-07` at 16 rows and `4.17233e-07` at four rows; the 17-row fallback
+  reached `1.01328e-06`. Unchanged batch 3/4/8 maxima were
+  `2.32458e-06`, `2.38419e-06`, and `1.90735e-06`. The disabled candidate
+  control also passed at 16x1. Every quant type and Q2_K token embedding in the
+  shared harness remained green under `rtol=2e-4`, `atol=2e-3`.
+- No new Python test code was added. The existing actual-file harness does not
+  expose sliced-Q4 K=256/768 or nonzero-offset construction; the pinned oracle,
+  guarded alignment, full-K shape coverage, compact full-model load, fixed
+  digest, and served gates cover those remaining risks before promotion.
+- All microbenchmark and parity processes exited. Port 30000 is free, no
+  server/client/xctrace/compiler workload is live, the four persistent system
+  compiler services are idle at 0.0% CPU, memory is 90% free, and macOS reports
+  no thermal or performance warning. Proceed to one exact 32K Rust/official-
+  tokenizer server gate with fixed output and the established digest.
+
+### 2026-08-23 08:41 PDT - PERF-A016 first exact candidate window reaches 8.567250 tok/s
+
+- State was `main` at signed `e494293a0ebf01d516811f8e2d48de3ef51398a5`,
+  ahead of `origin/main` by 21 commits, with only this ledger and
+  `gguf_q4_0.mm` modified. `git diff --check` passed before the launch.
+- Launched one Rust-ingress server with the official Qwen tokenizer and the
+  Bartowski IQ2_XXS blob, with the retained large-batch IQ2 path and the new
+  Q4_K tensor-family kernel enabled:
+
+  ```text
+  env -u MTL_CAPTURE_ENABLED -u SGLANG_MPS_PROFILE_LAYERS -u SGLANG_MPS_PROFILE_STAGES \
+    SGLANG_USE_MLX=0 SGLANG_RUST_SERVER=1 SGLANG_RUST_BUILD_MODE=never \
+    SGLANG_MPS_IQ2_LARGE_BATCH=1 SGLANG_MPS_Q4_K_BATCH1_ROWS2=1 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 \
+    --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 32768 --max-total-tokens 32768 \
+    --max-running-requests 1 --chunked-prefill-size 4096 --max-prefill-tokens 8192 \
+    --disable-radix-cache --disable-overlap-schedule --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled \
+    --host 127.0.0.1 --port 30000
+  ```
+
+- Exact process tree was launcher PID 9517 and scheduler/listener PID 9522;
+  PID 9522 alone owned `127.0.0.1:30000`. Load took 16.66 s, the resolved
+  allocation was 9.03 GB weights + 0.29 GB Mamba state + 2.00 GB BF16 KV,
+  and the server selected random seed 421749532. No client or competing Metal
+  workload was live; four persistent system `MTLCompilerService` processes
+  were idle.
+- Used the same exact deterministic `12+256` request as the native baseline:
+
+  ```text
+  curl --max-time 120 -sS -w '\n%{time_total}\n' \
+    -X POST http://127.0.0.1:30000/generate \
+    -H 'Content-Type: application/json' \
+    -d '{"text":"Write a dense sequence of short Python identifiers separated by spaces.","sampling_params":{"temperature":0,"max_new_tokens":256,"ignore_eos":true}}'
+  ```
+
+- Warmup wall was **30.974458 s**. Five consecutive measured walls were
+  `29.815539, 29.815243, 29.913882, 29.936799, 29.924705` s, corresponding to
+  `8.586126852, 8.586212093, 8.557899640, 8.551348459, 8.554804467` tok/s.
+  Their sum was 149.406168 s, mean wall was 29.8812336 s, aggregate was
+  **8.567250048 tok/s**, and best was **8.586212093 tok/s**.
+- Every response reported exactly 12 prompt tokens, 256 completion tokens,
+  and `finish_reason=length`, and reproduced the established 256 token IDs,
+  text, and FNV digest `6d4d220de481f54e`. This first end-to-end candidate
+  window is 22.361594% above the earlier native source baseline of
+  7.001584201 tok/s. Attribution remains open until a fresh, otherwise
+  identical server with `SGLANG_MPS_Q4_K_BATCH1_ROWS2=0` completes its matched
+  window.
+- At the end of the window memory was 90% free and macOS reported no thermal
+  or performance warning. Next: stop only PID 9522 leaf-first, verify cleanup,
+  then run the matched disabled-kernel control with the same request sequence.
+
+### 2026-08-23 08:48 PDT - PERF-A016 matched control confirms a 22.289327% full-model win
+
+- Sent `SIGTERM` only to candidate scheduler/listener PID 9522. Its launcher
+  PID 9517 reaped the child and exited normally. Both exact PIDs disappeared,
+  port 30000 became free, no SGLang/client/xctrace workload remained, the four
+  persistent compiler services were idle at 0.0% CPU, memory returned to 90%
+  free, and macOS reported no thermal or performance warning.
+- Started an otherwise identical fresh server with the sole experimental
+  switch changed to `SGLANG_MPS_Q4_K_BATCH1_ROWS2=0`. The exact launch was the
+  prior entry's command with that one value changed from `1` to `0`. Launcher
+  PID 9650 parented scheduler/listener PID 9659, and PID 9659 alone owned
+  `127.0.0.1:30000`. The resolved arguments retained Rust ingress, the official
+  tokenizer, 32,768 context/tokens, one request, BF16 KV, Qwen3 reasoning,
+  Qwen3 Coder tools, disabled radix/overlap/graphs, and the IQ2_XXS blob. The
+  control selected random seed 397317536, loaded 9.03 GB of weights in 17.01 s,
+  allocated 0.29 GB of Mamba state and 2.00 GB of KV, and passed one bounded
+  `/health` readiness check with HTTP 200.
+- The same exact deterministic `12+256` request took **37.680457 s** for the
+  warmup. Five consecutive control walls were
+  `36.519395, 36.549661, 36.530726, 36.549235, 36.558780` s, corresponding to
+  `7.009973741, 7.004168931, 7.007799407, 7.004250568, 7.002421853` tok/s.
+  Their sum was 182.707797 s, mean wall was 36.5415594 s, aggregate was
+  **7.005721819 tok/s**, and best was **7.009973741 tok/s**. This independently
+  reproduces the pre-candidate native baseline of 7.001584201 tok/s within
+  0.059095%.
+- Every control response also reported exactly 12 prompt tokens, 256 completion
+  tokens, `finish_reason=length`, and the established token IDs, text, and FNV
+  digest `6d4d220de481f54e`. The enabled candidate's 8.567250048 tok/s is
+  therefore a matched **22.289326767%** full-model throughput improvement. Its
+  29.8812336 s mean wall removes 6.6603258 s from the exact request.
+- At the control-window end memory remained 90% free and macOS reported no
+  thermal or performance warning. Sent `SIGTERM` only to PID 9659; launcher PID
+  9650 reaped it and exited normally. Both exact PIDs are absent, port 30000 is
+  free, no SGLang or xctrace workload remains, and the persistent compiler
+  services are idle at 0.0% CPU. Next: perform the contract's independent
+  candidate restart and second five-sample real window before behavioral and
+  capacity gates.
+
+### 2026-08-23 08:54 PDT - PERF-A016 independent window passes; default MPS tool grammar crashes
+
+- Independently relaunched the candidate with the exact first-window command
+  and `SGLANG_MPS_Q4_K_BATCH1_ROWS2=1`. Launcher PID 9768 parented scheduler/
+  listener PID 9773; PID 9773 alone owned port 30000. Random seed was
+  332321210. The resolved Rust/official-tokenizer/32K configuration matched the
+  first candidate, weights loaded in 16.65 s, allocation remained 9.03 GB
+  weights + 0.29 GB Mamba + 2.00 GB BF16 KV, and one bounded `/health` check
+  returned HTTP 200. No competing workload was present.
+- Warmup wall was **31.055888 s**. The independent five-sample walls were
+  `29.983631, 30.035657, 30.019766, 30.012717, 29.998409` s, corresponding to
+  `8.537991946, 8.523202938, 8.527714706, 8.529717586, 8.533785908` tok/s.
+  Their sum was 150.050180 s, mean wall was 30.0100360 s, aggregate was
+  **8.530479604 tok/s**, and best was **8.537991946 tok/s**. This is
+  **21.764463733%** above the fresh matched control and only 0.429197750% below
+  the first candidate window. Every request retained exact `12+256` usage,
+  length finish, token IDs, text, and FNV `6d4d220de481f54e`.
+- On the same official-tokenizer Rust process, `/model_info` reported
+  `Qwen3_5ForCausalLM`, `qwen3_5_text`, generation enabled, and image/audio
+  understanding false. Required-profile arithmetic stopped normally with 60
+  completion tokens, 148 characters of coherent separate reasoning, and exact
+  final content `703`. Thinking-disabled chat stopped normally with two
+  completion tokens, zero reasoning characters, and exact content `READY`.
+- The first explicit tool request exposed a pre-existing MPS configuration
+  failure outside the candidate kernel. The default `grammar_backend=xgrammar`
+  admitted the request, then scheduler PID 9773 raised from
+  `XGrammarGrammar.apply_vocab_mask`:
+
+  ```text
+  RuntimeError: Unsupported device: mps
+  ```
+
+  The exception occurred while applying the grammar mask to MPS logits and
+  intentionally killed the server tree; the client received
+  `RemoteDisconnected`. Both exact PIDs are absent, port 30000 is free, memory
+  returned to 90%, and macOS reports no thermal or performance warning. This
+  is not numerical evidence against the Q4_K tensor kernel: fixed decode,
+  arithmetic, and non-thinking chat all completed first. It is a hard
+  tool-enabled serving gate for the default MPS grammar selection.
+- The exact client command was:
+
+  ```text
+  .venv/bin/python scripts/windows/probe_openai_chat.py \
+    --model qwen3.8-27b-iq2 --max-tokens 256 --show-reasoning \
+    --tool-probe 'Use the multiply tool exactly once to calculate 37 * 19.'
+  ```
+
+  It posted to `http://127.0.0.1:30000/v1/chat/completions` with
+  `tool_choice="auto"`; the function omitted `strict`, used the single
+  `multiply(a: integer, b: integer)` schema with both fields required and
+  `additionalProperties=false`, and used temperature 1.0, top-p 0.95, top-k
+  20, min-p 0, presence penalty 1.5, repetition penalty 1.0, thinking and
+  thinking preservation enabled, non-streaming, and 256 maximum completion
+  tokens. Rust emitted a new-format `structural_tag` / `triggered_tags`
+  constraint beginning at `<tool_call>\n<function=`; the failure occurred when
+  xgrammar tried to apply that compiled constraint's vocabulary mask to MPS.
+- Source inspection confirms `xgrammar_backend.py` supports CUDA/XPU/MUSA,
+  NPU, and CPU and explicitly raises for every other device. Installed
+  alternatives include Outlines 0.1.11 and llguidance 1.8.0. No Python source
+  will be added under the repository's implementation boundary.
+
+### 2026-08-23 09:04 PDT - Rust grammar alternatives rejected; candidate scope tightened
+
+- A fresh candidate server with the first-window command plus
+  `--grammar-backend outlines` used launcher PID 10054, scheduler/listener PID
+  10076, random seed 786464946, and a 17.32 s load. The exact tool-probe command
+  and payload recorded above returned HTTP 400:
+
+  ```text
+  Failed to compile structural_tag grammar: Unknown grammar error
+  ```
+
+  Outlines 0.1.11 skipped unsupported `key_type=structural_tag`; its MPS-safe
+  `masked_fill_` implementation is therefore unreachable for the Qwen3 Coder
+  tag. The server remained healthy and was stopped leaf-first. Both PIDs
+  disappeared and port 30000 became free.
+- A second fresh candidate used the same command with
+  `--grammar-backend llguidance`. Launcher PID 10157 parented scheduler/listener
+  PID 10168; PID 10168 alone owned port 30000. Random seed was 250574455 and
+  load took 16.86 s. The same exact request returned HTTP 400. The backend
+  asserted on the Rust front end's new `triggered_tags` structure:
+
+  ```text
+  {"type":"structural_tag","format":{"type":"triggered_tags",...}}
+  ```
+
+  An explicit `strict=false` variant reached the same compiler failure. Moving
+  the tool declaration into message metadata avoided grammar construction, but
+  also withheld a usable tool surface from the model: generation exhausted all
+  256 tokens with `finish_reason=length` and produced no parsed call. Thus
+  neither installed Rust grammar alternative qualifies tool-enabled service.
+- Source review found that the Python OpenAI path leaves ordinary
+  `tool_choice=auto`, non-strict Qwen3 Coder requests unconstrained because the
+  detector's `get_auto_tool_call_structural_tag()` returns `None`; the native
+  parser still consumes the model's tool tags. This is the already-established
+  working MPS route and is the next qualification ingress.
+- A skeptical kernel review found that the default-on dispatch admitted Q4_K
+  K=256/512/768 cohorts and aligned storage views outside the then-current
+  direct parity surface. Admission was temporarily tightened at the shared
+  `quant_matmul` owner to require `blocks_per_row % 4 == 0` and zero packed-
+  weight/input storage offsets, in addition to batch one, four-row output
+  alignment, Q4_K, and the existing pipeline capability checks. This was an
+  intermediate guard, not a production invariant: the later offset audit
+  quantified substantial eligible compact-view traffic and restored the safe
+  `weight_offset % 2 == 0` / `input_offset % 4 == 0` alignment rule. Short
+  cohorts and misaligned views retain the generic kernel; see the final-source
+  entries below.
+- Sent `SIGTERM` only to llguidance scheduler/listener PID 10168. Launcher PID
+  10157 reaped it and exited normally. Both PIDs are absent, port 30000 is free,
+  no SGLang/xctrace/compiler workload is live, memory is 90% free, and macOS
+  reports no thermal or performance warning.
+
+### 2026-08-23 09:23 PDT - PERF-A016 passes Python tool/client gates and exact decode
+
+- Rebuilt the tightened source through the existing actual-file parity harness:
+
+  ```text
+  env SGLANG_MPS_Q4_K_BATCH1_ROWS2=1 SGLANG_MPS_IQ2_LARGE_BATCH=1 \
+    .venv/bin/python benchmark/mac/test_mps_gguf_quant.py \
+    /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 \
+    --rows 16 --batch-size 1
+  ```
+
+  Every available format passed. Candidate Q4_K maximum error remained
+  `7.15256e-07` / `3.77692e-07` relative; Q4_0, Q2_K, Q5_K, Q6_K, IQ2_XXS,
+  and Q2_K embedding parity also stayed green. This rebuilt and exercised the
+  then-current complete-cohort/zero-offset dispatch. A later offset audit and
+  final parity window supersede that temporary offset restriction.
+- Launched the exact candidate/official-tokenizer 32K configuration through
+  Python ingress by unsetting `SGLANG_RUST_SERVER` and
+  `SGLANG_RUST_BUILD_MODE`. The rest of the first candidate command was
+  unchanged, including the immutable Q2 blob, tokenizer snapshot, BF16 KV,
+  32,768 context and token pool, one request, 4,096-token chunks, reasoning
+  and Qwen3 Coder parsers, and disabled radix/overlap/graphs. Root/listener PID
+  10605 parented scheduler PID 10609; PID 10605 alone owned port 30000. Seed
+  was 748124067, weight load took 16.99 s, and residency stayed 9.03 GB weights
+  + 0.29 GB Mamba + 2.00 GB KV. `/model_info` reported image/audio false.
+- The exact recorded tool probe succeeded without a grammar constraint on
+  this ingress: 346 prompt and 62 completion tokens, 78 reasoning characters,
+  `finish_reason=tool_calls`, and exactly one parsed
+  `multiply({"a":37,"b":19})` with call ID
+  `call_7bc744fa651e474abc41a841`. A second request preserved the exact
+  assistant `reasoning_content`, call ID, and arguments across the tool result
+  `703`; it stopped normally with fresh reasoning and final content
+  `37 × 19 = **703**`. No second tool call appeared.
+- The standalone required-sampling arithmetic request used temperature 1.0,
+  top-p 0.95, top-k 20, and presence penalty 1.5. It stopped after 60 tokens
+  with 102 characters of coherent separate reasoning and exact final `703`.
+  Thinking-disabled returned exact `READY`, two completion tokens, and zero
+  reasoning tokens/characters.
+- After a 32.597088 s warmup, the same deterministic exact `12+256` request
+  produced Python-ingress walls
+  `31.776514,31.840450,31.828068,31.814146,31.836767` s. Per-sample rates were
+  `8.056264447,8.040087373,8.043215190,8.046734934,8.041017481` tok/s; sum was
+  159.095945 s, mean wall 31.8191890 s, aggregate **8.045459612 tok/s**, and
+  best **8.056264447 tok/s**. Every response retained exact `12+256` usage,
+  length finish, token IDs, text, and FNV `6d4d220de481f54e`. The matched
+  22.289327% kernel attribution remains the cleaner Rust-ingress comparison;
+  this window qualifies the same tightened source on the tool-capable route.
+- OpenCode 1.18.15 then used only process-scoped
+  `OPENCODE_CONFIG_CONTENT`, singular provider schema,
+  `@ai-sdk/openai-compatible`, endpoint
+  `http://127.0.0.1:30000/v1`, 32,768 context, and the local IQ2 model alias.
+  The established command was:
+
+  ```text
+  opencode run --pure --model local/qwen --format json --thinking \
+    'Reply with exactly OC READY. Do not call tools.'
+  ```
+
+  The current source tree formed a **13,691-input-token** main agent request,
+  56 tokens larger than the earlier 13,635-token admission probe. It completed
+  through four chunks, exposed coherent visible reasoning, emitted exact
+  `OC READY`, stopped normally with 36 output tokens in the client accounting,
+  called no tool, and exited 0. Global OpenCode configuration was neither read
+  nor changed. The server remained healthy and its cache flush completed.
+
+### 2026-08-23 09:40 PDT - Exact 32K capacity reaches the scheduler watchdog
+
+- With the same still-healthy Python-ingress candidate, 94% free system memory,
+  no competing workload, and no thermal/performance warning, launched the
+  existing calibrated edge harness:
+
+  ```text
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b-iq2 --input-tokens 32761 --output-tokens 1 \
+    --temperature 0 --skip-warmup --timeout 3600
+  ```
+
+  Calibration completed and two explicit cache flushes succeeded. The server
+  admitted the exact 32,761-token prompt into its 32,768-token pool. It
+  completed three 4,096-token chunks, leaving 20,473 tokens pending. Chunk
+  completion timestamps were 09:26:10, 09:28:58, and 09:32:10 after request
+  start at 09:23:25; their approximate walls were 165, 168, and 192 seconds.
+- The fourth chunk did not finish inside the configured 300-second scheduler
+  watchdog. At 09:37:52 the watchdog captured the exact request, reported
+  `total=32768`, `available=16384`, no evictable/protected/session-held rows,
+  and `pending-token=20473`, then terminated the process tree. The harness
+  received `RemoteDisconnected`. This is a long-prefill progress-timeout
+  failure after 12,288 prompt tokens, not an allocation failure and not a
+  batch-one Q4_K decode failure.
+- Root/listener PID 10605 and scheduler PID 10609 exited; port 30000 is free,
+  the client/OpenCode/xctrace/compiler workloads are absent, memory returned to
+  94% free, and macOS reports no thermal or performance warning. Next qualify
+  the same 32K pool with a chunk/watchdog setting whose individual forwards
+  remain bounded, preserving the successful 13,691-token real-client route.
+
+### 2026-08-23 10:11 PDT - 1K chunks pass the exact 32K capacity edge
+
+- The failed fourth 4K chunk had the first `4096 x 16384` lower-right
+  full-attention rectangle, 67,108,864 query/key positions before heads and
+  workspace. Later 4K chunks would grow further. Selected a 1,024-token outer
+  chunk because its largest full rectangle stays near 33.3 million positions,
+  below the last completed 4K shape, while retaining the original 300-second
+  watchdog. This is a capacity-safe serving selection, not a relaxation of
+  hang detection.
+- Relaunched the same Python-ingress candidate with the sole serving change
+  `--chunked-prefill-size 1024`. The exact command otherwise retained the
+  official tokenizer, BF16 32,768-token KV pool, one request, Qwen3 reasoning,
+  Qwen3 Coder tools, disabled radix/overlap/graphs, IQ2 large-batch path, and
+  Q4_K batch-one candidate. Root/listener PID 11431 parented tracker 11442,
+  scheduler 11443, and detokenizer 11444; PID 11431 alone owned port 30000.
+  Resolved watchdog stayed 300 seconds, seed was 280097996, weight load took
+  25.98 s, and allocation remained 9.03 GB weights + 0.29 GB Mamba + 2.00 GB
+  BF16 KV.
+- Ran the same calibrated edge request, allowing 7,200 seconds at the client:
+
+  ```text
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b-iq2 --input-tokens 32761 --output-tokens 1 \
+    --temperature 0 --skip-warmup --timeout 7200
+  ```
+
+  Both pre-request cache flushes succeeded. All 31 full 1,024-token chunks and
+  the final 1,017-token tail completed. Their server-reported input rates in
+  chronological order were:
+
+  ```text
+  21.80,25.33,25.09,25.14,24.82,24.73,24.69,24.65,
+  24.60,24.40,24.54,24.29,24.31,23.21,21.69,21.39,
+  21.38,20.30,19.37,17.41,17.87,16.99,18.98,18.41,
+  14.71,20.05,16.09,20.58,10.49,16.61,11.19,9.86 tok/s
+  ```
+
+  The slowest late forward took approximately 104 seconds, retaining more
+  than 2.8x margin under the unchanged watchdog.
+- Exact result: **32,761 prompt + 1 completion = 32,762 total**, length finish,
+  **19.242 prompt tok/s**, **1702.563673 s TTFT**, and **1702.563753 s E2E**.
+  The single output was three reasoning characters with SHA-256
+  `b344d80e24a3679999fa964450b34bc24d1578a35509f934c1418b0a20d21a67`;
+  visible content was empty and the response closed 0.000080 s after its last
+  fragment. The listener stayed healthy. Memory was 71% free immediately
+  after the full-pool request, no page was throttled, and macOS recorded no
+  thermal/performance warning. An explicit cache flush returned memory to 93%
+  free.
+
+### 2026-08-23 10:25 PDT - Final 1K-chunk client and behavior gates pass; clean shutdown
+
+- Repeated the exact process-scoped OpenCode 1.18.15 command on the final
+  1,024-token-chunk server. The main request again contained **13,691 input
+  tokens**, now completing as thirteen full 1,024-token chunks plus a
+  379-token tail. The client exposed coherent reasoning, emitted exact
+  `OC READY`, stopped normally, accounted for 40 output tokens, made no tool
+  call, and exited 0. Global provider/configuration state remained untouched.
+- Flushed the client request, then repeated the exact tool gate. It returned
+  346 prompt and 173 completion tokens, 375 reasoning characters, one and only
+  one parsed `multiply({"a":37,"b":19})`, and
+  `finish_reason=tool_calls`. The explicit tool-result continuation carried
+  forward reasoning, call ID, and arguments, supplied `703`, stopped normally,
+  and returned `The result of **37 × 19** is **703**.` with fresh separate
+  reasoning and no further tool call.
+- Required-profile standalone arithmetic stopped with coherent separate
+  reasoning and exact final `703`. Thinking-disabled returned exact `READY`,
+  two completion tokens, and zero reasoning. Final `/model_info` still
+  reported `Qwen3_5ForCausalLM`, text-only generation, and image/audio
+  understanding false.
+- Immediately before cleanup, exact ancestry remained
+  `11431 -> {11442,11443,11444}`, PID 11431 alone owned port 30000, and no
+  competing client/compiler workload was live. Sent `SIGTERM` only to leaf
+  scheduler PID 11443. The registered parent cleanup removed the detokenizer,
+  tracker, listener, and root. All four exact PIDs are absent, port 30000 is
+  free, no SGLang/OpenCode/benchmark/xctrace/compiler workload remains, memory
+  is 94% free, and macOS reports no thermal or performance warning.
+- PERF-A016 has now passed matched A/B attribution, an independent second
+  candidate window, actual-file parity, fixed digest, sampled reasoning,
+  thinking-disabled behavior, parsed tools, tool-result continuity,
+  language-only surface, exact 32K capacity, standalone OpenCode, and verified
+  cleanup. The remaining gap is performance: the fastest native window reaches
+  8.567250 tok/s while the pinned llama.cpp Q2 reference remains 14.661356
+  tok/s. Commit this kernel, then continue from the next measured decode
+  hotspot.
+
+### 2026-08-23 10:47 PDT - PERF-A016 final review restores aligned compact views
+
+- A final skeptical review found that the temporary zero-offset predicate was
+  added after the original 8.53--8.57 tok/s Rust windows. Those measurements
+  therefore qualified the broader aligned-view source, while the temporary
+  predicate still needed its own attribution. Three intermediate Rust-ingress
+  windows used the exact deterministic `12+256` request and the zero-offset
+  source:
+  - candidate warmup **32.884106 s**; measured walls
+    `31.836947,31.856741,31.865227,31.835426,31.860844` s, aggregate
+    **8.037414920 tok/s**, best **8.041356192 tok/s**;
+  - matched disabled-kernel control warmup **37.776083 s**; measured walls
+    `36.570255,36.605165,36.579837,36.557143,36.917539` s, aggregate
+    **6.985757933 tok/s**, best **7.002735416 tok/s**;
+  - independent candidate warmup **33.239597 s**; measured walls
+    `31.998079,32.324252,31.883663,32.722747,32.578462` s, aggregate
+    **7.925343119 tok/s**, best **8.029190373 tok/s**.
+  Every response preserved exact usage, length finish, token IDs, and text.
+  The independent window coincided with visible FileProvider/Spotlight
+  contention and is retained as noisy intermediate evidence.
+- Production-view tracing then disproved the zero-offset coverage assumption.
+  The guard removed **589,824,000 packed Q4_K bytes per generated token**, or
+  **27.173913%** of the checkpoint's Q4_K traffic, from the specialization. The
+  lost set contained 24 nonzero-offset GDN attention-QKV shards and eight
+  full-attention K projections. Their compact storage origins are 64-KiB
+  aligned. Q4_K weights are read through `half`/`ushort` and the activations
+  through `float`, establishing the safe admission invariants
+  `weight_offset % 2 == 0` and `input_offset % 4 == 0`.
+- Restored the final default-on host predicate at the common `quant_matmul`
+  owner: Q4_K type, batch one, output rows divisible by four, complete
+  four-block cohorts, the two offset-alignment checks, and the existing Apple7+
+  pipeline capability checks. The env control remains
+  `SGLANG_MPS_Q4_K_BATCH1_ROWS2=0`. This specializes the **Q4_K tensor family
+  inside the mixed-format Bartowski IQ2_XXS/Q2 checkpoint**. The machine and
+  checkpoint record remain Q2.
+- Final actual-file Metal parity passed with the restored predicate. The
+  `rows=16,batch=1` enabled case reported Q4_K maximum absolute/relative error
+  `7.15256e-07 / 3.77692e-07`; every other available quantized format and the
+  Q2_K embedding case passed. The `rows=17,batch=1` output-tail fallback
+  reported Q4_K `1.01328e-06 / 5.35063e-07`; the complete suite passed there as
+  well. The compact-view CPU suite
+  `.venv/bin/python -m pytest -q test/registered/unit/layers/quantization/test_gguf_mps_compact.py`
+  passed all **3** tests.
+
+### 2026-08-23 10:58 PDT - aligned-view Python candidate and named Codex profile pass
+
+- Began from `main` at signed
+  `e494293a0ebf01d516811f8e2d48de3ef51398a5`, ahead of `origin/main` by 21,
+  with only `gguf_q4_0.mm` and this ledger modified. `git diff --check` passed.
+  The final-source Python-ingress launch was:
+
+  ```text
+  env -u MTL_CAPTURE_ENABLED -u SGLANG_MPS_PROFILE_LAYERS \
+    -u SGLANG_MPS_PROFILE_STAGES -u SGLANG_RUST_SERVER \
+    -u SGLANG_RUST_BUILD_MODE SGLANG_USE_MLX=0 \
+    SGLANG_MPS_IQ2_LARGE_BATCH=1 SGLANG_MPS_Q4_K_BATCH1_ROWS2=1 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 \
+    --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 32768 --max-total-tokens 32768 \
+    --max-running-requests 1 --chunked-prefill-size 1024 \
+    --max-prefill-tokens 8192 --disable-radix-cache --disable-overlap-schedule \
+    --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
+    --incremental-streaming-output --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+- Root/listener PID 13954 parented tracker 13959, scheduler 13960, and
+  detokenizer 13961. The resolved configuration retained the official
+  tokenizer, exact 32,768 context/token pool, BF16 KV, one request, 1K chunks,
+  reasoning/tools, and the immutable IQ2_XXS blob. After a **30.893266 s**
+  warmup, exact deterministic `12+256` walls were
+  `29.801688,29.820932,29.824091,29.795946,29.820783` s. Per-sample rates were
+  `8.590117446,8.584574084,8.583664796,8.591772854,8.584616977` tok/s; sum was
+  149.063440 s, mean wall 29.8126880 s, aggregate **8.586947946 tok/s**, and
+  best **8.591772854 tok/s**. Every response reproduced the established exact
+  `12+256` projection and length finish.
+- At the user's direction, created a machine-local named Codex profile outside
+  the repository at `$CODEX_HOME/qwen38-local.config.toml` and its static model
+  catalog at `$CODEX_HOME/qwen38-local.models.json`. The profile selects
+  `qwen3.8-27b-iq2`, provider `sglang-local`,
+  `http://127.0.0.1:30000/v1`, Responses wire format, 32,768 context,
+  30,000-token auto-compaction, medium reasoning, a 900,000-ms stream idle
+  timeout, zero retries, `approval_policy=never`, and `sandbox_mode=read-only`.
+  The text-only catalog exposes sequential tools with `shell_type=shell_command`
+  and reasoning summaries disabled. These are intentionally machine-local
+  profile files rather than repository fixtures.
+- The first Codex attempt used the same 8,839-token prompt while the inherited
+  300-second SSE idle timeout was still active. Its long Metal prefill crossed
+  that client timeout, so Codex exited with the idle-timeout error while the
+  server later completed and removed the request. This failure motivated the
+  explicit 900-second profile timeout.
+- With the final profile, the exact command
+
+  ```text
+  env SGLANG_API_KEY=local codex exec -p qwen38-local --ephemeral \
+    --color never -C /Users/dcazares/sglang --json \
+    'Reply with exactly CODEX READY. Do not use tools.'
+  ```
+
+  completed through `/v1/responses`, exited zero, and emitted visible final
+  `CODEX READY` after whitespace. Codex accounted for **8,839 input tokens**,
+  **43 output tokens**, and **38 reasoning output tokens**. The static catalog
+  carried the tool-bearing model surface, the server remained healthy, and an
+  explicit cache flush returned memory to ordinary residency. The verified
+  server tree was then stopped leaf-first through scheduler PID 13960; all
+  four exact PIDs disappeared and port 30000 became free.
+
+### 2026-08-23 11:31 PDT - final Python A/B, independent restart, and Codex tool round trip pass
+
+- Started a fresh matched control with the exact prior launch and only
+  `SGLANG_MPS_Q4_K_BATCH1_ROWS2=0`. Root/listener PID 14533 parented tracker
+  14538, scheduler 14539, and detokenizer 14540; PID 14533 alone owned port
+  30000. Seed was 860878439, weights loaded in 25.22 s, and allocation remained
+  9.03 GB weights + 0.29 GB Mamba state + 2.00 GB BF16 KV. `/model_info`
+  reported the official tokenizer path, generation enabled, and image/audio
+  understanding false.
+- Control warmup was **37.796990 s**. Five consecutive exact `12+256` walls
+  were `36.534536,36.515441,36.531541,36.523822,36.512639` s, corresponding to
+  `7.007068599,7.010732802,7.007643067,7.009124073,7.011270810` tok/s. Sum was
+  182.617979 s, mean wall 36.5235958 s, aggregate **7.009167482 tok/s**, and
+  best **7.011270810 tok/s**. A seven-file projection comparison across the
+  candidate, control warmup, and five samples had one unique value: every
+  response contained 12 prompt tokens, 256 completion tokens, length finish,
+  and the same output IDs/text. The first final candidate window is therefore
+  a matched **22.510240600%** full-model improvement.
+- Flushed the cache, sent `SIGTERM` only to scheduler PID 14539, and let the
+  registered parent cleanup reap the tree. All four exact PIDs disappeared,
+  port 30000 became free, memory returned to 93%, and macOS recorded no thermal
+  or performance warning.
+- Independently relaunched the exact final-source candidate command. Root/
+  listener PID 14716 parented tracker 14734, scheduler 14735, and detokenizer
+  14736; PID 14716 alone owned port 30000. Seed was 424377351, weight load took
+  14.62 s, allocation again remained 9.03 + 0.29 + 2.00 GB, and `/model_info`
+  retained the text-only reasoning/tool-capable surface. Warmup was
+  **30.955713 s**. Five measured walls were
+  `29.820148,29.929749,29.820190,29.805838,29.839446` s, corresponding to
+  `8.584799780,8.553362743,8.584787689,8.588921405,8.579247751` tok/s. Sum was
+  149.215371 s, mean wall 29.8430742 s, aggregate **8.578204721 tok/s**, and
+  best **8.588921405 tok/s**. This is **22.385500754%** above the fresh matched
+  control and 0.101819934% below the first final-source window. All seven
+  candidate/projection records again collapsed to one exact token result.
+- Qualified the selected real client on this clean independent restart with
+  Codex CLI **0.149.0**. The machine-local overlay identities were:
+
+  ```text
+  9706003ad8a43ad48e4260f282057c023214c9e66737eae3da88a49188079a1c  qwen38-local.config.toml
+  a67c491a1dd4d4df0f720fb966ac390bd20041d8ed29f02833dfca4424a013f0  qwen38-local.models.json
+  ```
+
+  The exact read-only sequential-tool command was:
+
+  ```text
+  env SGLANG_API_KEY=local codex exec -p qwen38-local --ephemeral \
+    --color never -C /Users/dcazares/sglang --json \
+    'Use the shell_command tool exactly once to run pwd in the current workspace. After reading its output, reply with exactly CODEX TOOL READY. Do not use any other tool.'
+  ```
+
+  Codex used `/v1/responses`, issued exactly one command item
+  `/bin/zsh -lc pwd`, received `/Users/dcazares/sglang` with exit code zero,
+  consumed that result, and emitted visible final `CODEX TOOL READY` after
+  whitespace. The client exited zero and accounted for **17,871 input tokens**
+  across the two Responses turns, **96 output tokens**, and **62 reasoning
+  output tokens**. The profile is an overlay over the installed Codex tool/
+  skill surface; this gate qualifies its pinned read-only, sequential shell
+  path. `git status --short` was identical before and after the task, and the
+  server remained healthy with image/audio understanding false.
+- Flushed the Codex request, then sent `SIGTERM` only to scheduler PID 14735.
+  Parent cleanup removed the tracker, detokenizer, listener, and root. All four
+  exact PIDs are absent, port 30000 is free, no SGLang/benchmark/Codex client
+  remains, memory is 94% free, and macOS reports no thermal/performance warning.
+  Final-source PERF-A016 is qualified on the official-tokenizer Python ingress
+  with a 22.510241% matched gain, a reproduced independent window, exact 32K
+  capacity, preserved reasoning/tools, and the selected Codex profile. Its
+  fastest aggregate is **8.586947946 tok/s**, leaving a **41.431420%** gap to
+  the pinned llama.cpp M1 Max Q2 aggregate of 14.661356 tok/s.
