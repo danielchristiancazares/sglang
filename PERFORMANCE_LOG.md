@@ -7,6 +7,7 @@
 | Mac Pro Qwen3.8-27B Q4_0, 8 concurrent requests, 32 output tokens each | 32.953 TPS | 38.016 TPS | +5.063 TPS | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_sampling.py --concurrency 8 --output-tokens 32` | 2026-08-16 22:26 PDT |
 | Mac Pro Qwen3.8-27B Q4_0, batch 24, 128 output tokens each, real top-k/top-p sampling | 49.500 TPS | **62.034 TPS** | **+12.534 TPS** | `.venv-mac-metal/bin/python benchmark/mac/bench_sglang_batched_request.py --url http://127.0.0.1:30001/generate --batch-size 24 --output-tokens 128` | 2026-08-16 22:35 PDT |
 | M1 Max Qwen3.8-27B IQ2_XXS, exact `12+256` fixed-decode scoreboard | unqualified cross-machine q4 entry deleted | **14.661356 tok/s aggregate; 14.671473 best hit** | route-neutral local Q2 authority | pinned llama.cpp build 10547 command in `BENCHMARK.md` | 2026-08-23 07:46 PDT |
+| M1 Max Qwen3.8-27B IQ2_XXS, native SGLang Rust `/generate`, exact `12+256` | llama.cpp **14.661356 tok/s** aggregate | **7.001584 tok/s aggregate; 7.015010 best hit** | **-52.2446%; reference is 2.094006x faster** | exact launch and request in the 2026-08-23 08:05 experiment-log entry | 2026-08-23 08:05 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` batch-one projection | 1.176875 ms matched generic | **0.516000 ms** | **-0.660875 ms / -56.16%** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:25 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS Q5_K `248320x5120` head at batch one | 19.659291 ms matched generic | **3.754625 ms** | **-15.904666 ms / -80.90%; 5.24x** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor output.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:52 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS 48-layer F32 b/a projection sweep | 7.296667 ms selected custom Metal | **2.159000 / 2.051708 ms** native `torch.mm` A/B arms | **-70.41% / -71.88%; 3.38-3.56x** | `.venv/bin/python benchmark/mac/bench_mps_dense_ba.py $IQ2_GGUF --warmup 4 --iterations 9` | 2026-08-20 23:43 PDT |
@@ -680,7 +681,7 @@ tree throughput can be ranked for production.
 | PERF-A003 | Bound quantized-KV prefill score residency by tiling independent query rows above a measured threshold. | MLX quantized attention wrapper and environment surface | Retained source mechanism in `1271610e0b`; safety follow-up `ea983f3120`; Mac Pro evidence only | Helper and full Qwen3.5 wrapper parity pass. The cross-machine timing and allocation measurements carry no M1 Max record standing; fresh dependency, parity, memory, and capacity gates are required before local use. |
 | PERF-A004 | Separate GGUF checkpoint behavior from SGLang formatting before qualifying the retained IQ2 route. | native GGUF tokenizer, reasoning parser, Qwen3 Coder tool parser | Correctness fix retained in `8879ed3d01` | GGUF USER_DEFINED reasoning/tool markers now encode atomically without becoming skippable specials. Live gates return final `703`, exact thinking-off `READY`, one parsed multiply call, and a preserved tool-result continuation. Performance/capacity qualification remains open. |
 | PERF-A005 | Bound MLX's recycled Metal buffer cache during monotonically growing long-context prefill. | `SGLANG_MLX_CACHE_LIMIT_GB`, outer prefill boundary, former 262K profile | Mac Pro mechanism survey only | The source supports a pre-load cache cap. The deleted cross-machine profile supplies no M1 Max capacity or performance record. |
-| PERF-A006 | Compare the retained IQ2 GGUF through a pinned current llama.cpp Metal server. | Supporting dependency, exact Apple benchmark and behavior gates | Current route-neutral M1 Max Q2 reference | Official build 10547 at `749f688f` completed the exact `12+256` workload at **14.661356 tok/s aggregate** with a **14.671473 tok/s** best hit over five warmed runs. It returned correct preserved reasoning and final `703`; exact SGLang ingress remains open. |
+| PERF-A006 | Compare the retained IQ2 GGUF through a pinned current llama.cpp Metal server. | Supporting dependency, exact Apple benchmark and behavior gates | Current route-neutral M1 Max Q2 reference | Official build 10547 at `749f688f` completed exact `12+256` at **14.661356 tok/s aggregate** with a **14.671473 tok/s** best hit. The matched native SGLang baseline is **7.001584 tok/s**, leaving this reference **2.094006x** faster. |
 | PERF-A007 | Eliminate per-forward materialization of heterogeneous merged GGUF projection shards. | `GGUFLinearMethod` storage/apply and packed Metal storage offsets | Retained in `13bea403d6` | One compact MPS backing allocation removes 40 copies / 478.125 MiB of packed-weight materialization per full forward. Five exact `128+32` samples improved generation **3.1858 -> 3.309 tok/s** (+3.867%), prompt **6.979 -> 7.0224** (+0.622%), and reported weight residency **10.03 -> 9.03 GB**, with the identical output digest. |
 | PERF-A008 | Replace native MPS score-array GQA with fixed-memory online or split-K softmax. | `decode_gqa` Metal kernel, KV indirection, cache write | Capacity-critical native candidate | Current native decode allocates `(cache_slots + 256) * 4` bytes of threadgroup scratch and rejects `cache_slots > 7936`. Fixed-size online state removes the configured-pool occupancy cost and this absolute context ceiling; split-K adds long-history parallelism. |
 | PERF-A009 | Specialize the 96x5120 batch-one F32 b/a projection, then remove GDN input packing only if it remains funded. | GGUF F32 dispatch and Qwen3.5 GDN producer/consumer boundary | Retained in `4d1641fdcd`; two windows passed; full context/OpenCode gate open | Native `torch.mm` reduced the actual 48-layer sweep from `7.296667` to `2.159000/2.051708 ms`. Deterministic served generation improved `8.0284 -> 8.4406 tok/s`; sampled restart windows reached `8.3094/8.2942 tok/s`, with behavior and multi-batch fallback intact. |
@@ -1848,8 +1849,8 @@ tree throughput can be ranked for production.
   tying the full-model delta to the new shared-dequant dispatch. The earlier
   exact `4096+2` and `5000+1` requests retain the long/multi-chunk gates.
 - Each verified server tree was cleaned leaf-first between arms. Final state:
-  no server, client, or Metal compiler process; port 30000 free; memory 90%
-  free; no macOS thermal or performance warning.
+  no server, client, or workload-owned Metal compiler process; port 30000
+  free; memory 90% free; no macOS thermal or performance warning.
 - Decision: the default-enabled native IQ2 dispatch now satisfies repeated
   full-model measurement and independent-restart evidence. Retain and commit.
 
@@ -1866,3 +1867,28 @@ tree throughput can be ranked for production.
 - Decision: use that route-neutral Q2 result as the benchmark. Exact SGLang
   ingress remains open; PERF-A014 leaves batch-one decode unchanged and keeps
   fixed-memory GQA plus batch-one IQ2 optimization funded.
+
+### 2026-08-23 08:05 PDT - exact native SGLang Q2 baseline established
+
+- First Rust-ingress launch failed before serving because the GGUF-only
+  tokenizer path contains no `tokenizer.json`. Qwen's official tokenizer-only
+  files were then pinned at immutable revision `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`;
+  the model weights remained the same Bartowski IQ2_XXS blob.
+- One warmup followed by five exact `/generate` requests produced wall times
+  `36.493178,36.605944,36.580286,36.584450,36.551911 s` and request rates
+  `7.015010,6.993400,6.998305,6.997509,7.003738 tok/s`. Aggregate throughput
+  is **7.001584 tok/s**, mean E2E **36.563154 s**, and best hit
+  **7.015010 tok/s**.
+- Every response completed exact `12+256`, stopped at length, returned the
+  same 256 token IDs, and matched FNV-1a-64 `6d4d220de481f54e`. `/model_info`
+  reported the text architecture with image/audio understanding false. The
+  32,768-token BF16 KV pool allocated successfully.
+- This window did not repeat the reasoning, tool, required-sampling, or
+  independent-restart gates through the official-tokenizer Rust boundary;
+  earlier Python/GGUF-tokenizer evidence does not qualify that combination.
+- Decision: the native route is **52.2446%** below the Q2 record, which is
+  **2.094006x** faster. Profile batch-one decode before selecting the next
+  native C++/Metal kernel. Verified cleanup left no server or workload-owned
+  compiler process; four system `MTLCompilerService` XPC processes remained
+  idle at 0.0% CPU. Port 30000 was free, memory 90% free, and no
+  thermal/performance warning was recorded.

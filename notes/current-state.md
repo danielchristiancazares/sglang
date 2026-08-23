@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-23
-07:46 PDT.
+08:05 PDT.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -440,17 +440,28 @@ tool-result continuation ending in `37 × 19 = **703**`. `/model_info`
 continues to report image/audio understanding false. The focused tokenizer,
 reasoning-parser, and tool-parser suites passed 321 tests plus 64 subtests.
 
-This clears the local behavior, sampled-workload, and independent-restart
-gates. Pinned llama.cpp build 10547 owns the measured M1 Max Q2 `12+256`
-reference at **14.661356 tok/s** aggregate and **14.671473 tok/s** best hit.
-The native SGLang route still needs that exact fixture under the qualified 32K
-profile, followed by capacity and standalone OpenCode checks. A process-scoped
+Those behavior, sampled-workload, and independent-restart gates belong to the
+earlier Python-ingress/GGUF-tokenizer profile. They do not yet qualify the
+Rust-ingress/official-tokenizer boundary. Pinned llama.cpp build 10547 owns the
+measured M1 Max Q2 `12+256` reference at **14.661356 tok/s** aggregate and
+**14.671473 tok/s** best hit.
+The native SGLang route now has a fully matched Rust `/generate` baseline:
+**7.001584 tok/s** five-run aggregate, **7.015010 tok/s** best hit, and
+**36.563154 s** mean E2E. It used Qwen's immutable official tokenizer snapshot
+`1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, because the GGUF-only snapshot
+cannot initialize the Rust tokenizer. Every request completed exact `12+256`
+with the same token IDs and FNV `6d4d220de481f54e`. The route is 52.2446%
+below the reference, which is 2.094006x faster.
+
+Rust-profile reasoning, thinking-disabled, tool, preserved-tool-result,
+required-sampling, independent-restart, exact near-capacity, and standalone
+OpenCode checks remain. A process-scoped
 OpenCode 1.18.15 probe formed a **13,635-token** real agent prompt, proving the
 1,024-token diagnostic launch cannot satisfy that gate. No Apple server,
-client, or Metal compiler is live, port 30000 is free, and memory returned to
-93% free after verified cleanup. PERF-A008's fixed-memory GQA remains the
-funded native throughput work after the long-pool fallback completes its
-full-model capacity gate.
+client, or workload-owned compiler process is live; the four persistent system
+`MTLCompilerService` XPC processes remain idle at 0.0% CPU. Port 30000 is free,
+and memory returned to 90% free after verified cleanup. Batch-one decode
+profiling now precedes the next native C++/Metal candidate.
 
 Both source-level context blockers are now retained. Exact source A/B at a
 `4096+4096` partial extend reduced the padded-query controls from
@@ -481,8 +492,8 @@ formerly crossed the
 tok/s** and **201.251071 s E2E**. Arithmetic `703`, thinking-disabled `READY`,
 one parsed `multiply({"a":37,"b":19})`, preserved tool-result continuation,
 and image/audio-disabled gates all pass. Verified cleanup leaves port 30000
-free, no server/compiler process, 90% free memory, and no recorded thermal or
-performance warning.
+free, no server or workload-owned compiler process, 90% free memory, and no
+recorded thermal or performance warning.
 
 A process-scoped served control then isolated the large-batch dispatch on
 exact `128+1`. Disabling it produced **7.0234 prompt tok/s** and
@@ -493,10 +504,11 @@ the matched disabled prompt rate. Every request completed exact `128+1` with
 `finish_reason=length`; the true batch-eight fallback also passes actual-file
 parity.
 
-The native route still needs the exact `12+256` SGLang ingress and standalone
-13,635-token OpenCode gate before it can replace the route-neutral Q2
-reference. A bounded native long-history GQA kernel is the next native-IQ2
-candidate.
+The exact Rust/official-tokenizer route still needs its semantic, sampled,
+independent-restart, near-capacity, and standalone 13,635-token OpenCode gates
+before promotion. The exact `12+256` gap points to batch-one decode; a bounded
+native long-history GQA kernel and a new batch-one IQ2 projection design are
+the leading candidates pending direct attribution.
 
 The deleted affine-q4 scoreboard belonged to a separate Mac Pro experiment
 and carries no M1 Max record standing. The retained MLX quantized-prefill query
