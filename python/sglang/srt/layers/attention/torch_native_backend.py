@@ -34,6 +34,13 @@ def _sdpa(query, key, value, *, enable_gqa: bool, **kwargs):
 
 
 _MPS_DECODE_GQA_MAX_CACHE_SLOTS = 7936
+_MPS_BF16_DECODE_GQA_MAX_CACHE_SLOTS = 32769
+
+
+def _native_mps_bf16_decode_gqa_supported() -> bool:
+    from sglang.srt.hardware_backend.mps.ops import supports_bf16_decode_gqa
+
+    return supports_bf16_decode_gqa()
 
 
 def _native_mps_decode_gqa_inputs_supported(
@@ -47,15 +54,29 @@ def _native_mps_decode_gqa_inputs_supported(
     tensors = (query, key, value, key_cache, value_cache)
     return (
         all(tensor.device.type == "mps" for tensor in tensors)
-        and all(tensor.dtype == torch.float32 for tensor in tensors)
+        and all(tensor.dtype == torch.float32 for tensor in (query, key, value))
         and key_cache.ndim == 3
         and value_cache.ndim == 3
         and key_cache.shape == value_cache.shape
         and key_cache.shape[-1] == head_dim
         and key_cache.is_contiguous()
         and value_cache.is_contiguous()
-        and 0 < key_cache.shape[0] <= _MPS_DECODE_GQA_MAX_CACHE_SLOTS
+        and 0 < key_cache.shape[0]
         and 0 < head_dim <= 256
+        and (
+            (
+                key_cache.dtype == value_cache.dtype == torch.float32
+                and key_cache.shape[0] <= _MPS_DECODE_GQA_MAX_CACHE_SLOTS
+            )
+            or (
+                key_cache.dtype == value_cache.dtype == torch.bfloat16
+                and head_dim == 256
+                and key_cache.shape[0] <= _MPS_BF16_DECODE_GQA_MAX_CACHE_SLOTS
+                and query.shape == (1, 24 * 256)
+                and key.shape == value.shape == (1, 4 * 256)
+                and _native_mps_bf16_decode_gqa_supported()
+            )
+        )
     )
 
 

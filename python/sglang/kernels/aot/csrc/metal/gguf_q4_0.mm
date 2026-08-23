@@ -2228,6 +2228,7 @@ struct AttentionArgs {
     uint num_kv_heads;
     uint head_dim;
     uint cache_slots;
+    uint req_rows;
     uint req_stride;
     float scale;
 };
@@ -2755,13 +2756,50 @@ kernel void store_decode_kv_f32(
     }
     const uint batch = index / row_size;
     const long slot = cache_locations[batch];
-    if (slot < 0 || uint(slot) >= args.cache_slots) {
+    if (slot < 0 || ulong(slot) >= ulong(args.cache_slots)) {
         return;
     }
     const uint within = index - batch * row_size;
     const uint cache_index = uint(slot) * row_size + within;
     key_cache[cache_index] = key[index];
     value_cache[cache_index] = value[index];
+}
+
+inline float bf16_to_f32(ushort value) {
+    return as_type<float>(uint(value) << 16);
+}
+
+inline ushort f32_to_bf16_rne(float value) {
+    uint bits = as_type<uint>(value);
+    if ((bits & 0x7fffffffu) > 0x7f800000u) {
+        return ushort((bits >> 16) | 0x0040u);
+    }
+    bits += 0x7fffu + ((bits >> 16) & 1u);
+    return ushort(bits >> 16);
+}
+
+kernel void store_decode_kv_bf16(
+        device const float * key,
+        device const float * value,
+        device ushort * key_cache,
+        device ushort * value_cache,
+        device const long * cache_locations,
+        constant AttentionArgs & args,
+        uint index [[thread_position_in_grid]]) {
+    const uint row_size = args.num_kv_heads * args.head_dim;
+    const uint total = args.batch_size * row_size;
+    if (index >= total) {
+        return;
+    }
+    const uint batch = index / row_size;
+    const long slot = cache_locations[batch];
+    if (slot < 0 || ulong(slot) >= ulong(args.cache_slots)) {
+        return;
+    }
+    const uint within = index - batch * row_size;
+    const uint cache_index = uint(slot) * row_size + within;
+    key_cache[cache_index] = f32_to_bf16_rne(key[index]);
+    value_cache[cache_index] = f32_to_bf16_rne(value[index]);
 }
 
 kernel void decode_gqa_f32(
@@ -2784,9 +2822,11 @@ kernel void decode_gqa_f32(
         return;
     }
     const uint kv_head = query_head / (args.num_q_heads / args.num_kv_heads);
-    const uint seq_len = min(uint(max(seq_lens[batch], long(0))), args.cache_slots);
+    const uint seq_limit = min(args.cache_slots, args.req_stride);
+    const uint seq_len = uint(min(
+        ulong(max(seq_lens[batch], long(0))), ulong(seq_limit)));
     const long req_slot = req_pool_indices[batch];
-    if (req_slot < 0 || seq_len == 0) {
+    if (req_slot < 0 || ulong(req_slot) >= ulong(args.req_rows) || seq_len == 0) {
         return;
     }
 
@@ -2859,6 +2899,122 @@ kernel void decode_gqa_f32(
             result * inverse_sum;
     }
 }
+
+kernel void decode_gqa_bf16_online_256(
+        device const float * query,
+        device const ushort * key_cache,
+        device const ushort * value_cache,
+        device const int * req_to_token,
+        device const long * req_pool_indices,
+        device const long * seq_lens,
+        device float * output,
+        constant AttentionArgs & args,
+        threadgroup float * scratch [[threadgroup(0)]],
+        uint group [[threadgroup_position_in_grid]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    const uint batch = group / args.num_q_heads;
+    const uint query_head = group - batch * args.num_q_heads;
+    const uint kv_head = query_head / (args.num_q_heads / args.num_kv_heads);
+    const uint seq_limit = min(args.cache_slots, args.req_stride);
+    const uint seq_len = uint(min(
+        ulong(max(seq_lens[batch], long(0))), ulong(seq_limit)));
+    const long req_slot = req_pool_indices[batch];
+    const uint cache_row_size = args.num_kv_heads * 256;
+
+    device const float * q_row = query +
+        (batch * args.num_q_heads + query_head) * 256;
+    float q_values[8];
+    float result[8];
+    for (uint index = 0; index < 8; ++index) {
+        q_values[index] = q_row[lane + index * 32];
+        result[index] = 0.0f;
+    }
+
+    float running_max = -INFINITY;
+    float running_sum = 0.0f;
+    if (req_slot >= 0 && ulong(req_slot) < ulong(args.req_rows)) {
+        for (uint token = simd_id; token < seq_len; token += 4) {
+            const int cache_slot =
+                req_to_token[uint(req_slot) * args.req_stride + token];
+            if (cache_slot < 0 || uint(cache_slot) >= args.cache_slots) {
+                continue;
+            }
+            device const ushort * k_row = key_cache +
+                uint(cache_slot) * cache_row_size + kv_head * 256;
+            float dot_value = 0.0f;
+            for (uint index = 0; index < 8; ++index) {
+                dot_value += q_values[index] *
+                    bf16_to_f32(k_row[lane + index * 32]);
+            }
+            const float score = simd_sum(dot_value) * args.scale;
+            const float next_max = max(running_max, score);
+            const float old_scale = exp(running_max - next_max);
+            const float probability = exp(score - next_max);
+            running_sum = running_sum * old_scale + probability;
+
+            device const ushort * v_row = value_cache +
+                uint(cache_slot) * cache_row_size + kv_head * 256;
+            for (uint index = 0; index < 8; ++index) {
+                result[index] = result[index] * old_scale +
+                    probability * bf16_to_f32(v_row[lane + index * 32]);
+            }
+            running_max = next_max;
+        }
+    }
+
+    threadgroup float * partial_outputs = scratch;
+    threadgroup float * partial_stats = scratch + 4 * 256;
+    for (uint index = 0; index < 8; ++index) {
+        partial_outputs[simd_id * 256 + lane + index * 32] = result[index];
+    }
+    if (lane == 0) {
+        partial_stats[simd_id * 2] = running_max;
+        partial_stats[simd_id * 2 + 1] = running_sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint stride = 2; stride > 0; stride >>= 1) {
+        if (simd_id < stride) {
+            const float left_max = partial_stats[simd_id * 2];
+            const float left_sum = partial_stats[simd_id * 2 + 1];
+            const float right_max = partial_stats[(simd_id + stride) * 2];
+            const float right_sum = partial_stats[(simd_id + stride) * 2 + 1];
+            const float merged_max = max(left_max, right_max);
+            const float left_scale = left_sum == 0.0f
+                ? 0.0f
+                : exp(left_max - merged_max);
+            const float right_scale = right_sum == 0.0f
+                ? 0.0f
+                : exp(right_max - merged_max);
+            for (uint index = 0; index < 8; ++index) {
+                const uint dim = lane + index * 32;
+                partial_outputs[simd_id * 256 + dim] =
+                    partial_outputs[simd_id * 256 + dim] * left_scale +
+                    partial_outputs[(simd_id + stride) * 256 + dim] *
+                        right_scale;
+            }
+            if (lane == 0) {
+                partial_stats[simd_id * 2] = merged_max;
+                partial_stats[simd_id * 2 + 1] =
+                    left_sum * left_scale + right_sum * right_scale;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (simd_id == 0) {
+        const float inverse_sum = partial_stats[1] == 0.0f
+            ? 0.0f
+            : 1.0f / partial_stats[1];
+        device float * output_row = output +
+            (batch * args.num_q_heads + query_head) * 256;
+        for (uint index = 0; index < 8; ++index) {
+            const uint dim = lane + index * 32;
+            output_row[dim] = partial_outputs[dim] * inverse_sum;
+        }
+    }
+}
 )METAL";
 
 struct Q4Args {
@@ -2888,6 +3044,7 @@ struct AttentionArgs {
     uint32_t num_kv_heads;
     uint32_t head_dim;
     uint32_t cache_slots;
+    uint32_t req_rows;
     uint32_t req_stride;
     float scale;
 };
@@ -2975,7 +3132,9 @@ struct Pipelines {
     id<MTLComputePipelineState> iq2_xxs_embedding = nil;
     id<MTLComputePipelineState> iq1_m_embedding = nil;
     id<MTLComputePipelineState> store_decode_kv = nil;
+    id<MTLComputePipelineState> store_decode_kv_bf16 = nil;
     id<MTLComputePipelineState> decode_gqa = nil;
+    id<MTLComputePipelineState> decode_gqa_bf16 = nil;
     id<MTLComputePipelineState> gemma_rmsnorm = nil;
     id<MTLComputePipelineState> gemma_fused_add_rmsnorm = nil;
     id<MTLComputePipelineState> silu_and_mul = nil;
@@ -3078,7 +3237,9 @@ Pipelines & pipelines() {
         value.iq2_xxs_embedding = compile(@"iq2_xxs_embedding_f32");
         value.iq1_m_embedding = compile(@"iq1_m_embedding_f32");
         value.store_decode_kv = compile(@"store_decode_kv_f32");
+        value.store_decode_kv_bf16 = compile(@"store_decode_kv_bf16");
         value.decode_gqa = compile(@"decode_gqa_f32");
+        value.decode_gqa_bf16 = compile(@"decode_gqa_bf16_online_256");
         value.gemma_rmsnorm = compile(@"gemma_rmsnorm_f32");
         value.gemma_fused_add_rmsnorm = compile(@"gemma_fused_add_rmsnorm_f32");
         value.silu_and_mul = compile(@"silu_and_mul_f32");
@@ -3091,6 +3252,18 @@ Pipelines & pipelines() {
         value.sigmoid_mul_inplace = compile(@"sigmoid_mul_inplace_f32");
     });
     return value;
+}
+
+bool supports_bf16_decode_gqa() {
+    static const bool supported = [] {
+        id<MTLDevice> device = at::mps::getCurrentMPSStream()->device();
+        Pipelines & p = pipelines();
+        return [device supportsFamily:MTLGPUFamilyApple7] &&
+            p.decode_gqa_bf16 != nil &&
+            p.decode_gqa_bf16.threadExecutionWidth == 32 &&
+            p.decode_gqa_bf16.maxTotalThreadsPerThreadgroup >= 128;
+    }();
+    return supported;
 }
 
 torch::Tensor q4_0_matmul(
@@ -4290,13 +4463,24 @@ torch::Tensor decode_gqa(
     const torch::Tensor & req_pool_indices,
     const torch::Tensor & seq_lens,
     double scale) {
-    for (const auto & tensor : {query, key, value, key_cache, value_cache}) {
+    for (const auto & tensor : {query, key, value}) {
         TORCH_CHECK(tensor.device().is_mps(), "decode attention tensors must be on MPS");
         TORCH_CHECK(tensor.scalar_type() == torch::kFloat32,
-                    "native Metal decode attention requires float32 tensors");
+                    "native Metal decode attention requires float32 query/key/value tensors");
         TORCH_CHECK(tensor.is_contiguous(),
                     "native Metal decode attention tensors must be contiguous");
     }
+    for (const auto & tensor : {key_cache, value_cache}) {
+        TORCH_CHECK(tensor.device().is_mps(), "decode attention caches must be on MPS");
+        TORCH_CHECK(tensor.is_contiguous(),
+                    "native Metal decode attention caches must be contiguous");
+    }
+    TORCH_CHECK(key_cache.scalar_type() == value_cache.scalar_type(),
+                "key and value cache dtypes must match");
+    const bool cache_is_f32 = key_cache.scalar_type() == torch::kFloat32;
+    const bool cache_is_bf16 = key_cache.scalar_type() == torch::kBFloat16;
+    TORCH_CHECK(cache_is_f32 || cache_is_bf16,
+                "native Metal decode attention requires float32 or bfloat16 caches");
     for (const auto & tensor : {cache_locations, req_pool_indices, seq_lens}) {
         TORCH_CHECK(tensor.device().is_mps(), "decode attention metadata must be on MPS");
         TORCH_CHECK(tensor.scalar_type() == torch::kInt64,
@@ -4323,6 +4507,8 @@ torch::Tensor decode_gqa(
     const int64_t cache_slots = key_cache.size(0);
     TORCH_CHECK(batch_size >= 1 && key.size(0) == batch_size,
                 "query/key batch sizes must match");
+    TORCH_CHECK(num_q_heads > 0 && num_kv_heads > 0,
+                "decode attention requires non-empty query and KV heads");
     TORCH_CHECK(num_q_heads % num_kv_heads == 0,
                 "query heads must be divisible by KV heads");
     TORCH_CHECK(key.size(2) == head_dim && key_cache.size(1) == num_kv_heads &&
@@ -4330,8 +4516,19 @@ torch::Tensor decode_gqa(
                 "decode attention head geometry does not match the KV cache");
     TORCH_CHECK(head_dim > 0 && head_dim <= 256,
                 "native Metal decode attention requires head_dim <= 256");
-    TORCH_CHECK(cache_slots > 0 && cache_slots <= 7936,
-                "native Metal decode attention supports at most 7936 cache slots");
+    TORCH_CHECK(cache_slots > 0,
+                "native Metal decode attention requires a non-empty cache");
+    TORCH_CHECK(!cache_is_f32 || cache_slots <= 7936,
+                "native Metal float32 decode attention supports at most 7936 cache slots");
+    TORCH_CHECK(!cache_is_bf16 || head_dim == 256,
+                "native Metal bfloat16 decode attention requires head_dim 256");
+    TORCH_CHECK(!cache_is_bf16 || cache_slots <= 32769,
+                "native Metal bfloat16 decode attention supports at most 32769 cache slots");
+    TORCH_CHECK(!cache_is_bf16 ||
+                    (batch_size == 1 && num_q_heads == 24 && num_kv_heads == 4),
+                "native Metal bfloat16 decode attention requires batch 1, 24 query heads, and 4 KV heads");
+    TORCH_CHECK(!cache_is_bf16 || supports_bf16_decode_gqa(),
+                "native Metal bfloat16 decode attention requires Apple7+ with 32-lane SIMD groups");
     TORCH_CHECK(req_to_token.dim() == 2,
                 "req_to_token must have shape [request_slots, context_length]");
     TORCH_CHECK(cache_locations.numel() >= batch_size &&
@@ -4353,6 +4550,7 @@ torch::Tensor decode_gqa(
         static_cast<uint32_t>(num_kv_heads),
         static_cast<uint32_t>(head_dim),
         static_cast<uint32_t>(cache_slots),
+        static_cast<uint32_t>(req_to_token.size(0)),
         static_cast<uint32_t>(req_to_token.size(1)),
         static_cast<float>(scale),
     };
@@ -4361,7 +4559,8 @@ torch::Tensor decode_gqa(
     Pipelines & p = pipelines();
     dispatch_sync(stream->queue(), ^{
         id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
-        [encoder setComputePipelineState:p.store_decode_kv];
+        [encoder setComputePipelineState:
+            cache_is_bf16 ? p.store_decode_kv_bf16 : p.store_decode_kv];
         [encoder setBuffer:buffer_of(key) offset:offset_of(key) atIndex:0];
         [encoder setBuffer:buffer_of(value) offset:offset_of(value) atIndex:1];
         [encoder setBuffer:buffer_of(key_cache) offset:offset_of(key_cache) atIndex:2];
@@ -4374,7 +4573,8 @@ torch::Tensor decode_gqa(
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 
-        [encoder setComputePipelineState:p.decode_gqa];
+        [encoder setComputePipelineState:
+            cache_is_bf16 ? p.decode_gqa_bf16 : p.decode_gqa];
         [encoder setBuffer:buffer_of(query) offset:offset_of(query) atIndex:0];
         [encoder setBuffer:buffer_of(key_cache) offset:offset_of(key_cache) atIndex:1];
         [encoder setBuffer:buffer_of(value_cache) offset:offset_of(value_cache) atIndex:2];
@@ -4384,10 +4584,13 @@ torch::Tensor decode_gqa(
         [encoder setBuffer:buffer_of(seq_lens) offset:offset_of(seq_lens) atIndex:5];
         [encoder setBuffer:buffer_of(output) offset:offset_of(output) atIndex:6];
         [encoder setBytes:&args length:sizeof(args) atIndex:7];
-        [encoder setThreadgroupMemoryLength:(cache_slots + 256) * sizeof(float)
-                                    atIndex:0];
+        const NSUInteger scratch_bytes = cache_is_bf16
+            ? (4 * 256 + 8) * sizeof(float)
+            : (cache_slots + 256) * sizeof(float);
+        [encoder setThreadgroupMemoryLength:scratch_bytes atIndex:0];
         [encoder dispatchThreadgroups:MTLSizeMake(batch_size * num_q_heads, 1, 1)
-                    threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                    threadsPerThreadgroup:MTLSizeMake(cache_is_bf16 ? 128 : 256,
+                                                      1, 1)];
     });
     return output;
 }
@@ -4395,6 +4598,8 @@ torch::Tensor decode_gqa(
 }  // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
+    module.def("supports_bf16_decode_gqa", &supports_bf16_decode_gqa,
+               "Whether the active Metal device supports native BF16 GQA decode");
     module.def("q4_0_matmul", &q4_0_matmul, "Native Metal GGUF Q4_0 matmul");
     module.def("quant_matmul", &quant_matmul,
                "Native Metal GGUF low-bit matmul");

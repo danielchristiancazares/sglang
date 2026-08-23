@@ -238,6 +238,12 @@ def decode_gqa(
     return output.reshape(batch_size, num_q_heads * head_dim)
 
 
+@lru_cache(maxsize=1)
+def supports_bf16_decode_gqa() -> bool:
+    """Return whether the active Metal device supports the native BF16 path."""
+    return bool(_extension().supports_bf16_decode_gqa())
+
+
 def gemma_rmsnorm(
     x: torch.Tensor,
     weight: torch.Tensor,
