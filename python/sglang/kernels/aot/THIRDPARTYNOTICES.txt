@@ -458,8 +458,9 @@ Notice for ggml-org/llama.cpp
 -----------------------------
 
 The native Metal GGUF kernels adapt lookup tables and matrix-vector geometry
-from ggml source, including `ggml-common.h` and `ggml-metal.metal`. The IQ2_XXS
-batch-one and large-batch specializations were adapted from commit
+from ggml source, including `ggml-common.h` and `ggml-metal.metal`. The Q2_K
+and IQ2_XXS batch-one specializations and the IQ2_XXS large-batch
+specialization were adapted from commit
 749f688fcaa4c472ec034b08cb8a907c45cfaa02. The native Metal EXTEND attention
 kernel also adapts that commit's 8-query/64-cache-token, four-SIMD-group
 flash-attention tiling and online-softmax geometry.

@@ -585,6 +585,125 @@ INSTANTIATE_QUANT_BATCH("iq2_xxs_batch_4", block_iq2_xxs, 256, 4)
 INSTANTIATE_QUANT_BATCH("iq2_xxs_batch_8", block_iq2_xxs, 256, 8)
 #undef INSTANTIATE_QUANT_BATCH
 
+// Reuse each activation fragment across four Q2_K output rows. This mapping
+// adapts kernel_mul_mv_q2_K_f32_impl from ggml-org/llama.cpp's
+// ggml/src/ggml-metal/ggml-metal.metal at
+// 749f688fcaa4c472ec034b08cb8a907c45cfaa02; see THIRDPARTYNOTICES.txt.
+kernel void q2_K_batch_1_rows4(
+        device const block_q2_K * weights,
+        device const float * input,
+        device float * output,
+        constant Q4Args & args,
+        uint group [[threadgroup_position_in_grid]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr ushort rows_per_simdgroup = 4;
+    constexpr ushort simdgroups = 2;
+    constexpr ushort bytes_per_block = 84;
+    constexpr ushort words_per_block = bytes_per_block / 2;
+
+    const ushort ix = lane / 8;
+    const ushort it = lane % 8;
+    const ushort iq = it / 4;
+    const ushort ir = it % 4;
+    const ushort scale_lane = ir / 2;
+    const uint first_row =
+        (group * simdgroups + simd_id) * rows_per_simdgroup;
+    device const block_q2_K * row_weights =
+        weights + first_row * args.blocks_per_row;
+    device const float * input_fragment =
+        input + ix * 256 + 128 * iq + 8 * ir;
+    const uint row_stride_bytes = args.blocks_per_row * bytes_per_block;
+    const uint row_stride_words = args.blocks_per_row * words_per_block;
+
+    float input_values[32];
+    float sums[rows_per_simdgroup] = {0.0f};
+
+    for (uint block_index = ix;
+         block_index < args.blocks_per_row;
+         block_index += 4) {
+        float4 input_sums = float4(0.0f);
+#pragma unroll
+        for (ushort i = 0; i < 8; ++i) {
+            input_values[i] = input_fragment[i];
+            input_sums[0] += input_values[i];
+            input_values[i + 8] = input_fragment[i + 32];
+            input_sums[1] += input_values[i + 8];
+            input_values[i + 16] = input_fragment[i + 64];
+            input_sums[2] += input_values[i + 16];
+            input_values[i + 24] = input_fragment[i + 96];
+            input_sums[3] += input_values[i + 24];
+        }
+
+        device const uchar * scales =
+            row_weights[block_index].scales + 8 * iq + scale_lane;
+        device const ushort * quants =
+            reinterpret_cast<device const ushort *>(
+                row_weights[block_index].qs) + 16 * iq + 4 * ir;
+        device const half * deltas = &row_weights[block_index].d;
+
+#pragma unroll
+        for (ushort row_offset = 0;
+             row_offset < rows_per_simdgroup;
+             ++row_offset) {
+            float4 even_accumulator = float4(0.0f);
+            float4 odd_accumulator = float4(0.0f);
+#pragma unroll
+            for (ushort i = 0; i < 8; i += 2) {
+                even_accumulator[0] +=
+                    input_values[i] * float(quants[i / 2] & 0x0003);
+                odd_accumulator[0] +=
+                    input_values[i + 1] * float(quants[i / 2] & 0x0300);
+                even_accumulator[1] +=
+                    input_values[i + 8] * float(quants[i / 2] & 0x000c);
+                odd_accumulator[1] +=
+                    input_values[i + 9] * float(quants[i / 2] & 0x0c00);
+                even_accumulator[2] +=
+                    input_values[i + 16] * float(quants[i / 2] & 0x0030);
+                odd_accumulator[2] +=
+                    input_values[i + 17] * float(quants[i / 2] & 0x3000);
+                even_accumulator[3] +=
+                    input_values[i + 24] * float(quants[i / 2] & 0x00c0);
+                odd_accumulator[3] +=
+                    input_values[i + 25] * float(quants[i / 2] & 0xc000);
+            }
+
+            const float delta = float(deltas[0]);
+            const float minimum = float(deltas[1]) / 16.0f;
+            sums[row_offset] += delta * (
+                (even_accumulator[0] + odd_accumulator[0] / 256.0f) *
+                    float(scales[0] & 0x0f) +
+                (even_accumulator[1] + odd_accumulator[1] / 256.0f) *
+                    float(scales[2] & 0x0f) / 4.0f +
+                (even_accumulator[2] + odd_accumulator[2] / 256.0f) *
+                    float(scales[4] & 0x0f) / 16.0f +
+                (even_accumulator[3] + odd_accumulator[3] / 256.0f) *
+                    float(scales[6] & 0x0f) / 64.0f) -
+                minimum * (
+                    input_sums[0] * float(scales[0] & 0xf0) +
+                    input_sums[1] * float(scales[2] & 0xf0) +
+                    input_sums[2] * float(scales[4] & 0xf0) +
+                    input_sums[3] * float(scales[6] & 0xf0));
+
+            scales += row_stride_bytes;
+            quants += row_stride_words;
+            deltas += row_stride_words;
+        }
+
+        input_fragment += 4 * 256;
+    }
+
+#pragma unroll
+    for (ushort row_offset = 0;
+         row_offset < rows_per_simdgroup;
+         ++row_offset) {
+        const float sum = simd_sum(sums[row_offset]);
+        if (lane == 0 && first_row + row_offset < args.output_size) {
+            output[first_row + row_offset] = sum;
+        }
+    }
+}
+
 // Reuse each activation fragment across two Q4_K output rows. This mapping
 // adapts kernel_mul_mv_q4_K_f32_impl from ggml-org/llama.cpp's
 // ggml/src/ggml-metal/ggml-metal.metal at
@@ -3481,6 +3600,7 @@ struct Pipelines {
     id<MTLComputePipelineState> q4_1_batch4 = nil;
     id<MTLComputePipelineState> q4_1_batch8 = nil;
     id<MTLComputePipelineState> q2_K_batch1 = nil;
+    id<MTLComputePipelineState> q2_K_batch1_rows4 = nil;
     id<MTLComputePipelineState> q2_K_batch4 = nil;
     id<MTLComputePipelineState> q2_K_batch8 = nil;
     id<MTLComputePipelineState> q4_K_batch1 = nil;
@@ -3582,6 +3702,7 @@ Pipelines & pipelines() {
         value.q4_1_batch4 = compile(@"q4_1_batch_4");
         value.q4_1_batch8 = compile(@"q4_1_batch_8");
         value.q2_K_batch1 = compile(@"q2_K_batch_1");
+        value.q2_K_batch1_rows4 = compile(@"q2_K_batch_1_rows4");
         value.q2_K_batch4 = compile(@"q2_K_batch_4");
         value.q2_K_batch8 = compile(@"q2_K_batch_8");
         value.q4_K_batch1 = compile(@"q4_K_batch_1");
@@ -3911,11 +4032,22 @@ torch::Tensor quant_matmul(
         const char * value = std::getenv("SGLANG_MPS_Q4_K_BATCH1_ROWS2");
         return value == nullptr || std::string(value) != "0";
     }();
+    static const bool q2_k_batch1_rows4_enabled = [] {
+        const char * value = std::getenv("SGLANG_MPS_Q2_K_BATCH1_ROWS4");
+        return value == nullptr || std::string(value) != "0";
+    }();
     static const bool iq2_large_batch_enabled = [] {
         const char * value = std::getenv("SGLANG_MPS_IQ2_LARGE_BATCH");
         return value == nullptr || std::string(value) != "0";
     }();
     Pipelines & p = pipelines();
+    const bool use_q2_k_batch1_rows4 = q2_k_batch1_rows4_enabled &&
+        weight_type == 10 && batch_size == 1 && output_size % 8 == 0 &&
+        blocks_per_row % 4 == 0 && weight_offset % 2 == 0 &&
+        input_offset % 4 == 0 &&
+        p.q2_K_batch1_rows4 != nil &&
+        p.q2_K_batch1_rows4.threadExecutionWidth == 32 &&
+        p.q2_K_batch1_rows4.maxTotalThreadsPerThreadgroup >= 64;
     const bool use_iq2_large_batch = iq2_large_batch_enabled &&
         weight_type == 16 && batch_size > 8 &&
         p.iq2_xxs_large_batch != nil &&
@@ -3939,7 +4071,9 @@ torch::Tensor quant_matmul(
         pipeline = batch_tile == 1 ? p.q4_1_batch1
             : (batch_tile == 4 ? p.q4_1_batch4 : p.q4_1_batch8);
     } else if (weight_type == 10) {
-        pipeline = batch_tile == 1 ? p.q2_K_batch1
+        pipeline = batch_tile == 1
+            ? (use_q2_k_batch1_rows4
+                ? p.q2_K_batch1_rows4 : p.q2_K_batch1)
             : (batch_tile == 4 ? p.q2_K_batch4 : p.q2_K_batch8);
     } else if (weight_type == 12) {
         pipeline = batch_tile == 1
@@ -3987,8 +4121,8 @@ torch::Tensor quant_matmul(
         if (use_iq2_large_batch) {
             [encoder setThreadgroupMemoryLength:12288 atIndex:0];
         }
-        const bool use_four_row_batch1 =
-            (weight_type == 16 || weight_type == 29) && batch_size == 1;
+        const bool use_four_row_batch1 = use_q2_k_batch1_rows4 ||
+            ((weight_type == 16 || weight_type == 29) && batch_size == 1);
         const NSUInteger output_groups = use_iq2_large_batch
             ? (output_size + 63) / 64
             : (use_q5_vec4_batch1
