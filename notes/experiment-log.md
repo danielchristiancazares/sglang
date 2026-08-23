@@ -8224,3 +8224,98 @@ mean 13.929045  17.125658 446.051        39.730
   source candidate is hoisting invariant query matrix fragments outside the
   C64 loop, with register pressure and fragmented-map timing as its decisive
   falsifiers.
+
+### 2026-08-23 14:47 PDT - register-published run flags remove one tile barrier
+
+- Began from clean signed `main` at
+  `d28a167ace8097c77d91f7f2a19b972f68ccb4cb` (`perf: load consecutive
+  Metal cache runs directly`), ahead of `origin/main` by 27 commits. No server
+  or concurrent GPU workload was introduced; every Metal build and probe in
+  this entry ran sequentially.
+- A full invariant-query hoist was tried first. Each SIMDgroup
+  loaded all 32 Q8x8 FP32 query fragments before the C64 loop and reused them
+  at the existing QK multiply sites. The shader compiled, direct and fallback
+  results remained bitwise equal, checksum stayed `-441.633056640625`, and
+  SHA-256 stayed
+  `7209fefe46186dbbc09aa0ce1a675b5c3056d6add4091d1bf7622aff84236371`.
+  Direct samples were:
+
+  ```text
+  A1 27.706333,27.902291,27.706041,27.784167,27.714667,
+     27.624583,27.966250,27.944375,27.629458,27.659417
+     median 27.710500 ms
+  A2 27.994416,27.860625,27.687666,28.013625,27.863417,
+     27.960416,27.698917,27.721458,27.832083,27.612750
+     median 27.846354 ms
+  ```
+
+  The one-swap-per-eight zero-eligible median was **62.6210415 ms**. Relative
+  to PERF-A018's **26.801604/26.900646 ms** direct and **58.773563 ms**
+  fallback medians, both routes regressed by roughly 3.4-6.5%. The expanded
+  live matrix set is the likely register/scheduling cost; the candidate was
+  reverted before long-context work and recorded as `PERF-FA056`.
+- PERF-A019 instead removes classifier synchronization. Threads `0..63`
+  retain their sanitized physical slot in a register while writing
+  `shared_slots`. Within each eight-lane cohort, `simd_shuffle` broadcasts its
+  first slot and three `simd_shuffle_xor` reductions prove that all eight
+  lanes equal `first+lane_offset`, with lower/upper bounds. Cohort leaders
+  publish `shared_runs`. One threadgroup barrier now publishes both arrays to
+  the four consumer SIMDgroups. The previous barrier and 64 repeated shared
+  integer reads are absent; threadgroup storage stays exactly 20,832 bytes.
+- Every source arm was rebuilt with the established command and returned
+  capability `True`. A first candidate `E=17,L=129` call lazily compiled the
+  shader. Ascending direct and one-swap fallback results were bitwise equal,
+  finite, and retained SHA-256
+  `ce5c8c0b7a07a04eac7c1063c1412ac38a80550ce67392b42bef591cc3d77418`;
+  both matched dense BF16-cache attention at maximum error
+  `5.364418029785156e-07`.
+- The first candidate `E=256,L=4352` windows were:
+
+  ```text
+  direct A1 26.313042,26.394667,26.704292,26.270583,26.694792,
+            26.427834,26.219042,26.402000,26.497833,26.221375
+            median 26.3983335 ms
+  direct A2 26.287917,26.342875,26.138375,26.355500,26.306750,
+            26.311666,26.308833,26.745083,26.504042,26.248250
+            median 26.3102495 ms
+  zero eligible median 58.8961875 ms
+  ```
+
+  Output checksum and SHA-256 matched the PERF-A018 timing fixture exactly.
+- Source was then restored to signed PERF-A018, rebuilt, and measured with the
+  same fixture. Its direct samples were
+  `27.015042,27.229167,27.188250,27.003750,26.667708,26.618833,27.207083,
+  26.917000,26.827250,27.183875 ms`, median **27.009396 ms**. Its zero-
+  eligible median was **58.8325005 ms**. The candidate was restored and
+  rebuilt; the second direct samples were
+  `26.566000,26.534083,26.619125,26.825333,26.715083,26.449750,26.337083,
+  26.443458,26.893167,26.637417 ms`, median **26.5925625 ms**. The second
+  zero-eligible median was **58.8740625 ms**. Direct improvement therefore
+  reproduces at **1.54-2.59%** around the matched checkpoint, while fallback
+  movement is about **0.071%** in the final pair.
+- At `E=17,L=131072`, the signed-checkpoint samples were
+  `66.547625,66.595417,66.577542,66.560625,66.599000 ms`, median
+  **66.577542 ms**. Candidate windows were
+  `65.556541,65.565041,65.641708,65.437208,65.655125 ms`, median
+  **65.565041 ms**, then
+  `65.493667,65.725375,65.074916,65.593500,65.377875 ms`, median
+  **65.493667 ms**. The reproduced reductions are **1.52-1.63%**. Every arm
+  produced SHA-256
+  `0a550d0baacf2a6bbc67c252a7b849db9ae0a227206ccdf725c0b4ecc68306df`;
+  the candidate's measured current/driver allocation delta remained `0/0 MiB`.
+- Classifier qualification broke each individual lane position `0..7` inside
+  an otherwise consecutive run, then exercised ascending, reverse, duplicate,
+  negative/out-of-range, and half-mixed maps. All were finite and the maximum
+  dense-reference error was `7.152557373046875e-07`. A run beginning exactly
+  at `cache_slots-8` matched within `1.0654330e-06`; a run at physical rows
+  `60..67` matched within `1.3709068e-06`. An alternating direct/fallback map
+  across two C64 tiles plus a tail reproduced one SHA-256 over 20 calls and
+  matched dense attention within `4.7683716e-07`.
+- The retained source passed all six generic torch-native EXTEND tests. The
+  only live worktree change before ledger reconciliation was the Objective-C++
+  classifier implementation; no Python code was added.
+- Decision: retain PERF-A019. The result compounds PERF-A018's direct-load
+  win without increasing scratch or global residency. The next low-risk
+  shader candidate is a uniform fully-causal C64 branch that removes redundant
+  per-score logical-bound comparisons on history tiles. Production activation
+  remains gated at the policy-owning backend dispatch seam.

@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-23
-14:38 PDT.
+14:47 PDT.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -564,12 +564,23 @@ pass. The maximum ordinary random dense-reference error in the expanded sweep
 is `2.2649765e-06`. The shader lives in a separate lazy Metal library, leaving
 the ordinary extension pipeline cache and its failure boundary unchanged.
 
+PERF-A019 then derives the eight run flags from the slot-loader registers and
+publishes slots plus flags through one threadgroup barrier. At
+`E=256,L=4352`, matched PERF-A018/candidate medians are
+**27.009396 -> 26.398334/26.592563 ms**; the zero-eligible path moves only
+**58.832500 -> 58.874062 ms**. At `E=17,L=131072`, two candidate windows
+reach **65.565041/65.493667 ms** against the matched **66.577542 ms**
+checkpoint. Exact digests, `0/0 MiB` allocation growth, every broken cohort
+position, cross-boundary runs, and repeated two-tile hybrid execution pass.
+
 The raw native binding is outside `TorchNativeAttnBackend.forward_extend`.
 The explicit no-new-Python rule makes clean C++ dispatch ownership the active
 architecture gate. The measured 64K generic route remains closed by swap and
 forward-progress limits, so served capacity stays qualified at exact
-`32761+1`. The next isolated native candidate hoists invariant query matrix
-fragments outside the C64 loop; register pressure, bitwise output, and matched
+`32761+1`. Hoisting all query matrix fragments was bitwise exact and regressed
+direct/fragmented timing by roughly 3.4-6.5%, so that live-register design is
+closed. The next isolated native candidate removes redundant causal-bound
+comparisons from history-only C64 tiles; bitwise boundary sweeps and matched
 direct/fragmented timing govern retention.
 
 The deleted affine-q4 scoreboard belonged to a separate Mac Pro experiment

@@ -1583,3 +1583,31 @@ standing.
   regression below 1%.
 - Related commit or revert: superseded before the PERF-A018 checkpoint by one
   cooperative eight-thread classifier pass and a 32-byte shared run table.
+
+## PERF-FA056 - Hoist all query matrix fragments across C64 tiles
+
+- Hypothesis: loading the invariant Q8xD256 query into 32 FP32 SIMD-matrix
+  fragments once per threadgroup would remove repeated threadgroup reads from
+  every C64 key tile.
+- Scope: PERF-A018's native Metal BF16 paged-GQA EXTEND kernel, with both
+  consecutive direct loads and staged fragmented loads.
+- Attempted change: a 32-entry `simdgroup_float8x8` array was populated before
+  the key loop and reused at the existing QK multiply sites. Operand values
+  and multiply-accumulate order were unchanged.
+- Benchmark evidence: at `E=256,L=4352`, direct medians moved from the
+  PERF-A018 **26.801604/26.900646 ms** windows to
+  **27.710500/27.846354 ms**. The zero-eligible map moved from
+  **58.773563** to **62.621042 ms**. These are roughly 3.4-6.5% regressions.
+- Correctness evidence: sequential direct and one-swap-per-eight fallback
+  outputs stayed bitwise equal and retained SHA-256
+  `7209fefe46186dbbc09aa0ce1a675b5c3056d6add4091d1bf7622aff84236371`.
+- Failure mode: the long-lived 32-matrix query array materially increases the
+  shader's live register surface; measured timing is consistent with
+  register-pressure or scheduling cost overwhelming the saved shared reads.
+- Why not to retry unchanged: both the primary direct route and the fallback
+  route miss their retention gates before a long-context score is needed.
+- Reopen only if: query fragments can be tiled into a much smaller live set,
+  compiler register allocation is inspected, and an interleaved short-window
+  result clears the selected PERF-A018 medians by at least 2%.
+- Related commit or revert: reverted before PERF-A019; no kernel source from
+  this candidate remains.

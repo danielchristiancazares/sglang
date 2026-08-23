@@ -2891,31 +2891,32 @@ kernel void extend_gqa_bf16_tiled_256(
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     for (uint key_start = 0; key_start < group_kv_len; key_start += key_tile) {
+        int mapped_slot = -1;
         if (tid < key_tile) {
             const uint logical_token = key_start + tid;
-            int slot = -1;
             if (req_valid && logical_token < seq_len) {
                 const int candidate = req_to_token[
                     ulong(req_slot) * ulong(args.req_stride) + logical_token];
                 if (candidate >= 0 && uint(candidate) < args.cache_slots) {
-                    slot = candidate;
+                    mapped_slot = candidate;
                 }
             }
-            shared_slots[tid] = slot;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (tid < key_tile / 8) {
-            const uint run_offset = tid * 8;
-            const int first_slot = shared_slots[run_offset];
-            bool consecutive = first_slot >= 0 &&
-                uint(first_slot) + 7 < args.cache_slots;
-#pragma unroll
-            for (ushort key_row = 1; key_row < 8; ++key_row) {
-                consecutive = consecutive &&
-                    shared_slots[run_offset + key_row] ==
-                        first_slot + key_row;
+            shared_slots[tid] = mapped_slot;
+
+            const ushort run_lane = lane & ~ushort(7);
+            const ushort run_offset = lane & ushort(7);
+            const int first_slot = simd_shuffle(mapped_slot, run_lane);
+            const uint first_slot_u = uint(max(first_slot, 0));
+            uint consecutive = first_slot >= 0 &&
+                first_slot_u + 7 < args.cache_slots &&
+                mapped_slot >= 0 &&
+                uint(mapped_slot) == first_slot_u + run_offset;
+            consecutive &= simd_shuffle_xor(consecutive, 4);
+            consecutive &= simd_shuffle_xor(consecutive, 2);
+            consecutive &= simd_shuffle_xor(consecutive, 1);
+            if (run_offset == 0) {
+                shared_runs[tid / 8] = consecutive ? first_slot : -1;
             }
-            shared_runs[tid] = consecutive ? first_slot : -1;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
