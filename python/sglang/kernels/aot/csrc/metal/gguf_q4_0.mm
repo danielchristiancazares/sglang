@@ -2925,6 +2925,17 @@ kernel void extend_gqa_bf16_tiled_256(
         simdgroup_float8x8 score_right =
             make_filled_simdgroup_matrix<float, 8>(0.0f);
         threadgroup float * score_stage = shared_stage + simd_id * 8 * 16;
+        int key_run_starts[2];
+        ulong key_run_offsets[2];
+#pragma unroll
+        for (ushort key_half = 0; key_half < 2; ++key_half) {
+            const int run_start =
+                shared_runs[simd_id * 2 + key_half];
+            key_run_starts[key_half] = run_start;
+            key_run_offsets[key_half] =
+                ulong(uint(max(run_start, 0))) * ulong(cache_row_size) +
+                kv_head * head_dim;
+        }
 
         for (ushort dim_start = 0; dim_start < head_dim; dim_start += 16) {
             simdgroup_float8x8 query_low;
@@ -2938,11 +2949,10 @@ kernel void extend_gqa_bf16_tiled_256(
 #pragma unroll
             for (ushort key_half = 0; key_half < 2; ++key_half) {
                 const ushort run_offset = simd_id * 16 + key_half * 8;
-                const int run_start = shared_runs[run_offset / 8];
+                const int run_start = key_run_starts[key_half];
                 if (run_start >= 0) {
                     device const bfloat * key_run = key_cache_bf16 +
-                        ulong(uint(run_start)) * ulong(cache_row_size) +
-                        kv_head * head_dim + dim_start;
+                        key_run_offsets[key_half] + dim_start;
                     simdgroup_bfloat8x8 key_low;
                     simdgroup_bfloat8x8 key_high;
                     simdgroup_barrier(mem_flags::mem_none);
@@ -3078,13 +3088,14 @@ kernel void extend_gqa_bf16_tiled_256(
                 probability_fragment, shared_scores + key_block,
                 key_tile, 0, false);
             const int run_start = shared_runs[key_block / 8];
+            const ulong value_run_offset =
+                ulong(uint(max(run_start, 0))) * ulong(cache_row_size) +
+                kv_head * head_dim + simd_id * 64;
 #pragma unroll
             for (ushort output_block = 0; output_block < 8; ++output_block) {
                 if (run_start >= 0) {
                     device const bfloat * value_run = value_cache_bf16 +
-                        ulong(uint(run_start)) * ulong(cache_row_size) +
-                        kv_head * head_dim +
-                        simd_id * 64 + output_block * 8;
+                        value_run_offset + output_block * 8;
                     simdgroup_bfloat8x8 value_fragment;
                     simdgroup_barrier(mem_flags::mem_none);
                     simdgroup_load(

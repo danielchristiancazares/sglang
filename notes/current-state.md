@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-23
-14:47 PDT.
+14:56 PDT.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -573,15 +573,24 @@ reach **65.565041/65.493667 ms** against the matched **66.577542 ms**
 checkpoint. Exact digests, `0/0 MiB` allocation growth, every broken cohort
 position, cross-boundary runs, and repeated two-tile hybrid execution pass.
 
+PERF-A020 hoists each SIMDgroup's two QK cache-row offsets before the D256
+loop and each PV row base before its eight output fragments. Matched
+`E=256,L=4352` windows improve **26.330084 -> 25.548479 ms** and
+**26.649625 -> 25.674125 ms**; zero-eligible maps also improve by
+**1.33-1.52%**. At `E=17,L=131072`, matched medians improve
+**65.647625 -> 63.767667 ms** and **65.687333 -> 63.886417 ms**, with exact
+digests and `0/0 MiB` allocation growth. Offset views, a repeated mixed map,
+and physical row 131,072 retain their established arithmetic results.
+
 The raw native binding is outside `TorchNativeAttnBackend.forward_extend`.
 The explicit no-new-Python rule makes clean C++ dispatch ownership the active
 architecture gate. The measured 64K generic route remains closed by swap and
 forward-progress limits, so served capacity stays qualified at exact
-`32761+1`. Hoisting all query matrix fragments was bitwise exact and regressed
-direct/fragmented timing by roughly 3.4-6.5%, so that live-register design is
-closed. The next isolated native candidate removes redundant causal-bound
-comparisons from history-only C64 tiles; bitwise boundary sweeps and matched
-direct/fragmented timing govern retention.
+`32761+1`. Hoisting all query matrices, a fully-causal history branch, and a
+cohort-leader softmax broadcast were bitwise exact and missed their timing
+gates; those designs are closed. The next isolated native candidate tests the
+SIMDgroup barriers around direct device matrix loads, with exact parity and a
+1% reproduced timing floor.
 
 The deleted affine-q4 scoreboard belonged to a separate Mac Pro experiment
 and carries no M1 Max record standing. The retained MLX quantized-prefill query

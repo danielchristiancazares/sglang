@@ -15,6 +15,7 @@
 | Native Metal BF16 GQA EXTEND, isolated `E=17,L=131072` | dense MPS SDPA **424.528292 ms**, **+8,088.515625 MiB** driver residency | final-source **137.906625 ms** median, **+0 MiB** measured driver residency | **-67.52% latency; -8,088.515625 MiB residency** | raw `_extension().extend_gqa_bf16` harness recorded in the 2026-08-23 14:15 experiment-log entry | 2026-08-23 14:15 PDT |
 | Native Metal BF16 GQA EXTEND, consecutive-cache direct load, `E=17,L=131072` | **148.002792 ms** matched same-map forced-staged median | **66.553042 ms** median, **+0 MiB** measured current/driver residency | **-81.449750 ms / -55.03%** | raw `_extension().extend_gqa_bf16` A/B/A harness recorded in the 2026-08-23 14:38 experiment-log entry | 2026-08-23 14:38 PDT |
 | Native Metal BF16 GQA EXTEND, register-published run classifier, `E=17,L=131072` | **66.577542 ms** matched PERF-A018 median | **65.493667 ms** median, **+0 MiB** measured current/driver residency | **-1.083875 ms / -1.628%** | raw `_extension().extend_gqa_bf16` candidate/checkpoint/candidate harness recorded in the 2026-08-23 14:47 experiment-log entry | 2026-08-23 14:47 PDT |
+| Native Metal BF16 GQA EXTEND, hoisted cache-run bases, `E=17,L=131072` | **65.687333 ms** matched PERF-A019 median | **63.886417 ms** final-source median, **+0 MiB** measured current/driver residency | **-1.800916 ms / -2.742%** | raw `_extension().extend_gqa_bf16` candidate/checkpoint/candidate harness recorded in the 2026-08-23 14:56 experiment-log entry | 2026-08-23 14:56 PDT |
 | Torch-native MPS decode at unsupported physical pool/dtype boundaries | Runtime error for BF16 or more than 7,936 cache rows | **SDPA fallback, max error 0** at BF16/32,769 and FP32/7,937; fused FP32/7,936 preserved at `2.5331974e-07` | long-pool decode admitted without widening the native kernel contract | `.venv/bin/python benchmark/mac/test_mps_decode_fallback.py --cache-slots {32769,7937,7936} --cache-dtype {bfloat16,float32,float32} --seq-len 257` | 2026-08-21 00:24 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` large-batch projection | 65.578125 / 1971.539875 ms at batch 128 / 4096 | **4.277125 / 124.838125 ms** | **-93.48% / -93.67%; 15.33x / 15.79x** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size {128,4096} --warmup 1 --iterations 5` | 2026-08-23 07:06 PDT |
 | Qwen3.8-27B IQ2_XXS, 32K/BF16 required sampled `128+32` served workload | 8.2942 generation tok/s selected FP32/fused restart mean | **6.963 prompt / 6.772 generation tok/s** | BF16 fallback generation is 18.35% below the selected short-pool mean; long-pool execution is functional | same sampled command on the 32,768 context/token-pool launch with BF16 KV | 2026-08-21 00:36 PDT |
@@ -2119,3 +2120,36 @@ tree throughput can be ranked for production.
 - Decision: retain PERF-A019. The change is internal to the already-isolated
   raw native mechanism; serving reachability and qualified context remain
   unchanged.
+
+### 2026-08-23 14:56 PDT - PERF-A020 hoisted cache-run bases
+
+- Change: each SIMDgroup loads its two QK run starts once per C64 tile and
+  computes their 64-bit cache-row offsets once before the D256 loop. Each PV
+  key block likewise computes one safe value-row base before its eight output
+  fragments. The existing direct/fallback predicates, BF16 matrix loads,
+  FP32 arithmetic, scratch, and global-residency contracts remain unchanged.
+- At `E=256,L=4352`, matched PERF-A019 baselines were **26.330084** and
+  **26.649625 ms** in two source-restored arms. Candidate medians were
+  **25.548479** and **25.674125 ms**, reproduced reductions of
+  **2.97%** and **3.66%**. Zero-eligible baselines/candidates moved
+  `58.738667 -> 57.844396` and `58.786396 -> 58.004959 ms`, improvements of
+  **1.52%** and **1.33%**.
+- At `E=17,L=131072`, checkpoint medians were **65.647625** and
+  **65.687333 ms**. Candidate medians were **63.767667** and
+  **63.886417 ms**, reproduced reductions of **2.86%** and **2.74%**.
+  Exact SHA-256
+  `0a550d0baacf2a6bbc67c252a7b849db9ae0a227206ccdf725c0b4ecc68306df`
+  and `0/0 MiB` current/driver allocation growth were preserved.
+- Direct/fallback small parity remains bitwise exact at dense maximum error
+  `5.3644180e-07`. Cache storage offsets and physical starts `0..7` all retain
+  one digest and `1.0728836e-06` maximum error. A 20-call alternating
+  direct/fallback two-tile map retains one digest. The analytic physical-row
+  131,072 result remains within `4.7683716e-07`; its median improves to
+  **63.905375 ms**, and the 131,074-row host fence remains active.
+- Two adjacent softmax candidates were rejected before this selection. A
+  fully-causal C64 branch was neutral at the diagnostic shape and slightly
+  slower at 131K. A cohort-leader prior-state broadcast was likewise neutral
+  to slightly slower. `PERF-FA057/058` retain their exact evidence.
+- Focused generic torch-native EXTEND coverage passes all six tests.
+- Decision: retain PERF-A020. Serving reachability and qualified Apple context
+  remain unchanged because this is still an isolated raw native mechanism.

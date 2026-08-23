@@ -8319,3 +8319,91 @@ mean 13.929045  17.125658 446.051        39.730
   shader candidate is a uniform fully-causal C64 branch that removes redundant
   per-score logical-bound comparisons on history tiles. Production activation
   remains gated at the policy-owning backend dispatch seam.
+
+### 2026-08-23 14:56 PDT - hoisted cache-run bases compound the direct-load win
+
+- Began from clean signed `main` at
+  `e45964afe9f86be10e71c28a0130d078b57f8386` (`perf: publish Metal cache
+  runs in one barrier`), ahead of `origin/main` by 28 commits. The server and
+  port remained idle; source builds and MPS probes ran one at a time.
+- A uniform fully-causal C64 branch was measured first. It computed the
+  earliest query row's causal limit once per tile and bypassed per-score
+  logical-token comparisons only for complete history tiles. Small
+  direct/fallback parity remained bitwise exact with the established SHA-256.
+  `E=256,L=4352` direct medians were **26.358104/26.316271 ms** and the
+  zero-eligible median was **58.599480 ms**. After source restoration and
+  rebuild, PERF-A019 measured **26.330084/58.738667 ms**. At
+  `E=17,L=131072`, the candidate samples were
+  `65.779125,65.734041,65.688542,65.734208,65.746583 ms`, median
+  **65.734208 ms**; restored PERF-A019 samples were
+  `65.733333,65.059667,65.149375,65.647625,65.742125 ms`, median
+  **65.647625 ms**. The branch was neutral to slightly slower and is recorded
+  as `PERF-FA057`.
+- A cohort-leader online-softmax variant then made lanes 0 and 16 load the
+  prior maximum/sum, compute `next_max` plus `old_scale`, and broadcast those
+  exact FP32 values to their 16-lane cohorts. Direct/fallback output remained
+  bitwise equal with maximum dense error `5.3644180e-07`. Diagnostic direct
+  medians were **26.354417/26.513146 ms**; zero-eligible median was
+  **58.963146 ms**. Long samples were
+  `65.811292,65.733625,65.772375,65.520250,65.435667 ms`, median
+  **65.733625 ms**. The matched restored source remained faster at
+  **26.330084/58.738667/65.647625 ms**, so the shuffle design was reverted and
+  recorded as `PERF-FA058`.
+- PERF-A020 hoists address generation instead. Once per C64 tile, each
+  SIMDgroup loads its two QK run starts and computes their safe 64-bit
+  `slot*1024 + kv_head*256` element offsets before the D256 loop. Once per PV
+  key block, it computes the safe `slot*1024 + kv_head*256 + simd_id*64`
+  base before eight output fragments. Negative run sentinels use slot zero for
+  unused pointer arithmetic and remain behind the unchanged `run_start>=0`
+  staged-fallback branch. Matrix operands and arithmetic order are unchanged.
+- The first candidate `E=256,L=4352` windows were:
+
+  ```text
+  direct A1 25.631958,25.689875,25.625833,25.464792,25.414250,
+            25.381542,25.509916,25.378333,25.924500,25.587042
+            median 25.548479 ms
+  direct A2 25.868625,25.558291,25.648542,25.389584,25.515041,
+            25.462125,25.473042,25.441625,25.846875,25.936458
+            median 25.536666 ms
+  zero eligible median 57.8443955 ms
+  ```
+
+  All outputs retained checksum `-441.633056640625` and SHA-256
+  `7209fefe46186dbbc09aa0ce1a675b5c3056d6add4091d1bf7622aff84236371`.
+- Source was restored to signed PERF-A019 and rebuilt. Its diagnostic direct
+  samples were
+  `26.658833,26.668208,26.245291,26.530541,26.649458,26.427667,26.825958,
+  26.548959,26.742750,26.649792 ms`, median **26.649625 ms**; zero-eligible
+  median was **58.786396 ms**. PERF-A020 was restored and rebuilt. Its final
+  direct samples were
+  `25.489042,25.526709,25.545750,25.684000,25.858583,25.664250,25.875250,
+  25.927875,25.510500,25.870292 ms`, median **25.674125 ms**; zero-eligible
+  median was **58.0049585 ms**. Together with the earlier adjacent
+  **26.330084 -> 25.548479 ms** pair, the direct improvement reproduces at
+  **2.97-3.66%**, and fallback improves **1.33-1.52%**.
+- The first long candidate window was
+  `63.834250,63.851709,63.767667,63.767208,63.767250 ms`, median
+  **63.767667 ms**. After source restoration, PERF-A019 was
+  `65.709666,65.362292,65.664417,65.697125,65.687333 ms`, median
+  **65.687333 ms**. Final PERF-A020 samples were
+  `63.826084,63.886417,63.895667,63.938792,63.498416 ms`, median
+  **63.886417 ms**. The two matched reductions are **2.86%** and **2.74%**.
+  Every arm retained SHA-256
+  `0a550d0baacf2a6bbc67c252a7b849db9ae0a227206ccdf725c0b4ecc68306df`;
+  current/driver allocation growth remained `0/0 MiB`.
+- Direct storage offsets `0..7`, independent complementary V offsets,
+  physical run starts `0..7`, and final-row placement again produced one
+  SHA-256 with maximum dense error `1.0728836e-06`. An alternating
+  direct/fallback map across two C64 tiles plus a tail reproduced one digest
+  over 20 calls and matched dense attention within `5.3644180e-07`.
+- The analytic `E=5,L=131073` maximum-address gate kept its first four rows
+  exact zero and final-row maximum/mean errors
+  `4.7683716e-07/1.8085120e-07`. Samples were
+  `63.889000,63.913667,63.905375 ms`, median **63.905375 ms**; a 131,074-row
+  view remained rejected. All six generic torch-native EXTEND tests passed.
+- Decision: retain PERF-A020. The candidate removes redundant address work
+  from both direct and fallback routes with exact outputs, no scratch change,
+  and zero measured long-context residency growth. The next source pass will
+  test whether direct device-matrix-load synchronization can be reduced under
+  Metal's SIMDgroup contract; any parity or sub-1% result closes that branch.
+  Production activation remains gated at the backend-owned dispatch seam.
