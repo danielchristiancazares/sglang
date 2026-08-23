@@ -3472,13 +3472,18 @@ mean 13.929045  17.125658 446.051        39.730
   memory, running macOS 26.6.2 (25G83); display sleep was active and thermal
   pressure remained nominal. The fresh local environment uses Python 3.11.15,
   MLX 0.32.0, and mlx-lm 0.31.3.
+- Provenance correction recorded 2026-08-23: the Q4-KV, Fast32K, quantized-
+  prefill, and exact `5000+1` Q4 measurements below were imported from a
+  separate Mac Pro. They were never run on this M1 Max and carry no local
+  record standing. Their raw chronology remains here as cross-machine history.
 - Reconstructed the exact Apple prompt locally with the checkpoint tokenizer:
   `PROMPT_UNIT * 9473 + FILLER_UNIT * 15` yields exactly 199,000
   chat-templated tokens. The Rust endpoint currently exposes neither
   `/v1/tokenize` nor `/flush_cache`, so the local tokenizer is the exact-count
   control.
-- A Q4-KV launch with outer chunks of 4096 reached roughly 98K context, then
-  MLX rejected a 20,132,659,200-byte Metal allocation above its
+- On that separate Mac Pro, a Q4-KV launch with outer chunks of 4096 reached
+  roughly 98K context, then MLX rejected a 20,132,659,200-byte Metal allocation
+  above its
   20,100,448,256-byte buffer limit. A fresh 1024-chunk launch completed one
   exact `199000+16` warm-up in roughly 55 minutes; the benchmark discarded that
   warm-up timing by contract. A second run encountered heavy swap pressure and
@@ -3487,22 +3492,25 @@ mean 13.929045  17.125658 446.051        39.730
   usage. A 512-chunk retry was stopped cleanly when the user redirected the
   work to optimization. Every server tree was verified absent afterward and
   port 30000 was free.
-- Rejected a batch-one `ArraysCache` auxiliary-cache merge/split bypass. Fresh
-  Fast32K control times were `13.786914, 13.638193, 13.638745, 13.647698,
-  13.625752 s` (mean **13.667460 s**); candidate times were `13.790976,
+- Rejected a batch-one `ArraysCache` auxiliary-cache merge/split bypass in the
+  Mac Pro-only lane. Fresh Fast32K control times were `13.786914, 13.638193,
+  13.638745, 13.647698, 13.625752 s` (mean **13.667460 s**); candidate times
+  were `13.790976,
   13.609490, 13.598677, 13.661740, 13.636127 s` (mean **13.659402 s**), a
   roughly 0.06% change. Its code and test were removed.
-- Implemented an opt-in quantized-prefill query tile through
-  `SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE`; zero preserves the established
-  route. A dependency between tiles keeps MLX from reserving every independent
-  score matrix concurrently. At `Lq=1024`, `Lk=32768`, 24 query heads, four KV
-  heads, and head dimension 256, the original path measured **0.258692 s** and
+- From the Mac Pro-only evidence, implemented an opt-in quantized-prefill query
+  tile through `SGLANG_MLX_QUANTIZED_PREFILL_QUERY_TILE`; zero preserves the
+  established route. A dependency between tiles keeps MLX from reserving every
+  independent score matrix concurrently. At `Lq=1024`, `Lk=32768`, 24 query
+  heads, four KV heads, and head dimension 256, the original path measured
+  **0.258692 s** and
   **1,732,382,776 bytes** peak. A 64-row tile measured **0.229053 s** and
   **701,499,056 bytes** peak. The helper's full-result causal parity and score
   estimate tests bring the focused Q4 suite to **9 passing tests**. An adaptive
   1 GiB score threshold keeps smaller prefills on the established path.
-- Fresh exact `5000+1` server controls were **59.078458 s / 84.633218 tok/s**
-  for the original path and **59.271317 s / 84.357836 tok/s** for the initial
+- Mac Pro-only exact `5000+1` server controls were
+  **59.078458 s / 84.633218 tok/s** for the original path and
+  **59.271317 s / 84.357836 tok/s** for the initial
   always-tiled candidate; both returned token id 100. A subsequent adaptive
   64-row exact-32K candidate processed five 4096-token chunks, with reported
   chunk throughputs `62.55, 82.36, 79.64, 76.90, 74.43 tok/s`, before the user
@@ -5481,7 +5489,7 @@ mean 13.929045  17.125658 446.051        39.730
   the strongest supporting-dependency throughput control rather than a
   prerequisite for explaining checkpoint semantics.
 
-### 2026-08-20 21:45 PDT - pinned llama.cpp misses the Apple record; native control A captured
+### 2026-08-20 21:45 PDT - pinned llama.cpp establishes Q2 reference; native control A captured
 
 - Cloned the official llama.cpp repository into the separate
   `/Users/dcazares/llama.cpp-749f688f` provenance line after resolving
@@ -5523,9 +5531,11 @@ mean 13.929045  17.125658 446.051        39.730
 - The reference server also returned coherent separate reasoning and visible
   final `703` for `37 * 19`: 68 prompt tokens, 58 completion tokens, and
   14.779049 internal generation tok/s. This independently confirms the
-  retained artifact's corrected semantic path. The user judged the measured
-  dependency throughput too slow to pursue, so no configuration sweep or
-  tool-result gate followed the decisive record miss.
+  retained artifact's corrected semantic path. At the time, the user judged
+  the measured dependency throughput too slow against the then-misattributed
+  cross-machine q4 threshold, so no configuration sweep or tool-result gate
+  followed. The 2026-08-23 provenance correction supersedes that record-miss
+  classification and establishes this window as the M1 Max Q2 reference.
 - Stopped PID 70058 through its owning terminal session. It exited cleanly;
   the PID is absent, port 30000 is free, memory returned to 93% free, and no
   thermal or performance warning was recorded. The pinned detached checkout
@@ -5542,10 +5552,12 @@ mean 13.929045  17.125658 446.051        39.730
   `37f5512bd18c1962bd2e170f543fae806ca48b70495c2761ae162df3cac56299`.
 - Stopped the verified SGLang tree `70201 -> 70204,70205,70206` through its
   owning session. All PIDs are absent, port 30000 is free, and memory returned
-  to 92% free. Decision: close llama.cpp as a record candidate and use its
-  roughly 4.60x advantage over native-MPS generation as evidence for kernel
-  headroom. Control A now funds compact mixed-shard storage, which removes a
-  proven 478.125 MiB of packed-weight materialization per full forward.
+  to 92% free. The five-run window establishes the route-neutral M1 Max Q2
+  reference at **14.661356 tok/s** aggregate and **14.671473 tok/s** best hit.
+  Its roughly 4.60x advantage over native-MPS generation also supplies kernel
+  headroom evidence. Control A now funds compact mixed-shard storage, which
+  removes a proven 478.125 MiB of packed-weight materialization per full
+  forward.
 
 ### 2026-08-20 21:50 PDT - compact-shard loader device failure isolated
 
@@ -5819,8 +5831,9 @@ mean 13.929045  17.125658 446.051        39.730
   `KeyboardInterrupt` as exit 1, all known PIDs are absent, port 30000 is
   free, no matching compiler/server remains, memory is 92% free, and macOS
   reports no thermal/performance warning. The native IQ2 optimization is
-  retained. The Apple scoreboard's separate Rust `12+256` workload still
-  needs an exact measurement; the MLX record remains untouched.
+  retained. The Apple scoreboard's SGLang `12+256` workload still needs an
+  exact measurement; pinned llama.cpp owns the measured route-neutral Q2
+  reference.
 
 ### 2026-08-20 22:39 PDT - PERF-A011 Q5_K vocabulary-head control
 
@@ -5958,8 +5971,8 @@ mean 13.929045  17.125658 446.051        39.730
   generation enabled, text model type, and image/audio understanding false.
 - PERF-A011 is retained provisionally. Its isolated and served gains are
   large, repeatable, and numerically qualified. An independent committed
-  restart remains before final promotion. The separate Apple Rust/MLX
-  `12+256` scoreboard record remains **18.782925 tok/s** and is unchanged.
+  restart remains before final promotion. The route-neutral Q2 `12+256`
+  reference remains **14.661356 tok/s** through pinned llama.cpp.
 
 ### 2026-08-20 23:02 PDT - PERF-A011 first-window cleanup complete
 
@@ -6013,8 +6026,9 @@ mean 13.929045  17.125658 446.051        39.730
   returned exact `READY` with zero reasoning.
 - The second restart reproduces the served decode gain. PERF-A011 is promoted
   as the native IQ2 lane's selected Q5_K head path. Its 8.0284 tok/s first
-  deterministic mean remains a diagnostic workload result; it does not
-  replace the separate 18.782925 tok/s Apple Rust/MLX scoreboard record.
+  deterministic mean remains a diagnostic workload result; exact SGLang
+  `12+256` measurement remains open against the **14.661356 tok/s** Q2
+  reference.
 
 ### 2026-08-20 23:10 PDT - PERF-A011 independent cleanup complete
 
@@ -6573,8 +6587,9 @@ mean 13.929045  17.125658 446.051        39.730
   small-batch kernels and unsupported-device fallback cover every other
   applicable path. Exact format/tail parity, matched source A/B, real full
   forward, multi-chunk serving, semantics, allocation, and cleanup now agree.
-  The native IQ2 route remains below the Apple Rust/MLX decode and q4-KV
-  maximum-context records, so neither compact scoreboard changes.
+  Batch-one decode is unchanged, so pinned llama.cpp retains the route-neutral
+  Q2 reference; exact SGLang `12+256` and near-capacity qualification remain
+  open.
 
 ### 2026-08-23 07:30 PDT - PERF-A014 matched served control and second window pass
 
@@ -6656,3 +6671,52 @@ mean 13.929045  17.125658 446.051        39.730
   control plus two independent five-sample default windows, and every compact
   record describes a 32K-configured server rather than claiming a near-limit
   capacity request.
+
+### 2026-08-23 07:46 PDT - cross-machine q4 record deleted; M1 Max Q2 authority restored
+
+- Signed commit `1676c71bed6b8d88eb1d82b7d8128bdd7e9c51d2`
+  (`perf: accelerate large IQ2 prefills on Metal`) contains the qualified
+  PERF-A014 kernel and its recovery record. Signature verification passed and
+  the post-commit worktree was clean.
+- The user supplied the authoritative provenance correction: the affine-q4
+  measurements came from a separate Mac Pro experiment; this M1 Max has run
+  the Q2/IQ2_XXS lane. The Apple section in `BENCHMARK.md` had incorrectly
+  attributed the cross-machine q4 record, maximum-context figures, speculative
+  profile, and capability claims to the M1 Max. Those values and every derived
+  local threshold were deleted.
+- Deleted `KERNEL_BRIEF.md`, whose entire batched affine-q4 kernel handoff was
+  framed as M1 Max evidence and depended on the same invalid record. It remains
+  recoverable from signed history at `b45fdef7dd` if the Mac Pro work is ever
+  revisited with correct provenance.
+- Corrected the surviving MLX MTP, quantized-prefill, and affine-q4 benchmark
+  comments to identify their evidence as Mac Pro-only. The opt-in mechanisms
+  remain intact; this provenance-only edit changes no dispatch or runtime
+  behavior.
+- Added explicit Mac Pro provenance to the standalone failed-path ledger and
+  the terse Q4_0 candidate-inventory rows, closing the last ambiguous raw
+  kernel measurements outside their detailed machine context.
+- Python compilation passed for all three comment-touched files and
+  `git diff --check` passed. Black and Ruff are not installed in the active
+  `.venv` or on `PATH`, so their requested checks could not run; no formatter
+  or lint dependency was installed for this documentation-only correction.
+- The actual same-workload M1 Max Q2 authority is the pinned llama.cpp build
+  10547 window from 2026-08-20 21:45 PDT: request-observed samples
+  `14.642054,14.671473,14.660470,14.665758,14.667059 tok/s`, aggregate
+  **14.661356 tok/s**, best hit **14.671473 tok/s**, wall times
+  `17.483886,17.448827,17.461923,17.455627,17.454079 s`, exact `12+256`
+  completion, and stable FNV-1a-64 `6d4d220de481f54e`. The route uses the
+  immutable Bartowski IQ2_XXS blob and pinned official llama.cpp commit
+  `749f688fcaa4c472ec034b08cb8a907c45cfaa02`.
+- A mistaken restore of `mlx-community/Qwen3.8-27B-4bit` at revision
+  `3e6447f082e89cc7f0bc6e5441afd38dfce760ff` was stopped immediately after
+  the provenance correction. The partial cache reached approximately 9.4 GiB.
+  Cleanup removed only
+  `/Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit`;
+  the data is recoverable from the Hub. The retained Bartowski Q2 cache and
+  every unrelated cache remain present. No server or GPU benchmark ran during
+  the mistaken download.
+- Compact records now distinguish the route-neutral Q2 reference from the
+  repository-native path. Exact SGLang `12+256`, exact near-capacity, and the
+  13,635-token OpenCode request remain open. PERF-A014 leaves batch-one decode
+  unchanged; fixed-memory native GQA and batch-one IQ2 kernel work remain the
+  funded Q2 directions.

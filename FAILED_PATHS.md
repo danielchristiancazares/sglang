@@ -1,5 +1,9 @@
 # Failed Paths
 
+All Q4/Q4_0 benchmark evidence retained in this ledger came from separate Mac
+Pro experiments. None of it was measured on the M1 Max or carries local record
+standing.
+
 ## PERF-001 - Q4_0 batch-eight accumulation tile
 
 - Hypothesis: process all eight decode rows in one threadgroup Y tile so each packed Q4_0 row is loaded and dequantized once instead of twice.
@@ -1287,8 +1291,8 @@
 
 - Hypothesis: a single-request auxiliary-state cache can avoid general
   merge/split handling and reduce the fixed decode round cost.
-- Scope: MLX Qwen3.8 batch-one `ArraysCache` handling on the established
-  Fast32K fixed-decode control.
+- Scope: MLX Qwen3.8 batch-one `ArraysCache` handling on a Mac Pro-only
+  Fast32K fixed-decode control. This experiment supplies no M1 Max record.
 - Attempted change: installed a batch-one bypass and compared five warmed
   end-to-end samples per arm with the same checkpoint and workload.
 - Benchmark evidence: control times were `13.786914, 13.638193, 13.638745,
@@ -1299,8 +1303,8 @@
   behavior during the comparison.
 - Failure mode: cache merge/split bookkeeping is not a material part of the
   batch-one end-to-end critical path.
-- Why not to retry unchanged: the largest plausible effect is below the
-  measurement noise and cannot clear the Apple record gate.
+- Why not to retry unchanged: the largest plausible effect was below the
+  measurement noise in that cross-machine experiment.
 - Reopen only if: a trace on a materially different request topology shows
   cache composition on the serialized critical path.
 - Related commit or revert: experimental code was removed before commit.
@@ -1309,12 +1313,14 @@
 
 - Hypothesis: dividing quantized attention by query rows would improve every
   prefill while reducing Metal score-matrix residency.
-- Scope: Qwen3.8 quantized-KV prefill at a 64-row query tile, including the
-  exact `5000+1` server control.
+- Scope: Mac Pro-only Qwen3.8 quantized-KV prefill at a 64-row query tile,
+  including the exact `5000+1` server control. This experiment supplies no
+  M1 Max record.
 - Attempted change: forced query tiling without the later 1 GiB score-size
   admission threshold.
-- Benchmark evidence: the established path completed exact `5000+1` in
-  **59.078458 s / 84.633218 prompt tok/s**; always-tiled completed it in
+- Benchmark evidence: on the Mac Pro, the established path completed exact
+  `5000+1` in **59.078458 s / 84.633218 prompt tok/s**; always-tiled completed
+  it in
   **59.271317 s / 84.357836 prompt tok/s**. Both returned token id 100.
   At the larger synthetic `Lq=1024,Lk=32768` shape, tiling improved
   **0.258692 -> 0.229053 s** and reduced peak allocation
@@ -1330,37 +1336,6 @@
   gates tiling above a measured 1 GiB score estimate.
 - Related commit or revert: superseded by the thresholded opt-in mechanism in
   `1271610e0b`.
-
-## PERF-FA045 - Pinned llama.cpp IQ2 Metal server as the Apple record route
-
-- Hypothesis: a current pinned llama.cpp Metal build could serve the retained
-  IQ2 artifact fast enough to replace the unavailable MLX checkpoint and beat
-  the Apple `12+256` scoreboard.
-- Scope: official llama.cpp build 10547 at detached commit
-  `749f688fcaa4c472ec034b08cb8a907c45cfaa02`, Release native ARM,
-  Accelerate, embedded Metal, all layers on GPU, 32K context, one slot, and
-  the OpenAI reasoning-preservation surface.
-- Attempted change: no dependency source edits. Built the server in its
-  separate checkout and ran one warmup plus five exact greedy, ignore-EOS
-  scoreboard requests against the immutable Bartowski IQ2 checkpoint.
-- Benchmark evidence: request-observed generation was `14.642054, 14.671473,
-  14.660470, 14.665758, 14.667059 tok/s`, aggregate **14.661356**. This is
-  **21.943%** below the 18.782925 aggregate record; its best sample is
-  **22.046%** below the 18.820713 best-hit gate.
-- Correctness evidence: every request generated exact 256 tokens with one
-  stable digest. The OpenAI endpoint returned coherent preserved reasoning
-  and final `703`, while its properties reported vision, video, and audio
-  disabled.
-- Failure mode: the pinned dependency is substantially faster than the
-  repository's generic MPS route, yet its IQ2 Metal kernels still miss the
-  existing MLX 4-bit record decisively.
-- Why not to retry unchanged: five warmed samples were tightly clustered and
-  the user closed further llama configuration work after seeing the result.
-- Reopen only if: a dependency/kernel revision supplies a measured projection
-  or decode improvement large enough to fund the roughly 28% throughput gain
-  required from this baseline.
-- Related commit or revert: no llama.cpp source change or commit; the detached
-  checkout and binary remain as a reproducible supporting oracle.
 
 ## PERF-FA046 - Constant-address IQ2 lookup tables
 
