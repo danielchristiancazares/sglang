@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-23 08:05 PDT.
+**Reconciled through:** 2026-08-23 11:31 PDT.
 
 ## Selected production choices
 
@@ -186,7 +186,7 @@ has not.
 
 | Candidate | Status | Why |
 |---|---|---|
-| Bartowski Qwen3.8-27B IQ2_XXS checkpoint | Retained native playground | The earlier Python/GGUF-tokenizer profile passes behavior, required sampling, and restart gates. Exact Rust/official-tokenizer `12+256` reaches **7.001584 tok/s** aggregate under the allocated 32K profile; that boundary's semantic, sampled, restart, near-capacity, and OpenCode2 gates remain open |
+| Bartowski Qwen3.8-27B IQ2_XXS checkpoint | Retained native playground | The selected official-tokenizer/Python-ingress route reaches **8.586948 tok/s** aggregate on exact `12+256`, passes sampled behavior and tool continuity, completes exact `32761+1` in the 32K BF16 pool, and passes the named Codex Responses-profile gate |
 | Compact heterogeneous merged GGUF storage on MPS | Retained | Signed `13bea403d6` removes 40 packed copies / 478.125 MiB per forward, improves adjacent `128+32` generation **3.1858 -> 3.309 tok/s**, lowers reported weights **10.03 -> 9.03 GB**, and preserves the exact digest |
 | IQ2_XXS batch-one four-row Metal kernel | Retained | Signed `16b2bf7a06` changes matched projection time **1.176875 -> 0.516000 ms** and served generation **3.309 -> 7.1748 tok/s** with exact behavior across two restarts |
 | Q5_K batch-one four-cohort vocabulary head | Retained | Signed `b19cf4acf3` changes matched head time **19.659291 -> 3.754625 ms**; served deterministic generation reaches **8.0284 tok/s**, with an independent 8.114 tok/s confirmation and exact digest |
@@ -194,19 +194,23 @@ has not.
 | Lower-right torch-native partial extend | Retained | Signed `210a214c12` submits only new query rows. Exact MPS `4096+4096` source medians change **542.376416/641.256125 -> 176.066500 ms**; focused causal, ragged, sliding, noncausal, and empty-extend tests pass |
 | Native MPS decode capability gate | Retained | Signed `b2b8ab4af8` sends BF16 or more than 7,936 physical cache rows through the established cache-write plus SDPA fallback. BF16/32,769 and FP32/7,937 report zero observed error; eligible FP32/7,936 remains fused |
 | IQ2_XXS Apple7 large-batch SIMD-matrix kernel | Retained | PERF-A014 changes actual `17408x5120` medians **70.074833 -> 4.250250/4.277125 ms** at batch 128 and **1971.539875 -> 124.838125 ms** at batch 4096. Served exact-`128+1` prompt improves **7.0234 -> 22.8814 tok/s** across a matched disabled control and two independent default windows. Exact `4096+2` completes inside the former watchdog; candidate/fallback tails and all behavior gates pass |
+| Q4_K batch-one two-row reuse inside the retained IQ2_XXS checkpoint | Retained | Signed `52b5326d8e` specializes aligned complete-cohort Q4_K tensors within the mixed-format Q2 artifact. Final Python A/B is **7.009167 -> 8.586948 tok/s** (**+22.510241%**), the independent window is **8.578205 tok/s**, actual-file/tail parity passes, and record standing remains the M1 Max Q2 lane |
 | F32 custom-kernel cross-row reuse | Rejected | Exact-shape medians `0.484833`, `0.504208`, and `0.556667 ms` all trail the selected one-row-per-SIMD custom control at `0.390083 ms`; native MPS matrix multiplication is faster still |
 | IQ2 constant-table and four-SIMD/two-row ablations | Rejected | Constant-table windows `0.546042/0.576833 ms` and alternate-geometry windows `0.560625/0.550667 ms` trail the selected staged two-SIMD/four-row path around `0.523625 ms` |
-| Pinned llama.cpp build 10547 IQ2 route | Current M1 Max Q2 reference | Exact five-run `12+256` aggregate is **14.661356 tok/s**, with a **14.671473 tok/s** best hit. Native SGLang reaches **7.001584 tok/s** on the matched fixture, leaving the reference **2.094006x** faster |
+| Pinned llama.cpp build 10547 IQ2 route | Current M1 Max Q2 reference | Exact five-run `12+256` aggregate is **14.661356 tok/s**, with a **14.671473 tok/s** best hit. The original native SGLang baseline is **7.001584 tok/s**; selected PERF-A016 reaches **8.586948 tok/s**, leaving the reference **1.707400x** faster |
 | Thresholded MLX quantized-query tiling | Retained source mechanism; Mac Pro evidence only | The cross-machine measurements carry no M1 Max record standing. Fresh dependency, parity, memory, and capacity gates are required before M1 use |
 | Always-on MLX quantized-query tiling | Rejected on its measured machine | The process-wide policy regressed the measured 5K prompt while only larger score shapes benefited |
 
-Large-batch native-IQ2 prefill is qualified through an exact two-chunk 5K
-request. Exact near-capacity and the measured 13,635-token process-scoped
-OpenCode request remain admission gates. The safe long-pool fallback is
-retained, and fixed-memory native GQA is the next funded throughput path. The
-deleted affine-q4 record belonged to a separate Mac Pro experiment. Any future
-MLX long-context route on this M1 Max begins with fresh baseline, dependency,
-parity, memory, and capacity evidence.
+Large-batch native-IQ2 prefill is qualified through exact `5000+1` and
+`32761+1` requests. The Apple real-client selection is Codex CLI 0.149.0 via
+the machine-local `qwen38-local` Responses profile; its fixed read-only shell
+round trip consumed the tool result and returned exact `CODEX TOOL READY`.
+The earlier 13,635/13,691-token process-scoped OpenCode runs remain historical
+admission evidence. The safe long-pool fallback is retained, and the next
+measured batch-one decode hotspot governs funding. The deleted affine-q4
+scoreboard belonged to a separate Mac Pro experiment; current record standing
+is M1 Max Q2. Any future MLX long-context route on this M1 Max begins with
+fresh baseline, dependency, parity, memory, and capacity evidence.
 
 ## Protected boundaries
 
@@ -220,6 +224,9 @@ parity, memory, and capacity evidence.
   `304C9CDDB08FA69E680E6ABE46C02C17F992F904A4AF20B978E4CC4B767EADBD`.
 - Keep OpenCode2's cloud-model configuration stable during local server tuning;
   use process-scoped aliases or wrappers.
+- Treat `$CODEX_HOME/qwen38-local.config.toml` and its static catalog as the
+  machine-local Apple client overlay; pin their hashes and run the fixed
+  read-only Responses tool gate for qualification.
 - Use exact process ancestry for server lifecycle actions and preserve every
   unrelated user process.
 

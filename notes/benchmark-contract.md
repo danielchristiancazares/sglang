@@ -5,7 +5,9 @@ Qwen3.8 production line. A comparable result records the request shape, server
 mode, cache treatment, sampling profile, graph state, GPU environment, and
 resolved launcher arguments.
 
-**Reconciled through:** 2026-08-21 13:48 PDT.
+**Native-Windows reconciled through:** 2026-08-21 13:48 PDT.
+
+**Apple M1 Max Q2 addendum reconciled through:** 2026-08-23 11:31 PDT.
 
 ## Primary performance scoreboard
 
@@ -191,6 +193,44 @@ Production selection requires all of these:
 Use `scripts/windows/invoke_cuda_pytest.ps1` for native CUDA pytest work and
 `scripts/windows/invoke_cuda_python.ps1` for native scripts. They initialize
 the intended MSVC/CUDA 13.3 environment and cap compilation at two jobs.
+
+## Apple M1 Max Q2 client-gate addendum
+
+[`../BENCHMARK.md`](../BENCHMARK.md) governs the separate Apple M1 Max Q2
+scoreboard. Its selected repository-native route uses Python ingress, Qwen's
+official tokenizer, a 32,768-token BF16 pool, one request, and 1,024-token
+prefill chunks. Signed PERF-A016 commit
+`52b5326d8e5140b72a26a3909316fb1f665bbd3d` specializes the Q4_K tensor
+family inside the mixed-format IQ2_XXS/Q2 checkpoint; the checkpoint and
+scoreboard remain Q2.
+
+The Apple real-client gate is Codex CLI 0.149.0 with the machine-local
+`qwen38-local` profile over `/v1/responses`. Pin and record these overlay
+identities for each qualification:
+
+```text
+9706003ad8a43ad48e4260f282057c023214c9e66737eae3da88a49188079a1c  $CODEX_HOME/qwen38-local.config.toml
+a67c491a1dd4d4df0f720fb966ac390bd20041d8ed29f02833dfca4424a013f0  $CODEX_HOME/qwen38-local.models.json
+```
+
+The fixed read-only sequential-tool gate is:
+
+```bash
+env SGLANG_API_KEY=local codex exec -p qwen38-local --ephemeral \
+  --color never -C /Users/dcazares/sglang --json \
+  'Use the shell_command tool exactly once to run pwd in the current workspace. After reading its output, reply with exactly CODEX TOOL READY. Do not use any other tool.'
+```
+
+A passing window records the Codex version, both hashes, the pinned catalog
+and observed command-tool surface, exact server ingress and resolved arguments,
+process-scoped API key, request usage, one successful `shell_command`, consumed
+tool output, exact visible final marker, zero client exit, unchanged worktree,
+post-request server health, cache flush, leaf-first cleanup, free listener, and
+returned memory/thermal state. The qualified 2026-08-23 run used `pwd`,
+consumed `/Users/dcazares/sglang`, returned `CODEX TOOL READY`, and accounted
+for 17,871 input, 96 output, and 62 reasoning-output tokens. This gate
+qualifies the profile's read-only sequential shell surface. Windows production
+continues to use the standalone OpenCode2 provider/workload contract above.
 
 ## Tree and SWOR experiments
 
