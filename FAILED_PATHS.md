@@ -1611,3 +1611,50 @@ standing.
   result clears the selected PERF-A018 medians by at least 2%.
 - Related commit or revert: reverted before PERF-A019; no kernel source from
   this candidate remains.
+
+## PERF-FA057 - Uniform fully-causal C64 branch
+
+- Hypothesis: history tiles ending before the earliest query row's causal
+  limit could bypass each lane's redundant logical-token comparison.
+- Scope: PERF-A019's native Metal BF16 paged-GQA EXTEND softmax mask.
+- Attempted change: one threadgroup-uniform predicate identified fully causal
+  C64 tiles; diagonal and partial tiles retained the established comparison.
+- Benchmark evidence: at `E=256,L=4352`, candidate direct medians were
+  **26.358104/26.316271 ms** against an adjacent selected-source
+  **26.330084 ms** median. At `E=17,L=131072`, candidate **65.734208 ms**
+  trailed the matched **65.647625 ms** median.
+- Correctness evidence: direct and fallback outputs stayed bitwise equal and
+  retained the established small and timing-fixture SHA-256 digests.
+- Failure mode: the uniform branch and predicate cost offset the eliminated
+  comparisons; both diagnostic and long-context windows were neutral to
+  slightly slower.
+- Why not to retry unchanged: the candidate misses the 1% retention floor at
+  its highest-coverage long-context shape.
+- Reopen only if: compiler inspection proves the comparison remains in the
+  current shader and a branch-free specialization can remove it without an
+  added uniform predicate in the tile loop.
+- Related commit or revert: reverted before PERF-A020.
+
+## PERF-FA058 - Cohort-leader online-softmax state broadcast
+
+- Hypothesis: one lane per 16-lane softmax cohort could load the prior
+  maximum/sum, compute `next_max` and `old_scale`, then broadcast two FP32
+  values, reducing repeated shared reads and exponent evaluations.
+- Scope: PERF-A019's C64 online-softmax update.
+- Attempted change: physical lanes 0 and 16 owned prior-state arithmetic;
+  `simd_shuffle` distributed the exact next maximum and rescale to their
+  cohorts. Accumulation order and stored state were unchanged.
+- Benchmark evidence: `E=256,L=4352` direct medians were
+  **26.354417/26.513146 ms** versus a nearby selected-source
+  **26.330084 ms** median; the zero-eligible median was **58.963146 ms**
+  versus **58.738667 ms**. At `E=17,L=131072`, candidate
+  **65.733625 ms** trailed the matched **65.647625 ms** median.
+- Correctness evidence: small direct/fallback parity remained bitwise exact,
+  dense error stayed `5.3644180e-07`, and both timing digests were unchanged.
+- Failure mode: two cohort shuffles and leader control do not repay the
+  vector-issued transcendental/shared-state work on this Metal target.
+- Why not to retry unchanged: every scored route stays inside noise or moves
+  slightly slower.
+- Reopen only if: profiling demonstrates active-lane transcendental pressure
+  on a different Apple family and a matched window clears 0.75%.
+- Related commit or revert: reverted before PERF-A020.

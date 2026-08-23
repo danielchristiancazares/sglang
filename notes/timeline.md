@@ -784,6 +784,23 @@ code changes, or process state matter.
   fragmented maps by roughly 3.4-6.5%; its expanded live-register design is
   closed as `PERF-FA056`.
 
+### PERF-A020 hoists direct cache-run address generation
+
+- Each SIMDgroup now computes its two QK physical row offsets before the D256
+  loop, and each PV key block computes one value-row base before eight output
+  fragments. Direct/fallback predicates, BF16 matrix operands, FP32 arithmetic,
+  and the 20,832-byte scratch contract stay unchanged.
+- At `E=256,L=4352`, two matched source pairs improve
+  **26.330084 -> 25.548479 ms** and **26.649625 -> 25.674125 ms**. The
+  zero-eligible route also improves by **1.33-1.52%**.
+- At `E=17,L=131072`, two matched pairs improve
+  **65.647625 -> 63.767667 ms** and **65.687333 -> 63.886417 ms**, preserving
+  the exact timing-fixture digest and zero measured allocation growth.
+- Every cache storage offset and physical start `0..7`, repeated mixed
+  direct/fallback execution, and physical row 131,072 pass. A uniform causal
+  branch and cohort-leader online-softmax broadcast were exact and missed
+  their timing gates; they remain closed as `PERF-FA057/058`.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
