@@ -11,7 +11,7 @@ under `docs/`.
 
 Last reconciled with
 [`notes/experiment-log.md`](notes/experiment-log.md) through
-**2026-08-21 13:48 PDT**. A later experiment-log entry or fresh runtime
+**2026-08-30 15:08 PDT**. A later experiment-log entry or fresh runtime
 evidence supersedes every snapshot in this file.
 
 ## Recover context before acting
@@ -56,6 +56,157 @@ Maintain the compact layer when conclusions change:
 - add a timeline phase for a material new direction;
 - leave raw output, PIDs, incidents, and sample-by-sample narration in
   `notes/experiment-log.md`.
+
+## Start Qwen3.8-27B for Codex
+
+This is the local Codex setup for the qualified native-Windows lane. It uses
+the repository launcher, its measured defaults, and one additional FP32 Mamba
+cache slot for Codex's multi-chunk repository prompts. The derived checkpoint
+is a local artifact assembled from the immutable RadixArk base and NVFP4
+donor; its `selective-nvfp4-manifest.json` is part of the checkpoint
+provenance.
+
+### One-time setup
+
+From PowerShell 7 at the repository root, confirm that the checked-in virtual
+environment, checkpoint, and manifest are present:
+
+```powershell
+Test-Path .\.venv\Scripts\sglang.exe
+Test-Path C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4
+Test-Path C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4\selective-nvfp4-manifest.json
+```
+
+All three commands must return `True`. The launcher initializes the qualified
+MSVC/CUDA 13.3 environment itself. Keep the model artifact at its recorded path
+or pass a fully qualified `-ModelPath`; never modify the downloaded source
+checkpoints in place.
+
+Validate that the editable SGLang install resolves to this checkout:
+
+```powershell
+.\.venv\Scripts\sglang.exe --help
+.\.venv\Scripts\python.exe -c "import sglang; print(sglang.__file__)"
+```
+
+The import must resolve below `C:\Users\Daniel\sglang\python`. Moving this
+checkout can leave the uv-generated executable and editable-install metadata
+pointing at its former location. Repair that state while holding dependencies
+fixed, then rerun both checks:
+
+```powershell
+uv pip install --python C:\Users\Daniel\sglang\.venv\Scripts\python.exe `
+  --editable C:\Users\Daniel\sglang\python `
+  --no-deps `
+  --reinstall-package sglang
+```
+
+This setup is validated with Codex CLI 0.151.0. Create or verify the dedicated
+profile `C:\Users\Daniel\.codex\qwen38.config.toml` with this content:
+
+```toml
+model = "qwen3.8-27b"
+model_provider = "sglang-qwen38"
+model_context_window = 200000
+model_auto_compact_token_limit = 180000
+service_tier = "default"
+
+[model_providers.sglang-qwen38]
+name = "Local SGLang Qwen3.8"
+base_url = "http://127.0.0.1:30000/v1"
+wire_api = "responses"
+requires_openai_auth = false
+```
+
+This profile layers over the regular Codex configuration only when selected;
+it leaves the ordinary cloud model and authentication configuration unchanged.
+The 180K compaction threshold reserves room inside the server's real 200K
+token pool for instructions, tool results, and the next response. Codex appends
+`/responses` to the provider base URL, so keep `/v1` in `base_url`.
+
+### Preflight and start
+
+The RTX 5090 is also the display GPU. Before launch, exit any earlier
+`codex -p qwen38` session whose request is still reconnecting. Codex's
+unbounded reconnect mode retains failed turns across a server restart; two
+retained turns can arrive together when the listener returns. Then confirm
+port 30000 is free, no SGLang/CUDA compiler tree is active, and the GPU has
+returned to ordinary display residency. Follow the process-safety rules below
+if anything is already running. Open a dedicated PowerShell 7 terminal and run
+the Codex lane in the foreground:
+
+```powershell
+Set-Location C:\Users\Daniel\sglang
+.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -MaxMambaCacheSize 5
+```
+
+This retains the selected checkpoint, reasoning and tool parsers, real 200K
+context/token pools, one-request scheduler, CUDA graphs, and speculative-decode
+settings. The fifth Mamba slot is the Codex-specific reserve for the transient
+state donation that occurs when an unfinished 7,680-token prefill chunk enters
+the radix cache. A real 10.5K-token Codex prompt exhausted the four-slot pool
+at that boundary; the five-slot lane passed the same multi-chunk boundary,
+retained-cache pressure, exact `199000+16` capacity, and a post-capacity Codex
+request. The argument-free four-slot launcher remains the qualified production
+benchmark baseline.
+
+Leave the launcher terminal open. Startup loads the checkpoint, JIT-compiles
+kernels, and captures three CUDA graph phases, so wait for the ready message
+before sending traffic. The resolved `server_args` must include
+`max_mamba_cache_size=5`, `max_running_requests=1`,
+`max_total_tokens=200000`, and `context_length=200000`. Confirm target verify,
+draft decode, and draft extend graph completion, then use one bounded readiness
+check after the expected startup interval:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:30000/health
+Invoke-RestMethod http://127.0.0.1:30000/v1/models | ConvertTo-Json -Depth 5
+Invoke-RestMethod http://127.0.0.1:30000/model_info | ConvertTo-Json -Depth 8
+```
+
+The model list must contain `qwen3.8-27b`; `/model_info` must report image and
+audio understanding disabled. A refused connection means the server is stopped
+or still starting. Exit any reconnecting Qwen Codex session and inspect the
+launcher terminal before a restart.
+
+### Start and verify Codex
+
+In another PowerShell terminal, start Codex with the local profile:
+
+```powershell
+Set-Location C:\Users\Daniel\sglang
+codex -p qwen38
+```
+
+The startup banner must show model `qwen3.8-27b` and provider
+`sglang-qwen38`. For a disposable end-to-end test using the repository and
+multi-chunk shape that exposed the unfinished-chunk failure:
+
+```powershell
+codex exec -p qwen38 --ephemeral -C C:\Users\Daniel\hauberk `
+  "Return exactly READY"
+```
+
+The final response must be exactly `READY`. The server log must show a first
+prefill chunk of 7,680 tokens with a positive pending-token count, completion
+of the remaining chunk, and a healthy scheduler. Recheck `/health` afterward.
+Qualification uses this multi-chunk prompt shape.
+
+Codex 0.151.0 currently also emits an optional model-catalog refresh warning
+because SGLang's OpenAI-compatible `/v1/models` response uses the
+`object`/`data` schema while that catalog reader expects a `models` field. It
+may also report fallback model metadata for this custom model ID. The explicit
+profile supplies the real context and compaction limits; a successful expected
+banner, completed multi-chunk response, and healthy listener establish the
+end-to-end gate.
+
+Keep Qwen Codex requests sequential: this lane admits one running request. Exit
+a failed Qwen TUI before relaunching the server so its retained retry cannot
+overlap a new turn. Use `Ctrl+C` in the foreground launcher terminal for an
+intentional shutdown. For a detached or orphaned launch, first resolve the
+listener PID, its complete ancestry, CUDA workers, and unrelated processes;
+stop only the verified server tree leaf-first and confirm port 30000, compiler
+workers, and GPU residency are clear afterward.
 
 ## Qualified production contract
 
@@ -200,6 +351,10 @@ work has frozen the desktop.
   safe.
 - Preserve asynchronous CUDA lifetimes. Stable graph inputs may be reused;
   per-cycle outputs that outlive a launch retain distinct storage.
+- Native-Windows TP or attention-TP size one makes sampler token
+  synchronization an identity. Preserve the process-group size guard before
+  grammar/env-driven CUDA collectives; the installed Gloo control plane does
+  not provide the CUDA all-reduce implementation.
 - The linear `SimulateAcceptedLength` control models contiguous linear
   ancestry. Tree recurrent-state qualification uses real tree ancestry and
   accepted-path commit tests.

@@ -1,7 +1,7 @@
 # Current state
 
-**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-23
-16:25 PDT.
+**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-30
+15:08 PDT.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -9,6 +9,86 @@ launcher now selects the attention-selective checkpoint, chunk 7680, native
 draft-k1 proposal construction, and Cutlass-prefill/Marlin-decode gate/up
 weights. It passed exact capacity, graph, reasoning, tools, language-only,
 OpenCode2, and post-flush headroom gates.
+
+## Native backend roadmap handoff
+
+Roadmap milestone 1, the native tensor-view ABI, is complete in the current
+worktree. The dormant C++/CUDA slice fixes ABI 1.0 as 184-byte metadata and
+192-byte const/mutable views with rank at most eight, closed dtype/device
+vocabularies, checked bit-span validation, conservative mutable non-overlap,
+typed witnesses, and allocation-free structured diagnostics. It has no
+framework adapter, Python binding, CMake target, server route, or launcher
+change. Its first standalone CUDA consumer is described below.
+
+The final contract audit corrected `ValidationOutcome::match` so its error
+branch passes the copied `TensorValidationError` value category promised by
+its constraints and `noexcept` expression. An rvalue-only error-handler
+regression raises the standalone suite to 35 cases. Default and `/Zp1` MSVC
+warning-as-error builds, VS 2022 AddressSanitizer, MSVC static analysis, and
+the NVCC `sm_120` compile-only probe pass. The dependency and raw-type
+confinement scans, Mintlify validation, and worktree checks pass. Repository
+baselines remain independently red: `base-a-test-cpu` cannot enter execution
+because the unchanged `test_cuda_graph_composite.py` lacks CI registration,
+and Mintlify reports 392 pre-existing broken links in 103 files with no
+finding for the ABI page.
+
+At the user's explicit request, the earlier qualified production server was
+stopped leaf-first through exact PIDs `15140`, `15824`, `56364`, `20092`,
+`49872`, `49852`, and `39816`. A later Codex setup task launched the supported
+five-slot client lane described below; the argument-free launcher remains the
+production benchmark source of truth.
+
+The remaining roadmap item 1 substrate is now implemented beside the ABI.
+`CudaStream` and copyable `CudaExecutionContext` establish explicit
+device-affine nonblocking stream ownership. `GraphMemoryArena` allocates one
+fixed CUDA address range, issues aligned slices until sealing, and then
+creates retained leases. Owner-backed binding overwrites device provenance,
+capacity, and base address before validation and produces only typed
+`GraphStableTensorView` values. `CudaGraphExecutable` retains both its stream
+context and arena lease, records completion after launch, and refuses storage
+or stream cleanup while an asynchronous dependency remains.
+
+Strict host tests, MSVC static analysis, and a real `sm_120` RTX 5090 CUDA
+suite pass. The CUDA test captures an increment kernel, destroys the source
+graph, drops every external slice/view/lease, proves arena and stream cleanup
+remain busy, replays the executable three times at the same pointer, and
+observes every output as `3.0`. The two-device mismatch branch is present and
+fails closed when two GPUs exist; this single-GPU host skips that branch.
+This substrate now backs one standalone operator but remains dormant with no
+build-system target, SRT adapter, launcher route, or production CUDA graph.
+
+Roadmap item 2 now has its first bounded kernel port:
+`launch_linear_rejection_sampling`. The framework-free C++/CUDA operator
+implements the qualified batch-one linear p/q rejection rule for 2 through 64
+slots. It accepts only exact-size, contiguous, non-aliasing
+`GraphStableTensorView` buffers on the execution context's device. The
+contract uses `int64` proposal tokens/indices, FP32 uniforms and p/q rows,
+`int32` output tokens/accept indices/`num_correct_drafts`, and a `uint32`
+device-status slot.
+
+Device code preflights every proposal token and output index, including index
+uniqueness, before changing any token/count/index output. Valid input preserves
+strict `coin * q < p` acceptance, NaN-q residual fallback, positive `p - q`
+sampling after rejection, pure target sampling after full draft correctness,
+strict CDF crossing, and the existing last-token zero-residual fallback.
+
+The strict host contract suite passes 2 cases. The live CUDA 13.3 `sm_120`
+suite passes 5 cases: malformed layout/content, hand-oracle parity, 256
+deterministic randomized comparisons, 2/64-slot boundaries, and captured
+stable-address replay at the checkpoint's authoritative 248,320-token
+vocabulary with changed inputs. CUDA memcheck reports zero errors. MSVC static
+analysis, the existing ABI suites (35/35 default and `/Zp1`), resource host
+suite (2/2), resource CUDA suite (5/5 with the two-GPU body skipped), the ABI
+CUDA compile probe, dependency/raw-view/integration scans, and Mintlify
+validation pass.
+
+No SRT, Python, kernel registry, launcher, endpoint, or production graph uses
+the new operator. The later live Codex server retains that boundary.
+Full behavior, capacity, production-relaunch, and OpenCode2 gates remain
+mandatory before any adapter is promoted. Four ignored root object files
+created before this task at 16:10-16:14 remain user-owned and untouched; every
+artifact created for this milestone was removed with its isolated session
+build directory.
 
 ## Qualified production configuration
 
@@ -42,6 +122,43 @@ These values match the defaults in
 [`../scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1`](../scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1)
 at reconciliation time. The launcher and freshly resolved arguments remain the
 executable source of truth.
+
+## Codex client lane
+
+Codex CLI 0.151.0 uses `C:\Users\Daniel\.codex\qwen38.config.toml`. Start
+its server with the production launcher plus `-MaxMambaCacheSize 5`. The fifth
+FP32 state slot is a client-specific transient reserve; the benchmarked
+production default remains four. A real `hauberk` Codex prompt crossed the
+7,680-token prefill boundary and exhausted the four-slot pool while the
+unfinished first chunk was being donated to the radix cache. Five slots passed
+the same multi-chunk boundary, sequential retained-prefix pressure, exact
+`199000+16`, a post-capacity Codex request, sampled reasoning, parsed tools,
+and standalone OpenCode2 while preserving one-request admission.
+
+Exit an earlier Qwen Codex TUI before restarting this listener. Codex's
+unbounded reconnect mode can retain multiple failed turns and submit them
+together when the endpoint returns; that violates this lane's sequential-use
+contract. The executable setup, real multi-chunk gate, and recovery procedure
+are in [`../AGENTS.md`](../AGENTS.md).
+
+The native-Windows grammar sampler access violation is fixed in the current
+worktree. The selected TP or attention-TP process group now has to contain
+more than one rank before `_sync_token_ids_across_tp` enters its existing
+CUDA token-ID collective. This restores the same one-rank identity invariant
+used by `GroupCoordinator`: the qualified lane has `tp_size=1`, so grammar
+sampling keeps its local token and never submits it to Gloo.
+
+An isolated unguarded CUDA/Gloo reproducer reached the reported
+`ProcessGroupGloo::allreduce -> enqueue` access violation immediately. The
+patched sampler completed the same real one-rank process-group path. Four
+focused policy cases passed, covering grammar and forced-sync bypass at size
+one, the preserved MIN reduction at size two, and the inactive size-two path.
+A five-slot full-model launch then captured target verify, draft decode, and
+draft extend and served two simultaneous parsed-tool chat requests plus two
+simultaneous Codex `/v1/responses` requests. Both request pairs produced one
+queued request, every response completed exactly, and `/health` remained
+green. That validation server was stopped through its foreground launcher;
+port 30000 is currently free and the GPU is at ordinary display residency.
 
 ## Qualified measurements
 

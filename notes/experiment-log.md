@@ -8765,3 +8765,745 @@ mean 13.929045  17.125658 446.051        39.730
   signed `4dfa1ad3efdfe3f9236aa0ed0c841644ab513859` (`perf: reuse Q2_K
   activations across rows`). Documentation and recovery-ledger updates remain
   a separate atomic checkpoint.
+
+### 2026-08-21 02:23 PDT - dormant native tensor-view ABI completed
+
+- Implemented the previously documentation-only contract in a dormant native
+  slice, with no CMake target, Python binding, operator registration, server
+  routing, launch, or GPU execution. The worktree was `main` at
+  `693c1f0593b5958b4d2b062a39c76a676dba7ede`, four commits ahead of
+  `origin/main`; the pre-existing modified speculative-runtime files and
+  untracked roadmap/sparse-sampling work remained user-owned and untouched.
+- Added `native/include/sglang/native/tensor_view.h` (74 lines),
+  `native/include/sglang/native/tensor_view.hpp` (640),
+  `native/src/tensor_view.cpp` (586),
+  `native/test/tensor_view_test.cpp` (699), and the compile-only
+  `native/test/tensor_view_cuda_compile_test.cu` (26). The implementation fixes
+  the documented major-1/minor-0, rank-8, 184-byte metadata/192-byte view ABI;
+  enforces every ordered validation rule with checked bit arithmetic; proves
+  mutable bytewise non-overlap using fixed storage; exposes move-only,
+  rvalue-matched typed witnesses; and provides allocation-free deterministic
+  names and diagnostics. Hostile packing assertions protect the public C ABI
+  and C++ outcome/witness surfaces.
+- Added 34 named host conformance tests covering all 23 error payloads, all 24
+  error-code names, all 18 field names, scalar/empty/sub-byte/mutable cases,
+  truncating diagnostics, outcome typestate, hostile-pack layout, allocation
+  counts, eight-worker deterministic validation, and a deterministic
+  1,000,000-case malformed-descriptor property run with seed
+  `0x53474c54454e534f`. The CUDA translation unit performs device-side metadata
+  reads only and remains compile-only.
+- Strict native builds and executions passed from an x64 VS Developer Command
+  Prompt:
+  - `cl.exe /nologo /std:c++20 /EHsc /W4 /WX /permissive-
+    /Zc:__cplusplus /I native\include native\src\tensor_view.cpp
+    native\test\tensor_view_test.cpp /Fe:native_tensor_view_test.exe`;
+  - the same command with `/Zp1` and output
+    `native_tensor_view_pack1_test.exe`;
+  - both executables reported `[  PASSED  ] 34 tests`;
+  - `cl.exe /nologo /std:c++20 /EHsc /W4 /WX /permissive-
+    /Zc:__cplusplus /analyze /I native\include /c
+    native\src\tensor_view.cpp` completed cleanly;
+  - `nvcc.exe -std=c++20 -arch=sm_120 -I native\include -Xcompiler=/W4
+    -Xcompiler=/WX -c native\test\tensor_view_cuda_compile_test.cu -o
+    native_tensor_view_cuda_compile_test.obj` compiled without launching a
+    kernel.
+- The VS 18 installation lacked
+  `clang_rt.asan_static_runtime_thunk-x86_64.lib`, so its AddressSanitizer link
+  could not start. The installed VS 2022 AddressSanitizer toolchain completed
+  `cl.exe /nologo /std:c++20 /EHsc /W4 /WX /permissive-
+  /Zc:__cplusplus /fsanitize=address /Zi /I native\include
+  native\src\tensor_view.cpp native\test\tensor_view_test.cpp
+  /Fe:native_tensor_view_asan_test.exe`; its executable also reported 34
+  passing tests. The architecture document now includes `/Zi` in that gate so
+  `/WX` remains valid with the older compiler.
+- Repository and documentation gates:
+  - forbidden dependency scan across `native/` found no Python, Torch, ATen,
+    C10, TVM, DLPack, FlashInfer, or TensorRT-LLM include/reference;
+  - raw tensor-view ABI types occur only in the ABI headers, validator, and
+    conformance tests, with no native operator entry point;
+  - `npx --yes mint validate` passed;
+  - `npx --yes mint broken-links` reported the repository baseline of 392
+    broken links in 103 files, with no finding for
+    `docs/NATIVE_TENSOR_VIEW_ABI.md`;
+  - `git diff --check` and the explicit trailing-whitespace scan passed.
+- The requested CPU suite initially required `tabulate`; installed
+  `tabulate==0.10.0` and refreshed the existing editable `sglang` installation
+  in `.venv` with `uv`, without changing repository source. Running
+  `.\.venv\Scripts\python.exe -X utf8 .\test\run_suite.py --hw cpu --suite
+  base-a-test-cpu` then reached strict discovery and stopped on the clean,
+  tracked `test/registered/kernels/test_cuda_graph_composite.py`, which has no
+  CI registry. No ABI test failed in that gate.
+- Deleted the verified compiler outputs from `D:\sglang`: three host test
+  executables, their PDBs, CUDA/host object files, and the native-code-analysis
+  XML. They are recoverable by rerunning the recorded compiler commands. No
+  server, CUDA context, listener, model process, or production configuration
+  was changed.
+
+### 2026-08-21 15:58 PDT - native ABI milestone closed; server stopped
+
+- Selected roadmap milestone 1, the native tensor-view ABI, because the
+  pre-existing untracked `docs/NATIVE_TENSOR_VIEW_ABI.md` and `native/` slice
+  already formed one coherent user-owned candidate. The task began on `main`
+  at `c7840626d4acd649350b88fee79a0ae9707796cd`, matching `origin/main`, with
+  modified `notes/experiment-log.md` and untracked `ROADMAP.md`, the ABI page,
+  and `native/`.
+- The contract audit found one value-category defect in
+  `ValidationOutcome::match`: its constraints and `noexcept` expression
+  modeled `TensorValidationError` as an rvalue, but the error branch invoked
+  the callback with the stored lvalue. Changed the invocation to pass an
+  explicit copied `TensorValidationError` value and added
+  `OutcomeErrorUsesValueCategory`, whose deleted lvalue overload proves the
+  promised rvalue path. The architecture's named test inventory now includes
+  the regression.
+- The user explicitly requested shutdown of the qualified server before fresh
+  compiler work. The listener command matched the recorded
+  `Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` launch. Stopped exact PIDs leaf-first
+  with `Stop-Process -Id <pid> -Force`: workers `15140` and `15824`, listener
+  `56364`, parents `20092` and `49872`, and detached launcher wrappers `49852`
+  and `39816`. All seven PIDs were absent after eight seconds, port 30000 was
+  free, no compiler worker remained, and GPU state was 1,072 MiB used /
+  31,116 MiB free, 2% utilization, 29 C. Parent PID `22740` and unrelated
+  processes were untouched.
+- Fresh strict verification after the correction:
+  - VS 18.7.1 default and `/Zp1` builds used C++20, `/EHsc /W4 /WX
+    /permissive- /Zc:__cplusplus`; both executables reported
+    `[  PASSED  ] 35 tests`, including the deterministic 1,000,000-record
+    property run;
+  - VS 2022 `/fsanitize=address /Zi` linked cleanly and the explicit
+    `.\native_tensor_view_asan_test.exe` run passed all 35 tests. The first
+    execution attempt used an unqualified filename and was rejected by the
+    machine's current-directory executable search policy before the binary
+    ran;
+  - VS 18.7.1 `/analyze` completed with no finding;
+  - CUDA 13.3 `nvcc.exe -std=c++20 -arch=sm_120` compiled the metadata-only
+    CUDA probe without launching a kernel or creating a CUDA context.
+- Repository and documentation verification:
+  - the prohibited dependency scan returned no Python, Torch, ATen, c10, TVM,
+    DLPack, FlashInfer, or TRT-LLM match under `native/`;
+  - every raw view type and `allocation_base` reference remained inside the
+    ABI headers, validator, or tests; no native operator entry point exists;
+  - `npx --yes mint validate` passed;
+  - `npx --yes mint broken-links` retained the repository baseline of 392
+    broken links in 103 files and reported zero ABI-page hits;
+  - `base-a-test-cpu` again stopped during strict discovery, before executing
+    tests, because clean tracked commit `56a07fe66e` added
+    `test/registered/kernels/test_cuda_graph_composite.py` without a CI
+    registry. This unrelated Python baseline was not modified under the
+    C++/CUDA-only task boundary.
+- Final source fingerprints:
+  - `docs/NATIVE_TENSOR_VIEW_ABI.md`: 1,302 lines,
+    SHA-256 `F3F9E9A4285044A9C93B0F65198E4B513AA6BEE4F16CC59228155746076B0831`;
+  - `tensor_view.h`: 74 lines,
+    `0A3CD68F7C2F324A7706C58A1FE56005BFA33F4476CDFE4B099C6E8BD13257D0`;
+  - `tensor_view.hpp`: 641 lines,
+    `BE032F38EA86319F26ED821C2AA15C21AD3BD97B1C3CF498D2CDCA0152403E7F`;
+  - `tensor_view.cpp`: 586 lines,
+    `5733EA132BB5851AD0AD1D85EBB4F8D26F8F3B39C1991242912EDCA3125CD5CF`;
+  - `tensor_view_test.cpp`: 718 lines,
+    `FB4438C118CA9F3202E1E914032603B83237DF1D1437E390C2F13125AA9DD8A7`;
+  - CUDA compile probe: 26 lines,
+    `2813F86585536E9AC020D0CB11443944745232567019E8F905A09F3D684DD497`.
+- Removed the three exact test executables, sanitizer PDB, host/CUDA objects,
+  compiler PDB, and native-code-analysis XML. No generated ABI artifact
+  remains. Port 30000 remains free and the launcher is unchanged.
+- Final closure checks reported zero forbidden dependencies, zero raw-view
+  references outside the ABI/validator/test allowlist, zero trailing
+  whitespace, a clean `git diff --check`, and exact agreement with every
+  recorded source SHA-256. All seven stopped server PIDs remained absent,
+  port 30000 remained free, no compiler worker or generated artifact remained,
+  and the RTX 5090 reported 1,158 MiB used / 31,030 MiB free at ordinary
+  desktop utilization.
+
+### 2026-08-21 16:00 PDT - native CUDA resource foundation completed
+
+- Continued roadmap item 1 from `main` at
+  `c7840626d4acd649350b88fee79a0ae9707796cd`, preserving all pre-existing
+  modified and untracked work. Selected the remaining tensor-substrate
+  boundary rather than opening a model/kernel milestone: explicit stream
+  ownership, graph-stable device storage, retained asynchronous lifetimes,
+  and owner-backed typed view construction.
+- Success condition was a framework-free C++/CUDA API that:
+  - owns a nonblocking CUDA stream and device-affine execution contexts;
+  - allocates one fixed graph arena, issues aligned slices until sealing, and
+    rejects later reservations;
+  - overwrites caller-supplied provenance/capacity fields before producing
+    validated typed graph-stable views;
+  - retains arena and stream dependencies in graph executables through
+    completion;
+  - fails cleanup with a structured `resource_busy` result while any slice,
+    view, lease, execution context, or graph executable remains;
+  - changes no SRT, launcher, Python, kernel-registration, or production path.
+- Added:
+  - `native/include/sglang/native/result.hpp`, a move-only result with
+    mandatory success/error matching;
+  - `cuda_graph_resources.hpp/.cpp`, defining structured runtime errors,
+    `CudaStream`, `CudaExecutionContext`, `GraphMemoryArena`,
+    `GraphMemorySlice`, `GraphArenaLease`, `GraphStableTensorView`, and
+    `CudaGraphExecutable`;
+  - a strict host contract test and an `sm_120` CUDA execution test.
+- The resource contract is deliberately conservative:
+  - arena allocation is synchronous and fixed-address; no pointer-changing
+    growth exists;
+  - only sealed arenas issue leases or typed bindings;
+  - owner-controlled CUDA device, ordinal, capacity, and base pointer must be
+    canonical-zero in caller metadata and are then filled by the owner;
+  - all CUDA operations check the current device against the owner/context;
+  - stream and arena owners do not silently destroy busy resources;
+  - destructor cleanup terminates on an unhandled CUDA teardown failure rather
+    than silently leaking or freeing potentially live asynchronous state.
+- Validation loop and corrections:
+  - strict C++20 `/W4 /WX /permissive-` host build and the two host contract
+    tests passed;
+  - the first NVCC `/WX` link failed only on NVCC-generated stub warning
+    C4211; the rerun suppressed that known generated-code warning with
+    `/wd4211` while retaining `/W4 /WX` for project source;
+  - the live CUDA 13.3 `sm_120` suite passed five cases. It proved the
+    nonblocking stream flag, reservation alignment/sealing/capacity failures,
+    foreign-slice and owner-metadata rejection, typed bounds failure,
+    retained cleanup, and stable-address graph replay;
+  - the graph test zeroed 256 floats, captured one increment kernel, destroyed
+    the source graph, dropped every external view/slice/lease, observed both
+    arena and stream cleanup blocked, replayed three times, synchronized
+    through the executable event, and copied back 256 exact `3.0` values;
+  - the explicit device-mismatch case is implemented but skipped on this
+    single-RTX-5090 host because CUDA reports fewer than two devices;
+  - initial `/analyze /WX` found a false nullable-dereference path through
+    aggregate `new (nothrow)` initialization. Rewriting the two state
+    allocations as guarded explicit field initialization made MSVC static
+    analysis pass without suppressing the finding.
+- The server remained stopped. Before the GPU gate, port 30000 was free, no
+  `cl`, `nvcc`, `ninja`, `ptxas`, `cicc`, or `link` worker existed, and the
+  RTX 5090 reported 1,160 MiB used / 31,028 MiB free at ordinary desktop
+  utilization. No unrelated process was stopped.
+- Final closure reran the existing tensor ABI suite under default packing and
+  `/Zp1` (**35/35** each), the new strict host suite (**2/2**), the NVCC ABI
+  compile probe, the live CUDA suite (**5/5**, with the two-device body
+  skipped), and MSVC `/analyze /WX`. Forbidden-framework and non-native
+  integration scans returned zero findings; `git diff --check` and the
+  trailing-whitespace scan passed. `npx --yes mint validate` passed; the
+  broken-link scan retained its pre-existing nonzero repository baseline and
+  reported zero `NATIVE_TENSOR_VIEW_ABI` hits.
+- Removed every exact native test executable, object, PDB, and
+  native-code-analysis XML. Final state retained no root generated artifact,
+  port 30000 was free, compiler workers were absent, and the RTX 5090 reported
+  1,158 MiB used / 31,030 MiB free, 4% utilization, and 43 C.
+- Final new-source SHA-256 fingerprints:
+  - `cuda_graph_resources.hpp`
+    `8C8B7DC22374063ABD687D6F7F7A49CA6E6760804B727275DFC2B998D47A72A8`;
+  - `result.hpp`
+    `9D8903A96A27A1E21FF5520E95349C72C5131D10F2458941854A39BFB27820BC`;
+  - `cuda_graph_resources.cpp`
+    `83B00F8FB0F2B79452BEA0A61C012FD49C54FDB43D98087A6A52504F236F6EA7`;
+  - host test
+    `02AF8A91DEAEA098DCEC64A57A84C8452DF60B43B0018363C93D1FB2C82EBA44`;
+  - CUDA test
+    `9E507632E95B3DF0503C1E24568C8A4BE12D3E5253050649453FE2471F15F713`.
+- The slice remains dormant: there is no CMake target, SRT adapter, operator,
+  Python import, launcher flag, endpoint, or production graph. The next
+  milestone must select one bounded native operator/layout consumer and add
+  isolated numerical parity plus captured replay before any server gate.
+
+### 2026-08-21 16:42 PDT - first native operator consumer completed
+
+- Continued the explicit native-backend roadmap from `main` at
+  `c7840626d4acd649350b88fee79a0ae9707796cd`, matching `origin/main`.
+  Preserved the modified recovery notes and all untracked roadmap, ABI, and
+  native-foundation files as user-owned work. Selected roadmap item 2's first
+  bounded consumer: the active batch-one linear speculative rejection sampler.
+- Success condition was a framework-free C++/CUDA operator that:
+  - consumes only owner-backed typed graph-stable views on one explicit CUDA
+    execution context;
+  - enforces exact production dtype, rank, row-major layout, allocation size,
+    device, and cross-buffer non-aliasing before launch;
+  - fails content preflight before any token/count/index output write;
+  - reproduces linear p/q accept and residual bonus-sampling semantics;
+  - passes an independent host oracle across hand, randomized, boundary, and
+    authoritative production-shape cases; and
+  - captures and replays at stable addresses while reading changed inputs.
+- Added:
+  - `native/include/sglang/native/linear_rejection_sampling.hpp`;
+  - `native/src/linear_rejection_sampling.cpp`;
+  - `native/src/linear_rejection_sampling.cu`;
+  - `native/test/linear_rejection_sampling_host_test.cpp`; and
+  - `native/test/linear_rejection_sampling_test.cu`.
+  Extended `NativeRuntimeOperation` with stable validation/launch operation
+  IDs and updated the existing resource host identifier test.
+- The contract is deliberately bounded to one request, 2 through 64 slots,
+  output count equal to slot count, and vocabulary at most `INT32_MAX`.
+  Buffers are exact-size and contiguous: `int32` output tokens, accept indices,
+  and `num_correct_drafts`; `int64` proposal tokens/output indices; FP32 accept
+  uniforms, bonus uniforms, target p, and draft q; and one `uint32` device
+  status. All ten ranges must be distinct and on the context device.
+- A single block preflights every proposal token and output index, including
+  index uniqueness. Invalid content changes only device status. Valid content
+  follows strict `coin * q < p`; accepted drafts advance the p/q row and output
+  location; rejection samples positive `p - q`; NaN q is zero only in the
+  residual; full correctness samples target p; the CDF uses strict `>`; and
+  zero residual retains the active Triton fallback to the final vocabulary
+  token. `num_correct_drafts` excludes the bonus while `accept_indices`
+  includes its destination.
+- Validation corrections made during the loop:
+  - removed an unsafe evaluation-order dependency in early range recording;
+  - made lower/upper shape errors report their exact required boundary;
+  - added malformed-layout alias/extent cases and explicit 2/64-slot cases;
+  - removed an unused shared-state field; and
+  - replaced the provisional 151,936 test size after authoritative checkpoint
+    inspection showed
+    `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4\config.json`
+    has `text_config.vocab_size = 248320`. Every production-shape and memcheck
+    gate was rerun at 248,320, including a sampled token at index 247,000.
+- Exact primary build/run commands used the VS 18 BuildTools x64 environment
+  and CUDA 13.3:
+  - `cl.exe /nologo /std:c++20 /EHsc /W4 /WX /permissive-
+    /Zc:__cplusplus /I D:\sglang\native\include /I
+    "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\include"
+    D:\sglang\native\src\linear_rejection_sampling.cpp
+    D:\sglang\native\test\linear_rejection_sampling_host_test.cpp
+    /Fe:linear_rejection_sampling_host_test.exe`;
+  - `nvcc.exe -std=c++20 -arch=sm_120 --threads 2 -I
+    D:\sglang\native\include -Xcompiler=/EHsc -Xcompiler=/W4
+    -Xcompiler=/WX -Xcompiler=/permissive- -Xcompiler=/Zc:__cplusplus
+    -Xcompiler=/wd4211 D:\sglang\native\src\tensor_view.cpp
+    D:\sglang\native\src\cuda_graph_resources.cpp
+    D:\sglang\native\src\linear_rejection_sampling.cpp
+    D:\sglang\native\src\linear_rejection_sampling.cu
+    D:\sglang\native\test\linear_rejection_sampling_test.cu -o
+    linear_rejection_sampling_test.exe`;
+  - `compute-sanitizer.exe --tool memcheck --error-exitcode 99
+    linear_rejection_sampling_test.exe`; and
+  - `cl.exe /nologo /std:c++20 /EHsc /W4 /WX /permissive-
+    /Zc:__cplusplus /analyze /I D:\sglang\native\include /I
+    "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\include"
+    /c D:\sglang\native\src\linear_rejection_sampling.cpp`.
+- Final focused results:
+  - host contract **2/2**;
+  - live CUDA suite **5/5**, covering fail-closed layout/content, hand cases,
+    256 deterministic randomized oracle cases, 2/64-slot boundaries, and two
+    captured 248,320-vocabulary replays with changed inputs and the same output
+    address;
+  - Compute Sanitizer memcheck **0 errors**;
+  - MSVC `/analyze /WX` clean for the host contract/source;
+  - existing tensor ABI **35/35** under default packing and **35/35** under
+    `/Zp1`;
+  - existing resource host **2/2** and CUDA **5/5**, with only the already
+    expected two-device body skipped on the single RTX 5090;
+  - ABI `sm_120` compile-only probe passed;
+  - forbidden-framework, Python/script integration, raw-view escape, and
+    native trailing-whitespace scans each returned zero;
+  - `git diff --check` passed;
+  - `npx --yes mint validate` passed from `D:\sglang\docs`; and
+  - `mint broken-links` retained the baseline **392 links in 103 files** with
+    zero `NATIVE_TENSOR_VIEW_ABI` hits.
+- Two operational interruptions were handled without touching unrelated work:
+  - the first Mintlify invocation was run from the repository root, where no
+    `docs.json` exists, and failed before validating; rerunning from
+    `D:\sglang\docs` passed;
+  - an unrelated `cl.exe` PID `18188`, parent `9184`, compiling Cargo
+    `aws-lc-sys` appeared before a CUDA regression gate. The gate stopped
+    before compiling, the process was left untouched, and validation resumed
+    only after the compiler tree exited.
+- The production server stayed stopped throughout. Port 30000 was free before
+  every GPU gate. No compute process owned the RTX 5090; ordinary WDDM clients
+  remained. Observed pre-gate states ranged from 1,184 to 1,329 MiB used and
+  30,859 to 31,004 MiB free. Final state was 1,294 MiB used / 30,894 MiB free,
+  24% display utilization, and 47 C after cleanup; the final persistence check
+  reported the same residency at 6% utilization and 46 C.
+- All milestone artifacts were built under
+  `C:\Users\Daniel\.copilot\session-state\d3b4e80f-973b-4440-ba35-4c5df34d5bfa\files\native-linear-sampler-build`
+  and that exact directory was removed. Four ignored root objects dated
+  16:10-16:14, before this task began at 16:18, remain user-owned and
+  untouched: `cuda_graph_resources_host_test.obj`,
+  `cuda_graph_resources.obj`, `tensor_view_test.obj`, and `tensor_view.obj`.
+  No executable, PDB, analysis XML, or object created by this milestone
+  remains.
+- Final source fingerprints:
+  - `linear_rejection_sampling.hpp`: 96 lines,
+    `BACE4CFE471955843E0C59CF4E6AE91F0FB91BDF7D3EC392CF4169DCD8A215CF`;
+  - host implementation: 101 lines,
+    `9C36EF623EE9502CC49B3FC99F38DADBADE640569F6530BB16D86B651360453A`;
+  - CUDA implementation: 510 lines,
+    `9735E9419F6A1C92B5B3FD8E43396C758D23CA53DF29A737BEA7169FB18D9600`;
+  - host test: 158 lines,
+    `F7282BBA4D00969EF32130251C5F34D1FD7925B64661AD06A399A81C27040B7B`;
+  - CUDA test: 1,156 lines,
+    `B7CA244C7B60AAD6178D10181049CDB291FA9A7B884427AA76B508BF19A9DFE6`;
+  - resource header/source/host-test hashes after stable operation IDs:
+    `DCD12D46...F93D`, `1FB61DF1...F1F08`, and `3CFBCB9B...A913D`;
+  - architecture page: 1,361 lines,
+    `9D8F6AA34BC9ED73D7D70B11990D8188A299776B9EBA583049BBC6E48348A65E`.
+- The operator remains dormant. There is no CMake target, framework adapter,
+  Python import, kernel registry entry, SRT call site, launcher flag, endpoint,
+  model plan, or production graph. The next authorized milestone may port
+  another bounded active kernel or design the explicit framework-to-v1
+  adapter; neither may enter production without the full behavior, capacity,
+  relaunch, and OpenCode2 qualification contract.
+
+### 2026-08-30 12:15 PDT - Qwen3.8 Codex profile installed and live server validated
+
+- The task began on branch `main` at
+  `c7840626d4acd649350b88fee79a0ae9707796cd`. The existing modified
+  `notes/current-state.md`, `notes/decisions.md`, and
+  `notes/experiment-log.md`, plus untracked `ROADMAP.md`,
+  `docs/NATIVE_TENSOR_VIEW_ABI.md`, and `native/`, were treated as user-owned
+  work. This task changed root `AGENTS.md`, appended this ledger entry, and
+  created the user-level Codex profile described below.
+- Added `C:\Users\Daniel\.codex\qwen38.config.toml` for Codex CLI 0.151.0:
+
+  ```toml
+  model = "qwen3.8-27b"
+  model_provider = "sglang-qwen38"
+  model_context_window = 200000
+  model_auto_compact_token_limit = 180000
+  service_tier = "default"
+
+  [model_providers.sglang-qwen38]
+  name = "Local SGLang Qwen3.8"
+  base_url = "http://127.0.0.1:30000/v1"
+  wire_api = "responses"
+  requires_openai_auth = false
+  ```
+
+  The profile is selected explicitly with `codex -p qwen38`, so the ordinary
+  cloud model and authentication configuration remain unchanged. The server's
+  real context/token pool is 200K; 180K auto-compaction leaves response, tool,
+  and instruction headroom.
+- Presence preflight passed for `.venv\Scripts\sglang.exe`, the selected
+  `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4`
+  checkpoint, and its `selective-nvfp4-manifest.json`. Port 30000 was free,
+  the production server and compiler trees were absent, and the RTX 5090 was
+  at ordinary display residency before launch.
+- The first argument-free detached launch, PowerShell PID `4964`, exited before
+  CUDA initialization. Its logs are:
+  - `C:\Users\Daniel\AppData\Local\Temp\sglang-qwen38-codex-20260830-115250.stdout.log`;
+  - `C:\Users\Daniel\AppData\Local\Temp\sglang-qwen38-codex-20260830-115250.stderr.log`.
+
+  The exact error was `error: uv trampoline failed to canonicalize script
+  path`. The checkout had moved from `D:\sglang` to
+  `C:\Users\Daniel\sglang`; `sglang.exe`, the editable finder, and
+  `direct_url.json` still referenced the former path. GPU residency remained
+  untouched by this failed launch.
+- Repaired only the editable SGLang installation, retaining installed
+  dependencies, with:
+
+  ```powershell
+  uv pip install --python C:\Users\Daniel\sglang\.venv\Scripts\python.exe `
+    --editable C:\Users\Daniel\sglang\python `
+    --no-deps `
+    --reinstall-package sglang
+  ```
+
+  This replaced `0.5.18.dev705+g693c1f059` from
+  `file:///D:/sglang/python` with `0.5.18.dev717+gc7840626d` from
+  `file:///C:/Users/Daniel/sglang/python`.
+  `.\.venv\Scripts\sglang.exe --help` then passed, and
+  `.\.venv\Scripts\python.exe -c "import sglang; print(sglang.__file__)"`
+  resolved to `C:\Users\Daniel\sglang\python\sglang\__init__.py`. The
+  reinstall changed editable environment metadata and no repository source.
+- The second argument-free production launch began at **11:56:56 PDT** under
+  PowerShell PID `38580` and reached `The server is fired up and ready to
+  roll!` at **12:11:02 PDT** after rebuilding the checkout's FlashInfer SM120
+  caches. Logs are:
+  - `C:\Users\Daniel\AppData\Local\Temp\sglang-qwen38-codex-20260830-115656.stdout.log`;
+  - `C:\Users\Daniel\AppData\Local\Temp\sglang-qwen38-codex-20260830-115656.stderr.log`.
+
+  Startup resolved the selected checkpoint, served name `qwen3.8-27b`,
+  `context_length=200000`, `max_total_tokens=200000`, draft token pool 200000,
+  `max_running_requests=1`, reasoning parser `qwen3`, and tool parser
+  `qwen3_coder`. It enabled the 64-layer hybrid NVFP4 Marlin route, native
+  top-k-one delta proposals, and the qualified linear ReplaySSM/NEXTN path.
+  Target verify graph capture completed in 45.53 s, draft decode in 8.38 s,
+  and draft extend in 0.97 s; 3.62 GB remained available immediately after
+  graph capture. A known Triton GDN fp32/fp64 assertion selected its recorded
+  fallback and startup completed. The language-only checkpoint also produced
+  its expected absent-vision-weight registration messages.
+- Live endpoint gates passed:
+  - `GET /health` completed successfully;
+  - `GET /v1/models` returned `qwen3.8-27b` with
+    `max_model_len: 200000`;
+  - `GET /model_info` returned the exact selected checkpoint,
+    `model_type: qwen3_5`, architecture
+    `Qwen3_5ForConditionalGeneration`, and image/audio understanding disabled.
+- Two disposable Codex Responses API checks used the actual executable
+  `C:\Users\Daniel\AppData\Roaming\npm\codex.cmd` because this shell's
+  `codex` function injects `--yolo`. Both banners selected model
+  `qwen3.8-27b` and provider `sglang-qwen38`, and both commands exited zero.
+  The literal gate was:
+
+  ```powershell
+  C:\Users\Daniel\AppData\Roaming\npm\codex.cmd exec `
+    -p qwen38 `
+    --ephemeral `
+    -C C:\Users\Daniel\sglang `
+    "Return exactly the five ASCII characters READY and nothing else"
+  ```
+
+  Session `01a05418-47ef-7663-af03-5f2fde32c87e` returned exactly `READY`
+  using 182 tokens. The earlier sentence-punctuated prompt in session
+  `01a05416-2bb6-7053-8c26-1e34743bca8c` completed the same end-to-end path
+  and rendered `READY.`. Codex 0.151.0 emitted a nonfatal optional catalog
+  warning because SGLang's OpenAI-compatible `/v1/models` response uses
+  `object`/`data` while its catalog reader expects `models`, followed by its
+  fallback-metadata warning for the custom ID. The explicit profile supplied
+  the 200K context and 180K compaction limits; request execution completed.
+- Final live snapshot at 12:13-12:15 PDT: port 30000 was owned by listener PID
+  `18356`; the verified tree was PowerShell `38580` -> `sglang.exe` `29164` ->
+  Python `10764` -> listener `18356`, with scheduler/CUDA worker `24772` and
+  detokenizer worker `32892` below it. These PIDs remain snapshots and must be
+  re-resolved before lifecycle action. No CUDA/compiler worker outside the
+  server tree was present. The RTX 5090 reported 30,021 MiB used, 2,167 MiB
+  free, 0% instantaneous utilization, 29 C, and 42.07 W. The health endpoint
+  and `/model_info` remained responsive.
+- Root `AGENTS.md` now carries the one-time dependency and moved-checkout
+  repair checks, dedicated Codex profile, qualified argument-free launch,
+  readiness checks, exact Codex smoke gate, catalog-warning interpretation,
+  sequential-request constraint, and verified-tree shutdown procedure. The
+  qualified server is intentionally left running for the user.
+
+### 2026-08-30 13:42 PDT - five-slot Codex lane fixes multi-chunk stream failure
+
+- Continued on branch `main` at
+  `c7840626d4acd649350b88fee79a0ae9707796cd`. Existing modifications to
+  `AGENTS.md`, `notes/current-state.md`, `notes/decisions.md`, and
+  `notes/experiment-log.md`, plus untracked `ROADMAP.md`,
+  `docs/NATIVE_TENSOR_VIEW_ABI.md`, and `native/`, remained user-owned. This
+  task updated only the four modified documentation/recovery paths and the
+  already-created user-level Codex profile remained unchanged at SHA-256
+  `AA3BF4662A9F480A2CAC839880C903A1573F351A3D5C268F89C978C9F2FC5EEB`.
+- The user-visible Codex failure was:
+
+  ```text
+  Reconnecting... 1/5
+  Stream disconnected before completion: Transport error: network error:
+  error decoding response body
+  ```
+
+  It was a truncated SSE body after the server scheduler crashed. Session
+  `01a05447-91c0-7160-9681-2ccdda3d1e3a` ran from
+  `C:\Users\Daniel\hauberk` with prompt `mic check`. Codex received
+  `HTTP/1.1 200 OK`, `content-type: text/event-stream`, and chunked transfer,
+  then recorded `codex_core::responses_retry` when the body ended early.
+- The four-slot server log
+  `C:\Users\Daniel\AppData\Local\Temp\sglang-qwen38-codex-20260830-115656.stderr.log`
+  (SHA-256
+  `6CD2BA099F5A3F8CB51CC9DD939CD35D804094B73873A7FAB51A8FEF1861002D`)
+  showed the real prompt entering prefill as 7,680 new tokens plus 2,815
+  pending tokens at Mamba usage 0.75. While processing that unfinished first
+  chunk, the scheduler followed
+  `process_batch_result_prefill -> maybe_cache_unfinished_req ->`
+  `cache_unfinished_req -> prepare_for_caching_req -> _alloc_mamba_slot` and
+  raised `AssertionError: Can not alloc mamba cache`. Port 30000 closed and the
+  server tree exited. The final clean GPU snapshot was 857 MiB used, 31,331
+  MiB free, 0% utilization, and 29 C.
+- Four FP32 Mamba slots remain the historically qualified production default
+  and the minimum startup allocation for this speculative topology. The
+  smallest direct Codex candidate was therefore:
+
+  ```powershell
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 `
+    -MaxMambaCacheSize 5
+  ```
+
+  Five slots preserve `max_running_requests=1` under the configurator's
+  four-state-per-request ratio while adding one transient unfinished-cache
+  donation slot at roughly 0.18 GiB.
+- The first five-slot launch used hidden PowerShell PID `38000` with logs
+  `sglang-qwen38-codex-mamba5-20260830-131929.stdout.log` and `.stderr.log`.
+  It resolved `max_mamba_cache_size=5`, one running request, 200,000-token
+  context/target/draft pools, and captured target verify, draft decode, and
+  draft extend in 38.58, 1.41, and 0.96 s, leaving 3.58 GiB internally.
+- At readiness, the still-open failed Qwen Codex process PID `36044` retried
+  two distinct retained turns concurrently: the original
+  `01a05447-91c0-7160-9681-2ccdda3d1e3a` and
+  `01a05447-a78d-7520-839b-8e6f15a6099a`. Both `/v1/responses` calls received
+  HTTP 200 within 0.54 s. The scheduler then hit a Windows access violation in
+  `sampler._sync_token_ids_across_tp -> torch.distributed.all_reduce ->`
+  `ProcessGroupGloo::allreduce/enqueue` and exited with `0xC0000005`. This was
+  a separate overlapping-client failure. The five-slot Mamba candidate
+  therefore required an isolated rerun. Its stderr SHA-256 is
+  `78B569FAA3E9BDBE8AA7D505B2D8B2B818D4A3829CA836902D888D4766EB09C0`.
+- Resolved that exact failed client tree as `cmd 7804 -> node 23912 -> Codex
+  36044`, with child `pcctl-mcp 1916`, `node_repl 20400`, and
+  `quasimorph-gpt-mcp 23304`. Stopped only those verified descendants
+  leaf-first, then the Codex/node/cmd chain. Its rollout and database log were
+  already persisted. All other Codex sessions and user processes remained
+  running.
+  This establishes a client operating rule: close a failed Qwen TUI before
+  relaunching its endpoint because unbounded retries can survive the outage and
+  overlap later turns.
+- The isolated five-slot launch started at **13:27:53 PDT** under PowerShell
+  PID `6980`; logs are
+  `C:\Users\Daniel\AppData\Local\Temp\sglang-qwen38-codex-mamba5-20260830-132747.stdout.log`
+  and `.stderr.log`. It became ready at **13:28:59 PDT**. Resolved state was
+  `max_mamba_cache_size=5`, `max_running_requests=1`,
+  `context_length=max_total_tokens=200000`, draft pool 200,000, chunk 7,680,
+  FP32 `extra_buffer_lazy` Mamba state, and all qualified production
+  speculation/attention/quantization settings. Target verify, draft decode,
+  and draft extend captured in 19.87, 1.12, and 1.05 s; 3.58 GiB remained
+  internally. `/health`, `/v1/models`, and `/model_info` passed, with model
+  `qwen3.8-27b`, 200K maximum length, and image/audio understanding false.
+- Exact real-shape Codex command:
+
+  ```powershell
+  C:\Users\Daniel\AppData\Roaming\npm\codex.cmd exec `
+    -p qwen38 `
+    --ephemeral `
+    -C C:\Users\Daniel\hauberk `
+    "Return exactly READY"
+  ```
+
+  Session `01a0545d-88e9-7913-9f1e-a46dd1c8e857` selected model
+  `qwen3.8-27b` and provider `sglang-qwen38`, exited zero, and returned exactly
+  `READY`. Codex reported 9,656 total tokens; the server logged a 7,680-token
+  first prefill with 1,945 tokens pending, followed by a page-aligned
+  1,984-token tail. This reproduces the original failure boundary and
+  completed with Mamba usage 0.60 and a live listener.
+- Sequential retained-cache pressure also passed. Disposable Codex sessions
+  returned exact `ALPHA`, `GAMMA`, `DELTA`, `EPSILON`, and `ZETA` responses
+  from alternating `sglang` and `hauberk` roots. The requests included fresh
+  two-chunk prompts, a 4,672-token cached prefix, and later 9,344/9,600-token
+  cached prefixes. The attempted `BETA` invocation from the non-repository user
+  directory correctly failed Codex's trust check before sending a request.
+  Every submitted request completed with a live scheduler.
+- Exact capacity and post-capacity recovery passed on the unmodified five-slot
+  server:
+
+  ```powershell
+  .\.venv\Scripts\python.exe `
+    .\scripts\windows\bench_openai_stream.py `
+    --input-tokens 199000 `
+    --output-tokens 16 `
+    --timeout 600
+  ```
+
+  The measured request completed exact `199016`, `finish_reason=length`,
+  **3138.564 prompt / 122.740 generation tok/s**, **63.404796 s TTFT**, and
+  **63.527005 s E2E**. Its benchmark warmup and measured request each traversed
+  the complete multi-chunk ladder. Without an intervening manual flush,
+  session `01a05461-8868-7753-a6c4-52be51c65e38` then returned exact `OMEGA`
+  from a 9,929-token `hauberk` Codex request. This proves eviction/reuse after
+  the full-capacity request.
+- Behavior and client gates passed:
+  - sampled reasoning at temperature 1.0/top-p 0.95/top-k 20/presence 1.5
+    stopped normally with 204 coherent reasoning characters and final `703`;
+  - the tool probe returned `finish_reason=tool_calls`, 106 reasoning
+    characters, and exactly one parsed `multiply` call with integer arguments
+    37 and 19;
+  - standalone OpenCode2 through `opencode_qwen.ps1 -DisableSnapshots`, the
+    process-scoped `llama-cpp/qwen3.8-27b` provider, and its real auxiliary/main
+    request shape exited zero with visible exact `READY` in 8.315 s;
+  - six sampled exact `6213+512` measurements produced generation rates
+    `143.703, 123.643, 127.815, 127.439, 129.819, 120.551` tok/s, mean
+    **128.828**, with every result exact `6725` and
+    `finish_reason=length`. This is supporting evidence for the Codex
+    override; the existing qualified production window remains authoritative.
+- Kept the launcher default at four slots to preserve the benchmarked
+  production contract. Root `AGENTS.md` now starts the dedicated Codex lane
+  with `-MaxMambaCacheSize 5`, distinguishes it from the argument-free
+  baseline, requires the real multi-chunk `hauberk` gate, and documents the
+  failed-TUI retry hazard. `notes/current-state.md` and `notes/decisions.md`
+  carry the same durable distinction. Repository implementation, launcher,
+  dependency, and model artifacts remained byte-identical.
+- After the final cache flush the RTX 5090 reported 28,133 MiB used, 4,055 MiB
+  free, 0% utilization, 29 C, and 42.19 W. The live tree was PowerShell `6980`
+  -> `sglang.exe 22368` -> Python `36660` -> listener/tokenizer `22672`, with
+  scheduler `3392` and detokenizer `9652`. These PIDs remain snapshots and
+  must be re-resolved before lifecycle action. No Qwen-profile Codex process or
+  compiler worker remained. The validated five-slot Codex server is
+  intentionally left running.
+
+### 2026-08-30 15:08 PDT - TP1 grammar synchronization bypass fixes Windows Gloo access violation
+
+- Continued on branch `main` at
+  `c7840626d4acd649350b88fee79a0ae9707796cd`. Existing modifications to
+  `AGENTS.md`, `notes/current-state.md`, `notes/decisions.md`, and
+  `notes/experiment-log.md`, plus untracked `ROADMAP.md`,
+  `docs/NATIVE_TENSOR_VIEW_ABI.md`, and `native/`, remained user-owned. This
+  task changed the existing synchronization guard in
+  `python/sglang/srt/layers/sampler.py`, reconciled the three recovery-note
+  files, and advanced the matching root `AGENTS.md` recovery boundary. It
+  created no Python file or new Python implementation surface.
+- The reported `0xC0000005` was reproduced independently of the server with
+  PyTorch `2.13.0+cu130`, Python `3.13.14`, one Gloo rank, and an `int64` CUDA
+  tensor. The exact diagnostic initialized a rank-zero Gloo process group and
+  subgroup at `tcp://127.0.0.1:29613`, then called
+  `dist.all_reduce(value, ReduceOp.MIN, group=group)`. It immediately exited
+  `1` in `distributed_c10d.py:3245` with
+  `ProcessGroupGloo::allreduce -> ProcessGroupGloo::enqueue`, matching the
+  server stack.
+- The qualified Windows launch resolves `tp_size=1`, `enable_dp_attention=False`,
+  and a Gloo device group. `Sampler._sync_token_ids_across_tp` previously sent
+  its CUDA-resident sampled token IDs directly to that group whenever a
+  grammar was present or `SYNC_TOKEN_IDS_ACROSS_TP` was enabled. The one-rank
+  reduction is mathematically an identity. The installed Windows PyTorch
+  build has Gloo and no NCCL; its Gloo CUDA all-reduce creator is absent, so
+  the unsupported call reaches the native access violation.
+- Two persisted earlier incidents establish the production exposure pattern:
+  - `sglang-qwen38-codex-mamba5-20260830-131929.stderr.log`, SHA-256
+    `78B569FAA3E9BDBE8AA7D505B2D8B2B818D4A3829CA836902D888D4766EB09C0`,
+    crashed after two retained Codex Responses calls arrived together; and
+  - `sglang-qwen38-codex-mamba5-20260830-132747.stderr.log`, SHA-256
+    `A260C32CB09FF5178E3C19B0A2747D407A40E99840C69D7739C2E4D85E4A5BD0`,
+    reproduced the same stack at 14:47 after a second request entered the
+    queue. The user-provided 14:58 scheduler PID `36852` trace has the same
+    Python call site and native PCs.
+- The narrow source repair changes the existing conditional to require
+  `self.tp_sync_group.size() > 1` after the existing grammar/env predicate.
+  Evaluating the existing predicate first preserves the ordinary no-sync hot
+  branch without a process-group query. Multi-rank synchronization retains
+  the original tensor, `ReduceOp.MIN`, and selected ordinary-TP or
+  attention-TP process group.
+- Focused validation:
+  - a mocked four-case policy check passed **4/4**: size-one grammar and
+    forced-sync paths made zero distributed calls; size-two grammar made one
+    exact MIN all-reduce; size-two without grammar/env sync made zero calls;
+  - the patched sampler completed the real one-rank Gloo/CUDA grammar path at
+    `tcp://127.0.0.1:29615`, synchronized CUDA, printed the unchanged token
+    `7`, and exited zero;
+  - `python -m compileall -q python\sglang\srt\layers\sampler.py` passed;
+  - `git diff --check -- python/sglang/srt/layers/sampler.py` passed; and
+  - the optional repository-local `ruff.exe` command could not start because
+    this virtual environment has no Ruff executable. No dependency was added
+    for the one-condition repair.
+- Controlled full-model validation used the exact foreground command:
+
+  ```powershell
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 `
+    -MaxMambaCacheSize 5
+  ```
+
+  The launch began at 15:04:38 under PowerShell PID `17912`, resolved one
+  running request, five FP32 Mamba slots, 200,000-token target/draft pools,
+  7,680-token chunks, and the qualified attention/speculation/quantization
+  settings. Target verify, draft decode, and draft extend graph capture
+  completed in **20.31**, **1.18**, and **0.84 s**. The server became ready at
+  15:05:46. `/health`, `/v1/models`, and `/model_info` passed; the served ID
+  was `qwen3.8-27b`, maximum length was 200,000, and image/audio understanding
+  remained false.
+- Two simultaneous `probe_openai_chat.py --tool-probe` requests produced the
+  required queued shape. The scheduler logged `#queue-req: 1`; both completed
+  with `finish_reason=tool_calls`, preserved reasoning, and exactly one parsed
+  call:
+  - `multiply({"a":37,"b":19})`, 350 prompt / 85 completion tokens; and
+  - `multiply({"a":41,"b":23})`, 350 prompt / 80 completion tokens.
+- A sequential real Codex Responses gate pinned supported reasoning effort
+  `xhigh`: session `01a054b5-f63f-75f3-aaa3-70fc67ed7af9` crossed the
+  multi-chunk `hauberk` prompt and returned exact `READY` with 9,184 reported
+  tokens. Two simultaneous ephemeral Codex clients then received HTTP 200 in
+  the same second:
+  - session `01a054b6-1f86-75f1-8fbe-a70e28ec803e` returned exact `ALPHA`
+    with 9,318 reported tokens; and
+  - session `01a054b6-2060-7523-8cfa-76353afa03ff` returned exact `OMEGA`
+    with 169 reported tokens from the shared cached prefix.
+
+  The server logged a 7,680-token first chunk, positive pending tokens, one
+  queued request throughout the first decode, and healthy service of the
+  second request. `/health` passed afterward. This is the original
+  simultaneous `/v1/responses` and multi-chunk client shape that exposed the
+  defect.
+- Before shutdown, the verified tree was PowerShell `17912` -> `sglang.exe
+  29800` -> Python `25160` -> listener/tokenizer `7192`, with scheduler/CUDA
+  worker `12876` and detokenizer `36076`. Ctrl+C was sent through the
+  foreground launcher after the final healthy response. All six PIDs exited,
+  port 30000 retained only ownerless `TIME_WAIT` records, compiler workers
+  were absent, and the RTX 5090 returned to **832 MiB used / 31,356 MiB free**,
+  0% utilization, and 30 C. The validation server is stopped.
