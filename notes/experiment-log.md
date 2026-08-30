@@ -9507,3 +9507,40 @@ mean 13.929045  17.125658 446.051        39.730
   port 30000 retained only ownerless `TIME_WAIT` records, compiler workers
   were absent, and the RTX 5090 returned to **832 MiB used / 31,356 MiB free**,
   0% utilization, and 30 C. The validation server is stopped.
+
+### 2026-08-30 15:29 PDT - Windows and Apple handoffs reconciled for publication
+
+- Publication began from local `main` at `c7840626d4` with the completed
+  native foundation, Codex handoff, and TP1 sampler repair still in the
+  worktree. A fresh fetch advanced `origin/main` by 32 commits to
+  `de5714c15c`; those commits carry the complete Apple/Metal PERF-A021 source
+  and recovery history and leave the Windows sampler implementation untouched.
+- Checkpointed the local state as three signed commits, then rebased them onto
+  `de5714c15c`:
+  - `492c316e80` (`feat: add native CUDA graph sampler foundation`), adding
+    the roadmap, tensor-view architecture, and framework-free C++/CUDA source
+    and tests;
+  - `b01ad695c5` (`fix: skip single-rank sampler synchronization`), changing
+    only `python/sglang/srt/layers/sampler.py`; and
+  - `c611dcc1c2` (`docs: record Windows native backend handoff`), reconciling
+    root instructions and the compact/raw recovery layers.
+- The native and sampler commits are byte-equivalent across the rebase. The
+  three expected documentation conflicts were resolved by selecting the later
+  2026-08-30 15:08 compact boundary, preserving the native/Codex sections and
+  the Apple-silicon sections together, and retaining the experiment ledger as
+  all 8,767 lines from the remote tip followed by the exact 742-line local
+  Windows suffix. The resolved ledger has 9,509 lines before this entry and no
+  conflict marker.
+- Final publication checks passed:
+  - sampler policy **4/4** and focused Python compilation;
+  - `git diff --check origin/main..HEAD`;
+  - `git fsck --no-dangling`;
+  - framework-dependency include scan across `native/` with zero findings;
+  - `mint validate` from `docs/`; and
+  - signed-commit verification for all three rebased commits.
+
+  The earlier isolated CUDA, CUDA-graph replay, Compute Sanitizer, full-model
+  parsed-tool concurrency, multi-chunk Codex Responses, behavior, capacity,
+  and cleanup results remain authoritative because the two implementation
+  commits replayed unchanged. A second fetch found the same remote tip. The
+  reconciled branch is ready for a fast-forward push to `origin/main`.
