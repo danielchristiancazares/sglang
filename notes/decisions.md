@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-23 11:31 PDT.
+**Reconciled through:** 2026-08-30 15:08 PDT.
 
 ## Selected production choices
 
@@ -35,6 +35,8 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Workspace | 128 MiB | Wins decode and long prefill; 64 MiB fails required graph allocation |
 | Compile mode | `default`, with established partial fallbacks | Five-run fixed-work win over other compile/fallback arrangements |
 | Scheduling | Receive interval 4; stream interval 4; incremental output | Measured fixed-work wins while retaining client streaming behavior |
+| Codex client lane | Launcher override `-MaxMambaCacheSize 5`; one request; close failed Qwen sessions before server restart | A real 10.5K-token Codex prompt exhausted the four-slot pool while caching its unfinished 7,680-token chunk. Five slots passed the same multi-chunk boundary, retained-cache pressure, exact 200K capacity, post-capacity Codex, semantics, and OpenCode2; four slots remain the benchmarked production default |
+| Single-rank token synchronization | Treat TP or attention-TP size one as an identity before the sampler's grammar/env collective | Native-Windows Gloo lacks the CUDA all-reduce registration in the installed PyTorch build. The guard preserves every multi-rank MIN reduction; isolated CUDA/Gloo and simultaneous parsed-tool/Codex Responses gates pass |
 | Implementation language | C++/CUDA hot paths with thin Python integration | Explicit user direction after the display-GPU incident; preserves graph capture and native dispatch |
 | Tree/SWOR implementation | Retained as opt-in, production-ineligible infrastructure | A non-front unified-pool KV/compaction defect exists outside the measured static-pool route; current-config full cross-cycle parity is still required, and raw-composite SWOR RNG is invalid |
 | Device-resident linear cycle | Retained opt-in; rejected for throughput | Exact-q dense-race and explicit-seed categorical forms reached 122.576 and 120.075 tok/s versus 124.775 matched control; ordinary scheduling remains selected |
@@ -43,6 +45,21 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Target attribution | Exact per-shape M/N/K plus overlap-aware exposure | M3 primary GEMMs occupy 12.360 ms on the terminal stream; aggregate residency alone overcounts alternate-stream overlap |
 | Selective target NVFP4 | Launcher-default production checkpoint | User accepted the all-four-metric record; default relaunch and behavior/client gates passed |
 | MiaAI-Lab vLLM recipe | Matched `199000+16` reproduction remains an information gate | Same checkpoint/GPU uses MTP-3, TurboQuant 4-bit KV, and patched full-graph K+1 verify; published ~160 TPS lacks raw workload evidence |
+
+## Native backend foundation
+
+| Decision | Selected choice | Boundary |
+|---|---|---|
+| Tensor descriptor ABI | Native ABI 1.0: 184-byte metadata, 192-byte borrowed const/mutable views, rank at most eight | Windows x64 little-endian; fixed-width C record; process-local and non-owning |
+| Validation boundary | Total `noexcept` metadata validation, checked bit arithmetic, mutable non-overlap proof, then dtype/rank typed narrowing | No allocation, tensor dereference, logging, CUDA call, framework dependency, or unchecked pointer access |
+| Framework isolation | Keep Python, PyTorch, ATen, c10, TVM, DLPack, FlashInfer, and TRT-LLM outside the core ABI | Future adapters translate explicitly and retain storage/lifetime ownership |
+| CUDA execution context | Owned nonblocking stream plus copyable device-affine context lease | Current-device mismatch fails closed; stream destruction is busy while any context or graph executable remains |
+| Graph-stable storage | One fixed device allocation, aligned slices, explicit seal, retained leases, and owner-authored tensor provenance | Slices cannot move after sealing; storage destruction is busy while slices, typed views, or graph executables remain |
+| Graph executable lifetime | Retain stream context and arena lease through recorded completion; synchronize before teardown | Stable-address replay passed on the RTX 5090 after all external view and lease handles were dropped |
+| First operator consumer | Batch-one native linear rejection sampling, 2-64 slots, exact contiguous graph-arena views, authoritative vocabulary 248,320 | Standalone C++/CUDA only; strict layout/device/alias checks and captured replay at the qualified shape pass |
+| Sampler content safety | Preflight every proposal token and unique output index on device before token/count/index writes | Malformed content publishes only a structured device status; no unchecked probability/output index access |
+| Sampler semantics | Strict `coin * q < p`; NaN q becomes zero only for residual; positive `p - q` on rejection; target p on full correctness; strict CDF and last-token zero-mass fallback | Matches the active linear Triton rule; 256 randomized host-oracle cases, hand cases, and slot boundaries pass |
+| Integration state | Dormant ABI, CUDA resources, and one standalone sampler consumer | No framework adapter, CMake target, SRT/Python registration, launcher route, endpoint, or production graph; full qualification is still required before promotion |
 
 ## Primary performance record
 
