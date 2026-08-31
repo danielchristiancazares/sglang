@@ -2368,3 +2368,57 @@ option, or serving dispatch was added.
   proves exact logits and the established served digest.
 - Related commit or revert: both experimental C++ forms were removed; the
   selected A050 dylib hash and short digest were restored.
+- Sampled-lane disposition, 2026-08-31: the deterministic default rejection
+  remains closed. The user-authorized xhigh lane now applies the dependency's
+  process-scoped `MLX_SDPA_BLOCKS=64` override only with native stochastic
+  sampling. One real Codex xhigh shell round trip passed, and five sampled
+  real-131K client requests averaged **20.1722 tok/s** with every sample above
+  20. The source default and its deterministic arithmetic remain unchanged.
+
+## PERF-FA087 - Renormalize top-p over only the selected top-k candidates
+
+- Hypothesis: discarding the full-vocabulary log-sum-exp after top-k would
+  remove enough sampling overhead to clear 20 tok/s with MLX's default SDPA
+  reduction topology.
+- Scope: native early-out27 v2 sampler, seed 67396869, direct 6,237-history
+  decode and the real 131K Codex xhigh shell-tool turn.
+- Attempted change: converted and normalized only the 20 selected candidate
+  logits before cumulative top-p filtering, preserving the asynchronous
+  two-token pipeline and device-resident Gumbel selection.
+- Benchmark evidence: two direct `6237 / 32 warm / 256 timed` samples reached
+  **20.112478513** and **20.120420191 tok/s** with the same
+  `48d911de593ab4fc` digest. Seed 42 reached **20.211157783 tok/s** with a
+  different `d2b13675c7615ce6` digest.
+- Correctness evidence: the real Codex turn issued the requested first
+  `/bin/pwd`, then sampled a malformed extra tool call whose `session_id`
+  string failed the harness schema; the bounded client timed out.
+- Failure mode: changing the normalization support materially changed the
+  low-bit model's tool trajectory and failed the authoritative xhigh behavior
+  gate.
+- Why not to retry unchanged: the performance gain has full-model evidence,
+  while the required named-client continuation fails.
+- Reopen only if: a broader fixed-seed behavior suite establishes equivalent
+  or better tool reliability and a second independent throughput window keeps
+  every sample above 20.
+- Related commit or revert: the candidate normalization was removed before
+  commit; full-vocabulary normalization is restored.
+
+## PERF-FA088 - Greedy native xhigh lane with a reasoning bound
+
+- Hypothesis: greedy selection plus a bounded reasoning section would retain
+  the selected deterministic speed and make the xhigh tool turn terminate.
+- Scope: native early-out27 v2, real 131K pools, 256-token reasoning bound,
+  and the same Codex shell-tool request.
+- Attempted change: launched with native stochastic sampling disabled while
+  keeping prompt-boundary state reuse and the reasoning bound active.
+- Benchmark evidence: server decode telemetry remained around 20.1--20.2
+  tok/s.
+- Correctness evidence: Codex invoked `/bin/pwd` three times and timed out,
+  violating the request's exactly-once contract.
+- Failure mode: the greedy trajectory repeats the tool after each continuation.
+- Why not to retry unchanged: the failure reproduced across prompt-state
+  continuations and is behavioral rather than a throughput shortfall.
+- Reopen only if: model precision or tool-parser state changes enough to alter
+  the repeated greedy trajectory.
+- Related commit or revert: no source change; the selected interactive lane
+  uses native stochastic sampling with seed 42.
