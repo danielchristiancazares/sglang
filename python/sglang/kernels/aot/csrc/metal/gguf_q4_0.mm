@@ -2362,6 +2362,7 @@ struct ExtendAttentionArgs {
     uint cache_slots;
     uint req_rows;
     uint req_stride;
+    uint key_splits;
     float scale;
 };
 
@@ -2963,8 +2964,9 @@ kernel void extend_gqa_bf16_tiled_256(
     threadgroup float * shared_stats =
         reinterpret_cast<threadgroup float *>(shared_runs + key_tile / 8);
 
+    const bool split_decode = args.query_tokens == 1 && args.key_splits > 1;
     const uint kv_head = group.y;
-    const uint attention_row_start = group.x * query_tile;
+    const uint attention_row_start = split_decode ? 0 : group.x * query_tile;
     const uint attention_rows = args.query_tokens * heads_per_kv;
     const long raw_seq_len = seq_lens[0];
     const bool metadata_valid = raw_seq_len >= long(args.query_tokens) &&
@@ -2987,6 +2989,23 @@ kernel void extend_gqa_bf16_tiled_256(
     const uint group_kv_len = req_valid
         ? min(seq_len, prefix_len + last_attention_row / heads_per_kv + 1)
         : 0;
+    const uint active_key_splits = split_decode
+        ? min(args.key_splits, max(1u, (group_kv_len + 1023) / 1024))
+        : 1;
+    if (split_decode && group.x >= active_key_splits) {
+        return;
+    }
+    const uint key_tiles = (group_kv_len + key_tile - 1) / key_tile;
+    const uint tiles_per_split =
+        (key_tiles + active_key_splits - 1) / active_key_splits;
+    const uint first_key_tile = split_decode
+        ? group.x * tiles_per_split
+        : 0;
+    const uint last_key_tile = split_decode
+        ? min(key_tiles, first_key_tile + tiles_per_split)
+        : key_tiles;
+    const uint first_key = first_key_tile * key_tile;
+    const uint last_key = min(group_kv_len, last_key_tile * key_tile);
 
     for (uint index = tid; index < query_tile * head_dim; index += 128) {
         const uint row = index / head_dim;
@@ -3009,7 +3028,7 @@ kernel void extend_gqa_bf16_tiled_256(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    for (uint key_start = 0; key_start < group_kv_len; key_start += key_tile) {
+    for (uint key_start = first_key; key_start < last_key; key_start += key_tile) {
         int mapped_slot = -1;
         if (tid < key_tile) {
             const uint logical_token = key_start + tid;
@@ -3256,6 +3275,31 @@ kernel void extend_gqa_bf16_tiled_256(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
+    if (split_decode) {
+        for (uint index = tid; index < query_tile * head_dim; index += 128) {
+            const uint row = index / head_dim;
+            const uint dim = index - row * head_dim;
+            const uint attention_row = attention_row_start + row;
+            if (attention_row < attention_rows) {
+                const uint query_head =
+                    kv_head * heads_per_kv + attention_row % heads_per_kv;
+                const ulong partial_base =
+                    (ulong(group.x) * args.num_q_heads + query_head) *
+                    (head_dim + 2);
+                output[partial_base + dim] = shared_output[index];
+            }
+        }
+        if (tid < heads_per_kv) {
+            const uint query_head = kv_head * heads_per_kv + tid;
+            const ulong partial_base =
+                (ulong(group.x) * args.num_q_heads + query_head) *
+                (head_dim + 2);
+            output[partial_base + head_dim] = shared_stats[2 * tid];
+            output[partial_base + head_dim + 1] = shared_stats[2 * tid + 1];
+        }
+        return;
+    }
+
     for (uint index = tid; index < query_tile * head_dim; index += 128) {
         const uint row = index / head_dim;
         const uint dim = index - row * head_dim;
@@ -3268,6 +3312,62 @@ kernel void extend_gqa_bf16_tiled_256(
             output[(query_token * args.num_q_heads + query_head) * head_dim + dim] =
                 sum == 0.0f ? 0.0f : shared_output[index] / sum;
         }
+    }
+}
+
+kernel void reduce_decode_gqa_bf16_split_256(
+        device const float * partials,
+        device float * output,
+        device const long * seq_lens,
+        constant ExtendAttentionArgs & args,
+        uint query_head [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr uint head_dim = 256;
+    constexpr uint partial_stride = head_dim + 2;
+
+    const uint seq_limit = min(args.cache_slots, args.req_stride);
+    const uint seq_len = uint(min(
+        ulong(max(seq_lens[0], long(0))), ulong(seq_limit)));
+    const uint active_key_splits =
+        min(args.key_splits, max(1u, (seq_len + 1023) / 1024));
+    threadgroup float split_scales[32];
+    threadgroup float denominator;
+
+    if (simd_id == 0) {
+        const ulong partial_base =
+            (ulong(lane) * args.num_q_heads + query_head) * partial_stride;
+        const float partial_sum = lane < active_key_splits
+            ? partials[partial_base + head_dim + 1]
+            : 0.0f;
+        const float partial_max = partial_sum == 0.0f
+            ? -INFINITY
+            : partials[partial_base + head_dim];
+        const float merged_max = simd_max(partial_max);
+        const float partial_scale = partial_sum == 0.0f
+            ? 0.0f
+            : exp(partial_max - merged_max);
+        if (lane < active_key_splits) {
+            split_scales[lane] = partial_scale;
+        }
+        const float merged_sum = simd_sum(partial_sum * partial_scale);
+        if (lane == 0) {
+            denominator = merged_sum;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid < head_dim && query_head < args.num_q_heads) {
+        float value = 0.0f;
+        for (uint split = 0; split < active_key_splits; ++split) {
+            const ulong partial_base =
+                (ulong(split) * args.num_q_heads + query_head) * partial_stride;
+            value += partials[partial_base + tid] * split_scales[split];
+        }
+        output[query_head * head_dim + tid] = denominator == 0.0f
+            ? 0.0f
+            : value / denominator;
     }
 }
 #endif
@@ -3668,6 +3768,7 @@ struct ExtendAttentionArgs {
     uint32_t cache_slots;
     uint32_t req_rows;
     uint32_t req_stride;
+    uint32_t key_splits;
     float scale;
 };
 
@@ -3882,6 +3983,7 @@ Pipelines & pipelines() {
 
 struct ExtendPipeline {
     id<MTLComputePipelineState> state = nil;
+    id<MTLComputePipelineState> reduction = nil;
     std::string error = "native Metal BF16 extend pipeline is unavailable";
 };
 
@@ -3935,6 +4037,18 @@ ExtendPipeline & extend_pipeline() {
             value.error =
                 "native Metal BF16 extend pipeline does not satisfy the SIMD or threadgroup-memory contract";
             return;
+        }
+        id<MTLFunction> reduction_function =
+            [library newFunctionWithName:@"reduce_decode_gqa_bf16_split_256"];
+        if (reduction_function != nil) {
+            value.reduction = [device
+                newComputePipelineStateWithFunction:reduction_function
+                                              error:&error];
+            if (value.reduction != nil &&
+                (value.reduction.threadExecutionWidth != 32 ||
+                 value.reduction.maxTotalThreadsPerThreadgroup < 256)) {
+                value.reduction = nil;
+            }
         }
         value.error.clear();
     });
@@ -5245,7 +5359,6 @@ torch::Tensor decode_gqa(
                     seq_lens.numel() >= batch_size,
                 "decode attention metadata must cover every batch row");
 
-    auto output = torch::empty_like(query);
     auto buffer_of = [](const torch::Tensor & tensor) {
         return (__bridge id<MTLBuffer>)tensor.storage().data_ptr().get();
     };
@@ -5263,6 +5376,50 @@ torch::Tensor decode_gqa(
         static_cast<uint32_t>(req_to_token.size(1)),
         static_cast<float>(scale),
     };
+
+    // Batch-one BF16 decode is the one-query-row case of the retained tiled
+    // extend kernel. Six query heads share each KV tile, and long histories
+    // are divided across bounded partials before one numerically stable merge.
+    // The returned view owns the partial storage until queued GPU work no
+    // longer needs it.
+    static const bool tiled_decode_enabled = [] {
+        const char * value = std::getenv("SGLANG_MPS_TILED_DECODE");
+        return value == nullptr || std::string(value) != "0";
+    }();
+    static const bool split_decode_enabled = [] {
+        const char * value = std::getenv("SGLANG_MPS_SPLIT_DECODE");
+        return value == nullptr || std::string(value) != "0";
+    }();
+    ExtendPipeline & tiled_pipeline = extend_pipeline();
+    const bool use_tiled_bf16 = tiled_decode_enabled && cache_is_bf16 &&
+        tiled_pipeline.state != nil;
+    const uint32_t requested_key_splits =
+        static_cast<uint32_t>((cache_slots + 4095) / 4096);
+    const uint32_t max_key_splits = requested_key_splits > 32
+        ? 32
+        : requested_key_splits;
+    const bool use_split_bf16 = use_tiled_bf16 && split_decode_enabled &&
+        tiled_pipeline.reduction != nil && max_key_splits > 1;
+    ExtendAttentionArgs tiled_args = {
+        1,
+        static_cast<uint32_t>(num_q_heads),
+        static_cast<uint32_t>(num_kv_heads),
+        static_cast<uint32_t>(head_dim),
+        static_cast<uint32_t>(cache_slots),
+        static_cast<uint32_t>(req_to_token.size(0)),
+        static_cast<uint32_t>(req_to_token.size(1)),
+        use_split_bf16 ? max_key_splits : 1,
+        static_cast<float>(scale),
+    };
+    const int64_t output_values = query.numel();
+    const int64_t partial_values = use_split_bf16
+        ? static_cast<int64_t>(max_key_splits) * num_q_heads * (head_dim + 2)
+        : 0;
+    auto output_storage = torch::empty(
+        {output_values + partial_values}, query.options());
+    auto output = output_storage.narrow(0, 0, output_values).view(query.sizes());
+    const NSUInteger partial_offset = offset_of(output_storage) +
+        output_values * output_storage.element_size();
 
     at::mps::MPSStream * stream = at::mps::getCurrentMPSStream();
     Pipelines & p = pipelines();
@@ -5283,10 +5440,11 @@ torch::Tensor decode_gqa(
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 
-        [encoder setComputePipelineState:
-            cache_is_bf16
+        [encoder setComputePipelineState:use_tiled_bf16
+            ? tiled_pipeline.state
+            : (cache_is_bf16
                 ? p.decode_gqa_bf16
-                : (use_online_attention ? p.decode_gqa_online : p.decode_gqa)];
+                : (use_online_attention ? p.decode_gqa_online : p.decode_gqa))];
         [encoder setBuffer:buffer_of(query) offset:offset_of(query) atIndex:0];
         [encoder setBuffer:buffer_of(key_cache) offset:offset_of(key_cache) atIndex:1];
         [encoder setBuffer:buffer_of(value_cache) offset:offset_of(value_cache) atIndex:2];
@@ -5294,7 +5452,30 @@ torch::Tensor decode_gqa(
         [encoder setBuffer:buffer_of(req_pool_indices)
                  offset:offset_of(req_pool_indices) atIndex:4];
         [encoder setBuffer:buffer_of(seq_lens) offset:offset_of(seq_lens) atIndex:5];
-        [encoder setBuffer:buffer_of(output) offset:offset_of(output) atIndex:6];
+        [encoder setBuffer:buffer_of(output_storage)
+                 offset:use_split_bf16 ? partial_offset : offset_of(output)
+                atIndex:6];
+        if (use_tiled_bf16) {
+            [encoder setBytes:&tiled_args length:sizeof(tiled_args) atIndex:7];
+            [encoder setThreadgroupMemoryLength:20832 atIndex:0];
+            [encoder dispatchThreadgroups:MTLSizeMake(
+                        use_split_bf16 ? max_key_splits : 1, 4, 1)
+                        threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+            if (use_split_bf16) {
+                [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                [encoder setComputePipelineState:tiled_pipeline.reduction];
+                [encoder setBuffer:buffer_of(output_storage)
+                         offset:partial_offset atIndex:0];
+                [encoder setBuffer:buffer_of(output)
+                         offset:offset_of(output) atIndex:1];
+                [encoder setBuffer:buffer_of(seq_lens)
+                         offset:offset_of(seq_lens) atIndex:2];
+                [encoder setBytes:&tiled_args length:sizeof(tiled_args) atIndex:3];
+                [encoder dispatchThreadgroups:MTLSizeMake(num_q_heads, 1, 1)
+                            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+            }
+            return;
+        }
         [encoder setBytes:&args length:sizeof(args) atIndex:7];
         const NSUInteger scratch_floats =
             cache_is_bf16
@@ -5397,6 +5578,7 @@ torch::Tensor extend_gqa_bf16(
         static_cast<uint32_t>(cache_slots),
         static_cast<uint32_t>(req_to_token.size(0)),
         static_cast<uint32_t>(req_to_token.size(1)),
+        1,
         scale_f32,
     };
 
