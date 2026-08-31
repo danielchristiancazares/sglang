@@ -32,6 +32,8 @@ struct FullAttn {
   mlx::core::array keys{0};
   mlx::core::array values{0};
   int offset = 0;
+  int cache_length = 0;
+  int cache_capacity = 0;
 };
 
 struct LinearAttn {
@@ -66,6 +68,8 @@ struct LayerSnap {
   mlx::core::array keys{0};
   mlx::core::array values{0};
   int offset = 0;
+  int cache_length = 0;
+  int cache_capacity = 0;
   bool has_state = false;
   bool is_linear = true;
 };
