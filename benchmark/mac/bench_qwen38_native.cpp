@@ -61,10 +61,10 @@ std::uint64_t UpdateDigest(std::uint64_t digest, std::int32_t token) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 6) {
+  if (argc != 6 && argc != 7) {
     std::cerr
         << "usage: bench_qwen38_native LIBRARY MODEL_DIR PROMPT_TOKENS "
-           "WARMUP_TOKENS OUTPUT_TOKENS\n";
+           "WARMUP_TOKENS OUTPUT_TOKENS [MTP_DIR]\n";
     return 2;
   }
 
@@ -88,6 +88,10 @@ int main(int argc, char** argv) {
         MlxQwen38Engine*, const std::int32_t*, int, int, std::int32_t*, char*, int);
     using Decode = int (*)(
         MlxQwen38Engine*, std::int32_t, std::int32_t*, char*, int);
+    using LoadMtp = int (*)(
+        MlxQwen38Engine*, const char*, char*, int);
+    using HasMtp = int (*)(MlxQwen38Engine*);
+    using LastSpecWidth = int (*)(MlxQwen38Engine*);
     using Free = void (*)(MlxQwen38Engine*);
 
     const auto config_from_json =
@@ -95,6 +99,10 @@ int main(int argc, char** argv) {
     const auto load = LoadSymbol<Load>(library, "mlx_qwen38_load");
     const auto prefill = LoadSymbol<Prefill>(library, "mlx_qwen38_prefill");
     const auto decode = LoadSymbol<Decode>(library, "mlx_qwen38_decode");
+    const auto load_mtp = LoadSymbol<LoadMtp>(library, "mlx_qwen38_load_mtp");
+    const auto has_mtp = LoadSymbol<HasMtp>(library, "mlx_qwen38_has_mtp");
+    const auto last_spec_width =
+        LoadSymbol<LastSpecWidth>(library, "mlx_qwen38_last_spec_width");
     const auto free_engine = LoadSymbol<Free>(library, "mlx_qwen38_free");
 
     const std::filesystem::path model_dir(argv[2]);
@@ -113,6 +121,11 @@ int main(int argc, char** argv) {
     if (!engine) {
       throw std::runtime_error(error);
     }
+    if (argc == 7 &&
+        load_mtp(engine.get(), argv[6], error, sizeof(error)) != 0) {
+      throw std::runtime_error(error);
+    }
+    const bool mtp_enabled = has_mtp(engine.get()) != 0;
 
     std::vector<std::int32_t> prompt(static_cast<std::size_t>(prompt_tokens));
     const std::uint32_t token_range =
@@ -127,25 +140,50 @@ int main(int argc, char** argv) {
             engine.get(),
             prompt.data(),
             prompt_tokens,
-            1,
+            mtp_enabled ? 0 : 1,
             &token,
             error,
             sizeof(error)) != 0) {
       throw std::runtime_error(error);
     }
+    int buffered_tokens = 0;
     for (int i = 0; i < warmup_tokens; ++i) {
+      const bool refilling = mtp_enabled && buffered_tokens == 0;
       if (decode(engine.get(), token, &token, error, sizeof(error)) != 0) {
         throw std::runtime_error(error);
+      }
+      if (refilling) {
+        const int width = last_spec_width(engine.get());
+        if (width <= 0) {
+          throw std::runtime_error("MTP refill produced an empty token block");
+        }
+        buffered_tokens = width - 1;
+      } else if (mtp_enabled) {
+        --buffered_tokens;
       }
     }
     mlx::core::synchronize();
 
     constexpr std::uint64_t kFnvOffset = 14695981039346656037ULL;
     std::uint64_t digest = kFnvOffset;
+    std::uint64_t spec_width_sum = 0;
+    int spec_refills = 0;
     const auto start = std::chrono::steady_clock::now();
     for (int i = 0; i < output_tokens; ++i) {
+      const bool refilling = mtp_enabled && buffered_tokens == 0;
       if (decode(engine.get(), token, &token, error, sizeof(error)) != 0) {
         throw std::runtime_error(error);
+      }
+      if (refilling) {
+        const int width = last_spec_width(engine.get());
+        if (width <= 0) {
+          throw std::runtime_error("MTP refill produced an empty token block");
+        }
+        buffered_tokens = width - 1;
+        spec_width_sum += static_cast<std::uint64_t>(width);
+        ++spec_refills;
+      } else if (mtp_enabled) {
+        --buffered_tokens;
       }
       digest = UpdateDigest(digest, token);
     }
@@ -160,6 +198,13 @@ int main(int argc, char** argv) {
               << "output_tokens=" << output_tokens << '\n'
               << "seconds=" << seconds << '\n'
               << "tokens_per_second=" << output_tokens / seconds << '\n'
+              << "mtp_enabled=" << (mtp_enabled ? 1 : 0) << '\n'
+              << "spec_refills=" << spec_refills << '\n'
+              << "mean_spec_width="
+              << (spec_refills == 0
+                      ? 0.0
+                      : static_cast<double>(spec_width_sum) / spec_refills)
+              << '\n'
               << "token_digest_fnv1a64=" << std::hex << std::setw(16)
               << std::setfill('0') << digest << std::dec << '\n'
               << "last_token=" << token << '\n';

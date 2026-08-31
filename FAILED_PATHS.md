@@ -2245,3 +2245,32 @@ option, or serving dispatch was added.
   also eliminating a downstream b/a transform, and its full boundary timing
   beats the two asynchronous MLX operations.
 - Related commit or revert: the experimental engine diff was removed.
+
+## PERF-FA083 - Native 4-bit MTP-2 draft and recurrent target verification
+
+- Hypothesis: the existing Qwen3.8 MTP head would emit enough accepted tokens
+  per target verification to carry the selected native-MLX lane beyond the
+  20 tok/s floor.
+- Scope: signed fused-convolution target engine, pinned
+  `mlx-community/Qwen3.8-27B-MTP-4bit` revision
+  `b643c01b6d3b094e325edb6ebd832e16c486c575`, deterministic direct
+  `128 / 32 warm / 256 timed`, and the existing two-draft greedy verifier.
+- Attempted change: loaded the native sidecar through the established C ABI and
+  instrumented the C++ benchmark with exact refill counts and emitted widths.
+- Benchmark evidence: target-only measured **20.187702923 tok/s**. MTP measured
+  **9.649959984 tok/s**, a **52.199%** regression, across 135 timed refills with
+  mean width **1.888888889**.
+- Correctness evidence: both paths produced digest `8ea2430e3fa3d56e`, last
+  token `198`, and 256 timed outputs. The sidecar loaded successfully and every
+  refill emitted a nonempty block.
+- Failure mode: two sequential MTP forwards followed by a multi-token target
+  forward traverse the general recurrent sequence path. The accepted-token
+  yield does not amortize that block cost.
+- Why not to retry unchanged: sidecar representation alone cannot change the
+  target recurrent verification owner that dominates this topology, and the
+  measured gap is larger than the remaining target-only optimization gap.
+- Reopen only if: an isolated recurrent verification kernel or materially new
+  target batch implementation first demonstrates a block cost low enough for
+  the measured acceptance distribution to exceed 20 tok/s.
+- Related commit or revert: the C++ benchmark retains optional MTP/refill
+  telemetry; engine behavior is unchanged.

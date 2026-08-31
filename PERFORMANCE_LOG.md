@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2, direct deterministic `128 / 32 warm / 256 timed` | target-only fused-convolution **20.187703 tok/s** | native 4-bit MTP-2 **9.649960 tok/s** | **-10.537743 / -52.199%** despite exact output and **1.888889** mean block width; rejected | `bench_qwen38_native ... 128 32 256 [MTP_DIR]` | 2026-08-31 09:01 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | general depthwise convolution plus concatenated state **18.7616 tok/s** mean | fused decode convolution/state owner **18.8914 tok/s** mean | **+0.1298 / +0.692%**, all ten requests exact | `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, process-isolated five-sample control/candidate windows | 2026-08-31 08:53 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | general depthwise convolution plus concatenated state **19.120031 tok/s** mean | fused decode convolution/state owner **19.221589 tok/s** mean | **+0.101558 / +0.531%**, all five pairs exact | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 08:37 PDT |
 | M1 Max native early-out27 v2, direct deterministic decode after a 6,237-token history | historical direct control **19.151623 tok/s** | standalone C++ harness **19.116578 tok/s** | **-0.035045 / -0.183%** with identical `13eb9a7159a2612f` digest; harness retained | `/private/tmp/bench_qwen38_native ... 6237 32 128` | 2026-08-31 08:09 PDT |
@@ -740,6 +741,7 @@ tree throughput can be ranked for production.
 | PERF-A040 | Combine the two 48-row linear-attention b/a affine projections. | Native Qwen3.8 `Engine::gated_delta` owner | Rejected and removed | Adjacent deterministic `6237+128` serving changes **18.845 -> 18.511 tok/s** (-1.772%) with the same output SHA-256 and **28.89 GB** startup headroom. See PERF-FA082. |
 | PERF-A041 | Add a standalone direct native Qwen3.8 benchmark with deterministic tokens and a stable digest. | C++ benchmark infrastructure | Retained | The synchronized `6237 / 32 warm / 128 timed` run reaches **19.116578 tok/s**, within **0.183%** of the signed **19.151623 tok/s** direct control, with matching digest `13eb9a7159a2612f`. |
 | PERF-A042 | Fuse single-token causal convolution with its next-state window. | Native Qwen3.8 recurrent decode owner | Qualified and retained in signed `6ad2c58921` | Five adjacent exact long-history direct pairs improve mean decode **19.120031 -> 19.221589 tok/s** (+0.531%); matched five-sample serving improves **18.7616 -> 18.8914 tok/s** (+0.692%). An isolated BF16 C++ parity test matches MLX convolution and state output exactly at production width. |
+| PERF-A043 | Reopen the existing native MTP-2 draft/verify route with exact acceptance telemetry. | Native Qwen3.8 C ABI and direct C++ benchmark | Rejected; telemetry retained | The 4-bit sidecar emits **1.888889 tokens/refill** and preserves digest `8ea2430e3fa3d56e`, while throughput changes **20.187703 -> 9.649960 tok/s** (-52.199%). The target's multi-token recurrent verification topology requires a separate execution-cost breakthrough before another sidecar/depth screen. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -2704,3 +2706,24 @@ tree throughput can be ranked for production.
   were empty, throttled pages remained zero, and thermal/performance status was
   normal. The detached control worktree was clean and removed, and the signed
   candidate library was restored.
+
+### 2026-08-31 09:01 PDT - PERF-A043 native MTP telemetry
+
+- Extended the standalone C++ benchmark with an optional MTP sidecar argument.
+  It resolves the existing load/availability/refill-width C ABI, selects the
+  engine's MTP prefill contract, and reports refill count plus mean emitted
+  block width. The original five-argument path retains its scheduled target-
+  only decode pipeline.
+- The selected fused-convolution target-only control measured
+  **12.680987083 s / 20.187702923 tok/s** on `128 / 32 warm / 256 timed`, with
+  digest `8ea2430e3fa3d56e` and last token `198`. The locally pinned
+  `mlx-community/Qwen3.8-27B-MTP-4bit` sidecar at revision
+  `b643c01b6d3b094e325edb6ebd832e16c486c575` measured
+  **26.528607417 s / 9.649959984 tok/s** on the same shape. It issued 135
+  target refills with mean emitted width **1.888888889** and reproduced the
+  exact control digest and final token.
+- The acceptance signal is healthy while the recurrent multi-token target
+  verification plus two sequential draft forwards more than doubles the
+  per-output wall. PERF-FA083 closes the unchanged MTP-2 topology. A later MTP
+  branch first needs a native recurrent verification mechanism whose measured
+  execution cost changes this block-level result.
