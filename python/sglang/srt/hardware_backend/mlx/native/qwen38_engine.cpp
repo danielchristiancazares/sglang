@@ -31,6 +31,7 @@ using mlx::core::quantized_matmul;
 using mlx::core::reshape;
 using mlx::core::sigmoid;
 using mlx::core::slice;
+using mlx::core::slice_update;
 using mlx::core::split;
 using mlx::core::sum;
 using mlx::core::take;
@@ -230,8 +231,7 @@ void Engine::reset() {
       layer.linear.has_state = false;
     } else {
       layer.attn.offset = 0;
-      layer.attn.keys = array(0);
-      layer.attn.values = array(0);
+      layer.attn.cache_length = 0;
     }
   }
   reset_decode_pipeline();
@@ -442,13 +442,50 @@ array Engine::full_attn(FullAttn& attn, const array& x) {
   keys = mx::fast::rope(
       keys, rope_dims, /*traditional=*/false, cfg_.rope_theta, 1.0f, attn.offset);
 
-  if (attn.offset > 0 && attn.keys.ndim() == 4) {
-    keys = concatenate({attn.keys, keys}, 2);
-    values = concatenate({attn.values, values}, 2);
+  const int needed = attn.cache_length + L;
+  if (attn.cache_capacity < needed) {
+    int capacity = std::max(256, attn.cache_capacity);
+    while (capacity < needed) {
+      capacity *= 2;
+    }
+    array new_keys = zeros({B, n_kv, capacity, hd}, keys.dtype());
+    array new_values = zeros({B, n_kv, capacity, hd}, values.dtype());
+    if (attn.cache_length > 0) {
+      auto active_keys = slice(
+          attn.keys, {0, 0, 0, 0}, {B, n_kv, attn.cache_length, hd});
+      auto active_values = slice(
+          attn.values, {0, 0, 0, 0}, {B, n_kv, attn.cache_length, hd});
+      new_keys = slice_update(
+          new_keys,
+          active_keys,
+          {0, 0, 0, 0},
+          {B, n_kv, attn.cache_length, hd});
+      new_values = slice_update(
+          new_values,
+          active_values,
+          {0, 0, 0, 0},
+          {B, n_kv, attn.cache_length, hd});
+      eval(new_keys, new_values);
+    }
+    attn.keys = new_keys;
+    attn.values = new_values;
+    attn.cache_capacity = capacity;
   }
-  attn.keys = keys;
-  attn.values = values;
+  attn.keys = slice_update(
+      attn.keys,
+      keys,
+      {0, 0, attn.cache_length, 0},
+      {B, n_kv, needed, hd});
+  attn.values = slice_update(
+      attn.values,
+      values,
+      {0, 0, attn.cache_length, 0},
+      {B, n_kv, needed, hd});
+  attn.cache_length = needed;
   attn.offset += L;
+
+  keys = slice(attn.keys, {0, 0, 0, 0}, {B, n_kv, needed, hd});
+  values = slice(attn.values, {0, 0, 0, 0}, {B, n_kv, needed, hd});
 
   std::string mask_mode = (L > 1) ? "causal" : "";
   array output = mx::fast::scaled_dot_product_attention(
@@ -534,6 +571,8 @@ void Engine::snapshot() {
       s.rec = layer.linear.rec_state;
     } else {
       s.offset = layer.attn.offset;
+      s.cache_length = layer.attn.cache_length;
+      s.cache_capacity = layer.attn.cache_capacity;
       s.keys = layer.attn.keys;
       s.values = layer.attn.values;
     }
@@ -550,6 +589,8 @@ void Engine::restore() {
       layer.linear.rec_state = s.rec;
     } else {
       layer.attn.offset = s.offset;
+      layer.attn.cache_length = s.cache_length;
+      layer.attn.cache_capacity = s.cache_capacity;
       layer.attn.keys = s.keys;
       layer.attn.values = s.values;
     }
@@ -569,8 +610,7 @@ void Engine::forward_argmax(const int32_t* tokens, int n, int32_t* out) {
 }
 
 void Engine::mtp_reset() {
-  mtp_layer_.attn.keys = array(0);
-  mtp_layer_.attn.values = array(0);
+  mtp_layer_.attn.cache_length = 0;
   int seq = 0;
   for (const auto& layer : layers_) {
     if (!layer.is_linear) {
