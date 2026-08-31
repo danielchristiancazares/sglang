@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate recurrent output RMSNorm and SiLU gate **19.1260 tok/s** mean | fused norm/gate owner **19.1548 tok/s** mean | **+0.0288 / +0.151%**; all ten requests exact | `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, process-isolated five-sample control/candidate windows | 2026-08-31 11:05 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | separate recurrent output RMSNorm and SiLU gate **19.469136 tok/s** mean | fused norm/gate owner **19.515718 tok/s** mean | **+0.046582 / +0.239%**; all five adjacent pairs exact and positive | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 10:50 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate recurrent q/k RMSNorm and scaling **19.0900 tok/s** mean | fused q/k normalization owner **19.1610 tok/s** mean | **+0.0710 / +0.372%**; all ten requests exact | `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, process-isolated five-sample control/candidate windows | 2026-08-31 10:19 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | separate recurrent q/k RMSNorm and scaling **19.319062 tok/s** mean | fused q/k normalization owner **19.464738 tok/s** mean | **+0.145676 / +0.754%**; all five adjacent pairs exact and positive | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 10:04 PDT |
@@ -749,7 +750,7 @@ tree throughput can be ranked for production.
 | PERF-A043 | Reopen the existing native MTP-2 draft/verify route with exact acceptance telemetry. | Native Qwen3.8 C ABI and direct C++ benchmark | Rejected; telemetry retained | The 4-bit sidecar emits **1.888889 tokens/refill** and preserves digest `8ea2430e3fa3d56e`, while throughput changes **20.187703 -> 9.649960 tok/s** (-52.199%). The target's multi-token recurrent verification topology requires a separate execution-cost breakthrough before another sidecar/depth screen. |
 | PERF-A044 | Fuse single-token residual addition with the following RMSNorm. | Native Qwen3.8 decoder-layer boundary | Qualified and retained in signed `4905d68370` | The dual-output Metal owner replaces 127 add/normalization pairs and preserves distinct residual storage. Direct long-history changes **19.222533 -> 19.310857 tok/s** (+0.459%); matched five-sample 131K serving changes **18.8286 -> 19.0484 tok/s** (+1.167%). Production-width, nonaligned, and 12-outstanding-output parity pass. |
 | PERF-A045 | Fuse recurrent q/k RMS normalization and float scaling. | Native Qwen3.8 gated-delta decode owner | Qualified and retained in signed `b851d3c9de` | One dual-output Metal launch replaces four operations in each of 48 recurrent layers. Direct long-history improves **19.319062 -> 19.464738 tok/s** (+0.754%); matched five-sample 131K serving improves **19.0900 -> 19.1610 tok/s** (+0.372%). Production `16x128`, multi-simdgroup width 257, and 12-outstanding-output parity pass. |
-| PERF-A046 | Fuse recurrent output RMS normalization with the SiLU gate. | Native Qwen3.8 gated-delta decode owner | Direct gate passed; served qualification pending | One exact Metal launch replaces the single-token RMSNorm, sigmoid, and elementwise gate chain in each of 48 recurrent layers. Five adjacent long-history pairs improve **19.469136 -> 19.515718 tok/s** (+0.239%). Production `48x128`, nonaligned width 257, extreme activations, and 12-outstanding-output parity pass. |
+| PERF-A046 | Fuse recurrent output RMS normalization with the SiLU gate. | Native Qwen3.8 gated-delta decode owner | Qualified and retained in signed `28174b3da2` | One exact Metal launch replaces the single-token RMSNorm, sigmoid, and elementwise gate chain in each of 48 recurrent layers. Direct long-history improves **19.469136 -> 19.515718 tok/s** (+0.239%); matched five-sample 131K serving improves **19.1260 -> 19.1548 tok/s** (+0.151%). Production `48x128`, nonaligned width 257, extreme activations, and 12-outstanding-output parity pass. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -2877,3 +2878,29 @@ tree throughput can be ranked for production.
   93% free, no matching workload remained, and thermal/performance status was
   normal. The detached control remains available for matched served
   qualification under real 131,072 context/token pools.
+
+### 2026-08-31 11:05 PDT - PERF-A046 served qualification
+
+- Qualified signed candidate `28174b3da2` against detached signed
+  `068f9ca072`. The control dylib SHA-256 was
+  `746e230fcee3f328fd2cb54d329210bb8dd8db07ff4a5617270f4c865870f7c2`;
+  the candidate was
+  `5865de3c7e3956986076ebc3a57aadcb84e2058cfad3fa42a0a6eb244bf31a1d`.
+- Both isolated servers resolved real 131,072 context and token pools, one
+  running request, five Mamba slots, 8,192-token prefill chunks, the Qwen3 and
+  Qwen3 Coder parsers, language-only mode, and 28.92 GB startup-reported
+  available unified memory. `/health`, `/v1/models`, and `/model_info` passed;
+  image and audio understanding remained disabled.
+- Control decode samples were **19.055, 19.045, 19.200, 19.185, 19.145
+  tok/s**, mean **19.1260**. Candidate samples were **19.109, 19.117, 19.254,
+  19.177, 19.117 tok/s**, mean **19.1548**, a **0.0288 tok/s / 0.150580%**
+  increase. Mean prompt throughput was **107.4042 -> 107.4040 tok/s**, mean
+  TTFT **58.070235 -> 58.070435 s**, and mean end-to-end latency
+  **64.710486 -> 64.700673 s**.
+- All ten requests completed exact `6237+128=6365`, `finish_reason=length`,
+  585 reasoning characters, 33 response fragments, and output/reasoning
+  SHA-256 `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  Both foreground server trees exited zero through `Ctrl+C`; port 30000 and
+  matching workloads were absent afterward, memory returned to 93% free, and
+  thermal/performance status remained normal. The clean detached control
+  worktree was removed and is reproducible from signed `068f9ca072`.
