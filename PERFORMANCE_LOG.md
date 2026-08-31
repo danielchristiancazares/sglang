@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | general depthwise convolution plus concatenated state **18.7616 tok/s** mean | fused decode convolution/state owner **18.8914 tok/s** mean | **+0.1298 / +0.692%**, all ten requests exact | `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, process-isolated five-sample control/candidate windows | 2026-08-31 08:53 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | general depthwise convolution plus concatenated state **19.120031 tok/s** mean | fused decode convolution/state owner **19.221589 tok/s** mean | **+0.101558 / +0.531%**, all five pairs exact | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 08:37 PDT |
 | M1 Max native early-out27 v2, direct deterministic decode after a 6,237-token history | historical direct control **19.151623 tok/s** | standalone C++ harness **19.116578 tok/s** | **-0.035045 / -0.183%** with identical `13eb9a7159a2612f` digest; harness retained | `/private/tmp/bench_qwen38_native ... 6237 32 128` | 2026-08-31 08:09 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate linear-attention b/a projections **18.845 tok/s** | separate b/a projections **18.845 tok/s** | fused 96-row projection reached **18.511 tok/s** (**-1.772%**) with identical output; rejected | same process-isolated exact served A/B as PERF-A039 | 2026-08-31 07:52 PDT |
@@ -738,7 +739,7 @@ tree throughput can be ranked for production.
 | PERF-A039 | Materialize gate/up affine rows and issue one quantized matmul per MLP. | Native Qwen3.8 target and MTP MLP owner | Rejected and removed | Adjacent deterministic `6237+128` serving changes **18.845 -> 18.782 tok/s** and reported available unified memory falls **28.92 -> 22.28 GB**, while output SHA-256 remains exact. See PERF-FA081. |
 | PERF-A040 | Combine the two 48-row linear-attention b/a affine projections. | Native Qwen3.8 `Engine::gated_delta` owner | Rejected and removed | Adjacent deterministic `6237+128` serving changes **18.845 -> 18.511 tok/s** (-1.772%) with the same output SHA-256 and **28.89 GB** startup headroom. See PERF-FA082. |
 | PERF-A041 | Add a standalone direct native Qwen3.8 benchmark with deterministic tokens and a stable digest. | C++ benchmark infrastructure | Retained | The synchronized `6237 / 32 warm / 128 timed` run reaches **19.116578 tok/s**, within **0.183%** of the signed **19.151623 tok/s** direct control, with matching digest `13eb9a7159a2612f`. |
-| PERF-A042 | Fuse single-token causal convolution with its next-state window. | Native Qwen3.8 recurrent decode owner | Retained; served qualification pending | Five adjacent exact long-history pairs improve mean decode **19.120031 -> 19.221589 tok/s** (+0.531%). An isolated BF16 C++ parity test matches MLX convolution and state output exactly at production width. |
+| PERF-A042 | Fuse single-token causal convolution with its next-state window. | Native Qwen3.8 recurrent decode owner | Qualified and retained in signed `6ad2c58921` | Five adjacent exact long-history direct pairs improve mean decode **19.120031 -> 19.221589 tok/s** (+0.531%); matched five-sample serving improves **18.7616 -> 18.8914 tok/s** (+0.692%). An isolated BF16 C++ parity test matches MLX convolution and state output exactly at production width. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -2673,3 +2674,33 @@ tree throughput can be ranked for production.
 - The direct full-model gate clears the candidate for a signed recovery point.
   Process-isolated served qualification with real 131,072 context/token pools
   remains the next promotion gate.
+
+### 2026-08-31 08:53 PDT - PERF-A042 served qualification
+
+- Qualified signed candidate `6ad2c58921` against a detached signed
+  `bd52acb255` control. Both native libraries were built from their respective
+  source trees against MLX 0.32.2. The control dylib SHA-256 was
+  `e0ae523b64663a156224c1030fae9fc99477de0ad292b5618caa1f02ccaed1ca`;
+  the candidate dylib SHA-256 was
+  `42471b53aa2c7df08fa35a9f4bbe0024ef3c60741e00b21fd822f854377df9ba`.
+- Both process-isolated servers resolved `context_length=131072`,
+  `max_total_tokens=131072`, `max_running_requests=1`,
+  `max_mamba_cache_size=5`, and 8,192-token prefill chunks. They retained the
+  Qwen3 reasoning parser, Qwen3 Coder tool parser, language-only model surface,
+  and startup-reported 28.92 GB available unified memory. `/model_info`
+  reported image and audio understanding disabled.
+- Five control decode samples were **18.796, 18.688, 18.719, 18.844,
+  18.761 tok/s**, mean **18.7616**. Five candidate samples were **18.806,
+  19.003, 18.847, 18.918, 18.883 tok/s**, mean **18.8914**, a
+  **0.1298 tok/s / 0.692%** increase. Mean prompt throughput changed
+  **107.3162 -> 107.4536 tok/s**, mean TTFT **58.118316 -> 58.043591 s**,
+  and mean end-to-end latency **64.887544 -> 64.766309 s**.
+- All ten requests completed exact `6237+128=6365` tokens with
+  `finish_reason=length`, 585 reasoning characters, 33 stream fragments, and
+  identical output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  Both foreground server trees exited cleanly through `Ctrl+C`; their exact
+  PIDs were absent afterward, port 30000 was free, compiler/model process scans
+  were empty, throttled pages remained zero, and thermal/performance status was
+  normal. The detached control worktree was clean and removed, and the signed
+  candidate library was restored.
