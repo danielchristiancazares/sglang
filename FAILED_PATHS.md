@@ -1716,3 +1716,371 @@ option, or serving dispatch was added.
   workload clears 1% in two windows.
 - Related commit or revert: every shader edit was reverted; signed PERF-A020 at
   `5fe532b41c` is restored. The record-only closure commit follows this entry.
+
+## PERF-FA064 - Apple MPS extra-buffer cache under non-overlap scheduling
+
+- Hypothesis: eager `extra_buffer` would retain aligned recurrent checkpoints
+  for divergent Codex task suffixes while preserving the established Apple
+  non-overlap scheduler.
+- Scope: Qwen3.8-27B IQ2_XXS on the M1 Max, exact 131,072-token context and
+  BF16 KV pool, five FP32 Mamba slots, page size one, seed 67396869, and the
+  qualified reasoning/tool parser pair.
+- Attempted change: changed only the selected cache strategy from `no_buffer`
+  to `extra_buffer`; retained `--disable-overlap-schedule`.
+- Benchmark evidence: weight load, five-slot Mamba allocation, exact KV-pool
+  allocation, and UnifiedRadixCache startup completed. The first six-token
+  warmup prefetched successfully, then the first decode transition crashed
+  before an external request could be scored.
+- Correctness evidence: the fatal stack identifies
+  `set_mamba_track_indices_from_reqs` and the pinned-CPU-to-MPS copy, ending in
+  `at::native::mps::mps_copy_` and the AGX blit path. The scheduler exited
+  `-11`; macOS retained the exact crash report. Cleanup left the listener and
+  relevant process sets empty.
+- Failure mode: current eager extra-buffer tracking takes an unsafe MPS device
+  transfer path during decode preparation.
+- Why not to retry unchanged: the configuration cannot pass its built-in
+  startup generation gate and therefore cannot serve real client traffic.
+- Reopen only if: the track-index construction gains an MPS-safe lifetime and
+  device-transfer implementation with focused replay coverage, or a dependency
+  change demonstrably removes the same crash.
+- Related commit or revert: no source change; full evidence is in the
+  2026-08-31 01:59 experiment-log entry.
+
+## PERF-FA065 - Cap split-history Metal decode at sixteen partitions
+
+- Hypothesis: a sixteen-way cap would avoid idle split threadgroups at the
+  6.2K-token Codex history while still dividing the exact 131K history evenly.
+- Scope: native Apple7 BF16 batch-one GQA decode on the M1 Max; current
+  131,073-row physical cache, Qwen 24/4 heads, head dimension 256, and the
+  retained two-kernel stable softmax merge.
+- Attempted change: added a native `SGLANG_MPS_SPLIT_DECODE_MAX_SPLITS`
+  control and selected sixteen by default; the 32-way value reproduced the
+  committed control in separate processes.
+- Benchmark evidence: focused medians changed **0.919091 -> 0.472529 ms** at
+  sequence length 6,234 and **0.161865 -> 0.140490 ms** at length 16. Exact
+  131,072-token history remained effectively flat at **4.066904 ->
+  4.078974 ms**. A matched full-model six-Mamba-slot 131K window then measured
+  warmed exact `128+256` decode at **9.190 tok/s** for the 32-way control and
+  **9.122 tok/s** for the sixteen-way candidate. The identical output digest
+  and all count/finish gates passed. The candidate therefore failed the served
+  promotion gate despite its isolated long-history reduction.
+- Correctness evidence: BF16 reference parity passed lengths 1, 257, 1,024,
+  1,025, 6,234, and 131,072 with maximum error
+  `5.066394805908203e-07`; a fragmented map and twelve unsynchronized outputs
+  retained twelve distinct backing storages with maximum error
+  `3.725290298461914e-07`. The native extension compiled, the existing MPS
+  attention smoke passed at maximum error `5.96046e-07`, three dispatch unit
+  tests passed, and `git diff --check` passed.
+- Failure mode: the saved full-attention work is too small a fraction of the
+  full token wall, and the warmed end-to-end window moved 0.74% lower.
+- Why not to retry unchanged: the user-visible generation rate owns promotion;
+  isolated attention speed alone cannot fund an end-to-end regression.
+- Reopen only if: whole-token attribution shows a new long-history server path
+  where the same cap clears a matched served window and the 20 tok/s floor.
+- Related commit or revert: the Objective-C++ edit was fully removed before
+  the next profile; no candidate source remains.
+
+## PERF-FA066 - Full Qwen3.8-27B affine 3-bit MLX checkpoint
+
+- Hypothesis: reducing the full 27B weight stream from affine q4 to affine
+  q3 would save enough Metal memory bandwidth to clear 20 tok/s.
+- Scope: immutable revision
+  `c98bba5926f51fec1c8d8737e577221673f524d7` of
+  `lukaskremla/Qwen3.8-27B-3bit-MLX-TextOnly`, real 131,072 context/token
+  pools, q4 KV, one request, MLX 0.32.2, and the existing SGLang sampling and
+  parser surface.
+- Attempted change: launched the prequantized group-64, three-bit checkpoint
+  through the MLX runner. The config's empty quantization method required the
+  existing `--quantization mlx_q4` loader selection; model loading detected
+  the stored affine-q3 tensors and preserved them.
+- Benchmark evidence: three exact deterministic `128+256` server samples were
+  **17.972, 17.961, and 17.941 tok/s**, mean **17.958**. The selected
+  affine-q4/q4-KV endpoint averages **19.1432 tok/s** on the same dependency,
+  so the smaller checkpoint is about 6.2% slower.
+- Correctness evidence: all three requests completed 128 prompt and 256
+  completion tokens, ended with `finish_reason=length`, preserved reasoning,
+  and reproduced output SHA-256 `2f8a3468...212d`.
+- Failure mode: the three-bit affine kernel's unpack/compute efficiency costs
+  more than the reduced packed-weight traffic saves on this M1 Max/MLX build.
+- Why not to retry unchanged: the immutable checkpoint and current MLX kernel
+  miss the selected endpoint by more than 1.18 tok/s before sampling cost.
+- Reopen only if: a native three-bit batch-one matvec specialization or an MLX
+  dependency change demonstrates a direct target-loop gain over affine q4.
+- Related commit or revert: no source change; checkpoint remains an immutable
+  local cache artifact.
+
+## PERF-FA067 - Official Qwen3.8-27B MLX MXFP4 checkpoint
+
+- Hypothesis: MXFP4's group-32 block format would reduce affine metadata and
+  improve batch-one quantized matvec throughput.
+- Scope: immutable revision
+  `97ab0819817ab1c61d7d39f9169fc71999915641` of
+  `mlx-community/Qwen3.8-27B-mxfp4`, MLX 0.32.2, a 128-token input, 32 warm
+  decode tokens, 256 timed tokens, and q4 attention KV.
+- Attempted change: loaded the official full 27B MXFP4 checkpoint through
+  `mlx_lm` and exercised the same direct `generate_step` loop as the selected
+  affine-q4 control.
+- Benchmark evidence: MXFP4 reached **18.581608 tok/s** over 13.777064 seconds.
+  The matched affine-q4/q4-KV loop reached **19.513158 tok/s** over
+  13.119353 seconds. MXFP4 is 4.774% slower.
+- Correctness evidence: both arms completed the exact 32-token warmup and
+  256-token timing interval and returned stable token-stream digests for their
+  respective checkpoints.
+- Failure mode: current MLX MXFP4 batch-one execution has higher per-token cost
+  than affine q4 on this model and GPU.
+- Why not to retry unchanged: the regression occurs inside the direct target
+  loop, before SGLang scheduling, streaming, or sampling overhead.
+- Reopen only if: MLX ships a changed MXFP4 Metal kernel or the checkpoint is
+  paired with measured fused operators that reverse the direct-loop result.
+- Related commit or revert: no source change; checkpoint remains an immutable
+  local cache artifact.
+
+## PERF-FA068 - Full Qwen3.8-27B affine 2-bit MLX checkpoint
+
+- Hypothesis: reducing every quantized model projection to affine q2 would
+  lower batch-one weight traffic enough to clear the 20 tok/s floor while
+  retaining Qwen3.8 reasoning and tool behavior.
+- Scope: immutable revision
+  `33b90b60fd7ba16b668854e049bd65e22d6afddf` of
+  `lukaskremla/Qwen3.8-27B-2bit-MLX-TextOnly`, MLX 0.32.2, BF16 attention KV,
+  one running request, and real 131,072-token context and token pools.
+- Attempted change: loaded the complete group-64 affine-q2 checkpoint through
+  the existing MLX runner and exercised deterministic, production-sampled,
+  arithmetic, and tool-call requests.
+- Benchmark evidence: the direct target loop reached **21.134311 tok/s** with
+  BF16 KV. Five deterministic exact `128+256` server samples were
+  **21.161, 21.066, 21.054, 21.046, and 21.050 tok/s**, mean **21.0754**.
+  Five production-sampled samples were
+  **20.890, 20.902, 20.912, 20.900, and 20.912 tok/s**, mean **20.9032**.
+- Correctness evidence: `/model_info` retained the language-only surface. The
+  sampled arithmetic request ended with empty completion content instead of
+  `703`; the tool request emitted repetitive text and no valid parsed call.
+- Failure mode: whole-model q2 clears the throughput floor and loses the
+  semantic behavior required for actual work.
+- Why not to retry unchanged: both required behavior probes fail on the exact
+  full-model checkpoint that produced the speed result.
+- Reopen only if: a changed q2 checkpoint demonstrates the arithmetic and
+  exact single-tool-call gates, or layer-level sensitivity evidence supports
+  a distinct mixed-precision selection.
+- Related commit or revert: no repository source change; checkpoint remains an
+  immutable local cache artifact.
+
+## PERF-FA069 - Group-128 affine requantization of the q4 checkpoint
+
+- Hypothesis: doubling the affine group size would reduce scale/bias traffic
+  while retaining the selected q4 model's behavior.
+- Scope: in-memory MLX 0.32.2 requantization screens on the immutable affine-q4
+  checkpoint, a 128-token input, 32 warm tokens, 256 timed tokens, and BF16
+  attention KV.
+- Attempted change: first requantized all 64 MLP down projections, then
+  broadened the group-128 selection to 385 quantized linear modules while
+  retaining the linear-attention `in_proj_z`, `out_proj`, and full-attention
+  output projections at their original group size.
+- Benchmark evidence: down-only group 128 reached **19.681944 tok/s** with
+  BF16 KV. The broader 385-module selection reached **19.781749 tok/s**. The
+  selected affine-q4/BF16 direct loop is **19.643293 tok/s** and the candidate
+  remains below the direct-loop margin required for a 20 tok/s sampled server.
+- Correctness evidence: both screens completed the exact warmup and timing
+  interval. The candidate stopped at the throughput screen before promotion
+  behavior gates.
+- Failure mode: lower affine metadata traffic yields less than 0.71% over the
+  direct q4/BF16 control, leaving scheduler and sampling overhead unfunded.
+- Why not to retry unchanged: the broad selection already covers 385 modules
+  and remains about 0.22 tok/s below the absolute floor in the direct loop.
+- Reopen only if: an MLX kernel change materially increases group-128
+  batch-one efficiency or a measured selection exceeds the served-workload
+  promotion margin.
+- Related commit or revert: no checkpoint was written and no repository source
+  change remains.
+
+## PERF-FA070 - Q2 linear-attention and gate/up mixed checkpoint
+
+- Hypothesis: retain q4 embeddings, head, MLP down projections, and all full
+  attention blocks while using q2 for linear-attention modules and MLP gate/up
+  projections, combining full-q2 speed with q4 semantic anchors.
+- Scope: derived immutable artifact
+  `Qwen3.8-27B-MLX-Q2GDN-Q4Anchors-v1`, assembled from the affine-q4 base and
+  PERF-FA068 donor with 368 per-module q2 overrides, MLX 0.32.2, BF16 KV, one
+  request, and real 131,072-token context and token pools.
+- Attempted change: substituted the donor's 128 MLP gate/up and 240
+  linear-attention quantized modules, preserved every MLP down projection and
+  full-attention block from q4, and wrote a provenance manifest with hashes for
+  every artifact file.
+- Benchmark evidence: the reloaded artifact reached **20.526347 tok/s** in the
+  direct target loop. Five deterministic exact `128+256` server samples were
+  **20.309, 20.287, 20.286, 20.291, and 20.299 tok/s**, mean **20.2944**.
+  Five production-sampled samples were
+  **20.144, 20.145, 20.148, 20.156, and 20.148 tok/s**, mean **20.1482**.
+- Correctness evidence: sampled arithmetic returned `703` and `/model_info`
+  retained the language-only surface. The required tool request emitted two
+  malformed calls named `...` and ended by length instead of one parsed
+  `multiply({"a":37,"b":19})` call with `finish_reason=tool_calls`.
+- Failure mode: this precision boundary clears throughput and arithmetic while
+  damaging structured tool-call behavior.
+- Why not to retry unchanged: an exact server gate reproduces the malformed
+  tool behavior on the reloaded, hashed artifact.
+- Reopen only if: a narrower q2 linear-attention selection retains one exact
+  multiply call and clears the sampled throughput floor.
+- Related commit or revert: artifact v1 remains immutable and unqualified;
+  repository source is unchanged.
+
+## PERF-FA071 - YoozLabs quality-aware q3/q4/q6 MLX checkpoint
+
+- Hypothesis: the checkpoint's long-context-aware mixed precision would retain
+  Qwen3.8 reasoning and tool quality while its lower average weight width
+  cleared the 20 tok/s floor.
+- Scope: immutable revision
+  `55c317fadb679431afef61ddd97a4ac2522ca420` of
+  `YoozLabs/Qwen3.8-27B-lean-4bit-mlx`, MLX 0.32.2, a 128-token input,
+  32 warm tokens, 256 timed tokens, and BF16 attention KV.
+- Attempted change: loaded the published q3 gate/up, q6 self-attention value
+  and language-head, and q4 remainder through the same direct target loop used
+  for the active affine checkpoints.
+- Benchmark evidence: the exact direct loop reached **18.553117 tok/s**.
+- Correctness evidence: the immutable model loaded and completed the exact
+  warmup and timed token counts. Its model card's quality claims remain
+  external evidence; the local performance screen stopped before serving.
+- Failure mode: current MLX affine-q3 batch-one execution makes this
+  quality-aware layout about 7.2% slower than the absolute throughput floor
+  before scheduler and sampling costs.
+- Why not to retry unchanged: the deficit occurs in the direct model loop and
+  leaves no server-overhead margin.
+- Reopen only if: a native q3 matvec specialization or changed MLX q3 kernel
+  demonstrates at least an 8% direct-loop gain on this exact artifact.
+- Related commit or revert: no repository source change; the pinned checkpoint
+  remains a redownloadable cache artifact.
+
+## PERF-FA072 - PocketAiHub group-32 q2 AWQ checkpoint and selective mixing
+
+- Hypothesis: group-32 AWQ q2 weights would provide the full-q2 bandwidth win
+  with better quality than RTN q2, either unchanged or as selective overrides
+  on the affine-q4 base.
+- Scope: immutable revision
+  `dcc3732f8c93ccf5580bf7a55e4ae639a40f194c` of
+  `PocketAiHub/Qwen3.8-27B-MLX`, its `2bit` artifact, MLX 0.32.2, BF16 KV,
+  and the exact direct Qwen tool prompt.
+- Attempted change: measured the complete AWQ checkpoint, then substituted its
+  gate/up and linear-attention modules into the q4 base; a broader arm also
+  substituted the MLP down projections.
+- Benchmark evidence: the complete checkpoint reached **20.796459 tok/s**.
+  The gate/up plus linear-attention mix reached **20.298 tok/s**; adding down
+  projections reached **20.758 tok/s**.
+- Correctness evidence: the complete checkpoint emitted placeholder-example
+  loops instead of one multiply call. The first selective mix produced empty
+  output, and the broader mix produced only `</think>`.
+- Failure mode: AWQ's transformed module weights are not independently
+  interchangeable with the q4 model, while the complete artifact fails the
+  required raw tool behavior.
+- Why not to retry unchanged: all measured full and mixed forms fail before a
+  parsed server tool gate despite clearing or approaching the speed floor.
+- Reopen only if: the artifact's complete AWQ transform metadata can be
+  applied coherently at a validated layer boundary and exact tool behavior
+  passes before serving.
+- Related commit or revert: no repository source change; the pinned checkpoint
+  remains a redownloadable cache artifact.
+
+## PERF-FA073 - Four-step MLX streaming and scheduler receive cadence
+
+- Hypothesis: reducing output and receive bookkeeping from every token to
+  every four tokens would raise the sampled mixed-checkpoint floor.
+- Scope: `Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2`, radix disabled,
+  BF16 KV, real 131K pools, one request, and the required sampled `128+256`
+  workload.
+- Attempted change: changed only `--stream-interval` and
+  `--scheduler-recv-interval` from one to four.
+- Benchmark evidence: five candidate samples were
+  **20.082, 20.074, 20.067, 20.082, and 20.076 tok/s**, mean **20.0762**.
+  The matched one-step mean was **20.0626 tok/s**, a
+  **0.0136 tok/s / 0.068%** difference.
+- Correctness evidence: every exact timing request completed 128 prompt and
+  256 sampled output tokens.
+- Failure mode: the difference is below ordinary run noise, and source tracing
+  shows the MLX overlap loop receives requests through its direct receiver
+  call rather than the generic scheduler receive-interval path.
+- Why not to retry unchanged: the five-sample server window produces no
+  material user-visible gain.
+- Reopen only if: scheduler attribution identifies cadence bookkeeping above
+  0.25 ms/token on the reachable MLX path.
+- Related commit or revert: no source change; the radix launch retains the
+  four-step output cadence as a low-cost configuration choice.
+
+## PERF-FA074 - Early-out27 selective RTN q2 artifact as an actual-work lane
+
+- Hypothesis: q2 gate/up, qkv, z, and the first 27 linear-attention output
+  projections would preserve the raw arithmetic and tool boundary while
+  funding sampled serving above 20 tok/s.
+- Scope: immutable derived artifact
+  `Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2`, MLX 0.32.2, BF16 KV,
+  real 131,072 context and token pools, five auxiliary-state slots, radix
+  prefix caching, and the frozen Codex 0.151.0 xhigh client.
+- Attempted change: selected 251 RTN-q2 modules over the affine-q4 base and
+  served them with 512-token prefill chunks and four-step output cadence.
+- Benchmark evidence: five radix-enabled sampled `128+256` samples were
+  **20.091, 20.092, 20.074, 20.068, and 20.081 tok/s**, mean
+  **20.0812**. During the real 6.2K-token Codex turn, server telemetry fell to
+  about **19.2 tok/s**.
+- Correctness evidence: standalone sampled arithmetic returned `703` and the
+  first tool probe produced exactly one parsed multiply call. Three sampled
+  continuation cycles then produced one contradictory length-truncated answer,
+  one clean `703`, and one duplicate multiply call. The frozen xhigh Codex
+  turn emitted a blank message and an invalid exec request; its continuation
+  ended in a Metal out-of-memory command-buffer failure.
+- Failure mode: the short timing window clears the floor narrowly, while
+  realistic context loses that floor, structured behavior is unstable, and
+  the radix continuation exceeds available Metal residency.
+- Why not to retry unchanged: the exact frozen-client gate reproduces all
+  three actual-work failures on the hashed artifact.
+- Reopen only if: a memory-residency change survives the same continuation,
+  long-prefix decode stays at or above 20 tok/s, and repeated tool cycles are
+  stable.
+- Related commit or revert: artifact v2 remains immutable and unqualified;
+  repository source is unchanged.
+
+## PERF-FA075 - One-GiB MLX recycled-buffer cache cap
+
+- Hypothesis: bounding MLX's recycled Metal buffers before model load would
+  release enough transient residency for the 6.2K cached-prefix continuation.
+- Scope: early-out27 v2, BF16 131K shared KV pool, five auxiliary slots,
+  512-token prefill chunks, radix enabled, and
+  `SGLANG_MLX_CACHE_LIMIT_GB=1` as the only memory change.
+- Attempted change: applied the existing pre-load cache cap and replayed both
+  the sampled short window and a deterministic 6,257-token two-request radix
+  continuation.
+- Benchmark evidence: five short sampled samples were
+  **20.069, 20.069, 20.063, 20.068, and 20.054 tok/s**, mean
+  **20.0646**, only 0.083% below the uncapped mean. The first long request
+  completed; the immediate second request disconnected during its prefix-hit
+  extend.
+- Correctness evidence: server logs identify the same
+  `kIOGPUCommandBufferCallbackErrorOutOfMemory` at
+  `tp_worker._async_extend_batch -> mx.async_eval`.
+- Failure mode: recycled-buffer residency is not the dominant peak; live
+  model, pool, and fallback prefill state exceed Metal's working set.
+- Why not to retry unchanged: the exact bounded reproducer reaches the same
+  crash while the cap has already demonstrated throughput neutrality.
+- Reopen only if: independent allocator telemetry shows more than 1 GiB of
+  reclaimable cache remains live at the failing submission.
+- Related commit or revert: no source change; the environment override is
+  rejected as a standalone fix.
+
+## PERF-FA076 - Halve cached-prefix prefill chunks to 256
+
+- Hypothesis: halving the new-token extend graph would cut the transient peak
+  enough for the cached-prefix continuation to complete.
+- Scope: PERF-FA075's exact early-out27 v2 launch and bounded 6,257-token radix
+  replay, changing only `--chunked-prefill-size 512 -> 256`.
+- Attempted change: restarted cleanly with 256-token chunks and replayed the
+  same two requests.
+- Benchmark evidence: cold chunks held about 106--110 prompt tok/s. The first
+  request completed, then the second request failed after its cache match.
+- Correctness evidence: the failure again occurred in
+  `_async_extend_batch -> mx.async_eval` with Metal insufficient memory.
+- Failure mode: source tracing and the control show that the restore misses
+  deferred auxiliary-state COW and reruns the entire cached prompt; the
+  6,144-token fallback graph dominates the new 256-token chunk.
+- Why not to retry unchanged: 512 and 256 produce the same failure at the same
+  request boundary.
+- Reopen only if: auxiliary restore succeeds and profiling then attributes a
+  residual memory peak to the new-token chunk itself.
+- Related commit or revert: no source change; the server was stopped and the
+  512-token production-shaped baseline remains authoritative.

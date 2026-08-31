@@ -4,12 +4,24 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max Qwen3.8-27B early-out27 selective q2, required sampled `128+256`, BF16 KV, radix enabled, real 131K pools | affine-q4/BF16 **19.2786 tok/s** | **20.0812 tok/s** | **+0.8026 / +4.163%**; all five samples clear 20; actual-work gate rejected | production-sampled stream command on `Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2` | 2026-08-31 05:06 PDT |
+| M1 Max Qwen3.8-27B early-out27 selective q2, frozen Codex xhigh turn at about 6.2K tokens | short sampled **20.0812 tok/s** | server telemetry **~19.2 tok/s** | **~-0.88 / -4.4%**; continuation Metal OOM | Codex 0.151.0 strict-config ephemeral tool round trip with explicit 131,072 window and xhigh reasoning | 2026-08-31 05:18 PDT |
+| M1 Max Qwen3.8-27B radix continuation after a 6,257-token first turn, real 131K pools | early-out27 v2 **Metal OOM** | full affine-q2 **2.04 new tok/s** on the prefix-hit request | q2 residency survives; missing MLX auxiliary-state COW forces a 6,144-token recompute | bounded two-request OpenAI replay with `SGLANG_MLX_CACHE_LIMIT_GB=1`, 512-token chunks, and five auxiliary slots | 2026-08-31 05:39 PDT |
+| M1 Max Qwen3.8-27B full affine-q2, required sampled `128+256`, BF16 KV, real 131K pools | affine-q4/BF16 **19.2786 tok/s** | **20.9032 tok/s** | **+1.6246 / +8.427%**; arithmetic and tool behavior rejected | same production-sampled stream command on immutable q2 revision `33b90b6...` | 2026-08-31 04:04 PDT |
+| M1 Max Qwen3.8-27B q2-linear-attention plus q2-gate/up mixed artifact, required sampled `128+256`, BF16 KV, real 131K pools | affine-q4/BF16 **19.2786 tok/s** | **20.1482 tok/s** | **+0.8696 / +4.511%**; exact tool gate rejected | same production-sampled stream command on `Qwen3.8-27B-MLX-Q2GDN-Q4Anchors-v1` | 2026-08-31 04:18 PDT |
+| M1 Max Qwen3.8-27B affine-q4, exact `128+256` deterministic MLX dependency gate, real 131K pools, q4 KV | MLX 0.32.0 **19.0468 tok/s** | MLX 0.32.2 **19.1432 tok/s** | **+0.0964 / +0.506%** | `.venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 128 --output-tokens 256 --temperature 0 --skip-warmup --timeout 600` | 2026-08-31 03:23 PDT |
+| M1 Max Qwen3.8-27B affine-q4, exact `128+256` deterministic MLX lane, real 131K pools | q4 KV **19.1432 tok/s** | BF16 KV **19.4274 tok/s** | **+0.2842 / +1.485%** | same exact deterministic stream command; only `--mlx-kv-cache-bits 4` omitted | 2026-08-31 03:49 PDT |
+| M1 Max Qwen3.8-27B affine-q4, required sampled `128+256` MLX lane, real 131K pools | q4 KV **18.9904 tok/s** | BF16 KV **19.2786 tok/s** | **+0.2882 / +1.518%** | same stream command with `--temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` | 2026-08-31 03:49 PDT |
+| M1 Max Qwen3.8-27B affine-q4, direct 32-warmup plus 256-token target loop | q4 KV **19.513158 tok/s** | BF16 KV **19.643293 tok/s** | **+0.130135 / +0.667%** | inline `mlx_lm.generate_step`, 128-token input, 32 warm tokens, 256 timed tokens | 2026-08-31 03:46 PDT |
+| M1 Max Qwen3.8-27B affine-q4 native C++ graph, exact `128+256` deterministic server candidate | selected Python MLX q4-KV **19.1432 tok/s** | **19.2990 tok/s** | **+0.1558 / +0.814%**; sampled semantics gate open | same exact deterministic stream command under `SGLANG_USE_MLX_NATIVE_GRAPH=1` | 2026-08-31 03:44 PDT |
 | M1 Max Qwen3.8-27B IQ2_XXS, exact `12+256` fixed-decode scoreboard | unqualified cross-machine q4 entry deleted | **14.661356 tok/s aggregate; 14.671473 best hit** | route-neutral local Q2 authority | pinned llama.cpp build 10547 command in `BENCHMARK.md` | 2026-08-23 07:46 PDT |
 | M1 Max Qwen3.8-27B IQ2_XXS, historical native SGLang Rust `/generate` baseline, exact `12+256` | llama.cpp **14.661356 tok/s** aggregate | **7.001584 tok/s aggregate; 7.015010 best hit** | **-52.2446%; reference is 2.094006x faster** | exact launch and request in the 2026-08-23 08:05 experiment-log entry | 2026-08-23 08:05 PDT |
-| M1 Max Qwen3.8-27B IQ2_XXS, selected native SGLang Python `/generate`, exact `12+256` | **7.009167 tok/s** matched disabled-kernel control | **8.586948 tok/s aggregate; 8.591773 best hit** | **+22.510241%; llama.cpp reference is 1.707400x faster** | final PERF-A016 launch and request in the 2026-08-23 11:31 experiment-log entry | 2026-08-23 11:31 PDT |
+| M1 Max Qwen3.8-27B IQ2_XXS, historical PERF-A016 native SGLang Python `/generate`, exact `12+256` | **7.009167 tok/s** matched disabled-kernel control | **8.586948 tok/s aggregate; 8.591773 best hit** | **+22.510241%; llama.cpp reference is 1.707400x faster** | final PERF-A016 launch and request in the 2026-08-23 11:31 experiment-log entry | 2026-08-23 11:31 PDT |
 | M1 Max Qwen3.8-27B IQ2_XXS, current PERF-A021 native SGLang `/generate`, exact `12+256` | **8.515065 tok/s** matched generic-Q2_K control | **9.189086 tok/s aggregate; 9.194647 best hit** | **+7.532647% matched; +7.012249% over PERF-A016** | fixed command and raw windows in `BENCHMARK.md` and the 2026-08-23 16:25 experiment-log entry | 2026-08-23 16:25 PDT |
 | M1 Max Qwen3.8-27B IQ2_XXS, current PERF-A021 reasoning-enabled stream, exact `128+256` | new explicit four-metric Apple baseline | **22.945718 prompt / 9.156675 generation tok/s; 5.578383 s TTFT; 33.426973 s E2E** | five cache-flushed requests; exact counts and one reasoning digest | `.venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 128 --output-tokens 256 --temperature 0 --skip-warmup --timeout 600` | 2026-08-23 16:25 PDT |
 | M1 Max Qwen3.8-27B IQ2_XXS, current PERF-A021 capacity | historical PERF-A016 exact `32761+1` pass | **32,768-token BF16 pool; exact `32761+1` passed; 18.942 prompt tok/s; 1729.565719 s TTFT; 1729.565822 s E2E** | capacity preserved on current source | same client with `--input-tokens 32761 --output-tokens 1 --temperature 0 --skip-warmup --timeout 7200` | 2026-08-23 16:25 PDT |
+| M1 Max Qwen3.8-27B IQ2_XXS, historical PERF-A021 read-only Codex Responses tool gate | historical PERF-A016 gate on Codex 0.149.0 | **Codex 0.151.0; one `pwd`; consumed result; exact `CODEX TOOL READY`; 21,537 input / 413 output / 379 reasoning tokens** | repaired profile/catalog hashes exercised by one read-only shell round trip | executed command and raw events in the 2026-08-30 18:29 experiment-log entry | 2026-08-30 18:29 PDT |
+| M1 Max Qwen3.8-27B IQ2_XXS, isolated-home strict Codex workspace-write gate | profile-overlay scratch gate with mutable lower config | **one first-attempt `file_change`; exact `QWEN38 ISOLATED WRITE READY`; 2,670 input / 115 output / 39 reasoning tokens** | dedicated pinned `CODEX_HOME`; unified-exec catalog; root-owned empty `/var/empty` target; separate trusted-repository AGENTS prompt diagnostic; exact 34-byte file/hash; no `-p`, `-c`, `--sandbox`, reasoning, or capacity override; bundle/global hashes stable pre/post | fixed command in `notes/benchmark-contract.md`; exact events in the 2026-08-30 20:46 experiment-log entry | 2026-08-30 20:46 PDT |
 | M1 Max Qwen3.8-27B IQ2_XXS, synchronized batch-one decoder-layer profile | separate exact-request wall time **142.824820 ms/completion token** | **132.593 ms/token** topology projection from stable profiled layers | **10.232 ms/token cross-run numerical difference; no outside-layer attribution** | one-shot `SGLANG_MPS_PROFILE_LAYERS=1 SGLANG_MPS_PROFILE_STAGES=1` launch in the 08:14 experiment-log entry | 2026-08-23 08:14 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS `17408x5120` batch-one projection | 1.176875 ms matched generic | **0.516000 ms** | **-0.660875 ms / -56.16%** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor blk.8.ffn_gate.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:25 PDT |
 | Qwen3.8-27B IQ2_XXS, native-MPS Q5_K `248320x5120` head at batch one | 19.659291 ms matched generic | **3.754625 ms** | **-15.904666 ms / -80.90%; 5.24x** | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $IQ2_GGUF --tensor output.weight --batch-size 1 --warmup 8 --iterations 25` | 2026-08-20 22:52 PDT |
@@ -700,6 +712,19 @@ tree throughput can be ranked for production.
 | PERF-A014 | Reuse each quantized weight tile across large activation batches with native simdgroup matrix multiplication. | `quant_matmul` Metal kernels and host dispatch | Qualified in signed `1676c71bed` | The FP32 64-output by 32-batch path changes the actual IQ2_XXS `17408x5120` median **70.074833 -> 4.250250/4.277125 ms** at batch 128. Matched served exact-`128+1` prompt changes **7.0234 -> 22.8814 tok/s** across a control and two independent default windows; multi-chunk prefill, parity, behavior, and cleanup gates pass. |
 | PERF-A016 | Reuse each activation fragment across two eligible Q4_K output rows inside the retained mixed-format IQ2_XXS/Q2 checkpoint. | `quant_matmul` Metal kernel and aligned compact-view dispatch | Qualified in signed `52b5326d8e` | Final Python A/B changes exact-`12+256` generation **7.009167 -> 8.586948 tok/s** (**+22.510241%**); an independent restart reaches **8.578205 tok/s**. Candidate/tail parity, exact `32761+1`, behavior, Codex Responses tool integration, and cleanup pass. `Q4_K` names the tensor family; record standing remains M1 Max Q2. |
 | PERF-A021 | Reuse one activation fragment across four eligible Q2_K output rows. | `quant_matmul` Metal kernel, aligned batch-one dispatch, and generic environment control | Retained in signed `4dfa1ad3ef`; current Apple baseline | Actual Q2_K gate/down medians fall from about **1.07/1.09 ms** to **0.455/0.454 ms**. Matched exact-`12+256` generation changes **8.515065 -> 9.156475 tok/s**; the independent current window reaches **9.189086 tok/s**. Streaming Prompt/Generation/TTFT/E2E and current-source exact `32761+1` capacity are recorded in `BENCHMARK.md`. |
+| PERF-A022 | Pick up current MLX batch-one decode improvements while holding model, pools, cache format, and output trajectory fixed. | Apple MLX dependency floor | Retained in signed `45b50cc4c3` | MLX 0.32.0 -> 0.32.2 changes five deterministic exact `128+256` q4-KV samples from **19.0468** to **19.1432 tok/s** (+0.506%) with identical output and reasoning digests. |
+| PERF-A023 | Reduce decode attention cost by retaining BF16 K/V. | Qwen3.8-27B affine-q4 MLX attention cache | Current sampled baseline candidate | Five deterministic samples average **19.4274 tok/s** and five production-sampled samples average **19.2786 tok/s**, respective gains of 1.485% and 1.518% over q4 KV. Exact 131K allocation and actual-work gates remain open. |
+| PERF-A024 | Use a smaller full-model affine 3-bit checkpoint to reduce weight bandwidth. | `lukaskremla/Qwen3.8-27B-3bit-MLX-TextOnly` | Rejected | Three deterministic exact `128+256` samples average **17.958 tok/s**, about 6.2% below the selected affine-q4/q4-KV endpoint. See PERF-FA066. |
+| PERF-A025 | Use MLX MXFP4 storage to reduce affine metadata and decode traffic. | `mlx-community/Qwen3.8-27B-mxfp4` | Rejected | Matched direct target-loop throughput is **18.581608 tok/s** versus **19.513158** for affine q4/q4 KV, a 4.774% loss. See PERF-FA067. |
+| PERF-A026 | Execute the complete token graph through the repository C++ MLX engine. | `hardware_backend/mlx/native/qwen38_engine.cpp` | Deterministic candidate; sampled gate open | Five deterministic exact `128+256` server samples average **19.2990 tok/s**, +0.814% over selected Python q4 KV. The current C ABI returns argmax token ids, so sampled Codex behavior requires a native logits/sampling seam before promotion. |
+| PERF-A027 | Use full-model affine q2 to reduce batch-one weight bandwidth. | Immutable q2 revision `33b90b60fd7ba16b668854e049bd65e22d6afddf` | Rejected | Five sampled server samples average **20.9032 tok/s**, while arithmetic and tool behavior fail. See PERF-FA068. |
+| PERF-A028 | Reduce affine metadata with group-128 requantization. | In-memory q4 checkpoint module selections | Rejected | The broad 385-module screen reaches **19.781749 tok/s** in the direct BF16-KV loop, leaving too little margin for sampled server overhead. See PERF-FA069. |
+| PERF-A029 | Preserve q4 semantic anchors around q2 linear-attention and MLP expansion projections. | Derived `Qwen3.8-27B-MLX-Q2GDN-Q4Anchors-v1` artifact | Rejected; narrower boundary active | Five sampled server samples average **20.1482 tok/s** and sampled arithmetic returns `703`; the exact tool gate emits two malformed calls. See PERF-FA070. |
+| PERF-A030 | Quantize the measured raw-tool-safe boundary through the first 27 linear-attention output projections. | Derived `Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2` artifact | Rejected unchanged; residency and long-prefix work active | Radix-enabled sampled `128+256` averages **20.0812 tok/s**, while real 6.2K decode is about 19.2 tok/s, tool continuations are unstable, and the frozen Codex continuation OOMs. See PERF-FA074. |
+| PERF-A031 | Use a published long-context quality-aware q3/q4/q6 precision map. | Immutable YoozLabs revision `55c317fadb679431afef61ddd97a4ac2522ca420` | Rejected | Direct throughput is **18.553117 tok/s**, below the server floor before sampling overhead. See PERF-FA071. |
+| PERF-A032 | Use group-32 q2 AWQ unchanged or as selective q4 overrides. | Immutable PocketAiHub revision `dcc3732f8c93ccf5580bf7a55e4ae639a40f194c` | Rejected | Full AWQ reaches **20.796459 tok/s** and fails raw tools; mixed forms reach **20.298/20.758** and produce empty or terminator-only output. See PERF-FA072. |
+| PERF-A033 | Bound MLX's recycled Metal buffer cache before model load and radix continuation. | Existing `SGLANG_MLX_CACHE_LIMIT_GB` control | Rejected unchanged | A one-GiB cap keeps five short samples at **20.0646 tok/s** and still OOMs on the immediate 6,257-token continuation. See PERF-FA075. |
+| PERF-A034 | Restore the radix-matched recurrent state before MLX continuation prefill. | Deferred Mamba COW handoff into `MlxAuxiliaryStatePool` | Active | The scheduler emits source/destination indices and the generic runner consumes them; the reachable MLX generation path does neither. Full q2 proves residency can survive and exposes a **2.04 new tok/s** full-prefix fallback. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -2223,3 +2248,255 @@ tree throughput can be ranked for production.
   third-party notice. Root `BENCHMARK.md` owns the current Prompt, Generation,
   TTFT, E2E, and Capacity baseline; the full commands, samples, process state,
   and cleanup are in `notes/experiment-log.md`.
+
+### 2026-08-30 18:29 PDT - PERF-A021 Codex tool gate and profile-capacity repair
+
+- Corrected the machine-local `qwen38-local` profile and catalog from
+  unsupported 131,072-token declarations to the served 32,768-token context.
+  The configured compaction limit is 30,000; Codex 0.151.0 applies an effective
+  29,491-token threshold. Final profile/catalog SHA-256 values begin
+  `9706003a` and `680e762e`.
+- A fresh independent PERF-A021 restart used the exact 32K launch and the
+  repaired artifacts with no capacity override. Codex issued one
+  `/bin/zsh -lc pwd`, received `/Users/dcazares/sglang`, consumed the result,
+  returned exact visible `CODEX TOOL READY`, and exited zero with 21,537 input,
+  413 output, and 379 reasoning-output tokens.
+- Post-tool health and language-only reporting passed, cache flush succeeded,
+  foreground shutdown exited zero, all four verified PIDs disappeared, port
+  30000 became free, memory returned to 92% free, and thermal status remained
+  normal.
+- The exact-tag client audit found that the 900-second stream-idle bound is
+  shorter than near-capacity TTFT, the catalog's sequential-tool flag is
+  ignored, and no native `apply_patch` tool is registered. These remain the
+  next client-hardening gates; the current evidence covers one read-only
+  shell-command/result-consumption round trip.
+
+### 2026-08-30 19:46 PDT - strict Codex editing and compaction continuation
+
+- Added a separate `qwen38-local-hardened` three-artifact overlay while
+  preserving the earlier profile/catalog hashes. Strict Codex 0.151.0 loading
+  passes; model-visible plugin, agent, skill-instruction, goal, memory, web,
+  and MCP tool surfaces are absent or disabled. One observed prompt render
+  changed from 32,965 to
+  21,457 serialized bytes while retaining repository `AGENTS.md`, environment,
+  and user context; its exact render command was not retained.
+- A medium-reasoning forced-compaction gate on the immediate predecessor
+  hashes recovered from one malformed patch across two observed compaction
+  boundaries, successfully added a nonce-bearing file, preserved that nonce in
+  final output, and exited zero with 11,093 input, 5,120 output, and 3,943
+  reasoning-output tokens. The raw JSONL and warning text were not retained.
+- An unmatched low-reasoning clean-edit trial completed the patch on its first
+  attempt and exited zero with 4,136 input, 141 output, and 70 reasoning-output
+  tokens. Promoting low reasoning into the overlay produced an independent run
+  with no reasoning or capacity override at 4,111 input, 118 output, and 47
+  reasoning-output tokens; same-value sandbox/approval pins remained on the
+  command. The lower user config and rules were not pinned at process start.
+- All scratch files were verified and removed, cache flush passed, foreground
+  shutdown exited zero, PIDs 27939/28026/28027/28028 disappeared, port 30000
+  became free, memory returned to 93% free, and thermal status remained normal.
+
+### 2026-08-30 20:11 PDT - isolated Codex home established the scratch-write gate
+
+- Moved the selected client into the dedicated
+  `/Users/dcazares/.codex/qwen38-local-hardened-home`. Its sibling-relative
+  config/catalog/instruction hashes were `a764dc28...b9984`,
+  `eb15e828...51db1`, and `8a2fe9b...2279`. Strict loading was independent of
+  the ordinary user config, `--ignore-rules` excluded user/project exec policy,
+  and exact-path untrusted decisions excluded project config and hooks.
+- The fixed clean gate used no `-p`, `-c`, `--sandbox`, reasoning, or capacity
+  override. Thread `01a055c9-f5e8-7621-9822-acfeaa1a9c45` emitted one
+  first-attempt `file_change`, returned exact
+  `QWEN38 ISOLATED WRITE READY`, and exited zero at 2,843 input / 260 output /
+  184 reasoning-output tokens. The only file was 34 bytes with SHA-256
+  `f7ca43b4...6729a`.
+- All three bundle hashes and ordinary config/rules hashes remained unchanged
+  pre/post. Post-gate health, language-only reporting, cache flush, scratch
+  removal, and foreground shutdown passed. PIDs 31773/31778/31779/31780 were
+  absent, port 30000 was free, memory was 92% free, and thermal status was
+  normal.
+
+### 2026-08-30 20:29 PDT - trusted-repository unified-exec Codex gate
+
+- Exact-tag review aligned the catalog with Codex's exposed unified tools:
+  `shell_type=unified_exec`, instruction names `exec_command` and `cmd`, and
+  sequential use at task/instruction scope. It also made the repository
+  trusted so root `AGENTS.md` reached actual-work prompts while retaining the
+  fixed scratch path as untrusted.
+- The 20:29 config/catalog/instruction hashes were
+  `a1ce8b8e...2981bf`, `862339c1...2ec71`, and `5d59350...9d096`.
+  A post-change prompt-input diagnostic rendered the root AGENTS heading and
+  exact C++/CUDA-only rule. The qualified repository contained no `.codex`
+  project surface, hook file, or rule file, and the dedicated home contained
+  no `rules/` directory.
+- Thread `01a055da-e3ba-7b03-9384-be480e8ce20c` emitted one first-attempt
+  `file_change`, returned exact `QWEN38 ISOLATED WRITE READY`, and exited zero
+  at 2,662 input / 113 output / 37 reasoning-output tokens. The only file was
+  34 bytes with SHA-256 `f7ca43b4...6729a`; all bundle and ordinary-global
+  hashes remained stable.
+- Post-gate health, language-only reporting, cache flush, scratch removal, and
+  foreground shutdown passed. PIDs 33801/33842/33843/33844 were absent, port
+  30000 was free, memory was 92% free with zero throttled pages, and thermal and
+  performance status were normal.
+
+### 2026-08-30 20:46 PDT - zsh-startup-isolated Codex gate
+
+- Pinned `ZDOTDIR=/var/empty` in the dedicated shell-environment policy. The
+  root-owned 0755 target was empty, `/etc/zshenv` and `/etc/zsh/zshenv` were
+  absent, and exact-tag review confirms the setting reaches spawned unified-
+  exec shells before `zsh -c` startup.
+- Final config/catalog/instruction hashes are `9d7842bb...0409`,
+  `862339c1...2ec71`, and `5d59350...9d096`. The exact strict task used
+  explicit stdin EOF, emitted one first-attempt `file_change`, returned
+  `QWEN38 ISOLATED WRITE READY`, and exited zero at 2,670 input / 115 output /
+  39 reasoning-output tokens. The verified 34-byte file retained SHA-256
+  `f7ca43b4...6729a`; every governing and ordinary-global hash was stable.
+- A separate final prompt-input diagnostic under the stored trusted-repository
+  decision rendered root `AGENTS.md` and its exact C++/CUDA-only rule. No
+  project `.codex`, hook, rule, override-instruction, or skill sidecar was
+  present; dedicated-home rule/skill/override and global agent/system skill
+  roots were also absent.
+- Health, language-only reporting, cache flush, host patch cleanup, and
+  foreground shutdown passed. PIDs 36097/36112/36113/36114 disappeared, port
+  30000 and matching process sets were empty, memory returned to 92% free with
+  zero throttled pages, and thermal/performance status was normal.
+
+### 2026-08-31 03:23 PDT - PERF-A022 MLX 0.32.2 dependency win
+
+- Change: upgraded the isolated `.venv` from MLX/`mlx-metal` 0.32.0 to 0.32.2
+  and raised the existing optional-dependency floor in
+  `python/pyproject_other.toml` to `mlx>=0.32.2`.
+- Benchmark evidence: the exact affine-q4/q4-KV 131K launch produced
+  `19.190, 19.133, 19.131, 19.119, 19.143 tok/s`, mean **19.1432**. The
+  matched 0.32.0 baseline was
+  `19.046, 19.058, 19.006, 19.090, 19.034`, mean **19.0468**. This is a
+  **0.506%** retained gain.
+- Correctness evidence: all ten requests completed exact `128+256`, preserved
+  reasoning, ended at `finish_reason=length`, and retained output SHA-256
+  `df00bc9380ea6fcc5b0c4aea8694a3a01f29ee8e483afe19c9e8202e9c7c146c`
+  and reasoning SHA-256
+  `1b45e66ba0245377a41c4da996a3a96cc0d7e0957fbaba2d7fd8683a4011939c`.
+  The MLX sampling suite passed 26 tests and 11 subtests; TOML parsing and
+  `git diff --check` passed.
+- Decision: retain. Signed commit `45b50cc4c3` owns the dependency floor.
+
+### 2026-08-31 03:40 PDT - PERF-A024/A025 compact-weight checkpoint screen
+
+- PERF-A024 loaded immutable revision
+  `c98bba5926f51fec1c8d8737e577221673f524d7` of the full 27B affine-3-bit
+  text checkpoint. Three exact deterministic 131K server samples were
+  `17.972, 17.961, 17.941 tok/s`, mean **17.958**. All completed exact counts
+  and reproduced output digest
+  `2f8a3468...212d`; throughput was about 6.2% below affine q4.
+- PERF-A025 loaded immutable revision
+  `97ab0819817ab1c61d7d39f9169fc71999915641` of the official MLX MXFP4
+  checkpoint. A matched 32-warmup/256-token direct target loop reached
+  **18.581608 tok/s**. The affine-q4/q4-KV control reached
+  **19.513158 tok/s**, leaving MXFP4 4.774% lower.
+- Decision: reject both checkpoint substitutions. PERF-FA066 and PERF-FA067
+  retain the provenance and reopening conditions.
+
+### 2026-08-31 03:44 PDT - PERF-A026 native C++ graph candidate
+
+- Change: rebuilt the ignored native MLX engine dylib against MLX 0.32.2 and
+  selected the existing `SGLANG_USE_MLX_NATIVE_GRAPH=1` route with affine-q4
+  weights, BF16 attention KV, real 131,072 context/token pools, and one request.
+- Benchmark evidence: five exact deterministic `128+256` samples were
+  `19.359, 19.278, 19.262, 19.286, 19.310 tok/s`, mean **19.2990**. This is
+  +0.814% over the selected Python q4-KV endpoint and remains 3.63% below the
+  20 tok/s floor.
+- Correctness evidence: every request completed exact counts, preserved
+  reasoning, ended by length, and retained one deterministic digest. The
+  current native C ABI returns argmax token ids directly, while sampled Codex
+  requests require logits edits and stochastic top-k/top-p selection.
+- Decision: keep as a profiling candidate. Promotion waits for preserved
+  sampled semantics and a measured gain above the current BF16 Python route.
+
+### 2026-08-31 03:49 PDT - PERF-A023 BF16 attention KV
+
+- Change: omitted `--mlx-kv-cache-bits 4` from the otherwise exact affine-q4
+  131K MLX launch, selecting BF16 attention K/V.
+- Benchmark evidence: the direct target loop moved
+  **19.513158 -> 19.643293 tok/s**. Five deterministic server samples were
+  `19.449, 19.430, 19.418, 19.439, 19.401`, mean **19.4274**. Five ordinary
+  sampled samples were `19.283, 19.287, 19.253, 19.284, 19.286`, mean
+  **19.2786**. The server gains over q4 KV are 1.485% deterministic and
+  1.518% sampled.
+- Correctness evidence: every request completed exact `128+256`, preserved
+  reasoning, and ended by length. The deterministic digest was stable; all
+  five sampled outputs were distinct under temperature 1.0, top-p 0.95,
+  top-k 20, and presence penalty 1.5.
+- Decision: select as the current real-sampling baseline candidate. The
+  remaining measured gap is **0.7214 tok/s / 3.74%**; exact-capacity and
+  actual-work promotion gates remain open.
+
+### 2026-08-31 04:18 PDT - PERF-A027/A028/A029 precision-boundary screens
+
+- PERF-A027 loaded immutable full affine-q2 revision
+  `33b90b60fd7ba16b668854e049bd65e22d6afddf`. Five deterministic 131K/BF16
+  server samples averaged **21.0754 tok/s** and five production-sampled
+  samples averaged **20.9032 tok/s**. Sampled arithmetic returned empty
+  completion content and the tool request produced no valid parsed call.
+- PERF-A028 tested group-128 affine requantization in memory. The 64-module
+  down-projection selection reached **19.681944 tok/s** and the broader
+  385-module selection reached **19.781749 tok/s** in matched direct BF16-KV
+  target loops, leaving insufficient served-workload margin.
+- PERF-A029 combined q2 MLP gate/up and linear-attention modules with q4
+  embeddings, head, MLP down projections, and full-attention blocks. The
+  reloaded, hashed v1 artifact reached **20.526347 tok/s** directly; exact
+  deterministic and production-sampled server means were **20.2944** and
+  **20.1482 tok/s**. Sampled arithmetic returned `703`. The required tool
+  request emitted two malformed calls named `...` and ended by length.
+- Decision: reject all three unchanged candidates. The active search narrows
+  PERF-A029's q2 linear-attention boundary while retaining its q2 gate/up
+  modules, whose raw greedy tool form produced one exact `multiply` call.
+
+### 2026-08-31 05:18 PDT - PERF-A030/A031/A032 actual-work boundary screens
+
+- PERF-A030 retained q2 for all 128 MLP gate/up projections, all 48
+  linear-attention qkv projections, all 48 z projections, and the first 27
+  linear-attention output projections. The hashed reloaded artifact reached
+  **20.412561 tok/s** directly. Radix-disabled deterministic and sampled
+  server means were **20.1998** and **20.0626 tok/s**. Four-step cadence moved
+  the sampled mean only to **20.0762 tok/s**. Enabling the five-slot unified
+  radix cache produced five sampled scores of
+  `20.091, 20.092, 20.074, 20.068, 20.081`, mean **20.0812**.
+- Standalone arithmetic returned `703`, and the first parsed tool request was
+  one exact multiply call. Three sampled continuations produced one
+  contradictory truncated answer, one clean answer, and one duplicate tool
+  call. The frozen Codex xhigh request prefetched about 6.2K tokens at roughly
+  107--111 tok/s and decoded at about **19.2 tok/s**. Its tool attempt was
+  invalid for the harness schema, and the next Responses continuation failed
+  with `kIOGPUCommandBufferCallbackErrorOutOfMemory` in Metal.
+- PERF-A031 measured YoozLabs' q3/q4/q6 precision map at
+  **18.553117 tok/s** directly. PERF-A032 measured PocketAiHub group-32 q2 AWQ
+  at **20.796459 tok/s** directly, while its full and selectively mixed forms
+  all failed the raw tool/output gate.
+- Decision: reject all three unchanged candidates. PERF-A033 now isolates the
+  existing pre-load MLX buffer-cache cap against the frozen continuation OOM;
+  long-prefix decode and repeated tool behavior remain coequal gates.
+
+### 2026-08-31 05:43 PDT - PERF-A033 cache cap and PERF-A034 deferred-state handoff
+
+- Changed only `SGLANG_MLX_CACHE_LIMIT_GB=1` on the radix-enabled early-out27
+  v2 launch. Five required sampled short scores were
+  `20.069, 20.069, 20.063, 20.068, 20.054 tok/s`, mean **20.0646**. A frozen
+  Codex xhigh retry completed its 6,237-token prefill and decoded around
+  **19.02--19.28 tok/s** until the bounded client timed out. A deterministic
+  two-request replay completed the first 6,257-token request and reproduced a
+  Metal OOM on the immediate continuation. Halving prefill chunks from 512 to
+  256 reproduced the same request-boundary failure. PERF-FA075 and PERF-FA076
+  close both unchanged controls.
+- A matched full affine-q2 memory control started with about **24.12 GB**
+  available GPU memory versus **21.65 GB** for v2 and completed both bounded
+  requests in **57.387437 s** and **64.289053 s**. The second request reported
+  6,144 cached tokens and processed 131 new tokens at only **2.04 tok/s**,
+  proving that lower weight residency survives while the matched recurrent
+  state is still recomputed.
+- Reachability tracing found that
+  `ScheduleBatch._collect_deferred_mamba_cow_and_clear` publishes source and
+  destination auxiliary-state indices. The generic model runner executes the
+  deferred copy, while `MlxTPWorker.async_forward_batch_generation_mlx` never
+  consumes those fields. Its restore therefore sees an empty destination and
+  `prefill_start` falls back to the complete prompt. PERF-A034 owns the missing
+  state handoff; the implementation must remain within the repository's native
+  C++/CUDA boundary.
