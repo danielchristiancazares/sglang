@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2, direct deterministic decode after a 6,237-token history | historical direct control **19.151623 tok/s** | standalone C++ harness **19.116578 tok/s** | **-0.035045 / -0.183%** with identical `13eb9a7159a2612f` digest; harness retained | `/private/tmp/bench_qwen38_native ... 6237 32 128` | 2026-08-31 08:09 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate linear-attention b/a projections **18.845 tok/s** | separate b/a projections **18.845 tok/s** | fused 96-row projection reached **18.511 tok/s** (**-1.772%**) with identical output; rejected | same process-isolated exact served A/B as PERF-A039 | 2026-08-31 07:52 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate affine gate/up **18.845 tok/s** | separate affine gate/up **18.845 tok/s** | materialized fused rows reached **18.782 tok/s** (**-0.334%**) with identical output; rejected | process-isolated `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup` A/B | 2026-08-31 07:46 PDT |
 | M1 Max native early-out27 v2, deterministic decode after a 6,237-token history | growing concatenated BF16 K/V **17.923409 tok/s** | reusable power-of-two BF16 K/V **19.151623 tok/s** | **+1.228215 / +6.853%**; exact 128-token digest retained | direct native engine, 32 warm tokens plus 128 timed tokens | 2026-08-31 06:10 PDT |
@@ -735,6 +736,7 @@ tree throughput can be ranked for production.
 | PERF-A038 | Split long-history native attention across custom Metal workgroups. | Native MLX decode attention | Rejected | The best tiled split arm reaches **19.117317 tok/s**, below the **19.151623** MLX SDPA control. See PERF-FA078/PERF-FA079. |
 | PERF-A039 | Materialize gate/up affine rows and issue one quantized matmul per MLP. | Native Qwen3.8 target and MTP MLP owner | Rejected and removed | Adjacent deterministic `6237+128` serving changes **18.845 -> 18.782 tok/s** and reported available unified memory falls **28.92 -> 22.28 GB**, while output SHA-256 remains exact. See PERF-FA081. |
 | PERF-A040 | Combine the two 48-row linear-attention b/a affine projections. | Native Qwen3.8 `Engine::gated_delta` owner | Rejected and removed | Adjacent deterministic `6237+128` serving changes **18.845 -> 18.511 tok/s** (-1.772%) with the same output SHA-256 and **28.89 GB** startup headroom. See PERF-FA082. |
+| PERF-A041 | Add a standalone direct native Qwen3.8 benchmark with deterministic tokens and a stable digest. | C++ benchmark infrastructure | Retained | The synchronized `6237 / 32 warm / 128 timed` run reaches **19.116578 tok/s**, within **0.183%** of the signed **19.151623 tok/s** direct control, with matching digest `13eb9a7159a2612f`. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -2615,3 +2617,28 @@ tree throughput can be ranked for production.
 - Decision: reject and remove. Independent MLX projection scheduling is faster
   than the combined 96-row quantized matmul at this batch-one shape. PERF-FA082
   retains the distinct evidence and reopening condition.
+
+### 2026-08-31 08:09 PDT - PERF-A041 direct native benchmark harness
+
+- Added `benchmark/mac/bench_qwen38_native.cpp`, a C++20 executable that loads
+  the native engine C ABI, generates deterministic prompt IDs, performs an
+  explicit warmup, synchronizes MLX around the measured decode interval, and
+  reports a stable little-endian FNV-1a token digest.
+- The synchronized exact `6237 / 32 warm / 128 timed` validation measured
+  **19.116578 tok/s** and digest `13eb9a7159a2612f`. The signed historical
+  direct control is **19.151623 tok/s** with the same digest, a **0.183%**
+  difference. A `128 / 8 / 16` smoke run measured **20.270547 tok/s** and
+  digest `a3cb71cd75683b5f` before the final synchronization placement.
+- Strict compilation passed with `-std=c++20 -O3 -Wall -Wextra -Werror`; the
+  existing MLX macOS 26.2 versus local 26.0 link warning remained. Missing
+  arguments return status 2 with usage text, and all eight focused native
+  engine tests pass.
+- MLX's process-lifetime compile cache retains primitives implemented by the
+  engine dynamic library. The benchmark therefore keeps its `dlopen` handle
+  alive through process teardown. This removed the exit-time compiled-cache
+  destructor crash seen when the library was unloaded first.
+- A Metal System Trace capture succeeded for a short direct run. Its default
+  encoder tables expose generic command-buffer and compute-command labels;
+  shader timeline data is disabled in that template, so the trace supplies
+  dispatch-density evidence while stage attribution still needs an engine-side
+  measurement seam.
