@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <dirent.h>
 #include <functional>
 #include <optional>
@@ -38,6 +39,16 @@ using mlx::core::take;
 using mlx::core::transpose;
 using mlx::core::zeros;
 namespace mx = mlx::core;
+
+// cfg_ is Engine's first member, so this initializer runs before the MLX array
+// members can create the Metal device and cache its command-buffer limits.
+MlxQwen38Config configure_mlx_runtime(MlxQwen38Config cfg) {
+  if (std::getenv("MLX_MAX_MB_PER_BUFFER") == nullptr &&
+      setenv("MLX_MAX_MB_PER_BUFFER", "128", 0) != 0) {
+    throw std::runtime_error("failed to set MLX command-buffer byte budget");
+  }
+  return cfg;
+}
 
 std::string layer_key(int i, const std::string& rest) {
   return "language_model.model.layers." + std::to_string(i) + rest;
@@ -605,7 +616,8 @@ std::pair<array, array> gated_delta_update(
   return {outs[0], outs[1]};
 }
 
-Engine::Engine(MlxQwen38Config cfg, const std::string& model_dir) : cfg_(cfg) {
+Engine::Engine(MlxQwen38Config cfg, const std::string& model_dir)
+    : cfg_(configure_mlx_runtime(cfg)) {
   if (cfg_.hidden_size <= 0 || cfg_.num_hidden_layers <= 0) {
     throw std::runtime_error("invalid Qwen3.8 config");
   }
