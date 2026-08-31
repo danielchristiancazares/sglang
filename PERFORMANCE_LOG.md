@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | MLX 50 MiB command-buffer budget **19.623300 tok/s** mean | native-engine 128 MiB default **20.153966 tok/s** mean | **+0.530666 / +2.704%**; every candidate clears 20 and all five pairs are exact | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 13:21 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | separate recurrent beta/decay graphs **19.641655 tok/s** mean | beta/decay inside q/k normalization owner **19.547612 tok/s** mean | **-0.094043 / -0.479%**; all five adjacent pairs exact and slower; rejected | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 12:43 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate BF16 convolution and SiLU **19.1730 tok/s** mean | fused convolution/SiLU owner **19.2134 tok/s** mean | **+0.0404 / +0.211%**; all ten requests exact | `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, process-isolated five-sample control/candidate windows | 2026-08-31 11:41 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | separate BF16 convolution and SiLU **19.524068 tok/s** mean | fused convolution/SiLU owner **19.632483 tok/s** mean | **+0.108415 / +0.555%**; all five adjacent pairs exact and positive | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 11:25 PDT |
@@ -3013,3 +3014,24 @@ tree throughput can be ranked for production.
   launches. The source and expanded test diff were removed. A selected-source
   rebuild restored digest `8ea2430e3fa3d56e`, last token `198`, at
   **20.689765463 tok/s** on the short screen.
+
+### 2026-08-31 13:21 PDT - PERF-A050 native command-buffer byte budget
+
+- Raised the native Qwen3.8 engine's default MLX command-buffer byte budget
+  from the M1 Max architecture default of 50 MiB to 128 MiB. The constructor
+  installs the default while its first member initializes, before any MLX array
+  can create the Metal device. A process-level `MLX_MAX_MB_PER_BUFFER` value
+  keeps precedence.
+- The short exact candidate measured **21.025485404 tok/s**, digest
+  `8ea2430e3fa3d56e`, last token `198`. An explicit 50 MiB override measured
+  **20.663320571 tok/s** with the same output, confirming the compatibility
+  control. The focused native suite passed **8 tests** with 16 existing
+  warnings.
+- Five adjacent long-history controls measured **19.645876112,
+  19.578931372, 19.640621068, 19.602503035, 19.648569033 tok/s**, mean
+  **19.623300124**. Candidates measured **20.174844979, 20.120396667,
+  20.187648928, 20.157111892, 20.129828219 tok/s**, mean **20.153966137**.
+  Pair deltas were **+0.528968867, +0.541465295, +0.547027860,
+  +0.554608857, +0.481259186 tok/s**. The mean gain is
+  **+0.530666013 tok/s / +2.704265%**. Every candidate clears 20; all ten runs
+  retained digest `faaecee6edebe116`, last token `19360`.
