@@ -155,6 +155,12 @@ std::pair<mlx::core::array, mlx::core::array> residual_rms_norm(
     const mlx::core::array& residual,
     const mlx::core::array& weight,
     float eps);
+std::pair<mlx::core::array, mlx::core::array> normalize_gated_delta_qk(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    float q_scale,
+    float k_scale,
+    float eps);
 std::pair<mlx::core::array, mlx::core::array> gated_delta_step(
     const mlx::core::array& q,
     const mlx::core::array& k,
