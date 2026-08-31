@@ -13996,3 +13996,122 @@ mean 13.929045  17.125658 446.051        39.730
 - At 199,000 tokens, selected FP8 segment 2,048 samples were `[3848.838425,3846.841431,3837.607956,3846.972656,3834.254456,3833.884811,3804.988861]` us, mean **3836.198371**, median **3837.607956**. Selected TurboQuant35 segment 512 samples were `[13771.778870,13820.721436,13744.000244,13779.550171,13763.789368,13836.871338,13811.277771]` us, mean **13789.712742**, median **13779.550171**, or **3.590661x** FP8. Relative L2 remained **0.199575**, cosine **0.980717**, maximum absolute error **0.001506**, and hashes remained `edd6b9bc04dcb4b1` / `b9b2d973209970ef`. This replay validates the independently selected layouts; the complete sweep remains the cross-variant selection evidence, with historical selected medians **3,074.225616 us** FP8 and **11,540.972900 us** TurboQuant35 at 199K.
 - The 1,956-byte pinned raw capture SHA-256 is `bd655cf335f2e3e647dee6f25c63a8bb09da7998b244efbb2d5bf47238f85a90`. After exit, port 30000 remained free, the benchmark allocation and CUDA context were gone, and no SGLang, compiler, or benchmark process remained. The GPU returned to **1,329 MiB used / 30,859 MiB free** with 18% sampled display utilization, 32 C, and 78.90 W; available RAM was 51,294 MiB and disk traffic was 0.524 MiB/s. The MTP-bearing AttnNVFP4 target and explicit DSpark-v2 draft selection remain unchanged, with no fallback added.
 - Final `clang-format --dry-run --Werror` and `git diff --check` passed. A focused source search found zero segment-1,024 variants and exactly four retained call sites: qualification, quick 6,213, default 6,213, and default 199,000. Final status still contains the initial user-owned paths plus the TurboQuant35 documentation updates; no unrelated path was cleaned, reset, or overwritten.
+
+### 2026-08-31 00:22 PDT - split-history Metal decode and an exact 131K xhigh Codex tool turn pass
+
+- Resumed on `main` from `50b0a1e110` with the existing modified documentation
+  set and untracked `test/qwen38_codex_actual_work_gate/` preserved as
+  collaborator-owned work. The native implementation touched only
+  `python/sglang/kernels/aot/csrc/metal/gguf_q4_0.mm`; no Python source was
+  added or changed.
+- Added bounded split-history BF16 decode to the established Apple7 tiled
+  attention path. Active splits scale with sequence length, up to 32 for the
+  131K pool; each split computes a stable local max/sum/numerator and a second
+  Metal kernel merges them with max-rescaled softmax weights. The returned
+  tensor view owns the partial backing storage, preserving asynchronous output
+  lifetime. `SGLANG_MPS_TILED_DECODE=0` retains the online control and
+  `SGLANG_MPS_SPLIT_DECODE=0` retains the unsplit tiled control.
+- Focused M1 Max source measurements were:
+
+  ~~~text
+  seq/cache                 online median   unsplit tiled   split tiled
+  6,234 / 32,768             5.956271 ms     3.185208 ms     0.825604 ms
+  131,072 / 131,073        148.078959 ms    65.117542 ms     4.338625 ms
+  1 / 32,768                   n/a            0.487959 ms     0.485230 ms
+  ~~~
+
+  The 131K split result is 97.1% below the online kernel and 93.3% below the
+  unsplit tiled kernel. Exact BF16 reference comparisons passed at sequence
+  lengths 1, 257, 1,024, 1,025, 32,768, and 131,072 with maximum observed
+  absolute error `3.27825546e-07` in the retained focused test and
+  `3.53902578e-08` at 131,072. A fragmented random request map with nonzero KV
+  and map storage offsets returned 12 distinct unsynchronized output storages;
+  all 12 matched, with maximum error `1.71363354e-07`. One first diagnostic
+  compared flattened and structured output shapes; correcting the harness view
+  passed without a kernel change. Extension compilation and `git diff --check`
+  passed. Commit `5f966ecb0d5f3b9bd3808470ba3ca5d28538505a`
+  (`perf: split Metal decode history`) records the source-only win.
+- A native MPS 131K server first launched with exact
+  `context_length=max_total_tokens=131072`, BF16 KV, one running request,
+  1,024-token prefill chunks, Qwen3 reasoning, Qwen3 Coder tools, and four
+  no-buffer Mamba slots. Weight load used 9.03 GB; the exact KV pool used
+  4.00 GB K plus 4.00 GB V; 11.97 GB remained. Health, language-only model
+  reporting, startup generation, and fixed `12+256` generation passed. The
+  latter completed in 29.054515 seconds with 256 completion tokens and steady
+  server intervals around 8.91-9.31 tok/s.
+- The qualified client artifacts remained byte-identical:
+
+  ~~~text
+  9d7842bb47d15c5b7a63d1507b8e035784bf1ab768de36dbb131088493620409  config.toml
+  862339c156824879852dbdc9ebf096523d6312699fdd8723f13d81091de2ec71  models.json
+  5d59350d7a1568c3c458b05513e8b58ed50d70874f27fb80a06d131e09b9d096  instructions.md
+  ~~~
+
+  Process-scoped overrides selected `model_context_window=131072`,
+  `model_auto_compact_token_limit=117964`, and reasoning effort `xhigh`. Raw
+  HTTP capture proved that the actual `/v1/responses` body omitted
+  `max_output_tokens`; the ordinary 423-character instruction asset and full
+  trusted-repository prompt remained in place.
+- Infrastructure-only `/generate` requests used `max_new_tokens=0` and the
+  same outer `/opt/homebrew/bin/timeout --signal=INT --kill-after=10s 120s` as
+  every actual model attempt. Progressive 2,048/4,160/6,232-token priming
+  completed in individual 80-86 second windows. An initial real client attempt
+  rendered a different 10,609-token plugin-heavy prompt because it selected
+  the ordinary profile; it was stopped at 120 seconds and changed no files.
+  Returning to the isolated home restored the exact 6,232-token render.
+- A four-slot retry and then a five-slot retry each reported zero cached tokens
+  after the date changed at midnight. Exact prompt diagnostics localized the
+  whole change to one token: old/new streams were both 6,232 tokens, shared
+  6,003 leading and 228 trailing tokens, and differed only at index 6,003
+  (`15 -> 16`, the `2026-08-30` to `2026-08-31` environment date). Source
+  inspection confirmed radix identity uses tokens, `extra_key`, and
+  `cache_salt`; reasoning state does not create a separate namespace. The
+  terminal recurrent checkpoint on the compressed path explained the full
+  miss. `--mamba-max-states-per-path` was already unlimited. The five-slot
+  result therefore rules out slot count as the cause of this miss, while the
+  extra slot remains useful headroom for Codex's transient multi-chunk state.
+- The selected five-slot server launched at 00:01:05 PDT with root/listener PID
+  53732 and children 53737/53738/53739. It allocated 0.87 GB of Mamba state,
+  the exact 131,072-token KV pool, and left 10.97 GB available. Health,
+  language-only reporting, compiler ownership, and thermal status passed.
+  The exact launch differed from the prior command only in
+  `--max-mamba-cache-size 5`.
+- Re-tokenizing the unchanged default prompt for August 31 and priming aligned
+  terminal prefixes 2,048, 4,160, and 5,952 produced these exact records:
+
+  ~~~text
+  prefix  cached  new    e2e
+  2,048       0   2,048  81.027809 s
+  4,160   2,048   2,112  85.022104 s
+  5,952   4,160   1,792  72.424614 s
+  ~~~
+
+  The final checkpoint sits on the 64-token recurrent grid before the mutable
+  date token.
+- The actual client then ran exactly under the process-group deadline:
+
+  ~~~text
+  /opt/homebrew/bin/timeout --signal=INT --kill-after=10s 120s \
+    /usr/bin/env \
+    CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home \
+    SGLANG_API_KEY=local /opt/homebrew/bin/codex exec \
+    --strict-config --ephemeral --ignore-rules \
+    -C /Users/dcazares/sglang \
+    -c model_context_window=131072 \
+    -c model_auto_compact_token_limit=117964 \
+    -c 'model_reasoning_effort="xhigh"' --color never --json \
+    'Use exec_command exactly once. Set cmd to /usr/bin/printf QWEN38_XHIGH_SPLIT_DECODE_TOOL=passed. After it succeeds, reply exactly QWEN38_XHIGH_SPLIT_DECODE_READY.' \
+    </dev/null
+  ~~~
+
+  Thread `01a056b0-54e5-7a60-921a-c7a05ef0843a` issued exactly one command,
+  `/bin/zsh -c '/usr/bin/printf QWEN38_XHIGH_SPLIT_DECODE_TOOL=passed'`;
+  it exited zero with exact stdout `QWEN38_XHIGH_SPLIT_DECODE_TOOL=passed`.
+  The visible final ended in exact `QWEN38_XHIGH_SPLIT_DECODE_READY`; Codex
+  exited zero in about 91.6 seconds. Client usage was **12,678 input / 12,328
+  cached input / 188 output / 131 reasoning-output tokens**. The first server
+  turn reused 5,952 tokens and prefetched 280; the tool-continuation turn reused
+  6,376 and prefetched 70. This is the first parser-enabled, normal-prompt,
+  uncapped-output `xhigh` Codex tool round trip inside the requested two-minute
+  contract at a real 131K client/server context. The server remains live for
+  the autonomous multi-file gate; PID and port state are runtime snapshots.
