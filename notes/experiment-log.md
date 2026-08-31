@@ -17380,3 +17380,79 @@ mean 13.929045  17.125658 446.051        39.730
   processes were absent afterward, memory returned to ordinary display
   residency, and thermal/performance status remained normal. The selected
   client mean leaves **0.0114 tok/s** to the required floor.
+
+### 2026-08-31 14:59 PDT - reduction barrier candidate clears direct screens
+
+- Continued on `main` from signed `8448b67c51`, ahead of `origin/main` by
+  27, with a clean initial worktree. Port 30000 and matching server, benchmark,
+  Metal-compiler, Clang, CMake, and Ninja processes were absent. Memory was
+  92--93% free with zero throttled pages; thermal and performance status were
+  normal.
+- Removed one redundant shared-memory initialization barrier from each native
+  RMS reduction. Every active SIMDgroup writes its partial before the first
+  retained barrier; inactive lanes now supply local zeroes to the same final
+  `simd_sum` tree. The production 128-wide recurrent q/k and output-norm
+  reductions use one SIMDgroup, so their exact fast path calculates the
+  reciprocal RMS in registers and avoids shared memory and all threadgroup
+  barriers. Multi-group widths retain the same shared reduction and two
+  synchronization points. The change reaches 127 residual boundaries, all 48
+  recurrent q/k and output-gate owners, and the 16 full-attention q/k owners.
+- Rebuilt with
+  `env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx python/sglang/srt/hardware_backend/mlx/native/build.sh`; the established
+  macOS 26.0/26.2 link warning remained. Candidate dylib SHA-256 is
+  `877e5cd4730e9da48200008fb6090c9ee662a5cbd2558a9753da840ccd10fb47`.
+  A clean detached `8448b67c51` control at
+  `/private/tmp/sglang-perf-a051-control` has dylib SHA-256
+  `8115d08ba1e33eab5813a935c3de00832a00ca2a8137a42ef93512a548089d7c`.
+- Five process-isolated short A/B pairs used exact command shape
+  `env MLX_MAX_MB_PER_BUFFER=128 /private/tmp/bench_qwen38_native LIBRARY /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 128 32 256`.
+  Controls were **21.209490969, 21.194777920, 21.195791927, 21.195075501,
+  21.183056392 tok/s**, mean **21.195638542**. Candidates were
+  **21.236510846, 21.230642997, 21.238067107, 21.226483271,
+  21.244663419 tok/s**, mean **21.235273528**. Every pair was positive;
+  deltas were **+0.027019877, +0.035865077, +0.042275180, +0.031407770,
+  +0.061607027 tok/s**. The mean gain is **+0.039634986 tok/s / +0.186996%**.
+- Clean long-history pairs used the same command with `6237 32 256`.
+  Controls were **20.223613322, 20.212671253, 20.221315385,
+  20.189589845 tok/s**, mean **20.211797451**. Candidates were
+  **20.201094797, 20.237895273, 20.179340407, 20.250507947 tok/s**, mean
+  **20.217209606**. The **+0.005412155 tok/s / +0.026777%** movement is
+  directionally positive and below classification on this four-pair window.
+  A preceding externally contended pair reached only **16.873081 / 17.783915
+  tok/s** and is excluded; both arms retained exact digest
+  `faaecee6edebe116` and last token `19360`. An independent candidate screen
+  reached **20.262422512 tok/s** with the same digest. Every short run retained
+  digest `8ea2430e3fa3d56e` and last token `198`.
+- Added production-shape 24-query-head/4-KV-head/D256 partial-RoPE parity at
+  offset 6,237 to the strict C++ q/k suite. That suite passes both the new
+  full-attention case and the existing recurrent 128/257-width plus outstanding
+  lifetime cases. The recurrent norm/gate and residual RMSNorm C++ suites also
+  pass. The focused native pytest suite passes **8 tests** with its existing
+  16 warnings, and `git diff --check` passes.
+- Launched the candidate with the exact unchanged 131K command recorded in the
+  14:18 entry: process-start `MLX_MAX_MB_PER_BUFFER=128`, real 131,072 context
+  and token pools, one request, five Mamba slots, 8,192-token chunks, radix
+  disabled, both Qwen parsers, incremental stream/scheduler interval four,
+  disabled graph capture, and language-only mode. Resolved `server_args`,
+  `/health`, `/v1/models`, and `/model_info` passed; the latter reported image
+  and audio understanding false.
+- Five sequential exact deterministic `6237+128` requests measured decode
+  **20.074, 20.023, 20.019, 20.025, and 19.959 tok/s**, mean **20.0200**.
+  Prompt rates were **107.193, 107.108, 107.086, 107.183, and 106.917**, mean
+  **107.0974 tok/s**. TTFTs were **58.184574, 58.230955, 58.242985,
+  58.190156, and 58.334867 s**, mean **58.236707 s**. End-to-end times were
+  **64.511144, 64.573584, 64.586933, 64.532233, and 64.697879 s**, mean
+  **64.580355 s**.
+- This first served window improves signed A051's adjacent **19.9886 tok/s**
+  mean by **+0.0314 tok/s / +0.157090%** and clears the user's required 20
+  tok/s floor by **0.0200 tok/s**. All five requests completed exact total
+  6,365, `finish_reason=length`, 585 reasoning characters, 33 fragments,
+  empty visible content, and established output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  Post-window health remained green. Foreground `Ctrl+C` stopped root/listener
+  PID `78831`; expected child `KeyboardInterrupt` traces accompanied clean
+  HTTP shutdown. The PID, port 30000, and matching model/compiler workloads
+  were absent afterward. Memory returned to 92% free with zero throttled
+  pages, and thermal/performance status remained normal. Commit this first
+  verified win, then require an independent committed restart and xhigh Codex
+  actual-work gate before final promotion.

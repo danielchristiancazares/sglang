@@ -162,6 +162,7 @@ constexpr const char* kCausalConvDecodeSiluSource = R"(
 constexpr const char* kResidualRmsNormSource = R"(
         constexpr int N_READS = 4;
         constexpr int SIMD_SIZE = 32;
+        constexpr int SIMD_GROUPS = Threads / SIMD_SIZE;
         threadgroup float local_inv_mean[1];
         threadgroup float local_sums[SIMD_SIZE];
 
@@ -190,16 +191,13 @@ constexpr const char* kResidualRmsNormSource = R"(
         }
 
         acc = simd_sum(acc);
-        if (simd_group == 0) {
-          local_sums[simd_lane] = 0.0f;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
         if (simd_lane == 0) {
           local_sums[simd_group] = acc;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (simd_group == 0) {
-          acc = simd_sum(local_sums[simd_lane]);
+          acc = simd_sum(
+              simd_lane < SIMD_GROUPS ? local_sums[simd_lane] : 0.0f);
           if (simd_lane == 0) {
             local_inv_mean[0] = metal::precise::rsqrt(acc / D + eps);
           }
@@ -222,6 +220,7 @@ constexpr const char* kResidualRmsNormSource = R"(
 constexpr const char* kGatedDeltaQkNormSource = R"(
         constexpr int N_READS = 4;
         constexpr int SIMD_SIZE = 32;
+        constexpr int SIMD_GROUPS = Threads / SIMD_SIZE;
         threadgroup float local_inv_mean[2];
         threadgroup float local_q_sums[SIMD_SIZE];
         threadgroup float local_k_sums[SIMD_SIZE];
@@ -255,25 +254,31 @@ constexpr const char* kGatedDeltaQkNormSource = R"(
 
         q_acc = simd_sum(q_acc);
         k_acc = simd_sum(k_acc);
-        if (simd_group == 0) {
-          local_q_sums[simd_lane] = 0.0f;
-          local_k_sums[simd_lane] = 0.0f;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (simd_lane == 0) {
-          local_q_sums[simd_group] = q_acc;
-          local_k_sums[simd_group] = k_acc;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (simd_group == 0) {
-          q_acc = simd_sum(local_q_sums[simd_lane]);
-          k_acc = simd_sum(local_k_sums[simd_lane]);
+        float q_inv_mean;
+        float k_inv_mean;
+        if (SIMD_GROUPS == 1) {
+          q_inv_mean = metal::precise::rsqrt(q_acc / D + eps);
+          k_inv_mean = metal::precise::rsqrt(k_acc / D + eps);
+        } else {
           if (simd_lane == 0) {
-            local_inv_mean[0] = metal::precise::rsqrt(q_acc / D + eps);
-            local_inv_mean[1] = metal::precise::rsqrt(k_acc / D + eps);
+            local_q_sums[simd_group] = q_acc;
+            local_k_sums[simd_group] = k_acc;
           }
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+          if (simd_group == 0) {
+            q_acc = simd_sum(
+                simd_lane < SIMD_GROUPS ? local_q_sums[simd_lane] : 0.0f);
+            k_acc = simd_sum(
+                simd_lane < SIMD_GROUPS ? local_k_sums[simd_lane] : 0.0f);
+            if (simd_lane == 0) {
+              local_inv_mean[0] = metal::precise::rsqrt(q_acc / D + eps);
+              local_inv_mean[1] = metal::precise::rsqrt(k_acc / D + eps);
+            }
+          }
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+          q_inv_mean = local_inv_mean[0];
+          k_inv_mean = local_inv_mean[1];
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
 
         iteration = 0;
         for (uint base = lid * N_READS; base < D;
@@ -282,9 +287,9 @@ constexpr const char* kGatedDeltaQkNormSource = R"(
             if (base + i < D) {
               auto index = row * D + base + i;
               InT q_norm = static_cast<InT>(
-                  cached_q[iteration][i] * local_inv_mean[0]);
+                  cached_q[iteration][i] * q_inv_mean);
               InT k_norm = static_cast<InT>(
-                  cached_k[iteration][i] * local_inv_mean[1]);
+                  cached_k[iteration][i] * k_inv_mean);
               q_out[index] = q_scale * static_cast<float>(q_norm);
               k_out[index] = k_scale * static_cast<float>(k_norm);
             }
@@ -295,6 +300,7 @@ constexpr const char* kGatedDeltaQkNormSource = R"(
 constexpr const char* kFullAttnQkNormRopeSource = R"(
         constexpr int N_READS = 4;
         constexpr int SIMD_SIZE = 32;
+        constexpr int SIMD_GROUPS = Threads / SIMD_SIZE;
         threadgroup float local_inv_mean[1];
         threadgroup float local_sums[SIMD_SIZE];
 
@@ -327,16 +333,13 @@ constexpr const char* kFullAttnQkNormRopeSource = R"(
         }
 
         acc = simd_sum(acc);
-        if (simd_group == 0) {
-          local_sums[simd_lane] = 0.0f;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
         if (simd_lane == 0) {
           local_sums[simd_group] = acc;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (simd_group == 0) {
-          acc = simd_sum(local_sums[simd_lane]);
+          acc = simd_sum(
+              simd_lane < SIMD_GROUPS ? local_sums[simd_lane] : 0.0f);
           if (simd_lane == 0) {
             local_inv_mean[0] = metal::precise::rsqrt(acc / D + eps);
           }
@@ -380,6 +383,7 @@ constexpr const char* kFullAttnQkNormRopeSource = R"(
 constexpr const char* kGatedDeltaNormGateSource = R"(
         constexpr int N_READS = 4;
         constexpr int SIMD_SIZE = 32;
+        constexpr int SIMD_GROUPS = Threads / SIMD_SIZE;
         threadgroup float local_inv_mean[1];
         threadgroup float local_sums[SIMD_SIZE];
 
@@ -406,21 +410,24 @@ constexpr const char* kGatedDeltaNormGateSource = R"(
         }
 
         acc = simd_sum(acc);
-        if (simd_group == 0) {
-          local_sums[simd_lane] = 0.0f;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (simd_lane == 0) {
-          local_sums[simd_group] = acc;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (simd_group == 0) {
-          acc = simd_sum(local_sums[simd_lane]);
+        float inv_mean;
+        if (SIMD_GROUPS == 1) {
+          inv_mean = metal::precise::rsqrt(acc / D + eps);
+        } else {
           if (simd_lane == 0) {
-            local_inv_mean[0] = metal::precise::rsqrt(acc / D + eps);
+            local_sums[simd_group] = acc;
           }
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+          if (simd_group == 0) {
+            acc = simd_sum(
+                simd_lane < SIMD_GROUPS ? local_sums[simd_lane] : 0.0f);
+            if (simd_lane == 0) {
+              local_inv_mean[0] = metal::precise::rsqrt(acc / D + eps);
+            }
+          }
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+          inv_mean = local_inv_mean[0];
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
 
         iteration = 0;
         for (uint base = lid * N_READS; base < D;
@@ -430,7 +437,7 @@ constexpr const char* kGatedDeltaNormGateSource = R"(
               auto index = row * D + base + i;
               float normed =
                   static_cast<float>(weight[base + i]) *
-                  (cached[iteration][i] * local_inv_mean[0]);
+                  (cached[iteration][i] * inv_mean);
               float z_value = static_cast<float>(z[index]);
               float sigmoid_low =
                   1.0f /
