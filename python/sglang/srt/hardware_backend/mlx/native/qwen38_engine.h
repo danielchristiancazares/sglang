@@ -161,6 +161,11 @@ std::pair<mlx::core::array, mlx::core::array> normalize_gated_delta_qk(
     float q_scale,
     float k_scale,
     float eps);
+mlx::core::array gated_delta_norm_gate(
+    const mlx::core::array& recurrent_out,
+    const mlx::core::array& z,
+    const mlx::core::array& weight,
+    float eps);
 std::pair<mlx::core::array, mlx::core::array> gated_delta_step(
     const mlx::core::array& q,
     const mlx::core::array& k,

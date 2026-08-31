@@ -275,6 +275,73 @@ constexpr const char* kGatedDeltaQkNormSource = R"(
         }
 )";
 
+constexpr const char* kGatedDeltaNormGateSource = R"(
+        constexpr int N_READS = 4;
+        constexpr int SIMD_SIZE = 32;
+        threadgroup float local_inv_mean[1];
+        threadgroup float local_sums[SIMD_SIZE];
+
+        auto row = threadgroup_position_in_grid.x;
+        auto lid = thread_position_in_threadgroup.x;
+        auto simd_lane = thread_index_in_simdgroup;
+        auto simd_group = simdgroup_index_in_threadgroup;
+
+        constexpr int Iterations =
+            (D + Threads * N_READS - 1) / (Threads * N_READS);
+        float cached[Iterations][N_READS];
+        float acc = 0.0f;
+        int iteration = 0;
+        for (uint base = lid * N_READS; base < D;
+             base += Threads * N_READS, ++iteration) {
+          for (int i = 0; i < N_READS; ++i) {
+            if (base + i < D) {
+              auto index = row * D + base + i;
+              float value = static_cast<float>(recurrent_out[index]);
+              cached[iteration][i] = value;
+              acc += value * value;
+            }
+          }
+        }
+
+        acc = simd_sum(acc);
+        if (simd_group == 0) {
+          local_sums[simd_lane] = 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_lane == 0) {
+          local_sums[simd_group] = acc;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_group == 0) {
+          acc = simd_sum(local_sums[simd_lane]);
+          if (simd_lane == 0) {
+            local_inv_mean[0] = metal::precise::rsqrt(acc / D + eps);
+          }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        iteration = 0;
+        for (uint base = lid * N_READS; base < D;
+             base += Threads * N_READS, ++iteration) {
+          for (int i = 0; i < N_READS; ++i) {
+            if (base + i < D) {
+              auto index = row * D + base + i;
+              float normed =
+                  static_cast<float>(weight[base + i]) *
+                  (cached[iteration][i] * local_inv_mean[0]);
+              float z_value = static_cast<float>(z[index]);
+              float sigmoid_low =
+                  1.0f /
+                  (1.0f + metal::precise::exp(metal::abs(z_value)));
+              float sigmoid_value =
+                  (z_value < 0.0f) ? sigmoid_low : 1.0f - sigmoid_low;
+              gated_out[index] = static_cast<GateT>(
+                  (z_value * sigmoid_value) * normed);
+            }
+          }
+        }
+)";
+
 std::vector<array> compute_g_fn(const std::vector<array>& xs) {
   return {mx::exp(-mx::exp(astype(xs[0], mx::float32)) * softplus(xs[1] + xs[2]))};
 }
@@ -318,6 +385,15 @@ const mx::fast::CustomKernelFunction& gated_delta_qk_norm_metal() {
       {"q", "k", "q_scale", "k_scale", "eps"},
       {"q_out", "k_out"},
       kGatedDeltaQkNormSource);
+  return kernel;
+}
+
+const mx::fast::CustomKernelFunction& gated_delta_norm_gate_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_gated_delta_norm_gate",
+      {"recurrent_out", "z", "weight", "eps"},
+      {"gated_out"},
+      kGatedDeltaNormGateSource);
   return kernel;
 }
 
@@ -412,6 +488,41 @@ std::pair<array, array> normalize_gated_delta_qk(
       false,
       {});
   return {outs[0], outs[1]};
+}
+
+array gated_delta_norm_gate(
+    const array& recurrent_out,
+    const array& z,
+    const array& weight,
+    float eps) {
+  if (recurrent_out.shape() != z.shape() || recurrent_out.ndim() == 0 ||
+      weight.ndim() != 1 || recurrent_out.shape().back() != weight.shape()[0] ||
+      recurrent_out.dtype() != mx::float32 || z.dtype() != weight.dtype()) {
+    throw std::runtime_error("invalid gated-delta norm/gate inputs");
+  }
+  const int D = static_cast<int>(recurrent_out.shape().back());
+  if (D <= 0 || D > 4096) {
+    throw std::runtime_error("gated-delta norm/gate width out of range");
+  }
+  const int rows =
+      static_cast<int>(recurrent_out.size() / static_cast<size_t>(D));
+  const int threads_needed = (D + 3) / 4;
+  const int threads = ((threads_needed + 31) / 32) * 32;
+  auto outs = gated_delta_norm_gate_metal()(
+      {recurrent_out, z, weight, array(eps)},
+      {z.shape()},
+      {z.dtype()},
+      {rows * threads, 1, 1},
+      {threads, 1, 1},
+      {
+          {"GateT", mx::fast::TemplateArg{z.dtype()}},
+          {"D", mx::fast::TemplateArg{D}},
+          {"Threads", mx::fast::TemplateArg{threads}},
+      },
+      std::nullopt,
+      false,
+      {});
+  return outs[0];
 }
 
 array silu(const array& x) {
@@ -821,9 +932,14 @@ array Engine::gated_delta(LinearAttn& lin, const array& x) {
   auto updated = gated_delta_update(q, k, v, g, beta, lin.rec_state);
   lin.rec_state = updated.second;
   array out = updated.first;
-  array normed = mx::fast::rms_norm(out, lin.norm, cfg_.rms_norm_eps);
-  array gated = silu(astype(z, mx::float32)) * astype(normed, mx::float32);
-  gated = astype(gated, x.dtype());
+  array gated = S == 1
+      ? gated_delta_norm_gate(out, z, lin.norm, cfg_.rms_norm_eps)
+      : astype(
+            silu(astype(z, mx::float32)) *
+                astype(
+                    mx::fast::rms_norm(out, lin.norm, cfg_.rms_norm_eps),
+                    mx::float32),
+            x.dtype());
   return lin.out_proj(reshape(gated, {B, S, value_dim}));
 }
 
