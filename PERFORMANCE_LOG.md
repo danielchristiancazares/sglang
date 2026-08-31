@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | general depthwise convolution plus concatenated state **19.120031 tok/s** mean | fused decode convolution/state owner **19.221589 tok/s** mean | **+0.101558 / +0.531%**, all five pairs exact | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 08:37 PDT |
 | M1 Max native early-out27 v2, direct deterministic decode after a 6,237-token history | historical direct control **19.151623 tok/s** | standalone C++ harness **19.116578 tok/s** | **-0.035045 / -0.183%** with identical `13eb9a7159a2612f` digest; harness retained | `/private/tmp/bench_qwen38_native ... 6237 32 128` | 2026-08-31 08:09 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate linear-attention b/a projections **18.845 tok/s** | separate b/a projections **18.845 tok/s** | fused 96-row projection reached **18.511 tok/s** (**-1.772%**) with identical output; rejected | same process-isolated exact served A/B as PERF-A039 | 2026-08-31 07:52 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate affine gate/up **18.845 tok/s** | separate affine gate/up **18.845 tok/s** | materialized fused rows reached **18.782 tok/s** (**-0.334%**) with identical output; rejected | process-isolated `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup` A/B | 2026-08-31 07:46 PDT |
@@ -737,6 +738,7 @@ tree throughput can be ranked for production.
 | PERF-A039 | Materialize gate/up affine rows and issue one quantized matmul per MLP. | Native Qwen3.8 target and MTP MLP owner | Rejected and removed | Adjacent deterministic `6237+128` serving changes **18.845 -> 18.782 tok/s** and reported available unified memory falls **28.92 -> 22.28 GB**, while output SHA-256 remains exact. See PERF-FA081. |
 | PERF-A040 | Combine the two 48-row linear-attention b/a affine projections. | Native Qwen3.8 `Engine::gated_delta` owner | Rejected and removed | Adjacent deterministic `6237+128` serving changes **18.845 -> 18.511 tok/s** (-1.772%) with the same output SHA-256 and **28.89 GB** startup headroom. See PERF-FA082. |
 | PERF-A041 | Add a standalone direct native Qwen3.8 benchmark with deterministic tokens and a stable digest. | C++ benchmark infrastructure | Retained | The synchronized `6237 / 32 warm / 128 timed` run reaches **19.116578 tok/s**, within **0.183%** of the signed **19.151623 tok/s** direct control, with matching digest `13eb9a7159a2612f`. |
+| PERF-A042 | Fuse single-token causal convolution with its next-state window. | Native Qwen3.8 recurrent decode owner | Retained; served qualification pending | Five adjacent exact long-history pairs improve mean decode **19.120031 -> 19.221589 tok/s** (+0.531%). An isolated BF16 C++ parity test matches MLX convolution and state output exactly at production width. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -2642,3 +2644,32 @@ tree throughput can be ranked for production.
   shader timeline data is disabled in that template, so the trace supplies
   dispatch-density evidence while stage attribution still needs an engine-side
   measurement seam.
+
+### 2026-08-31 08:37 PDT - PERF-A042 fused decode convolution state
+
+- Added a single-token custom Metal owner for the 48 recurrent layers. It reads
+  the existing three-row causal-convolution state and new QKV row, accumulates
+  the same four BF16 taps in float, rounds the convolution result to BF16, and
+  emits a distinct shifted next-state allocation from one launch. Multi-token
+  prefill retains MLX's general concatenate, slice, and depthwise-convolution
+  path.
+- Five interleaved process-isolated short-history `128 / 32 warm / 256 timed`
+  controls measured **20.205545, 20.045465, 20.168646, 20.161979,
+  20.152875 tok/s**, mean **20.146902**. Candidates measured **20.240219,
+  20.216071, 20.211578, 20.222553, 20.220025**, mean **20.222089 tok/s**,
+  a **0.373%** increase. Every run produced digest `8ea2430e3fa3d56e` and
+  last token `198`.
+- Five interleaved process-isolated 6,237-history controls measured
+  **19.142256, 19.143054, 19.069096, 19.125504, 19.120243 tok/s**, mean
+  **19.120031**. Candidates measured **19.189544, 19.229916, 19.237295,
+  19.223291, 19.227897**, mean **19.221589 tok/s**, a **0.531%** increase.
+  All ten long runs produced digest `faaecee6edebe116` and last token `19360`.
+- The new C++ parity executable compares the production custom kernel with
+  MLX's BF16 concatenate, depthwise `conv1d`, and state slice. Production
+  width `(B=1,K=4,D=10240)` and a non-tile-aligned `(B=2,K=3,D=257)` case
+  match exactly for convolution and next-state output. Strict compilation
+  passes with MLX treated as a system include; all eight focused native engine
+  tests pass.
+- The direct full-model gate clears the candidate for a signed recovery point.
+  Process-isolated served qualification with real 131,072 context/token pools
+  remains the next promotion gate.
