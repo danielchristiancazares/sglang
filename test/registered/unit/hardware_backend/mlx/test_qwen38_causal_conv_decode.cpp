@@ -66,10 +66,11 @@ bool CheckCase(int batch, int kernel_size, int channels) {
       mx::array(weight_values.data(), {channels, kernel_size, 1}, mx::float32),
       mx::bfloat16);
 
-  auto actual = sglang::mlx_qwen38::causal_conv_decode(state, qkv, weight);
+  auto actual =
+      sglang::mlx_qwen38::causal_conv_decode_silu(state, qkv, weight);
   mx::array conv_input = mx::concatenate({state, qkv}, 1);
-  mx::array expected_conv =
-      mx::conv1d(conv_input, weight, 1, 0, 1, channels);
+  mx::array expected_conv = sglang::mlx_qwen38::silu(
+      mx::conv1d(conv_input, weight, 1, 0, 1, channels));
   mx::array expected_state = mx::slice(
       conv_input,
       {0, 1, 0},
@@ -79,12 +80,34 @@ bool CheckCase(int batch, int kernel_size, int channels) {
       ExactEqual("state", actual.second, expected_state);
 }
 
+bool CheckExtremeActivations() {
+  constexpr int kChannels = 4;
+  const float zeros[kChannels] = {};
+  const float qkv_values[kChannels] = {-23.0f, 23.0f, -113.0f, 113.0f};
+  const float weight_values[kChannels * 2] = {
+      0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f};
+  mx::array state = mx::astype(
+      mx::array(zeros, {1, 1, kChannels}, mx::float32), mx::bfloat16);
+  mx::array qkv = mx::astype(
+      mx::array(qkv_values, {1, 1, kChannels}, mx::float32), mx::bfloat16);
+  mx::array weight = mx::astype(
+      mx::array(weight_values, {kChannels, 2, 1}, mx::float32), mx::bfloat16);
+
+  auto actual =
+      sglang::mlx_qwen38::causal_conv_decode_silu(state, qkv, weight);
+  mx::array conv_input = mx::concatenate({state, qkv}, 1);
+  mx::array expected_conv = sglang::mlx_qwen38::silu(
+      mx::conv1d(conv_input, weight, 1, 0, 1, kChannels));
+  return ExactEqual("extreme convolution/SiLU", actual.first, expected_conv);
+}
+
 }  // namespace
 
 int main() {
-  if (!CheckCase(1, 4, 10240) || !CheckCase(2, 3, 257)) {
+  if (!CheckCase(1, 4, 10240) || !CheckCase(2, 3, 257) ||
+      !CheckExtremeActivations()) {
     return 1;
   }
-  std::cout << "qwen38 causal-convolution decode parity passed\n";
+  std::cout << "qwen38 causal-convolution/SiLU decode parity passed\n";
   return 0;
 }

@@ -146,7 +146,7 @@ class Engine {
 
 mlx::core::array silu(const mlx::core::array& x);
 mlx::core::array softplus(const mlx::core::array& x);
-std::pair<mlx::core::array, mlx::core::array> causal_conv_decode(
+std::pair<mlx::core::array, mlx::core::array> causal_conv_decode_silu(
     const mlx::core::array& state,
     const mlx::core::array& qkv,
     const mlx::core::array& weight);
