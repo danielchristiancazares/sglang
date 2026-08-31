@@ -305,15 +305,18 @@ def _get_tool_schema(tool: Tool) -> dict:
 
 
 def get_schema_properties(schema: Any) -> Dict[str, Any]:
-    """Top-level ``properties`` of a tool ``parameters`` schema, descending
-    into ``anyOf``/``oneOf``/``allOf`` branches when the top level declares
-    none (legal JSON Schema, e.g. discriminated-union arguments)."""
+    """Return top-level properties, including properties below combinators.
+
+    A tool's parameters may legally declare its object variants beneath
+    ``anyOf``, ``oneOf``, or ``allOf`` instead of defining ``properties`` at
+    the top level. Merge those branches recursively, keeping the first schema
+    for a property that appears in more than one branch.
+    """
     if not isinstance(schema, dict):
         return {}
+
     properties = schema.get("properties")
-    if isinstance(properties, dict):
-        return properties
-    merged: Dict[str, Any] = {}
+    merged: Dict[str, Any] = dict(properties) if isinstance(properties, dict) else {}
     for keyword in ("anyOf", "oneOf", "allOf"):
         branches = schema.get(keyword)
         if isinstance(branches, list):

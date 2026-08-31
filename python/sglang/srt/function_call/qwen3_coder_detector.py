@@ -86,8 +86,7 @@ class Qwen3CoderDetector(BaseFormatDetector):
                     if properties or "properties" in params:
                         return properties
                     return params
-                else:
-                    return {}
+                return {}
         logger.warning(f"Tool '{func_name}' is not defined in the tools list.")
         return {}
 

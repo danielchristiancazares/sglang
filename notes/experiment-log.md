@@ -9647,3 +9647,104 @@ mean 13.929045  17.125658 446.051        39.730
   All six PIDs exited, port 30000 retained only ownerless `TIME_WAIT`, compiler
   workers were absent, and the RTX 5090 returned to **939 MiB used / 31,249 MiB
   free**, 0% utilization, and 29 C.
+
+### 2026-08-30 17:33 PDT - selected upstream hardening backports reach host qualification
+
+- Continued on `main` at signed commit
+  `d802d75bcc6f0c1a86f59fd29de4e917edb16249`, one commit ahead of
+  `origin/main`. Daniel's six benchmark/recovery document changes, 19
+  untracked native C++23 files, and isolated native-client build directory
+  remained owned by the parallel benchmark handoff and untouched. The Git
+  index was empty and every backport target path was clean before editing.
+- Daniel explicitly authorized the reviewed Python backports, opening the
+  repository's implementation-language boundary for these upstream
+  correctness/hardening adaptations. Applied five focused changes while
+  retaining local architecture and Windows dependency markers:
+  - `137fab2f48ad6137214c4c4625eef163424f1e21`: pin
+    `compressed-tensors==0.18.0`; the installed environment already resolves
+    exactly 0.18.0, so present runtime bits remain unchanged;
+  - the credential-safety slice of
+    `0149f56e84e4118eedf53f40badb5843397dd50a`: set
+    `persist-credentials: false` on the three `/rerun-test` checkouts that
+    execute a selected PR ref, leaving the broader contributor-policy rewrite
+    outside this backport;
+  - `c7e2c08d14da7b1e3df9af4b7b637f7d683d41b7`: reject raw or JSON-decoded
+    NUL bytes in regex, EBNF, JSON-schema, and structural-tag grammar specs
+    before pinned XGrammar can enter its native crash path;
+  - `5b7c62d5d685f0b14859ac26db8d3cacbd50ffa7`: cap stop strings and stop
+    regexes at 32 each and each stop regex at 256 UTF-8 bytes; and
+  - the Qwen-focused slice of
+    `0665102ce5e2786ec569dc22c017f2f898a94313`: resolve tool properties
+    recursively through top-level `anyOf`/`oneOf`/`allOf`, preserving the first
+    duplicate schema and applying typed conversion in one-shot and streaming
+    Qwen3 Coder parsing. Upstream-only detectors remain outside the change.
+- Focused worker gates passed independently:
+  - constrained grammar: **33 passed**, **17 subtests**;
+  - sampling parameters: **74 passed**, **11 subtests**; and
+  - Qwen schema/parser focus: **23 passed**, 188 deselected.
+  The whole function-call parser module later reached 65 passes before its
+  pre-existing DeepSeekV32 fixture read a downloaded tokenizer config through
+  Windows CP1252 and raised `UnicodeDecodeError`; the focused Qwen path is
+  independent of that external fixture.
+- The consolidated host window passed **198 tests**, **28 subtests**, with 17
+  established warnings. Focused `compileall`, TOML parsing, YAML parsing,
+  `compressed_tensors` import/version, and full `git diff --check` passed.
+  Ruff, Black, and actionlint are absent from the environment. `uv pip check`
+  retained its established four optional FlashInfer companion findings:
+  absent `cuda-tile`, `nccl4py`, `nvidia-cudnn-frontend`, and
+  `nvidia-cutlass-dsl` under the local Windows port.
+- The next gate is one controlled five-slot launch, followed by malformed-NUL
+  and over-limit request rejection, a top-level-union Qwen function call, the
+  ordinary multiply call, and the real multi-chunk Codex Code Mode round trip.
+- Adversarial cross-review found that upstream's schema helper returned early
+  when a schema combined direct `properties` with `allOf`/`oneOf`/`anyOf`.
+  The local backport now merges both sources, gives direct declarations first
+  precedence, and has a focused mixed-schema regression. The Qwen-focused
+  suite consequently passes **24/24**. The final consolidated window after
+  that repair passes **199 tests** and **28 subtests** with the same 17
+  established warnings.
+- Controlled full-model validation used the foreground command:
+
+  ```powershell
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 `
+    -MaxMambaCacheSize 5
+  ```
+
+  It started at **17:34:25 PDT**, resolved the selected checkpoint, five FP32
+  Mamba slots, one running request, exact 200,000-token target/draft pools and
+  context, chunk 7,680, language-only surface, and the qualified linear
+  speculative path. Target verify, draft decode, and draft extend graph
+  capture completed in **17.75**, **1.04**, and **0.85 s**. The server became
+  ready at **17:35:27 PDT**; `/health`, `/v1/models`, and `/model_info` passed
+  with served ID `qwen3.8-27b`, maximum length 200,000, and image/audio false.
+- Live fail-closed gates passed while preserving listener health:
+  - `/generate` with regex `a\u0000b` returned HTTP 400 and exact diagnostic
+    `Invalid regex: NUL bytes (\u0000) are not allowed`; the server logged the
+    rejection before native grammar dispatch; and
+  - `/v1/chat/completions` with 33 stop strings returned HTTP 400 and exact
+    diagnostic `at most 32 stop strings are allowed, got 33`.
+- A non-streaming `/v1/responses` request declared `record_values` through a
+  top-level `oneOf` schema and asked for count 7 plus verbose true. Qwen emitted
+  exactly one completed function call with arguments
+  `{"count": 7, "verbose": true}`; JSON preserved integer and boolean types.
+  The ordinary Chat Completions control retained `finish_reason=tool_calls`,
+  224 reasoning characters, and exactly one
+  `multiply({"a":37,"b":19})` call.
+- The real Codex command was unchanged from the qualification contract.
+  Ephemeral session `01a0553f-56be-7561-b589-0c2080d320e2` executed exactly
+  one `pwsh.exe -Command 'git status --short'`, received the complete
+  pre-existing Tombstead status with exit code zero, consumed it, returned
+  visible exact `CODEX TOOL READY`, and exited zero. Usage was **24,766 input**,
+  **12,352 cached input**, **180 output**, and **121 reasoning-output tokens**.
+  Tombstead status remained byte-for-byte identical.
+- The first Codex Responses turn crossed the real boundary as 7,680 new tokens
+  with 64 cached and 4,590 pending, then a 4,608-token tail. The tool-output
+  turn used a 12,288-token cached prefix plus 192 new tokens. Both calls
+  returned HTTP 200 and the scheduler remained healthy.
+- A sequential cache flush succeeded. The verified owned tree was PowerShell
+  `34812` -> `sglang.exe 36164` -> Python wrapper `32264` -> listener/tokenizer
+  `28924`, with scheduler `7608` and detokenizer `21004`. Ctrl+C through the
+  foreground session shut down the complete tree. All six PIDs exited, port
+  30000 retained only ownerless `TIME_WAIT`, compiler workers were absent, and
+  the RTX 5090 returned to **1,126 MiB used / 31,062 MiB free**, 24% transient
+  display utilization, and 31 C.

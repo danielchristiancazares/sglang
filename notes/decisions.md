@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-30 15:08 PDT.
+**Reconciled through:** 2026-08-30 17:38 PDT.
 
 ## Selected production choices
 
@@ -37,6 +37,7 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Scheduling | Receive interval 4; stream interval 4; incremental output | Measured fixed-work wins while retaining client streaming behavior |
 | Codex client lane | Launcher override `-MaxMambaCacheSize 5`; one request; close failed Qwen sessions before server restart | A real 10.5K-token Codex prompt exhausted the four-slot pool while caching its unfinished 7,680-token chunk. Five slots passed the same multi-chunk boundary, retained-cache pressure, exact 200K capacity, post-capacity Codex, semantics, and OpenCode2; four slots remain the benchmarked production default |
 | Codex Code Mode ABI | Adapt Responses `custom` tools through a synthetic one-string Qwen function and restore custom call/output wire items at the API boundary | Codex 0.151.0 rejected JSON-shaped `exec` calls as incompatible. The adapter passes 68 focused tests; a real 12.4K-token Tombstead turn executed one read-only command, consumed its output, returned exact `CODEX TOOL READY`, and preserved ordinary function calls |
+| Selected upstream hardening backports | Pin compressed-tensors 0.18.0; strip credentials from executable PR checkouts; reject NUL grammars; bound stop inputs; resolve Qwen tool properties across schema combinators | Explicitly authorized exception for the reviewed Python correctness changes. Consolidated host coverage passes 199 tests/28 subtests; live malformed requests fail closed, `oneOf` arguments retain integer/boolean types, ordinary multiply and multi-chunk Codex Code Mode remain qualified |
 | Single-rank token synchronization | Treat TP or attention-TP size one as an identity before the sampler's grammar/env collective | Native-Windows Gloo lacks the CUDA all-reduce registration in the installed PyTorch build. The guard preserves every multi-rank MIN reduction; isolated CUDA/Gloo and simultaneous parsed-tool/Codex Responses gates pass |
 | Implementation language | C++/CUDA hot paths with thin Python integration | Explicit user direction after the display-GPU incident; preserves graph capture and native dispatch |
 | Tree/SWOR implementation | Retained as opt-in, production-ineligible infrastructure | A non-front unified-pool KV/compaction defect exists outside the measured static-pool route; current-config full cross-cycle parity is still required, and raw-composite SWOR RNG is invalid |
