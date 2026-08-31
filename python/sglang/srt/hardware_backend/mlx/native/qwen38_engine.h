@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "mlx/array.h"
@@ -145,6 +146,10 @@ class Engine {
 
 mlx::core::array silu(const mlx::core::array& x);
 mlx::core::array softplus(const mlx::core::array& x);
+std::pair<mlx::core::array, mlx::core::array> causal_conv_decode(
+    const mlx::core::array& state,
+    const mlx::core::array& qkv,
+    const mlx::core::array& weight);
 std::pair<mlx::core::array, mlx::core::array> gated_delta_step(
     const mlx::core::array& q,
     const mlx::core::array& k,
