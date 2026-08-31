@@ -28,13 +28,15 @@ bool ExactEqual(
     std::string_view label,
     const mx::array& actual,
     const mx::array& expected) {
-  mx::eval(actual, expected);
   if (actual.shape() != expected.shape() || actual.dtype() != expected.dtype()) {
     std::cerr << label << " metadata mismatch\n";
     return false;
   }
-  const float* actual_data = actual.data<float>();
-  const float* expected_data = expected.data<float>();
+  mx::array actual_f = mx::astype(actual, mx::float32);
+  mx::array expected_f = mx::astype(expected, mx::float32);
+  mx::eval(actual_f, expected_f);
+  const float* actual_data = actual_f.data<float>();
+  const float* expected_data = expected_f.data<float>();
   for (std::size_t i = 0; i < actual.size(); ++i) {
     if (actual_data[i] != expected_data[i]) {
       std::cerr << label << " mismatch at " << i << ": " << actual_data[i]
@@ -107,15 +109,80 @@ bool CheckOutstandingOutputs() {
   return true;
 }
 
+bool CheckFullAttentionNormRope() {
+  constexpr int kBatch = 1;
+  constexpr int kQueryHeads = 24;
+  constexpr int kKvHeads = 4;
+  constexpr int kWidth = 256;
+  constexpr int kRopeDims = 64;
+  constexpr int kOffset = 6237;
+  constexpr float kEps = 1e-6f;
+  constexpr float kRopeTheta = 10000000.0f;
+
+  const auto qg_values = MakeValues(
+      static_cast<std::size_t>(kBatch * kQueryHeads * 2 * kWidth), 29);
+  const auto k_values = MakeValues(
+      static_cast<std::size_t>(kBatch * kKvHeads * kWidth), 61);
+  const auto q_weight_values = MakeValues(kWidth, 7);
+  const auto k_weight_values = MakeValues(kWidth, 11);
+  mx::array qg = mx::astype(
+      mx::array(
+          qg_values.data(),
+          {kBatch, 1, kQueryHeads, 2 * kWidth},
+          mx::float32),
+      mx::bfloat16);
+  mx::array k = mx::astype(
+      mx::array(
+          k_values.data(), {kBatch, 1, kKvHeads, kWidth}, mx::float32),
+      mx::bfloat16);
+  mx::array q_weight = mx::astype(
+      mx::array(q_weight_values.data(), {kWidth}, mx::float32),
+      mx::bfloat16);
+  mx::array k_weight = mx::astype(
+      mx::array(k_weight_values.data(), {kWidth}, mx::float32),
+      mx::bfloat16);
+
+  auto actual = sglang::mlx_qwen38::full_attn_qk_norm_rope(
+      qg,
+      k,
+      q_weight,
+      k_weight,
+      kEps,
+      kRopeTheta,
+      kRopeDims,
+      kOffset);
+  mx::array q = mx::split(qg, 2, -1)[0];
+  q = mx::fast::rms_norm(q, q_weight, kEps);
+  mx::array expected_k = mx::fast::rms_norm(k, k_weight, kEps);
+  q = mx::transpose(q, {0, 2, 1, 3});
+  expected_k = mx::transpose(expected_k, {0, 2, 1, 3});
+  q = mx::fast::rope(
+      q,
+      kRopeDims,
+      /*traditional=*/false,
+      kRopeTheta,
+      1.0f,
+      kOffset);
+  expected_k = mx::fast::rope(
+      expected_k,
+      kRopeDims,
+      /*traditional=*/false,
+      kRopeTheta,
+      1.0f,
+      kOffset);
+  return ExactEqual("full-attention q", actual.first, q) &&
+      ExactEqual("full-attention k", actual.second, expected_k);
+}
+
 }  // namespace
 
 int main() {
   const float inv = 1.0f / std::sqrt(128.0f);
   if (!CheckCase(16, 128, inv * inv, inv) ||
       !CheckCase(3, 257, 0.03125f, 0.176776692f) ||
-      !CheckOutstandingOutputs()) {
+      !CheckOutstandingOutputs() || !CheckFullAttentionNormRope()) {
     return 1;
   }
-  std::cout << "qwen38 gated-delta q/k normalization parity passed\n";
+  std::cout << "qwen38 q/k normalization and RoPE parity passed\n";
   return 0;
 }
