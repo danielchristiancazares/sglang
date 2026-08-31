@@ -155,7 +155,7 @@ diffusion_musa = [
 
 # https://docs.sglang.io/platforms/mps.md
 srt_mps = [
-    "mlx",
+    "mlx>=0.32.2",
     "mlx-lm",
     "sglang[runtime_common]",
     "torch==2.11.0",
