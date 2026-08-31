@@ -70,6 +70,9 @@ class ResponsesRequestTestCase(CustomTestCase):
         self.assertEqual(request.tools[0].type, "function")
         self.assertEqual(request.tools[0].name, "lookup")
         self.assertTrue(request.tools[0].strict)
+        serialized = request.tools[0].model_dump()
+        self.assertNotIn("format", serialized)
+        self.assertNotIn("defer_loading", serialized)
 
     def test_function_tool_requires_name(self):
         with self.assertRaises(ValueError):
@@ -84,6 +87,36 @@ class ResponsesRequestTestCase(CustomTestCase):
                 store=False,
             )
 
+    def test_custom_tool_preserves_codex_freeform_contract(self):
+        request = ResponsesRequest(
+            model="x",
+            input="call exec",
+            tools=[
+                {
+                    "type": "custom",
+                    "name": "exec",
+                    "description": "Run Code Mode JavaScript.",
+                    "format": {
+                        "type": "grammar",
+                        "syntax": "lark",
+                        "definition": "start: SOURCE",
+                    },
+                    "defer_loading": False,
+                }
+            ],
+            store=False,
+        )
+
+        tool = request.tools[0]
+        self.assertEqual(tool.name, "exec")
+        self.assertEqual(tool.format["syntax"], "lark")
+        self.assertFalse(tool.defer_loading)
+        self.assertIn("format", tool.model_dump())
+        with self.assertRaises(ValueError):
+            ResponsesRequest(
+                model="x", input="hi", tools=[{"type": "custom"}], store=False
+            )
+
     def test_extended_tool_types_accepted(self):
         for tool_type in (
             "web_search",
@@ -94,7 +127,6 @@ class ResponsesRequestTestCase(CustomTestCase):
             "computer_use_preview",
             "local_shell",
             "mcp",
-            "custom",
             "namespace",
         ):
             request = ResponsesRequest(
@@ -411,6 +443,7 @@ class ToolChoiceObjectFormTestCase(CustomTestCase):
             ("none", "none"),
             (named, named),
             ({"type": "function", "function": {"name": "get_weather"}}, named),
+            ({"type": "custom", "name": "exec"}, {"type": "function", "name": "exec"}),
             ({"type": "web_search"}, "auto"),
             ({"type": "mcp", "server_label": "s"}, "auto"),
         ):

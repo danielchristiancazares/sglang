@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-30
-15:08 PDT.
+16:59 PDT.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -134,6 +134,18 @@ unfinished first chunk was being donated to the radix cache. Five slots passed
 the same multi-chunk boundary, sequential retained-prefix pressure, exact
 `199000+16`, a post-capacity Codex request, sampled reasoning, parsed tools,
 and standalone OpenCode2 while preserving one-request admission.
+
+Codex Code Mode custom tools are now qualified on the non-Harmony Responses
+path. SGLang preserves the custom-tool grammar contract, presents Qwen with a
+one-string synthetic function, accepts its observed `functions.exec` alias or
+direct-shell `cmd` prior, and restores the exact `custom_tool_call` input and
+stream events Codex expects. The following turn replays
+`custom_tool_call_output` through the Qwen chat template, including Codex's
+lazy array-form output representation. A real Tombstead gate crossed the
+7,680-token boundary, executed exactly one `git status --short`, consumed its
+complete output, returned exact `CODEX TOOL READY`, and left both repository
+status and server health intact. The validation server was cache-flushed and
+stopped; port 30000 is free and the GPU is at ordinary display residency.
 
 Exit an earlier Qwen Codex TUI before restarting this listener. Codex's
 unbounded reconnect mode can retain multiple failed turns and submit them

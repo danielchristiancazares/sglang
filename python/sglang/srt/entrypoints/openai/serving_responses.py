@@ -102,6 +102,68 @@ class _MediaInputValidationError(ValueError):
     pass
 
 
+def _response_tool_wire_name(
+    request: ResponsesRequest, emitted_name: Optional[str], tool_type: str
+) -> Optional[str]:
+    """Resolve Qwen's optional ``functions.`` namespace to a Responses tool."""
+    if not emitted_name:
+        return None
+    names = {
+        tool.name
+        for tool in request.tools
+        if tool.type == tool_type and tool.name is not None
+    }
+    if emitted_name in names:
+        return emitted_name
+    if emitted_name.startswith("functions."):
+        unqualified = emitted_name.removeprefix("functions.")
+        if unqualified in names:
+            return unqualified
+    return None
+
+
+def _custom_tool_input(name: str, arguments: str) -> str:
+    """Unwrap the synthetic function arguments used to prompt non-native models."""
+    if not arguments:
+        return ""
+    try:
+        parsed = orjson.loads(arguments)
+    except orjson.JSONDecodeError:
+        return arguments
+    if not isinstance(parsed, dict):
+        return arguments
+
+    for key in ("input", "code", "source", "javascript", "js"):
+        value = parsed.get(key)
+        if isinstance(value, str):
+            return value
+
+    # Qwen may retain its direct-shell prior even when Codex exposes only the
+    # free-form Code Mode exec tool. Preserve that intent as one nested call.
+    cmd = parsed.get("cmd")
+    if name == "exec" and isinstance(cmd, str):
+        command_args = dict(parsed)
+        for key in ("yield_time_ms", "max_output_tokens"):
+            value = command_args.get(key)
+            if isinstance(value, str) and value.isdecimal():
+                command_args[key] = int(value)
+        for key in ("login", "tty"):
+            value = command_args.get(key)
+            if isinstance(value, str) and value.lower() in ("true", "false"):
+                command_args[key] = value.lower() == "true"
+        encoded = orjson.dumps(command_args).decode("utf-8")
+        return (
+            f"const result = await tools.exec_command({encoded});\n"
+            "text(result.output);"
+        )
+
+    if len(parsed) == 1:
+        only_value = next(iter(parsed.values()))
+        if isinstance(only_value, str):
+            return only_value
+    return arguments
+
+
 def _build_output_text_logprobs(meta_info: dict) -> list[Logprob]:
     """Reshape decoded ``meta_info`` logprobs into the Responses logprob type,
     covering every generated token."""
@@ -901,7 +963,7 @@ class OpenAIServingResponses(OpenAIServingChat):
                 id=f"ctc_{random_uuid()[:8]}",
                 call_id=call_id,
                 name=name,
-                input=decode_custom_tool_input(arguments),
+                input=_custom_tool_input(name, arguments),
             )
         return ResponseFunctionToolCall(
             arguments=arguments,
@@ -1056,7 +1118,9 @@ class OpenAIServingResponses(OpenAIServingChat):
                     for call_info in call_info_list:
                         tool_call_items.append(
                             self._make_tool_call_item(
-                                call_info.name,
+                                _response_tool_wire_name(request, call_info.name, "custom")
+                                or _response_tool_wire_name(request, call_info.name, "function")
+                                or call_info.name,
                                 call_info.parameters or "",
                                 custom_names,
                             )
@@ -1085,7 +1149,11 @@ class OpenAIServingResponses(OpenAIServingChat):
                         )
                         tool_call_items.append(
                             self._make_tool_call_item(
-                                tool["name"], arguments, custom_names
+                                _response_tool_wire_name(request, tool["name"], "custom")
+                                or _response_tool_wire_name(request, tool["name"], "function")
+                                or tool["name"],
+                                arguments,
+                                custom_names,
                             )
                         )
                     content = ""
@@ -1217,11 +1285,26 @@ class OpenAIServingResponses(OpenAIServingChat):
 
     @staticmethod
     def _flatten_tool_output(output: Any) -> str:
-        """``output`` may be a string or an array of content parts (OpenAI allows
-        both); the chat tool message needs a string."""
-        if isinstance(output, list):
-            return "".join(p.get("text", "") for p in output if isinstance(p, dict))
-        return output
+        """Flatten a Responses tool output, including Pydantic lazy iterators."""
+        if isinstance(output, str):
+            return output
+        if output is None:
+            return ""
+        if isinstance(output, dict):
+            entries = [output]
+        else:
+            try:
+                entries = list(output)
+            except TypeError:
+                return str(output)
+
+        text_parts = []
+        for entry in entries:
+            if hasattr(entry, "model_dump"):
+                entry = entry.model_dump(exclude_none=True)
+            if isinstance(entry, dict):
+                text_parts.append(entry.get("text", ""))
+        return "".join(text_parts)
 
     @staticmethod
     def _chat_tool_call_message(message: dict, name: Any, arguments: str) -> dict:
@@ -2168,7 +2251,7 @@ class OpenAIServingResponses(OpenAIServingChat):
             arguments = state["arguments"]
             events: list = []
             if state["custom"]:
-                payload = decode_custom_tool_input(arguments)
+                payload = _custom_tool_input(state["name"], arguments)
                 # Deltas cannot be retracted, so a payload that no longer
                 # extends what was already streamed defers to the streamed text.
                 if not payload.startswith(state["payload"]):
@@ -2390,7 +2473,12 @@ class OpenAIServingResponses(OpenAIServingChat):
                                     for ev in _close_tool_call_state(other_index):
                                         yield ev
                             current_output_index += 1
-                            name = call.name or ""
+                            name = (
+                                _response_tool_wire_name(request, call.name, "custom")
+                                or _response_tool_wire_name(request, call.name, "function")
+                                or call.name
+                                or ""
+                            )
                             is_custom = name in custom_names
                             state = {
                                 "item_id": (
