@@ -17456,3 +17456,154 @@ mean 13.929045  17.125658 446.051        39.730
   pages, and thermal/performance status remained normal. Commit this first
   verified win, then require an independent committed restart and xhigh Codex
   actual-work gate before final promotion.
+
+### 2026-08-31 15:09 PDT - reduced RMS barriers signed; independent serving holds the floor
+
+- Signed the exact tested barrier change as
+  `173cd4bc719229f0a3caf805f0cfed7d3e27eb51` with subject
+  `perf(mps): reduce native RMS barriers`; signature verification reports the
+  expected good EDDSA signature. The branch was `main`, ahead of
+  `origin/main` by 28, and the source worktree was clean after the commit.
+- An independent committed-source restart used the same real-131K launch and
+  deterministic `6237+128` client shape from the 14:59 entry. Its five-request
+  decode mean was **20.0146 tok/s**. Together with the first window's
+  **20.0200**, the ten-request aggregate is **20.0173 tok/s**. The individual
+  second-window JSON records remain in the originating client transcript; the
+  compacted handoff retained their mean. Counts, `finish_reason`, reasoning,
+  fragments, and the established deterministic digest remained unchanged.
+- The independent server stopped through foreground `Ctrl+C`. Port 30000,
+  matching native model/benchmark/compiler processes, and the known process
+  tree were absent afterward. The first committed optimization therefore
+  clears the requested floor on deterministic serving across two process
+  starts.
+
+### 2026-08-31 16:11 PDT - native sampling and bounded xhigh expose the continuation replay
+
+- Captured two fresh Codex 0.151.0 Responses bodies without modifying the
+  harness. Both rendered the same **6,236-token** input and requested
+  `max_new_tokens=124834`, temperature 1.0, top-p 0.95, top-k 20, and
+  `require_reasoning=true`; neither supplied a practical output cap. Source
+  inspection then confirmed that the native engine always selected argmax even
+  when the server resolved `mlx_enable_sampling=True`.
+- Added opt-in `SGLANG_MLX_NATIVE_SAMPLING`, deterministic
+  `SGLANG_MLX_NATIVE_SAMPLING_SEED`, and a Metal-resident top-k-20/top-p-0.95
+  sampling graph. Isolated seed 67396869 screens reproduced their digest;
+  seed 42 changed it, proving that the selected token path is stochastic.
+- Added `SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS`. With a 256-token value, a
+  real strict-config xhigh request for `Return exactly QWEN38_XHIGH_READY.`
+  exited zero at 6,197 input / 293 output / 257 reasoning-output tokens. A
+  bounded chat tool probe separately returned exactly one parsed
+  `multiply({"a":37,"b":19})`, `finish_reason=tool_calls`, and the correct
+  result 703.
+- The first shell-tool Codex turn issued `/bin/pwd` exactly once and observed
+  `/Users/dcazares/sglang`, then its 6,580-token continuation replayed the
+  entire prompt and missed the 120-second client bound. Native trace showed
+  why: the terminal engine history contained a generated pipeline token, so
+  exact terminal-prefix reuse failed even though the prior prompt remained a
+  strict prefix of the continuation.
+- Stored one exact prompt-boundary recurrent/KV snapshot before generation.
+  On a later request, exact terminal-prefix reuse still has precedence; when
+  terminal history differs, a strict prefix match against the prompt snapshot
+  restores that state and evaluates only the appended assistant/tool suffix.
+  Synthetic requests `[100,200,300]` and `[100,200,300,400]` reported
+  `history=4 input=4 common=3 snapshot=3 snapshot_common=3
+  reuse_current=0 reuse_snapshot=1` on the second request.
+- The same real xhigh shell task then exited zero. Codex ran `/bin/pwd` once,
+  consumed `/Users/dcazares/sglang`, and returned `QWEN38_TOOL_READY`. Trace
+  showed a 6,211-token first prompt followed by a 6,681-token continuation
+  with `reuse_snapshot=1`; only the appended 470 tokens were replayed. Usage
+  was **12,892 input / 482 output / 310 reasoning-output tokens** and server
+  decode telemetry stayed around 20 tok/s.
+
+### 2026-08-31 16:31 PDT - sampling distribution and greedy behavioral screens close
+
+- A sampled default-partial client request at the real `6237+128` shape
+  reached **19.937 tok/s**, leaving roughly 0.16 ms/token to the hard floor.
+  Normalizing top-p over only the selected 20 logits removed the full-width
+  reduction. Direct seed-67396869 screens reached **20.112478513** and
+  **20.120420191 tok/s** with digest `48d911de593ab4fc`; seed 42 reached
+  **20.211157783** with digest `d2b13675c7615ce6`.
+- The top-k-renormalized Codex continuation sampled a malformed additional
+  tool call whose string `session_id` failed the integer schema. The bounded
+  turn timed out, so the speedup failed the authoritative behavior gate and
+  was removed. Full-vocabulary top-p normalization was restored.
+- A native-greedy control with the 256-token reasoning bound retained roughly
+  20.1--20.2 tok/s server telemetry, then invoked `/bin/pwd` three times and
+  timed out. Greedy selection is therefore unsuitable for this xhigh tool
+  lane under the current low-bit checkpoint.
+- Seed 42 with the restored sampling distribution completed the cold 131K
+  xhigh shell turn without any primer: one tool call, correct stdout, final
+  `QWEN38_TOOL_READY`, exit zero, and **12,905 input / 451 output / 279
+  reasoning-output tokens**. A default-partial sampled `6237+128` client
+  screen measured **19.941 tok/s**. This establishes behavior and isolates the
+  remaining gap to the supported attention reduction topology.
+
+### 2026-08-31 16:49 PDT - sampled 64-partial xhigh lane clears every gate in its first window
+
+- Reopened the installed MLX 0.32.2 `MLX_SDPA_BLOCKS=64` override under a
+  narrower premise. The deterministic default stays untouched and retains its
+  exact arithmetic contract. The opt-in interactive lane is stochastic, so
+  named-client behavior and a sampled performance window govern this setting.
+- The exact selected server command was:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER -u MLX_METAL_FAST_SYNCH \
+    MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    PYTHONPATH=/Users/dcazares/sglang/python \
+    SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 \
+    SGLANG_MLX_CLEAR_CACHE_STEPS=0 \
+    SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 \
+    --served-model-name qwen3.8-27b-iq2 --language-model-only \
+    --context-length 131072 --max-total-tokens 131072 \
+    --max-running-requests 1 --max-mamba-cache-size 5 \
+    --chunked-prefill-size 8192 --max-prefill-tokens 8192 \
+    --disable-radix-cache --mlx-enable-sampling --sampling-defaults model \
+    --random-seed 42 --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --stream-interval 4 --scheduler-recv-interval 4 \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments reported real 131,072 context/token pools, one running
+  request, five Mamba slots, 8,192-token prefill chunks, both Qwen parsers,
+  seed 42, sampling enabled, disabled graph capture, and language-only mode.
+- The exact client command remained the hash-pinned isolated home plus
+  `model_context_window=131072`, compaction limit 117,964, and
+  `model_reasoning_effort="xhigh"` under GNU timeout 120 seconds. It issued
+  `/bin/pwd` exactly once, observed `/Users/dcazares/sglang`, returned a final
+  response containing `QWEN38_TOOL_READY`, and exited zero in about **81.8
+  seconds**. Usage was **12,894 input / 502 output / 332 reasoning-output
+  tokens**. No Codex harness file or ordinary user configuration changed.
+- Five sequential real-131K sampled commands used
+  `.venv/bin/python scripts/windows/bench_openai_stream.py --base-url
+  http://127.0.0.1:30000 --model qwen3.8-27b-iq2 --input-tokens 6237
+  --output-tokens 128 --temperature 1.0 --top-p 0.95 --top-k 20
+  --presence-penalty 1.5 --skip-warmup --timeout 600`. Decode results were
+  **20.171, 20.170, 20.178, 20.166, and 20.176 tok/s**, mean
+  **20.1722**. Prompt results were **107.132, 107.210, 107.138, 107.028,
+  and 107.100 tok/s**. TTFTs were **58.217857, 58.175599, 58.214610,
+  58.274212, and 58.235432 s**. E2E times were **64.514055, 64.471981,
+  64.508726, 64.571851, and 64.530028 s**. Every request completed exactly
+  6,365 tokens with `finish_reason=length`; all five client decode samples
+  exceed 20.
+- Rebuilt final source with the installed MLX prefix. Dylib SHA-256 is
+  `550702cd5a66f134ef0f98d446f07ff6f7d78efeb24403f8934bf6b16f216d5b`.
+  The final direct sampled `6237 / 32 warm / 256 timed` run under the selected
+  seed and 64-partial environment reached **20.326297821 tok/s**, digest
+  `bd6b79adfcbc3125`, last token `28322`.
+- Correctness checks passed: q/k normalization plus full-attention RoPE parity,
+  recurrent norm/gate parity, residual RMSNorm parity, and the focused native
+  pytest suite (**8 passed**, 16 existing warnings). `git diff --check`
+  passed. Root/listener PID `81889` stopped through foreground `Ctrl+C` after
+  the client window. Port 30000, matching server/benchmark/compiler processes,
+  and the known process tree were absent afterward; memory returned to ordinary
+  residency with zero throttled pages and no thermal/performance warning.
+- Handoff: commit the native sampler, reasoning bound, and prompt-boundary
+  snapshot as one coherent interactive-lane change. Then run an independent
+  committed 64-partial server restart, at least one fresh sampled client
+  window, and the exact xhigh tool command before compact promotion.

@@ -96,7 +96,7 @@ class Engine {
   mlx::core::array full_attn(FullAttn& layer, const mlx::core::array& x);
   mlx::core::array gated_delta(LinearAttn& layer, const mlx::core::array& x);
   mlx::core::array forward_hidden(const mlx::core::array& tokens);
-  mlx::core::array greedy_token(const mlx::core::array& hidden);
+  mlx::core::array select_token(const mlx::core::array& hidden);
   int32_t emit_scheduled();
   void reset_decode_pipeline();
   void record_processed_token(int32_t token);
@@ -130,6 +130,13 @@ class Engine {
   bool last_emitted_in_state_ = false;
   bool request_boundary_pending_ = false;
   std::vector<int32_t> token_history_;
+  bool sampling_enabled_ = false;
+  int max_reasoning_tokens_ = 0;
+  int selected_reasoning_tokens_ = 0;
+  bool reasoning_open_ = false;
+  bool reasoning_cap_selected_ = false;
+  bool prompt_snapshot_valid_ = false;
+  std::vector<int32_t> prompt_snapshot_history_;
 
   bool mtp_valid_ = false;
   int mtp_block_ = 3;

@@ -1,19 +1,24 @@
 #include "qwen38_engine.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <dirent.h>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "mlx/compile.h"
 #include "mlx/fast.h"
 #include "mlx/io.h"
+#include "mlx/random.h"
 #include "mlx/transforms.h"
 
 namespace sglang {
@@ -48,6 +53,51 @@ MlxQwen38Config configure_mlx_runtime(MlxQwen38Config cfg) {
     throw std::runtime_error("failed to set MLX command-buffer byte budget");
   }
   return cfg;
+}
+
+bool native_sampling_enabled() {
+  const char* const value = std::getenv("SGLANG_MLX_NATIVE_SAMPLING");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
+bool native_state_trace_enabled() {
+  const char* const value = std::getenv("SGLANG_MLX_NATIVE_TRACE_STATE");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
+std::uint64_t native_sampling_seed() {
+  const char* const value = std::getenv("SGLANG_MLX_NATIVE_SAMPLING_SEED");
+  if (value == nullptr || *value == '\0') {
+    return 67396869;
+  }
+  const std::string_view text(value);
+  std::uint64_t seed = 0;
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), seed);
+  if (error != std::errc() || end != text.data() + text.size()) {
+    throw std::runtime_error(
+        "SGLANG_MLX_NATIVE_SAMPLING_SEED must be an unsigned integer");
+  }
+  return seed;
+}
+
+int native_reasoning_token_limit() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS");
+  if (value == nullptr || *value == '\0') {
+    return 0;
+  }
+  const std::string_view text(value);
+  int limit = 0;
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), limit);
+  if (error != std::errc() || end != text.data() + text.size() || limit <= 0) {
+    throw std::runtime_error(
+        "SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS must be a positive integer");
+  }
+  return limit;
 }
 
 std::string layer_key(int i, const std::string& rest) {
@@ -779,10 +829,20 @@ Engine::Engine(MlxQwen38Config cfg, const std::string& model_dir)
   }
   layers_.resize(static_cast<size_t>(cfg_.num_hidden_layers));
   load_weights(model_dir);
+  sampling_enabled_ = native_sampling_enabled();
+  if (sampling_enabled_) {
+    mx::random::seed(native_sampling_seed());
+  }
+  max_reasoning_tokens_ = native_reasoning_token_limit();
   reset();
 }
 
 void Engine::reset() {
+  if (native_state_trace_enabled()) {
+    std::fprintf(
+        stderr, "qwen38_native reset history=%zu pending=%d\n",
+        token_history_.size(), request_boundary_pending_ ? 1 : 0);
+  }
   for (auto& layer : layers_) {
     if (layer.is_linear) {
       layer.linear.has_state = false;
@@ -794,12 +854,23 @@ void Engine::reset() {
   reset_decode_pipeline();
   request_boundary_pending_ = false;
   token_history_.clear();
+  selected_reasoning_tokens_ = 0;
+  reasoning_open_ = false;
+  reasoning_cap_selected_ = false;
+  prompt_snapshot_valid_ = false;
+  prompt_snapshot_history_.clear();
+  snap_.clear();
   if (mtp_valid_) {
     mtp_reset();
   }
 }
 
 void Engine::begin_request() {
+  if (native_state_trace_enabled()) {
+    std::fprintf(
+        stderr, "qwen38_native begin_request history=%zu\n",
+        token_history_.size());
+  }
   request_boundary_pending_ = true;
 }
 
@@ -1178,9 +1249,60 @@ array Engine::forward_hidden(const array& tokens) {
   return h;
 }
 
-array Engine::greedy_token(const array& hidden) {
+array Engine::select_token(const array& hidden) {
   last_hidden_ = last_token(hidden);
-  return mx::argmax(logits(last_hidden_), -1);
+  if (reasoning_open_) {
+    if (max_reasoning_tokens_ > 0 && !reasoning_cap_selected_ &&
+        selected_reasoning_tokens_ >= max_reasoning_tokens_) {
+      reasoning_cap_selected_ = true;
+      reasoning_open_ = false;
+      return array({248069}, mx::int32);
+    }
+    ++selected_reasoning_tokens_;
+  }
+  array token_logits = logits(last_hidden_);
+  if (!sampling_enabled_) {
+    return mx::argmax(token_logits, -1);
+  }
+
+  // Qwen3.8's model sampling contract is temperature 1.0, top-k 20, top-p
+  // 0.95. Keep the vocabulary partition and normalization on Metal, retain
+  // the model's full-vocabulary nucleus threshold, then run Gumbel-max over
+  // the surviving top-k candidates. This preserves the native graph's
+  // asynchronous two-token pipeline and transfers no logits to the host.
+  constexpr int kTopK = 20;
+  constexpr float kTopP = 0.95f;
+  const auto shape = token_logits.shape();
+  const int batch = static_cast<int>(shape[0]);
+  const int vocab = static_cast<int>(shape[1]);
+  if (vocab < kTopK) {
+    throw std::runtime_error("native sampling vocabulary is smaller than top-k");
+  }
+
+  array partitioned = mx::argpartition(token_logits, vocab - kTopK, -1);
+  array candidate_ids =
+      slice(partitioned, {0, vocab - kTopK}, {batch, vocab});
+  array candidate_logits = astype(
+      mx::take_along_axis(token_logits, candidate_ids, -1), mx::float32);
+  array order = mx::argsort(-candidate_logits, -1);
+  candidate_ids = mx::take_along_axis(candidate_ids, order, -1);
+  candidate_logits = mx::take_along_axis(candidate_logits, order, -1);
+
+  array candidate_probs = mx::exp(
+      candidate_logits -
+      mx::logsumexp(astype(token_logits, mx::float32), -1, true));
+  array cumulative = mx::cumsum(candidate_probs, -1);
+  array keep = mx::less_equal(
+      cumulative - candidate_probs, array(kTopP, mx::float32));
+  array filtered = mx::where(
+      keep,
+      candidate_logits,
+      array(-std::numeric_limits<float>::infinity(), mx::float32));
+  array noise = mx::random::gumbel(filtered.shape(), mx::float32);
+  array selected_rank = mx::argmax(filtered + noise, -1);
+  return squeeze(
+      mx::take_along_axis(candidate_ids, expand_dims(selected_rank, -1), -1),
+      -1);
 }
 
 void Engine::snapshot() {
@@ -1359,6 +1481,9 @@ void Engine::load_mtp(const std::string& mtp_dir) {
 int32_t Engine::emit_scheduled() {
   eval(pending_tok_);
   last_emitted_ = pending_tok_.item<int32_t>();
+  if (last_emitted_ == 248069) {
+    reasoning_open_ = false;
+  }
   return last_emitted_;
 }
 
@@ -1369,10 +1494,55 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
 
   const int32_t* new_tokens = tokens;
   int new_token_count = n;
+  const bool starts_request =
+      request_boundary_pending_ || token_history_.empty();
   if (request_boundary_pending_) {
-    const bool can_reuse = !mtp_valid_ && token_history_.size() < size_t(n) &&
+    const std::size_t history_compare_count =
+        std::min(token_history_.size(), static_cast<std::size_t>(n));
+    const auto mismatch = std::mismatch(
+        token_history_.begin(),
+        token_history_.begin() + history_compare_count,
+        tokens,
+        tokens + history_compare_count);
+    const std::size_t common_prefix =
+        static_cast<std::size_t>(mismatch.first - token_history_.begin());
+    const bool can_reuse_current =
+        !mtp_valid_ && token_history_.size() < size_t(n) &&
         std::equal(token_history_.begin(), token_history_.end(), tokens);
-    if (can_reuse) {
+    const std::size_t snapshot_compare_count =
+        std::min(prompt_snapshot_history_.size(), static_cast<std::size_t>(n));
+    const auto snapshot_mismatch = std::mismatch(
+        prompt_snapshot_history_.begin(),
+        prompt_snapshot_history_.begin() + snapshot_compare_count,
+        tokens,
+        tokens + snapshot_compare_count);
+    const std::size_t snapshot_common = static_cast<std::size_t>(
+        snapshot_mismatch.first - prompt_snapshot_history_.begin());
+    const bool can_reuse_snapshot =
+        !can_reuse_current && !mtp_valid_ && prompt_snapshot_valid_ &&
+        prompt_snapshot_history_.size() < size_t(n) &&
+        std::equal(
+            prompt_snapshot_history_.begin(), prompt_snapshot_history_.end(),
+            tokens);
+    if (native_state_trace_enabled()) {
+      std::fprintf(
+          stderr,
+          "qwen38_native prefill history=%zu input=%d common=%zu "
+          "snapshot=%zu snapshot_common=%zu reuse_current=%d "
+          "reuse_snapshot=%d mtp=%d\n",
+          token_history_.size(), n, common_prefix,
+          prompt_snapshot_history_.size(), snapshot_common,
+          can_reuse_current ? 1 : 0, can_reuse_snapshot ? 1 : 0,
+          mtp_valid_ ? 1 : 0);
+    }
+    if (can_reuse_current) {
+      new_tokens += token_history_.size();
+      new_token_count -= static_cast<int>(token_history_.size());
+      reset_decode_pipeline();
+      request_boundary_pending_ = false;
+    } else if (can_reuse_snapshot) {
+      restore();
+      token_history_ = prompt_snapshot_history_;
       new_tokens += token_history_.size();
       new_token_count -= static_cast<int>(token_history_.size());
       reset_decode_pipeline();
@@ -1382,10 +1552,35 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
     }
   }
 
+  if (starts_request) {
+    reasoning_open_ = false;
+    for (int index = 0; index < n; ++index) {
+      if (tokens[index] == 248068) {
+        reasoning_open_ = true;
+      } else if (tokens[index] == 248069) {
+        reasoning_open_ = false;
+      }
+    }
+    selected_reasoning_tokens_ = 0;
+    reasoning_cap_selected_ = false;
+    if (native_state_trace_enabled()) {
+      std::fprintf(
+          stderr,
+          "qwen38_native request_state input=%d reasoning_open=%d limit=%d\n",
+          n, reasoning_open_ ? 1 : 0, max_reasoning_tokens_);
+    }
+  }
+
   token_history_.insert(
       token_history_.end(), new_tokens, new_tokens + new_token_count);
   array ids(new_tokens, {1, new_token_count}, mx::int32);
-  array first = greedy_token(forward_hidden(ids));
+  array hidden = forward_hidden(ids);
+  if (!mtp_valid_) {
+    snapshot();
+    prompt_snapshot_history_ = token_history_;
+    prompt_snapshot_valid_ = true;
+  }
+  array first = select_token(hidden);
   async_eval(first);
   if (!schedule_decode) {
     pending_tok_ = first;
@@ -1393,7 +1588,7 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
     last_emitted_in_state_ = false;
     return emit_scheduled();
   }
-  array following = greedy_token(forward_hidden(reshape(first, {1, 1})));
+  array following = select_token(forward_hidden(reshape(first, {1, 1})));
   async_eval(following);
   pending_tok_ = first;
   int32_t out = emit_scheduled();
@@ -1413,7 +1608,8 @@ int32_t Engine::decode(int32_t token) {
     return last_emitted_;
   }
   if (decode_scheduled_ && token == last_emitted_) {
-    array following = greedy_token(forward_hidden(reshape(pending_tok_, {1, 1})));
+    array following =
+        select_token(forward_hidden(reshape(pending_tok_, {1, 1})));
     async_eval(following);
     int32_t out = emit_scheduled();
     pending_tok_ = following;
@@ -1425,9 +1621,9 @@ int32_t Engine::decode(int32_t token) {
   }
   array ids = (token == last_emitted_) ? reshape(pending_tok_, {1, 1})
                                        : array(&token, {1, 1}, mx::int32);
-  array next = greedy_token(forward_hidden(ids));
+  array next = select_token(forward_hidden(ids));
   async_eval(next);
-  array following = greedy_token(forward_hidden(reshape(next, {1, 1})));
+  array following = select_token(forward_hidden(reshape(next, {1, 1})));
   async_eval(following);
   pending_tok_ = next;
   int32_t out = emit_scheduled();

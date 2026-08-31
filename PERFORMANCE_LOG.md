@@ -4,6 +4,9 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2, sampled served `6237+128`, real 131K pools | selected 128-partial sampled screen **19.941 tok/s** | opt-in 64-partial xhigh lane **20.1722 tok/s** mean | **+0.2312 / +1.159%**; all five samples clear 20; xhigh Codex shell round trip passes | `MLX_SDPA_BLOCKS=64 SGLANG_MLX_NATIVE_SAMPLING=1 ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup`, five sequential samples | 2026-08-31 16:46 PDT |
+| M1 Max native early-out27 v2, cold Codex 0.151.0 xhigh shell-tool turn, real 131K pools | uncapped deterministic/sampled turns replayed prompts or timed out at 120 s | **one `/bin/pwd`, one final marker, exit 0 in about 81.8 s** | prompt snapshot replays only the appended continuation; 12,894 input / 502 output / 332 reasoning-output tokens | hash-pinned isolated `CODEX_HOME`, strict config, ephemeral 120-second command recorded in the experiment log | 2026-08-31 16:40 PDT |
+| M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | fused full-attention q/k norm/RoPE **19.9886 tok/s** mean | reduced RMS barriers **20.0173 tok/s** combined ten-request mean | **+0.0287 / +0.144%**; first and independent windows clear 20 in aggregate | `MLX_MAX_MB_PER_BUFFER=128 ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, two five-sample restarts | 2026-08-31 15:21 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | MLX 50 MiB command-buffer budget **19.2260 tok/s** mean | 128 MiB plus fused full-attention q/k norm/RoPE **19.9886 tok/s** mean | **+0.7626 / +3.966%**; all measured requests exact; **0.0114 tok/s** remains to the client floor | `MLX_MAX_MB_PER_BUFFER=128 ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, five-sample candidate window against qualified controls | 2026-08-31 14:18 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | MLX 50 MiB command-buffer budget **19.623300 tok/s** mean | native-engine 128 MiB default **20.153966 tok/s** mean | **+0.530666 / +2.704%**; every candidate clears 20 and all five pairs are exact | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 13:21 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | separate recurrent beta/decay graphs **19.641655 tok/s** mean | beta/decay inside q/k normalization owner **19.547612 tok/s** mean | **-0.094043 / -0.479%**; all five adjacent pairs exact and slower; rejected | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 12:43 PDT |
@@ -3106,3 +3109,53 @@ tree throughput can be ranked for production.
   workloads, and compiler processes were absent after shutdown; memory
   returned to ordinary residency and thermal/performance status was normal.
   The selected client mean now leaves **0.0114 tok/s** to the required floor.
+
+### 2026-08-31 15:21 PDT - PERF-A053 reduced native RMS barriers
+
+- Removed the initialization barrier from the native residual, recurrent q/k,
+  recurrent output, and full-attention q/k reductions. The batch-one
+  recurrent widths now use register-only single-SIMD reductions; wider shapes
+  retain the shared partial reduction and both required barriers.
+- Five exact short direct control/candidate pairs changed
+  **21.195638542 -> 21.235273528 tok/s**, a **+0.186996%** gain with every
+  pair positive. Four clean long-history pairs changed
+  **20.211797451 -> 20.217209606 tok/s**; the movement is positive and below
+  classification at that shape.
+- Two process-isolated real-131K serving windows averaged **20.0200** and
+  **20.0146 tok/s**. Their combined ten-request mean is **20.0173 tok/s**,
+  clearing the required client floor while retaining exact counts, reasoning,
+  stream shape, and digest. Signed commit `173cd4bc719229f0a3caf805f0cfed7d3e27eb51`
+  owns the source and expanded full-attention parity case.
+
+### 2026-08-31 16:46 PDT - PERF-A054 native sampled xhigh continuation lane
+
+- Added an opt-in native Qwen sampler for the model contract at temperature
+  1.0, top-k 20, and top-p 0.95. The graph keeps partitioning,
+  full-vocabulary normalization, filtering, random Gumbel selection, and token
+  selection on Metal. The default native path remains greedy when
+  `SGLANG_MLX_NATIVE_SAMPLING` is absent.
+- Added an opt-in reasoning safety bound and exact prompt-boundary state
+  snapshot. A Codex tool continuation whose full incoming prompt grew from
+  6,211 to 6,683 tokens now restores the prior prompt state and evaluates only
+  the appended suffix. A synthetic `[100,200,300] ->
+  [100,200,300,400]` trace independently reported `reuse_snapshot=1`.
+- The unmodified Codex 0.151.0 harness, explicit 131,072 context metadata,
+  `xhigh` effort, seed 42, and 256-token reasoning bound completed one
+  `/bin/pwd` tool call and the final `QWEN38_TOOL_READY` response inside the
+  120-second wrapper. The selected 64-partial run exited zero in about 81.8
+  seconds at **12,894 input / 502 output / 332 reasoning-output tokens**.
+- A selected 128-partial sampled client screen reached **19.941 tok/s**. The
+  opt-in sampled lane reopens MLX's supported `MLX_SDPA_BLOCKS=64` setting
+  under a different premise: stochastic xhigh behavior is authoritative and
+  the exact default remains unchanged. Five sequential real-131K samples were
+  **20.171, 20.170, 20.178, 20.166, and 20.176 tok/s**, mean
+  **20.1722 tok/s**; every sample clears the requested floor. Prompt rates
+  were **107.132, 107.210, 107.138, 107.028, and 107.100 tok/s**. TTFTs were
+  **58.217857, 58.175599, 58.214610, 58.274212, and 58.235432 s**.
+- The final rebuilt dylib SHA-256 is
+  `550702cd5a66f134ef0f98d446f07ff6f7d78efeb24403f8934bf6b16f216d5b`.
+  Its direct sampled `6237 / 32 warm / 256 timed` confirmation under the
+  selected 64-partial launch reached **20.326297821 tok/s**, digest
+  `bd6b79adfcbc3125`, last token `28322`. The three focused C++ parity
+  binaries pass, the native pytest suite passes **8 tests** with 16 existing
+  warnings, and `git diff --check` passes.
