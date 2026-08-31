@@ -93,6 +93,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.pr_head_sha || github.sha }}
+          # The following steps execute code from this checkout. Keep the job
+          # token out of .git/config when the ref belongs to a fork.
+          persist-credentials: false
 
       - name: Mark runner picked up
         if: inputs.reply_comment_id != '' && inputs.reply_marker != ''
@@ -188,6 +191,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.pr_head_sha || github.sha }}
+          # The following steps execute code from this checkout. Keep the job
+          # token out of .git/config when the ref belongs to a fork.
+          persist-credentials: false
 
       - name: Mark runner picked up
         if: inputs.reply_comment_id != '' && inputs.reply_marker != ''
@@ -262,6 +268,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.pr_head_sha || github.sha }}
+          # The following steps execute code from this checkout. Keep the job
+          # token out of .git/config when the ref belongs to a fork.
+          persist-credentials: false
 
       - name: Mark runner picked up
         if: inputs.reply_comment_id != '' && inputs.reply_marker != ''

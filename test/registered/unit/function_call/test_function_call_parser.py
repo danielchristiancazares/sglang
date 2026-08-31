@@ -31,6 +31,7 @@ from sglang.srt.function_call.llama32_detector import Llama32Detector
 from sglang.srt.function_call.mistral_detector import MistralDetector
 from sglang.srt.function_call.pythonic_detector import PythonicDetector
 from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
+from sglang.srt.function_call.utils import get_schema_properties
 from sglang.test.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=15, suite="base-a-test-cpu")
@@ -2259,6 +2260,70 @@ class TestDeepSeekV4Detector(unittest.TestCase):
         self.assertEqual(json.loads(tool_calls_by_index[0]["parameters"]), {})
 
 
+class TestGetSchemaProperties(unittest.TestCase):
+    def test_flat_properties(self):
+        schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+        self.assertEqual(get_schema_properties(schema), {"a": {"type": "string"}})
+
+    def test_top_level_combinator_uses_first_duplicate(self):
+        schema = {
+            "oneOf": [
+                {
+                    "properties": {
+                        "kind": {"const": "acme"},
+                        "payload": {"type": "object"},
+                    }
+                },
+                {"properties": {"kind": {"const": "other"}}},
+            ]
+        }
+        self.assertEqual(
+            get_schema_properties(schema),
+            {"kind": {"const": "acme"}, "payload": {"type": "object"}},
+        )
+
+    def test_nested_combinators_are_merged(self):
+        schema = {
+            "allOf": [
+                {"anyOf": [{"properties": {"count": {"type": "integer"}}}]},
+                {"properties": {"verbose": {"type": "boolean"}}},
+            ]
+        }
+        self.assertEqual(
+            get_schema_properties(schema),
+            {"count": {"type": "integer"}, "verbose": {"type": "boolean"}},
+        )
+
+    def test_direct_and_combinator_properties_are_merged(self):
+        schema = {
+            "properties": {
+                "kind": {"type": "string"},
+                "shared": {"type": "integer"},
+            },
+            "allOf": [
+                {
+                    "properties": {
+                        "payload": {"type": "object"},
+                        "shared": {"type": "boolean"},
+                    }
+                }
+            ],
+        }
+        self.assertEqual(
+            get_schema_properties(schema),
+            {
+                "kind": {"type": "string"},
+                "shared": {"type": "integer"},
+                "payload": {"type": "object"},
+            },
+        )
+
+    def test_invalid_or_missing_properties_are_empty(self):
+        self.assertEqual(get_schema_properties(None), {})
+        self.assertEqual(get_schema_properties({"type": "object"}), {})
+        self.assertEqual(get_schema_properties({"oneOf": "invalid"}), {})
+
+
 class TestQwen3CoderDetector(unittest.TestCase):
     """Test suite for Qwen3CoderDetector."""
 
@@ -2611,6 +2676,85 @@ null
         params = json.loads(collected_params)
         self.assertIsInstance(params["cities"], list)
         self.assertEqual(params["cities"], ["NYC"])
+
+    def test_top_level_oneof_parameter_conversion(self):
+        tools = [
+            Tool(
+                type="function",
+                function=Function(
+                    name="acme",
+                    parameters={
+                        "type": "object",
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "kind": {"const": "acme"},
+                                    "payload": {"type": "object"},
+                                },
+                            },
+                            {
+                                "type": "object",
+                                "properties": {"kind": {"const": "other"}},
+                            },
+                        ],
+                    },
+                ),
+            )
+        ]
+        text = (
+            "<tool_call><function=acme>"
+            "<parameter=kind>acme</parameter>"
+            '<parameter=payload>{"value": "hello"}</parameter>'
+            "</function></tool_call>"
+        )
+
+        result = self.detector.detect_and_parse(text, tools)
+
+        self.assertEqual(len(result.calls), 1)
+        self.assertEqual(
+            json.loads(result.calls[0].parameters),
+            {"kind": "acme", "payload": {"value": "hello"}},
+        )
+
+    def test_streaming_top_level_oneof_parameter_conversion(self):
+        tools = [
+            Tool(
+                type="function",
+                function=Function(
+                    name="acme",
+                    parameters={
+                        "type": "object",
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "count": {"type": "integer"},
+                                    "verbose": {"type": "boolean"},
+                                },
+                            }
+                        ],
+                    },
+                ),
+            )
+        ]
+        chunks = [
+            "<tool_call>",
+            "<function=acme>",
+            "<parameter=count>7</parameter>",
+            "<parameter=verbose>true</parameter>",
+            "</function>",
+            "</tool_call>",
+        ]
+        collected_params = ""
+        detector = Qwen3CoderDetector()
+
+        for chunk in chunks:
+            result = detector.parse_streaming_increment(chunk, tools)
+            for call in result.calls:
+                collected_params += call.parameters
+
+        self.assertEqual(json.loads(collected_params), {"count": 7, "verbose": True})
 
     # ==================== Edge Cases ====================
 

@@ -147,6 +147,18 @@ complete output, returned exact `CODEX TOOL READY`, and left both repository
 status and server health intact. The validation server was cache-flushed and
 stopped; port 30000 is free and the GPU is at ordinary display residency.
 
+Five selected upstream hardening backports are qualified on top of that lane:
+`compressed-tensors` is pinned to the already-installed 0.18.0; executable PR
+checkouts keep the GitHub token out of `.git/config`; grammar initialization
+rejects raw or decoded NULs before XGrammar; stop inputs are bounded to 32
+strings, 32 regexes, and 256 UTF-8 bytes per regex; and Qwen3 Coder resolves
+typed parameters across direct plus top-level `anyOf`/`oneOf`/`allOf` schema
+properties. Consolidated host coverage passes 199 tests and 28 subtests. Live
+gates returned ordinary HTTP 400 responses for malformed grammar and excess
+stops, emitted integer/boolean arguments from a `oneOf` tool schema, preserved
+the multiply call, and repeated the exact multi-chunk `CODEX TOOL READY` round
+trip.
+
 Exit an earlier Qwen Codex TUI before restarting this listener. Codex's
 unbounded reconnect mode can retain multiple failed turns and submit them
 together when the endpoint returns; that violates this lane's sequential-use
