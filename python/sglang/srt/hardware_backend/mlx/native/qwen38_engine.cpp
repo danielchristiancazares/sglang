@@ -1,6 +1,7 @@
 #include "qwen38_engine.h"
 
 #include <cmath>
+#include <cstdint>
 #include <dirent.h>
 #include <functional>
 #include <optional>
@@ -251,7 +252,25 @@ QLinear Engine::load_qlinear(
   q.scales = require(weights, prefix + ".scales");
   q.biases = require(weights, prefix + ".biases");
   q.group_size = cfg_.quant_group_size;
-  q.bits = cfg_.quant_bits;
+
+  const auto& weight_shape = q.w.shape();
+  const auto& scale_shape = q.scales.shape();
+  if (weight_shape.size() < 2 || scale_shape.size() < 2 ||
+      q.biases.shape() != scale_shape) {
+    throw std::runtime_error("invalid affine tensors for " + prefix);
+  }
+  const int64_t packed_bits = static_cast<int64_t>(weight_shape.back()) * 32;
+  const int64_t input_features =
+      static_cast<int64_t>(scale_shape.back()) * q.group_size;
+  if (input_features <= 0 || packed_bits % input_features != 0) {
+    throw std::runtime_error("cannot infer affine bit width for " + prefix);
+  }
+  q.bits = static_cast<int>(packed_bits / input_features);
+  if (q.bits < 2 || q.bits > 8 || q.bits == 7) {
+    throw std::runtime_error(
+        "unsupported affine bit width " + std::to_string(q.bits) + " for " +
+        prefix);
+  }
   q.valid = true;
   return q;
 }
@@ -320,8 +339,8 @@ void Engine::load_weights(const std::string& model_dir) {
       embed_tokens_.w,
       embed_tokens_.scales,
       embed_tokens_.biases,
-      cfg_.quant_group_size,
-      cfg_.quant_bits,
+      embed_tokens_.group_size,
+      embed_tokens_.bits,
       "affine",
       std::nullopt,
       mx::bfloat16);
