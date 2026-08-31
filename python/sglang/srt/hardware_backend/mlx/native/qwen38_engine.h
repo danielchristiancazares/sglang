@@ -75,6 +75,7 @@ class Engine {
   Engine(MlxQwen38Config cfg, const std::string& model_dir);
 
   void reset();
+  void begin_request();
   int32_t prefill(const int32_t* tokens, int n, bool schedule_decode);
   int32_t decode(int32_t token);
   void load_mtp(const std::string& mtp_dir);
@@ -92,6 +93,8 @@ class Engine {
   mlx::core::array forward_hidden(const mlx::core::array& tokens);
   mlx::core::array greedy_token(const mlx::core::array& hidden);
   int32_t emit_scheduled();
+  void reset_decode_pipeline();
+  void record_processed_token(int32_t token);
   void snapshot();
   void restore();
   void forward_argmax(const int32_t* tokens, int n, int32_t* out);
@@ -119,6 +122,9 @@ class Engine {
   mlx::core::array last_hidden_{0};
   int32_t last_emitted_ = -1;
   bool decode_scheduled_ = false;
+  bool last_emitted_in_state_ = false;
+  bool request_boundary_pending_ = false;
+  std::vector<int32_t> token_history_;
 
   bool mtp_valid_ = false;
   int mtp_block_ = 3;

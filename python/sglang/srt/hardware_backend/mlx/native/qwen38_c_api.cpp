@@ -238,7 +238,7 @@ MlxQwen38Engine* mlx_qwen38_load(
 
 void mlx_qwen38_reset(MlxQwen38Engine* engine) {
   if (engine != nullptr) {
-    engine->impl.reset();
+    engine->impl.begin_request();
   }
 }
 
