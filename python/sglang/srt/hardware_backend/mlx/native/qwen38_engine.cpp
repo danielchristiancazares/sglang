@@ -1,5 +1,6 @@
 #include "qwen38_engine.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <dirent.h>
@@ -233,15 +234,31 @@ void Engine::reset() {
       layer.attn.values = array(0);
     }
   }
+  reset_decode_pipeline();
+  request_boundary_pending_ = false;
+  token_history_.clear();
+  if (mtp_valid_) {
+    mtp_reset();
+  }
+}
+
+void Engine::begin_request() {
+  request_boundary_pending_ = true;
+}
+
+void Engine::reset_decode_pipeline() {
   pending_tok_ = array(0);
   last_hidden_ = array(0);
   last_emitted_ = -1;
   decode_scheduled_ = false;
+  last_emitted_in_state_ = false;
   spec_buf_n_ = 0;
   spec_buf_pos_ = 0;
-  if (mtp_valid_) {
-    mtp_reset();
-  }
+}
+
+void Engine::record_processed_token(int32_t token) {
+  token_history_.push_back(token);
+  last_emitted_in_state_ = true;
 }
 
 QLinear Engine::load_qlinear(
@@ -685,18 +702,38 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
   if (n <= 0) {
     throw std::runtime_error("prefill requires at least one token");
   }
-  array ids(tokens, {1, n}, mx::int32);
+
+  const int32_t* new_tokens = tokens;
+  int new_token_count = n;
+  if (request_boundary_pending_) {
+    const bool can_reuse = !mtp_valid_ && token_history_.size() < size_t(n) &&
+        std::equal(token_history_.begin(), token_history_.end(), tokens);
+    if (can_reuse) {
+      new_tokens += token_history_.size();
+      new_token_count -= static_cast<int>(token_history_.size());
+      reset_decode_pipeline();
+      request_boundary_pending_ = false;
+    } else {
+      reset();
+    }
+  }
+
+  token_history_.insert(
+      token_history_.end(), new_tokens, new_tokens + new_token_count);
+  array ids(new_tokens, {1, new_token_count}, mx::int32);
   array first = greedy_token(forward_hidden(ids));
   async_eval(first);
   if (!schedule_decode) {
     pending_tok_ = first;
     decode_scheduled_ = false;
+    last_emitted_in_state_ = false;
     return emit_scheduled();
   }
   array following = greedy_token(forward_hidden(reshape(first, {1, 1})));
   async_eval(following);
   pending_tok_ = first;
   int32_t out = emit_scheduled();
+  record_processed_token(out);
   pending_tok_ = following;
   decode_scheduled_ = true;
   return out;
@@ -716,7 +753,11 @@ int32_t Engine::decode(int32_t token) {
     async_eval(following);
     int32_t out = emit_scheduled();
     pending_tok_ = following;
+    record_processed_token(out);
     return out;
+  }
+  if (!last_emitted_in_state_ || token != last_emitted_) {
+    token_history_.push_back(token);
   }
   array ids = (token == last_emitted_) ? reshape(pending_tok_, {1, 1})
                                        : array(&token, {1, 1}, mx::int32);
@@ -726,6 +767,7 @@ int32_t Engine::decode(int32_t token) {
   async_eval(following);
   pending_tok_ = next;
   int32_t out = emit_scheduled();
+  record_processed_token(out);
   pending_tok_ = following;
   decode_scheduled_ = true;
   return out;
