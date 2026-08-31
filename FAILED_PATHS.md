@@ -2186,3 +2186,34 @@ option, or serving dispatch was added.
   20 tok/s.
 - Related commit or revert: prefix reuse and cache-storage wins remain; the
   greedy actual-work configuration is unqualified.
+
+## PERF-FA081 - Materialized native affine gate/up row fusion
+
+- Hypothesis: one double-height affine quantized matmul per MLP would remove a
+  launch from every target layer and the MTP layer while preserving independent
+  row arithmetic.
+- Scope: native early-out27 v2 target and MTP weight loading plus the shared
+  `Engine::mlp` owner; process-isolated deterministic `6237+128` serving with
+  real 131,072 context/token pools.
+- Attempted change: concatenated packed weights, scales, and biases at load,
+  released the layer-owned input handles, issued one quantized matmul, and
+  split its output into gate/up halves.
+- Benchmark evidence: the signed `14fd46b11a` control reached **18.845 tok/s**,
+  **58.100626 s** TTFT, and **64.839787 s** end to end. The adjacent candidate
+  reached **18.782 tok/s**, **58.605376 s** TTFT, and **65.367119 s** end to
+  end, a **0.334%** decode regression. Startup-reported available unified
+  memory fell from **28.92 GB** to **22.28 GB**.
+- Correctness evidence: both arms produced exact `6237+128` counts,
+  `finish_reason=length`, and output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  The focused native suite passed all **8 tests**.
+- Failure mode: materializing concatenated affine storage leaves large buffers
+  resident in MLX's allocator and the larger quantized matmul does not reduce
+  the measured long-history decode wall.
+- Why not to retry unchanged: the exact end-to-end A/B is slower and the
+  additional residency directly weakens the real 131K capacity margin.
+- Reopen only if: a native quantized kernel can consume the original gate/up
+  tensors in one dispatch without a concatenated copy, with separately measured
+  MLP-boundary and served gains.
+- Related commit or revert: the experimental engine diff was removed; only the
+  evidence record remains.

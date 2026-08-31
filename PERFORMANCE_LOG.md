@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate affine gate/up **18.845 tok/s** | separate affine gate/up **18.845 tok/s** | materialized fused rows reached **18.782 tok/s** (**-0.334%**) with identical output; rejected | process-isolated `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup` A/B | 2026-08-31 07:46 PDT |
 | M1 Max native early-out27 v2, deterministic decode after a 6,237-token history | growing concatenated BF16 K/V **17.923409 tok/s** | reusable power-of-two BF16 K/V **19.151623 tok/s** | **+1.228215 / +6.853%**; exact 128-token digest retained | direct native engine, 32 warm tokens plus 128 timed tokens | 2026-08-31 06:10 PDT |
 | M1 Max native early-out27 v2, exact-prefix continuation with 16 new prompt tokens and 32 generated tokens | fresh full prefill **3.063133 s / 10.4468 tok/s** | retained native state **1.927515 s / 16.6017 tok/s** | **-37.074% latency / +58.916% throughput**; output lists identical | direct native engine exact-prefix/fresh A/B | 2026-08-31 05:58 PDT |
 | M1 Max Qwen3.8-27B early-out27 selective q2, required sampled `128+256`, BF16 KV, radix enabled, real 131K pools | affine-q4/BF16 **19.2786 tok/s** | **20.0812 tok/s** | **+0.8026 / +4.163%**; all five samples clear 20; actual-work gate rejected | production-sampled stream command on `Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2` | 2026-08-31 05:06 PDT |
@@ -727,6 +728,11 @@ tree throughput can be ranked for production.
 | PERF-A032 | Use group-32 q2 AWQ unchanged or as selective q4 overrides. | Immutable PocketAiHub revision `dcc3732f8c93ccf5580bf7a55e4ae639a40f194c` | Rejected | Full AWQ reaches **20.796459 tok/s** and fails raw tools; mixed forms reach **20.298/20.758** and produce empty or terminator-only output. See PERF-FA072. |
 | PERF-A033 | Bound MLX's recycled Metal buffer cache before model load and radix continuation. | Existing `SGLANG_MLX_CACHE_LIMIT_GB` control | Rejected unchanged | A one-GiB cap keeps five short samples at **20.0646 tok/s** and still OOMs on the immediate 6,257-token continuation. See PERF-FA075. |
 | PERF-A034 | Restore the radix-matched recurrent state before MLX continuation prefill. | Deferred Mamba COW handoff into `MlxAuxiliaryStatePool` | Active | The scheduler emits source/destination indices and the generic runner consumes them; the reachable MLX generation path does neither. Full q2 proves residency can survive and exposes a **2.04 new tok/s** full-prefix fallback. |
+| PERF-A035 | Infer each stored affine projection width in the native checkpoint loader. | Native Qwen3.8 C++ weight loading | Retained in signed `42ee99493e` | Early-out27 v2 reaches **20.219228 tok/s** directly and **20.1186 tok/s** across five deterministic server samples with the Python-MLX token digest, arithmetic, and parsed tool call preserved. |
+| PERF-A036 | Reuse exact native prompt state across strict-prefix request continuations. | Native attention/recurrent state and request boundary | Retained in signed `24686a37b1` | A 16-token suffix plus 32 generated tokens changes **3.063133 -> 1.927515 s** with identical output; a served 6,257-token continuation takes **0.416196 s**. |
+| PERF-A037 | Replace per-token full-attention K/V concatenation with reusable power-of-two storage. | Native full-attention cache owner | Retained in signed `5ac91e2f22` | Exact 6,237-history decode changes **17.923409 -> 19.151623 tok/s** (+6.853%) with the same 128-token digest. |
+| PERF-A038 | Split long-history native attention across custom Metal workgroups. | Native MLX decode attention | Rejected | The best tiled split arm reaches **19.117317 tok/s**, below the **19.151623** MLX SDPA control. See PERF-FA078/PERF-FA079. |
+| PERF-A039 | Materialize gate/up affine rows and issue one quantized matmul per MLP. | Native Qwen3.8 target and MTP MLP owner | Rejected and removed | Adjacent deterministic `6237+128` serving changes **18.845 -> 18.782 tok/s** and reported available unified memory falls **28.92 -> 22.28 GB**, while output SHA-256 remains exact. See PERF-FA081. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -2568,3 +2574,23 @@ tree throughput can be ranked for production.
   `382dd93cb724783226eae6ede000d6b62bbbc6439c8a39178cb9bb0ba8a27112`.
 - Decision: reject these unchanged custom topologies. PERF-FA078 and
   PERF-FA079 retain their reopening criteria.
+
+### 2026-08-31 07:46 PDT - PERF-A039 materialized affine gate/up rows
+
+- Change: concatenated each native target and MTP MLP's packed affine gate/up
+  weights, scales, and biases during load, then replaced two quantized matmuls
+  with one double-height product and a result split.
+- Benchmark evidence: a process-isolated committed control at `14fd46b11a`
+  served exact deterministic `6237+128` at **18.845 tok/s**, **58.100626 s**
+  TTFT, and **64.839787 s** end to end. The adjacent fused candidate served
+  the same request at **18.782 tok/s**, **58.605376 s** TTFT, and
+  **65.367119 s** end to end. This is **-0.334%** decode throughput. Startup's
+  reported available unified memory changed **28.92 -> 22.28 GB**.
+- Correctness evidence: both arms completed exact `6365` total tokens with
+  `finish_reason=length` and identical output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  The native suite passed **8 tests** before the served A/B.
+- Decision: reject and remove the materialized concatenation. It consumes
+  long-context residency without reducing the measured decode wall. Reopen
+  only for a native kernel that reads the two original affine tensors directly
+  in one launch without duplicating their storage.
