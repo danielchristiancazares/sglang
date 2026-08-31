@@ -150,6 +150,11 @@ std::pair<mlx::core::array, mlx::core::array> causal_conv_decode(
     const mlx::core::array& state,
     const mlx::core::array& qkv,
     const mlx::core::array& weight);
+std::pair<mlx::core::array, mlx::core::array> residual_rms_norm(
+    const mlx::core::array& x,
+    const mlx::core::array& residual,
+    const mlx::core::array& weight,
+    float eps);
 std::pair<mlx::core::array, mlx::core::array> gated_delta_step(
     const mlx::core::array& q,
     const mlx::core::array& k,
