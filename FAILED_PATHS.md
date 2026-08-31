@@ -2304,3 +2304,33 @@ option, or serving dispatch was added.
   sharing input work.
 - Related commit or revert: every experimental C++ and test change was removed;
   the native dylib is rebuilt from the selected source before the next screen.
+
+## PERF-FA085 - Recurrent beta and decay inside q/k normalization
+
+- Hypothesis: the idle lanes in the dual-output q/k normalization dispatch
+  could calculate the small `sigmoid(b)` and `compute_g` arrays, removing two
+  MLX launches from each of 48 recurrent layers.
+- Scope: native early-out27 v2 single-token `Engine::gated_delta`; direct exact
+  `6237 / 32 warm / 256 timed` process-isolated adjacent pairs.
+- Attempted change: added beta and decay inputs/outputs to the existing q/k
+  Metal owner. The final exact form reproduced compiled MLX log-add-exp with
+  fast `exp`/`log`, preserved precise outer exponentials, and used an
+  independent decay input type.
+- Benchmark evidence: beta-only controls/candidates averaged
+  **19.602405132 / 19.600900659 tok/s**, a **0.007675%** regression. The full
+  beta/decay controls averaged **19.641655398 tok/s** and candidates averaged
+  **19.547612476 tok/s**, a **0.478793%** regression; every adjacent pair
+  favored the control.
+- Correctness evidence: widened production, nonaligned, extreme-value, float32
+  q/k, and twelve-outstanding-output cases passed exact parity. All ten final
+  model runs retained digest `faaecee6edebe116`, last token `19360`.
+- Failure mode: scalar exponentials execute serially within the q/k dispatch,
+  giving up asynchronous overlap already available between the independent MLX
+  graphs. Saved dispatches fail to offset that serialized work.
+- Why not to retry unchanged: both the beta-only isolation and complete exact
+  fusion have five-pair evidence at the actual long-history decode shape.
+- Reopen only if: one downstream recurrent-update kernel consumes raw beta and
+  decay parameters directly, or profiling demonstrates genuine idle ALU work
+  with preserved overlap.
+- Related commit or revert: the experimental C++ and test diff was removed;
+  selected source and its exact short digest were restored.

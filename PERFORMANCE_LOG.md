@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | separate recurrent beta/decay graphs **19.641655 tok/s** mean | beta/decay inside q/k normalization owner **19.547612 tok/s** mean | **-0.094043 / -0.479%**; all five adjacent pairs exact and slower; rejected | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 12:43 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate BF16 convolution and SiLU **19.1730 tok/s** mean | fused convolution/SiLU owner **19.2134 tok/s** mean | **+0.0404 / +0.211%**; all ten requests exact | `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, process-isolated five-sample control/candidate windows | 2026-08-31 11:41 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | separate BF16 convolution and SiLU **19.524068 tok/s** mean | fused convolution/SiLU owner **19.632483 tok/s** mean | **+0.108415 / +0.555%**; all five adjacent pairs exact and positive | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 11:25 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate recurrent output RMSNorm and SiLU gate **19.1260 tok/s** mean | fused norm/gate owner **19.1548 tok/s** mean | **+0.0288 / +0.151%**; all ten requests exact | `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, process-isolated five-sample control/candidate windows | 2026-08-31 11:05 PDT |
@@ -2988,3 +2989,27 @@ tree throughput can be ranked for production.
   even when packed rows, scales, biases, and per-row quantization remain
   identical. Both variants failed the first exactness gate. The engine and test
   diffs were removed before any long-history or served timing window.
+
+### 2026-08-31 12:43 PDT - PERF-A049 recurrent beta/decay fusion rejected
+
+- Extended the exact single-token recurrent q/k normalization Metal owner to
+  emit `sigmoid(b)` and the compiled `compute_g` decay values for all 48
+  gated-delta layers. The retained multi-token path continued through the
+  general MLX graph.
+- A beta-only five-pair window was neutral: controls averaged
+  **19.602405132 tok/s** and candidates averaged **19.600900659 tok/s**, a
+  **-0.001504472 tok/s / -0.007675%** change. The full beta/decay owner was
+  exact after matching MLX compiled softplus/log-add-exp arithmetic and
+  separating q/k and decay input types.
+- Five adjacent full-candidate controls measured **19.644892037,
+  19.594597286, 19.665576690, 19.652227855, 19.650983123 tok/s**, mean
+  **19.641655398**. Candidates measured **19.494418723, 19.583726912,
+  19.555902888, 19.570241386, 19.533772471 tok/s**, mean **19.547612476**.
+  Every pair favored the separate MLX graphs; the candidate changed throughput
+  by **-0.094042922 tok/s / -0.478793%**. All ten outputs retained digest
+  `faaecee6edebe116` and last token `19360`.
+- Serializing the scalar exponentials inside the q/k normalization dispatch
+  removes MLX scheduling overlap and costs more wall time than its saved
+  launches. The source and expanded test diff were removed. A selected-source
+  rebuild restored digest `8ea2430e3fa3d56e`, last token `198`, at
+  **20.689765463 tok/s** on the short screen.
