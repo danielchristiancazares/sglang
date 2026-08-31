@@ -4,6 +4,8 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2, deterministic decode after a 6,237-token history | growing concatenated BF16 K/V **17.923409 tok/s** | reusable power-of-two BF16 K/V **19.151623 tok/s** | **+1.228215 / +6.853%**; exact 128-token digest retained | direct native engine, 32 warm tokens plus 128 timed tokens | 2026-08-31 06:10 PDT |
+| M1 Max native early-out27 v2, exact-prefix continuation with 16 new prompt tokens and 32 generated tokens | fresh full prefill **3.063133 s / 10.4468 tok/s** | retained native state **1.927515 s / 16.6017 tok/s** | **-37.074% latency / +58.916% throughput**; output lists identical | direct native engine exact-prefix/fresh A/B | 2026-08-31 05:58 PDT |
 | M1 Max Qwen3.8-27B early-out27 selective q2, required sampled `128+256`, BF16 KV, radix enabled, real 131K pools | affine-q4/BF16 **19.2786 tok/s** | **20.0812 tok/s** | **+0.8026 / +4.163%**; all five samples clear 20; actual-work gate rejected | production-sampled stream command on `Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2` | 2026-08-31 05:06 PDT |
 | M1 Max Qwen3.8-27B early-out27 selective q2, frozen Codex xhigh turn at about 6.2K tokens | short sampled **20.0812 tok/s** | server telemetry **~19.2 tok/s** | **~-0.88 / -4.4%**; continuation Metal OOM | Codex 0.151.0 strict-config ephemeral tool round trip with explicit 131,072 window and xhigh reasoning | 2026-08-31 05:18 PDT |
 | M1 Max Qwen3.8-27B radix continuation after a 6,257-token first turn, real 131K pools | early-out27 v2 **Metal OOM** | full affine-q2 **2.04 new tok/s** on the prefix-hit request | q2 residency survives; missing MLX auxiliary-state COW forces a 6,144-token recompute | bounded two-request OpenAI replay with `SGLANG_MLX_CACHE_LIMIT_GB=1`, 512-token chunks, and five auxiliary slots | 2026-08-31 05:39 PDT |
@@ -2500,3 +2502,69 @@ tree throughput can be ranked for production.
   `prefill_start` falls back to the complete prompt. PERF-A034 owns the missing
   state handoff; the implementation must remain within the repository's native
   C++/CUDA boundary.
+
+### 2026-08-31 06:04 PDT - PERF-A035 mixed-width native checkpoint loading
+
+- Change: inferred every affine projection's stored bit width from its packed
+  weight and scale shapes inside the native C++ loader, including the embedding
+  table, while rejecting malformed or unsupported layouts.
+- Benchmark evidence: the early-out27 v2 artifact reached **20.219228 tok/s**
+  in the direct native loop. Five deterministic server samples were
+  `20.147, 20.125, 20.121, 20.105, 20.095 tok/s`, mean **20.1186 tok/s**.
+- Correctness evidence: the direct token digest exactly matched the Python MLX
+  v2 digest beginning `90c684d7`; server output retained one deterministic
+  digest, arithmetic returned `703`, and a 256-token probe produced exactly one
+  parsed `multiply({"a":37,"b":19})` call with `finish_reason=tool_calls`.
+- Decision: retain the native loading capability. Signed commit `42ee99493e`
+  owns the change. Native sampling and realistic-context speed remain separate
+  production gates.
+
+### 2026-08-31 06:14 PDT - PERF-A036 exact native prompt-state reuse
+
+- Change: retained C++ attention and recurrent state only when the next full
+  prompt has exact token history as a strict prefix; reset the decode pipeline
+  and process only the nonempty suffix. MTP continues to take the hard-reset
+  path.
+- Benchmark evidence: a direct continuation with 16 new prompt tokens and 32
+  generated tokens took **1.927515 s**, versus **3.063133 s** for a fresh full
+  prefill, reducing latency **37.074%**. A served 6,257-token first request took
+  **58.459993 s**; its exact-prefix continuation with 16 new tokens took
+  **0.416196 s** and returned the same token.
+- Correctness evidence: direct retained-state and fresh-prefill output lists
+  were identical, with SHA-256
+  `9ab2e8830abbe71df5999d71a2b6a90eff4b1c3dcb11eee7ca67b81304255413`.
+  The focused native suite passed **8 tests**.
+- Decision: retain. Signed commit `24686a37b1` owns the exact-prefix state
+  contract.
+
+### 2026-08-31 06:24 PDT - PERF-A037 reusable native attention storage
+
+- Change: replaced per-token full-attention K/V concatenation with growable
+  power-of-two BF16 storage and in-place slice updates. Rope offset, logical
+  cache length, and physical capacity are tracked independently so MTP draft
+  position and target snapshot/restore semantics remain exact.
+- Benchmark evidence: at a deterministic 6,237-token history, the committed
+  concatenation control reached **17.923409 tok/s** and the candidate reached
+  **19.151623 tok/s**, a **6.853%** gain. Both used 32 warm tokens and 128 timed
+  tokens on the same process-isolated workload.
+- Correctness evidence: both arms produced exact SHA-256
+  `382dd93cb724783226eae6ede000d6b62bbbc6439c8a39178cb9bb0ba8a27112`.
+  Exact-prefix retained-state output still matched a fresh prefill, and the
+  focused native suite passed **8 tests**.
+- Decision: retain. Signed commit `5ac91e2f22` owns the reusable cache.
+
+### 2026-08-31 06:40 PDT - PERF-A038 native split-attention topology screen
+
+- Change: screened opt-in custom MLX Metal decode attention over the committed
+  contiguous cache: per-query online split-K, paired-head shared-K/V split-K,
+  and the retained 8-by-64 tiled simdgroup-matrix algorithm with 8, 16, and 32
+  history splits. Experimental source was removed after measurement.
+- Benchmark evidence: per-query split-16 reached **15.931997 tok/s**;
+  paired-head split-16 and split-32 reached **13.068068** and
+  **15.863200 tok/s**. Tiled 8/16/32 reached **18.475598**,
+  **19.117317**, and **18.922351 tok/s**. The matched MLX SDPA control remains
+  **19.151623 tok/s**.
+- Correctness evidence: every completed arm reproduced exact 128-token SHA-256
+  `382dd93cb724783226eae6ede000d6b62bbbc6439c8a39178cb9bb0ba8a27112`.
+- Decision: reject these unchanged custom topologies. PERF-FA078 and
+  PERF-FA079 retain their reopening criteria.
