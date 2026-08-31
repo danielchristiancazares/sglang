@@ -2084,3 +2084,105 @@ option, or serving dispatch was added.
   residual memory peak to the new-token chunk itself.
 - Related commit or revert: no source change; the server was stopped and the
   512-token production-shaped baseline remains authoritative.
+
+## PERF-FA077 - Native graph through the Python chunked-prefill handoff
+
+- Hypothesis: selecting the native C++ graph with ordinary 4,096-token chunks
+  would preserve the native path across a realistic multi-chunk Codex prompt.
+- Scope: early-out27 v2, native graph enabled, one request, real 131,072
+  context/token pools, and a deterministic 6,257-token prompt.
+- Attempted change: launched with `--chunked-prefill-size 4096` and allowed the
+  scheduler to hand the unfinished request to the next extend chunk.
+- Benchmark evidence: the first 4,096-token native chunk ran at about
+  **57.79 prompt tok/s**. The next chunk reached
+  `MlxModelRunner.extend_start` and raised
+  `TypeError: 'types.SimpleNamespace' object is not callable`.
+- Correctness evidence: source tracing shows the native route installs a
+  `SimpleNamespace` model surface while the later chunk invokes
+  `self.model(...)`. A single 8,192-token chunk completes the same 6,257-token
+  prompt natively.
+- Failure mode: the Python chunk transition leaves the compiled engine path
+  and calls a model object that is intentionally non-callable in native mode.
+- Why not to retry unchanged: chunk size alone cannot make the second native
+  chunk reachable through the current dispatch contract.
+- Reopen only if: the compiled C++ engine gains a native multi-chunk prefill
+  entry point, or the shared dispatch owner routes every chunk through the
+  existing native C ABI without adding Python implementation code.
+- Related commit or revert: no source change retained; the 8,192-token launch
+  is an experiment-only bridge and does not establish 131K prompt capacity.
+
+## PERF-FA078 - Online native MLX split-K decode attention
+
+- Hypothesis: dividing a 6.2K BF16 attention history across independent Metal
+  workgroups would overcome the serial decode cost left after reusable K/V
+  storage.
+- Scope: native early-out27 v2, exact 6,237-token deterministic history, 32
+  warm tokens, 128 timed tokens, 16 or 32 history splits, and 256-dimensional
+  24-query/4-KV-head GQA.
+- Attempted change: first assigned four SIMD groups to each query-head/split;
+  then grouped paired query heads over one shared K/V stream with 16 and 32
+  splits. A second kernel merged numerically stable softmax partials.
+- Benchmark evidence: per-query split-16 reached **15.931997 tok/s**. The
+  paired-head split-16 and split-32 variants reached **13.068068** and
+  **15.863200 tok/s**. The reusable-cache MLX SDPA control is
+  **19.151623 tok/s**.
+- Correctness evidence: every arm reproduced the exact control digest
+  `382dd93cb724783226eae6ede000d6b62bbbc6439c8a39178cb9bb0ba8a27112`.
+- Failure mode: per-query work overproduces Metal groups and duplicate cache
+  reads; paired-head sharing leaves too little latency-hiding work per group.
+- Why not to retry unchanged: both sides of the occupancy tradeoff were
+  measured and each is materially slower than MLX SDPA.
+- Reopen only if: one workgroup can reuse K/V across all six GQA heads through
+  matrix tiles or a fused reduction eliminates the second dispatch.
+- Related commit or revert: experimental C++/Metal source was removed.
+
+## PERF-FA079 - Tiled simdgroup-matrix native MLX decode attention
+
+- Hypothesis: porting the retained 8-query by 64-key tiled MPS kernel to MLX's
+  custom Metal interface over contiguous BF16 caches would beat MLX SDPA.
+- Scope: the PERF-FA078 exact workload, one workgroup per KV-head/history
+  split, four SIMD groups, bounded 20.1-KiB threadgroup storage, fast math, and
+  8, 16, or 32 splits.
+- Attempted change: shared six GQA query heads per KV tile, used BF16
+  simdgroup-matrix QK/PV operations, retained online softmax partials, and
+  merged them in a 256-thread reduction kernel.
+- Benchmark evidence: 8, 16, and 32 splits reached **18.475598**,
+  **19.117317**, and **18.922351 tok/s**, respectively, against the
+  **19.151623 tok/s** reusable-cache MLX SDPA control. Disabling row-contiguous
+  normalization and selecting fast math changed the 8-split arm only from
+  **18.460132** to **18.475598 tok/s**.
+- Correctness evidence: every arm reproduced exact control digest
+  `382dd93cb724783226eae6ede000d6b62bbbc6439c8a39178cb9bb0ba8a27112`.
+- Failure mode: the extra partial-reduction dispatch and MLX custom-kernel
+  scheduling cost consume the tiled attention gain at this history length.
+- Why not to retry unchanged: the complete 8/16/32 occupancy sweep stayed at
+  or below the selected MLX SDPA implementation.
+- Reopen only if: attention is fused with adjacent gate/output work, partials
+  are reduced inside one launch, or profiling shows a longer-history crossover
+  that improves full-model throughput.
+- Related commit or revert: experimental C++/Metal source was removed.
+
+## PERF-FA080 - Greedy native C ABI as a frozen Codex xhigh lane
+
+- Hypothesis: native mixed-width execution plus exact prefix reuse would make
+  the frozen 131K/xhigh Codex request usable before sampled decoding landed.
+- Scope: native early-out27 v2, one 8,192-token prefill chunk, real 131,072
+  context/token pools, exact prefix reuse, and the frozen Codex 0.151.0 tool
+  command.
+- Attempted change: served the native C ABI, whose current output contract is
+  greedy token IDs, and ran the strict ephemeral xhigh tool round trip for 180
+  seconds.
+- Benchmark evidence: the 6,236-token prompt completed in about **74.6 s** at
+  **83.62 prompt tok/s**. Decode began around **18.51 tok/s** and declined to
+  roughly **17.95--18.0 tok/s** before the bounded client ended.
+- Correctness evidence: the request aborted cleanly and the endpoint remained
+  healthy, but no valid Codex JSON tool event or exact final response appeared.
+- Failure mode: long-history decode remained below 20 tok/s and greedy output
+  rambled instead of satisfying the tool protocol.
+- Why not to retry unchanged: the C ABI ignores request sampling parameters,
+  and the exact frozen gate already exposed both speed and behavior failures.
+- Reopen only if: native sampling preserves temperature 1.0, top-p 0.95,
+  top-k 20, and presence penalty 1.5, while measured long-history decode clears
+  20 tok/s.
+- Related commit or revert: prefix reuse and cache-storage wins remain; the
+  greedy actual-work configuration is unqualified.
