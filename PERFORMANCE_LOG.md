@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate linear-attention b/a projections **18.845 tok/s** | separate b/a projections **18.845 tok/s** | fused 96-row projection reached **18.511 tok/s** (**-1.772%**) with identical output; rejected | same process-isolated exact served A/B as PERF-A039 | 2026-08-31 07:52 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate affine gate/up **18.845 tok/s** | separate affine gate/up **18.845 tok/s** | materialized fused rows reached **18.782 tok/s** (**-0.334%**) with identical output; rejected | process-isolated `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup` A/B | 2026-08-31 07:46 PDT |
 | M1 Max native early-out27 v2, deterministic decode after a 6,237-token history | growing concatenated BF16 K/V **17.923409 tok/s** | reusable power-of-two BF16 K/V **19.151623 tok/s** | **+1.228215 / +6.853%**; exact 128-token digest retained | direct native engine, 32 warm tokens plus 128 timed tokens | 2026-08-31 06:10 PDT |
 | M1 Max native early-out27 v2, exact-prefix continuation with 16 new prompt tokens and 32 generated tokens | fresh full prefill **3.063133 s / 10.4468 tok/s** | retained native state **1.927515 s / 16.6017 tok/s** | **-37.074% latency / +58.916% throughput**; output lists identical | direct native engine exact-prefix/fresh A/B | 2026-08-31 05:58 PDT |
@@ -733,6 +734,7 @@ tree throughput can be ranked for production.
 | PERF-A037 | Replace per-token full-attention K/V concatenation with reusable power-of-two storage. | Native full-attention cache owner | Retained in signed `5ac91e2f22` | Exact 6,237-history decode changes **17.923409 -> 19.151623 tok/s** (+6.853%) with the same 128-token digest. |
 | PERF-A038 | Split long-history native attention across custom Metal workgroups. | Native MLX decode attention | Rejected | The best tiled split arm reaches **19.117317 tok/s**, below the **19.151623** MLX SDPA control. See PERF-FA078/PERF-FA079. |
 | PERF-A039 | Materialize gate/up affine rows and issue one quantized matmul per MLP. | Native Qwen3.8 target and MTP MLP owner | Rejected and removed | Adjacent deterministic `6237+128` serving changes **18.845 -> 18.782 tok/s** and reported available unified memory falls **28.92 -> 22.28 GB**, while output SHA-256 remains exact. See PERF-FA081. |
+| PERF-A040 | Combine the two 48-row linear-attention b/a affine projections. | Native Qwen3.8 `Engine::gated_delta` owner | Rejected and removed | Adjacent deterministic `6237+128` serving changes **18.845 -> 18.511 tok/s** (-1.772%) with the same output SHA-256 and **28.89 GB** startup headroom. See PERF-FA082. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -2594,3 +2596,22 @@ tree throughput can be ranked for production.
   long-context residency without reducing the measured decode wall. Reopen
   only for a native kernel that reads the two original affine tensors directly
   in one launch without duplicating their storage.
+
+### 2026-08-31 07:52 PDT - PERF-A040 linear-attention b/a row fusion
+
+- Change: concatenated only the two 48-row affine `in_proj_b` and `in_proj_a`
+  tensors in each of 48 linear-attention layers, replacing their two
+  quantized-matmul calls with one 96-row call and a split.
+- Benchmark evidence: the immediately preceding process-isolated control
+  reached **18.845 tok/s** on exact deterministic `6237+128`. The candidate
+  reached **18.511 tok/s**, **58.055139 s** TTFT, and **64.915750 s** end to
+  end, a **1.772%** decode regression. Startup retained **28.89 GB** reported
+  available unified memory, isolating execution topology from PERF-A039's
+  large materialization peak.
+- Correctness evidence: the candidate completed exact `6365` total tokens with
+  `finish_reason=length` and the control's output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  The focused native suite passed **8 tests** before serving.
+- Decision: reject and remove. Independent MLX projection scheduling is faster
+  than the combined 96-row quantized matmul at this batch-one shape. PERF-FA082
+  retains the distinct evidence and reopening condition.
