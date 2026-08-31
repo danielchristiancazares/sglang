@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | MLX 50 MiB command-buffer budget **19.2260 tok/s** mean | process-start 128 MiB budget **19.9366 tok/s** mean | **+0.7106 / +3.696%**; all ten requests exact; **0.0634 tok/s** remains to the client floor | `MLX_MAX_MB_PER_BUFFER=128 ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, isolated five-sample control/candidate windows | 2026-08-31 13:42 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | MLX 50 MiB command-buffer budget **19.623300 tok/s** mean | native-engine 128 MiB default **20.153966 tok/s** mean | **+0.530666 / +2.704%**; every candidate clears 20 and all five pairs are exact | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 13:21 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | separate recurrent beta/decay graphs **19.641655 tok/s** mean | beta/decay inside q/k normalization owner **19.547612 tok/s** mean | **-0.094043 / -0.479%**; all five adjacent pairs exact and slower; rejected | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 12:43 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate BF16 convolution and SiLU **19.1730 tok/s** mean | fused convolution/SiLU owner **19.2134 tok/s** mean | **+0.0404 / +0.211%**; all ten requests exact | `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, process-isolated five-sample control/candidate windows | 2026-08-31 11:41 PDT |
@@ -3035,3 +3036,43 @@ tree throughput can be ranked for production.
   +0.554608857, +0.481259186 tok/s**. The mean gain is
   **+0.530666013 tok/s / +2.704265%**. Every candidate clears 20; all ten runs
   retained digest `faaecee6edebe116`, last token `19360`.
+
+### 2026-08-31 13:42 PDT - PERF-A050 served process-start qualification
+
+- A no-environment server sample established that MLX creates its Metal device
+  before the native `Engine` constructor on the SGLang process path: the
+  internal default reached **19.257 tok/s**, inside the selected 50 MiB served
+  range. The native constructor remains effective for standalone engine users.
+- Supplying the same 128 MiB setting at process start produced five exact
+  client decode samples of **19.917, 19.945, 19.943, 19.938, and 19.940
+  tok/s**, mean **19.9366**. The matched 50 MiB window averaged **19.2260
+  tok/s**, making the served gain **0.7106 tok/s / 3.696%**.
+- Mean prompt throughput was **107.0978 tok/s**, mean TTFT was
+  **58.236469 s**, and mean end-to-end latency was **64.606635 s**. Every
+  candidate request completed exact `6237+128=6365`, `finish_reason=length`,
+  585 reasoning characters, 33 fragments, and output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+- The selected process-start serving configuration retains the 3.696% win and
+  leaves **0.0634 tok/s** to the required client-observed floor. Server
+  telemetry settled around 20.11--20.20 tok/s.
+
+### 2026-08-31 13:59 PDT - PERF-A051 SDPA block override rejected
+
+- Official MLX v0.32.2 source selects 128 SDPA blocks for this M1 Max decode
+  shape. Exact direct screens at 32/64/96/128 blocks measured
+  **19.116925846 / 20.419125823 / 19.541540885 / 20.139173026 tok/s**; a
+  second 64-block screen reached **20.391260024 tok/s**. The direct token
+  digest remained exact in every screen.
+- A global native 64-block default reached **20.146 client tok/s** on the real
+  131K server. Restricting the override to decode after fully materializing
+  the adaptive-block prefill reached **20.127 client tok/s**. Both responses
+  completed exact token counts and `finish_reason=length` while changing the
+  established output/reasoning digest from
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5` to
+  `69f3577805ed5ae85d2f8253eb3ec10f89ac7246897d6d5de9061ee6f665715c`.
+- The reduction-topology override is therefore closed under the deterministic
+  exactness gate. Both experimental forms were removed. Rebuilding selected
+  source restored dylib SHA-256
+  `6c6df982252d170426ee3a1d505c9157bd4ebf5f0e17cd8d2d3a4193d8671688`;
+  its short confirmation retained digest `8ea2430e3fa3d56e`, last token `198`,
+  at **21.135133773 tok/s**.

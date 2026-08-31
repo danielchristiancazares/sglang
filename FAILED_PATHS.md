@@ -2334,3 +2334,37 @@ option, or serving dispatch was added.
   with preserved overlap.
 - Related commit or revert: the experimental C++ and test diff was removed;
   selected source and its exact short digest were restored.
+
+## PERF-FA086 - Global and decode-only MLX SDPA block override
+
+- Hypothesis: halving MLX's 128-block long-history SDPA reduction to 64 blocks
+  would retain the established output while removing enough attention overhead
+  to carry client-observed serving beyond 20 tok/s.
+- Scope: native early-out27 v2 full-attention prefill/decode; exact direct
+  `6237 / 32 warm / 256 timed` screens and deterministic served `6237+128`
+  requests with real 131,072 context/token pools.
+- Attempted change: first installed `MLX_SDPA_BLOCKS=64` before every native
+  attention call. A narrowed form restored MLX's adaptive prefill policy,
+  fully materialized its first token, and selected 64 blocks only for decode.
+  Explicit process environment values retained precedence in both forms.
+- Benchmark evidence: 32/64/96/128 direct screens reached
+  **19.116925846 / 20.419125823 / 19.541540885 / 20.139173026 tok/s**; a
+  second 64-block screen reached **20.391260024**. Global 64-block serving
+  reached **20.146 client tok/s** and decode-only reached **20.127**.
+- Correctness evidence: every direct screen retained digest
+  `faaecee6edebe116`, last token `19360`. Both served forms changed the
+  established deterministic response digest from
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5` to
+  `69f3577805ed5ae85d2f8253eb3ec10f89ac7246897d6d5de9061ee6f665715c`.
+- Failure mode: changing SDPA partial count changes floating-point reduction
+  grouping. The direct token sequence had sufficient logit margin; the served
+  prompt exposed a changed greedy trajectory even after its adaptive prefill
+  was preserved.
+- Why not to retry unchanged: both broad and decode-only placements clear the
+  speed target while failing the fixed-work digest gate on the authoritative
+  real server path.
+- Reopen only if: attention work around the reduction can be removed while
+  retaining MLX's 128-partial arithmetic, or a fixed-order native kernel first
+  proves exact logits and the established served digest.
+- Related commit or revert: both experimental C++ forms were removed; the
+  selected A050 dylib hash and short digest were restored.
