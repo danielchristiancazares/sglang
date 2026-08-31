@@ -2274,3 +2274,33 @@ option, or serving dispatch was added.
   the measured acceptance distribution to exceed 20 tok/s.
 - Related commit or revert: the C++ benchmark retains optional MTP/refill
   telemetry; engine behavior is unchanged.
+
+## PERF-FA084 - Full-attention affine q/k/v row concatenation
+
+- Hypothesis: one affine q4 product could emit q+gate, k, and v rows while
+  removing two product launches from each of 16 full-attention layers.
+- Scope: native early-out27 v2 full-attention loading and `Engine::full_attn`;
+  exact direct `128 / 32 warm / 256 timed` full-model screens.
+- Attempted change: concatenated packed q4 weights, scales, and biases at load,
+  evaluated and detached the combined storage, then split one product output.
+  A second form retained the established q+gate product and combined only the
+  equal-shaped k/v rows.
+- Benchmark evidence: the all-row form reached **20.721377944 tok/s** and the
+  k/v-only form reached **20.672271140 tok/s**. The immediately selected short
+  control record was **20.630307745 tok/s**.
+- Correctness evidence: a synthetic C++20 parity test matched six-row separate
+  and concatenated products bit-for-bit and confirmed detached packed storage.
+  The full model exposed production-shape divergence: all-row digest
+  `12bb3edf3d51feac` and k/v-only digest `af06cc7ce5e094be` differed from exact
+  control `8ea2430e3fa3d56e`; all three ended at token `198`.
+- Failure mode: changing the output-row geometry selects a different MLX
+  affine accumulation path for production k/v shapes, and recurrent decoding
+  amplifies those float differences into a different token trajectory.
+- Why not to retry unchanged: both useful concatenation boundaries failed the
+  first full-model digest gate, so a longer throughput window cannot qualify
+  them as semantics-preserving wins.
+- Reopen only if: MLX exposes a fixed accumulation-geometry control or a native
+  multi-output kernel reproduces each separate product's bit order while
+  sharing input work.
+- Related commit or revert: every experimental C++ and test change was removed;
+  the native dylib is rebuilt from the selected source before the next screen.

@@ -754,6 +754,7 @@ tree throughput can be ranked for production.
 | PERF-A045 | Fuse recurrent q/k RMS normalization and float scaling. | Native Qwen3.8 gated-delta decode owner | Qualified and retained in signed `b851d3c9de` | One dual-output Metal launch replaces four operations in each of 48 recurrent layers. Direct long-history improves **19.319062 -> 19.464738 tok/s** (+0.754%); matched five-sample 131K serving improves **19.0900 -> 19.1610 tok/s** (+0.372%). Production `16x128`, multi-simdgroup width 257, and 12-outstanding-output parity pass. |
 | PERF-A046 | Fuse recurrent output RMS normalization with the SiLU gate. | Native Qwen3.8 gated-delta decode owner | Qualified and retained in signed `28174b3da2` | One exact Metal launch replaces the single-token RMSNorm, sigmoid, and elementwise gate chain in each of 48 recurrent layers. Direct long-history improves **19.469136 -> 19.515718 tok/s** (+0.239%); matched five-sample 131K serving improves **19.1260 -> 19.1548 tok/s** (+0.151%). Production `48x128`, nonaligned width 257, extreme activations, and 12-outstanding-output parity pass. |
 | PERF-A047 | Fuse recurrent causal convolution with its BF16 SiLU. | Native Qwen3.8 gated-delta decode owner | Qualified and retained in signed `4c1bc4c1e3` | The existing convolution/state launch now reproduces both BF16 boundaries of the following sigmoid and multiply, removing two launches in each of 48 recurrent layers. Five adjacent long-history pairs improve **19.524068 -> 19.632483 tok/s** (+0.555%); matched five-sample 131K serving improves **19.1730 -> 19.2134 tok/s** (+0.211%). Production width 10,240, nonaligned width 257, extreme activation parity, and exact served reasoning output pass. |
+| PERF-A048 | Concatenate full-attention q/k/v affine rows at load and issue fewer quantized products. | Native Qwen3.8 full-attention projection owner | Rejected and removed | Full q/k/v fusion screened at **20.721377944 tok/s** with digest `12bb3edf3d51feac`; q plus fused k/v screened at **20.672271140 tok/s** with digest `af06cc7ce5e094be`. Both diverge from exact control digest `8ea2430e3fa3d56e` because production row geometry changes MLX accumulation. See PERF-FA084. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -2970,3 +2971,20 @@ tree throughput can be ranked for production.
   worktree was removed and is reproducible from signed `8dcf68177c`. The
   selected served mean is **19.2134 tok/s**, leaving **0.7866 tok/s** to the
   required floor.
+
+### 2026-08-31 11:51 PDT - PERF-A048 full-attention affine row fusion rejected
+
+- Materialized q+gate, k, and v q4 rows into one detached affine projection at
+  load time, replacing three products in each of 16 full-attention layers. A
+  strict synthetic C++20 test reproduced separate-product float32 outputs
+  bit-for-bit across six input rows and verified that the realized packed
+  tensors detached from their source graphs.
+- The exact short full-model screen reached **12.354390750 s /
+  20.721377944 tok/s**, last token `198`, while digest changed from control
+  `8ea2430e3fa3d56e` to `12bb3edf3d51feac`. Keeping q+gate separate and
+  combining only the equal-shaped k/v products reached **12.383738500 s /
+  20.672271140 tok/s** with digest `af06cc7ce5e094be`.
+- Production output geometry therefore changes MLX's affine accumulation path
+  even when packed rows, scales, biases, and per-row quantization remain
+  identical. Both variants failed the first exactness gate. The engine and test
+  diffs were removed before any long-history or served timing window.
