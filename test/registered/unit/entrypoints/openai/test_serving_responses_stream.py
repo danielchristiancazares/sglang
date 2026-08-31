@@ -110,6 +110,71 @@ class NonHarmonyStreamTestCase(CustomTestCase):
         ]
         self.assertIn("function_call", added_kinds)
 
+    def test_custom_exec_emits_codex_freeform_events(self):
+        from sglang.srt.function_call.core_types import ToolCallItem
+
+        serving = make_serving()
+        serving.reasoning_parser = None
+        serving.tool_call_parser = "qwen3_coder"
+        request = ResponsesRequest(
+            model="x",
+            input="inspect the repository",
+            stream=True,
+            store=False,
+            tools=[
+                {
+                    "type": "custom",
+                    "name": "exec",
+                    "description": "Run Code Mode JavaScript.",
+                    "format": {
+                        "type": "grammar",
+                        "syntax": "lark",
+                        "definition": "start: SOURCE",
+                    },
+                }
+            ],
+        )
+        fake_call = ToolCallItem(
+            tool_index=0,
+            name="functions.exec",
+            parameters='{"input":"text(\'CODEX TOOL READY\');"}',
+        )
+
+        with patch(
+            "sglang.srt.entrypoints.openai.serving_responses.FunctionCallParser"
+        ) as parser_cls:
+            parser = parser_cls.return_value
+            parser.detector.supports_structural_tag.return_value = True
+            parser.parse_stream_chunk.return_value = ("", [fake_call])
+            parser.parse_stream_end.return_value = ("", [])
+            events = StreamFixture(serving, request).run(
+                [engine_chunk("raw", finish=True)]
+            )
+
+        seq = list(zip(event_types(events), event_payloads(events)))
+        custom_delta = next(
+            payload
+            for event_type, payload in seq
+            if event_type == "response.custom_tool_call_input.delta"
+        )
+        self.assertEqual(custom_delta["delta"], "text('CODEX TOOL READY');")
+        self.assertTrue(
+            any(
+                event_type == "response.custom_tool_call_input.done"
+                for event_type, _ in seq
+            )
+        )
+        done = next(
+            payload["item"]
+            for event_type, payload in seq
+            if event_type == "response.output_item.done"
+            and payload["item"]["type"] == "custom_tool_call"
+        )
+        self.assertEqual(done["name"], "exec")
+        self.assertEqual(done["input"], "text('CODEX TOOL READY');")
+        completed = find_completed_event(events)
+        self.assertEqual(completed["response"]["output"][0], done)
+
     def test_final_output_preserves_text_tool_text_order(self):
         from sglang.srt.function_call.core_types import (
             StreamingParseResult,

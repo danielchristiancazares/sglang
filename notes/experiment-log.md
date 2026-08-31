@@ -9544,3 +9544,106 @@ mean 13.929045  17.125658 446.051        39.730
   and cleanup results remain authoritative because the two implementation
   commits replayed unchanged. A second fetch found the same remote tip. The
   reconciled branch is ready for a fast-forward push to `origin/main`.
+
+### 2026-08-30 16:52 PDT - Codex Code Mode custom-tool adapter reaches host qualification
+
+- Began from clean tracked source on `main` at `50b0a1e110`; the untracked
+  `benchmark/native/` C++ benchmark work remained user-owned and untouched.
+  The live four-slot server observed during diagnosis had already exited;
+  port 30000 was free and the RTX 5090 had returned to ordinary display
+  residency. The completed Tombstead Qwen TUI remained open with no active
+  request.
+- Recovered the exact failed Codex CLI 0.151.0 rollout
+  `01a05503-6ff6-7820-bfca-1c88dd1202e8`. Qwen first emitted
+  `functions.exec` and received `unsupported call`; it then emitted `exec`
+  with JSON arguments such as `{"cmd":"git status --short"}`. Codex logged
+  `aborted=false` followed by `Fatal error: tool exec invoked with incompatible
+  payload`, and every rejected call lacked a function-call output. No command
+  reached PowerShell.
+- Local Codex source established the required ABI. The selected catalog uses
+  `shell_type=unified_exec`, `tool_mode=code_mode_only`, and a top-level
+  Responses `custom` tool named `exec` with Lark grammar. The result must be a
+  `custom_tool_call` carrying raw JavaScript in `input`, followed by
+  `response.custom_tool_call_input.delta`/`.done` and the ordinary
+  `response.output_item.done`. Codex returns the client result as
+  `custom_tool_call_output` on the next Responses turn.
+- Updated only the existing Responses protocol/adapter and their existing
+  focused test files; no Python file or new package was created. The adapter:
+  - preserves custom-tool `format` and `defer_loading` request fields;
+  - exposes custom tools to non-Harmony Qwen templates as one-string synthetic
+    functions, then restores the exact custom-tool Responses item/event ABI;
+  - accepts Qwen's observed `functions.` alias and publishes the declared wire
+    name;
+  - preserves native free-form JavaScript and converts the observed direct
+    `cmd` prior into one Code Mode `tools.exec_command` call;
+  - replays custom calls and outputs through assistant/tool chat messages; and
+  - materializes Pydantic's lazy array-form output iterator before flattening
+    the tool result, a second follow-up-turn defect exposed by the new test.
+- Focused host validation passed:
+  - `test_serving_responses.py`: **37/37**;
+  - `test_serving_responses_stream.py`: **9/9**;
+  - `test_responses_protocol.py`: **22/22**;
+  - focused `compileall`; and
+  - `git diff --check`.
+  Existing FastAPI ORJSON deprecation warnings and the pre-existing mocked
+  reasoning-flush traceback remained unchanged. The next gate is one controlled
+  five-slot full-model launch and a real sequential Codex Code Mode command.
+- The controlled foreground launch began at **16:53:31 PDT** with:
+
+  ```powershell
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 `
+    -MaxMambaCacheSize 5
+  ```
+
+  It resolved five FP32 Mamba slots, one running request, real 200,000-token
+  target/draft pools and context, chunk 7,680, language-only surface, and the
+  qualified linear speculation/attention/quantization path. Target verify,
+  draft decode, and draft extend graph capture completed in **16.24**, **0.97**,
+  and **0.81 s**. The server became ready at **16:54:28 PDT**. `/health`,
+  `/v1/models`, and `/model_info` passed with served ID `qwen3.8-27b`, maximum
+  length 200,000, and image/audio understanding false.
+- The selected Codex overlay identities were:
+
+  ```text
+  FA1880D110D966D75423EF7C524CBCA21BCE38330A5C39A37562762DFDCA6510  C:\Users\Daniel\.codex\qwen38.config.toml
+  46FD2235681AD29571852F060BDC022A2E3ABE5E996A173F570C09EC861C9C87  C:\Users\Daniel\.codex\qwen38_models_cache.json
+  ```
+
+  The decisive real-client command was:
+
+  ```powershell
+  C:\Users\Daniel\AppData\Roaming\npm\codex.cmd exec `
+    -p qwen38 --ephemeral --color never `
+    -C C:\Users\Daniel\tombstead --json `
+    "Use the exec Code Mode tool exactly once to run git status --short in the current workspace. Read the tool output. Then reply with exactly CODEX TOOL READY and nothing else."
+  ```
+
+  Ephemeral session `01a05519-7206-7d32-bd7c-1e573466e51f` emitted exactly
+  one command item, `pwsh.exe -Command 'git status --short'`, with exit code
+  zero and the complete pre-existing Tombstead dirty-worktree inventory. It
+  consumed that output, emitted visible exact `CODEX TOOL READY`, and exited
+  zero. Usage was **25,010 input**, **12,544 cached input**, **201 output**, and
+  **142 reasoning-output tokens**. Tombstead status was byte-for-byte identical
+  after the gate.
+- The server recorded the intended real multi-chunk shape: the first Responses
+  turn prefilling **7,680 + 4,736** tokens with positive pending count, followed
+  by the custom-tool-output turn at a 12,544-token cached prefix. Both
+  `/v1/responses` calls returned HTTP 200 and the scheduler remained healthy.
+- Ordinary tool behavior remained intact:
+  - Chat Completions returned `finish_reason=tool_calls`, preserved 225
+    reasoning characters, and emitted exactly one
+    `multiply({"a":37,"b":19})` call at a 256-token bound. The preliminary
+    64/128-token bounds ended at `length`; they were retained as bounded-probe
+    evidence and the qualified rerun used the sufficient bound.
+  - A non-streaming Responses request returned one completed
+    `function_call` with the same name and arguments, alongside preserved
+    reasoning.
+- The first cache-flush call raced a parallel health request and correctly
+  returned HTTP 400 with `pending requests`; a sequential retry immediately
+  succeeded. After flush the GPU reported **28,100 MiB used / 4,088 MiB free**.
+  The verified tree was PowerShell `35996` -> `sglang.exe 24920` -> Python
+  `21176` -> listener/tokenizer `38612`, with scheduler `27372` and detokenizer
+  `29376`. Ctrl+C through the foreground session shut down that exact tree.
+  All six PIDs exited, port 30000 retained only ownerless `TIME_WAIT`, compiler
+  workers were absent, and the RTX 5090 returned to **939 MiB used / 31,249 MiB
+  free**, 0% utilization, and 29 C.

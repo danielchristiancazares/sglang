@@ -232,6 +232,33 @@ Prompt, Generation, TTFT, E2E, and Capacity must all appear together in root
 `BENCHMARK.md` for the same source checkpoint. Any workload change receives a
 fresh label and retains the preceding baseline.
 
+The Windows real-client gate is Codex CLI 0.151.0 with the dedicated `qwen38`
+profile over `/v1/responses`. Pin and record these overlay identities:
+
+```text
+FA1880D110D966D75423EF7C524CBCA21BCE38330A5C39A37562762DFDCA6510  C:\Users\Daniel\.codex\qwen38.config.toml
+46FD2235681AD29571852F060BDC022A2E3ABE5E996A173F570C09EC861C9C87  C:\Users\Daniel\.codex\qwen38_models_cache.json
+```
+
+The fixed read-only sequential Code Mode gate is:
+
+```powershell
+C:\Users\Daniel\AppData\Roaming\npm\codex.cmd exec `
+  -p qwen38 --ephemeral --color never `
+  -C C:\Users\Daniel\tombstead --json `
+  "Use the exec Code Mode tool exactly once to run git status --short in the current workspace. Read the tool output. Then reply with exactly CODEX TOOL READY and nothing else."
+```
+
+A passing window records the client/version and overlay hashes, exact five-slot
+server ingress and resolved arguments, one successful command item and its
+complete output, the consumed `custom_tool_call_output` turn, exact visible
+final marker, usage, zero client exit, unchanged Tombstead status, multi-chunk
+prefill/pending counts, post-request health, cache flush, verified foreground
+cleanup, free listener, and returned GPU state. Session
+`01a05519-7206-7d32-bd7c-1e573466e51f` qualified this contract with **25,010
+input**, **12,544 cached input**, **201 output**, and **142 reasoning-output
+tokens**.
+
 The Apple real-client gate is Codex CLI 0.149.0 with the machine-local
 `qwen38-local` profile over `/v1/responses`. Pin and record these overlay
 identities for each qualification:

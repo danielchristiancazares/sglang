@@ -36,6 +36,7 @@ from typing import (
 )
 
 from openai.types.responses import (
+    ResponseCustomToolCall,
     ResponseFunctionToolCall,
     ResponseInputItemParam,
     ResponseOutputItem,
@@ -1456,8 +1457,9 @@ class ResponseReasoningParam(BaseModel):
     )
 
 
-# Only ``function`` / ``web_search*`` / ``code_interpreter`` are wired to
-# execution paths; the rest pass validation so clients aren't rejected.
+# ``function`` and ``custom`` tools are wired for non-Harmony models;
+# ``web_search*`` and ``code_interpreter`` use Harmony execution. The remaining
+# types pass validation so clients are not rejected at request parsing.
 RESPONSE_TOOL_TYPES = Literal[
     "function",
     "web_search",
@@ -1481,20 +1483,27 @@ class ResponseTool(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = None
+    format: Optional[Dict[str, Any]] = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    defer_loading: Optional[bool] = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     strict: bool = False
     # Inner schemas for ``namespace`` tools.
     tools: Optional[List[Dict[str, Any]]] = None
 
     @model_validator(mode="after")
     def validate_function_tool(self) -> ResponseTool:
-        if self.type == "function" and not self.name:
-            raise ValueError("Function tools must include a name.")
+        if self.type in ("function", "custom") and not self.name:
+            raise ValueError("Function and custom tools must include a name.")
         return self
 
 
 ResponseInputOutputItem: TypeAlias = Union[
     ResponseInputItemParam,
     "ResponseReasoningItem",
+    ResponseCustomToolCall,
     ResponseFunctionToolCall,
 ]
 
@@ -1673,15 +1682,16 @@ class ResponsesRequest(BaseModel):
 
     def effective_tool_choice(self) -> Union[str, Dict[str, Any]]:
         """``tool_choice`` reduced to what the server can actually honor: of the
-        object forms only a named ``function`` survives, the rest (web_search,
-        mcp, ...) can't be forced through the tool-call parser."""
+        object forms only a named ``function`` or synthetic ``custom`` tool
+        survives; built-ins such as web_search and mcp cannot be forced through
+        the tool-call parser."""
         tool_choice = self.tool_choice
         if not isinstance(tool_choice, dict):
             return tool_choice
         name = tool_choice.get("name") or (tool_choice.get("function") or {}).get(
             "name"
         )
-        if tool_choice.get("type") == "function" and name:
+        if tool_choice.get("type") in ("function", "custom") and name:
             return {"type": "function", "name": name}
         return "auto"
 

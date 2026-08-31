@@ -1,8 +1,10 @@
 import asyncio
+import json
 import unittest
 from unittest.mock import Mock, patch
 
 from openai.types.responses import (
+    ResponseCustomToolCall,
     ResponseOutputMessage,
     ResponseOutputText,
     ResponseReasoningItem,
@@ -30,6 +32,39 @@ register_cpu_ci(est_time=7, suite="base-a-test-cpu")
 
 
 class InputMessageConstructionTestCase(CustomTestCase):
+    def test_codex_custom_call_round_trip_constructs_chat_messages(self):
+        serving = make_serving()
+        request = ResponsesRequest(
+            model="x",
+            store=False,
+            input=[
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [{"type": "summary_text", "text": "Inspecting"}],
+                },
+                {
+                    "type": "custom_tool_call",
+                    "id": "ctc_1",
+                    "call_id": "call_exec",
+                    "name": "exec",
+                    "input": "text('READY');",
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_exec",
+                    "output": [{"type": "input_text", "text": "READY"}],
+                },
+            ],
+        )
+
+        messages = serving._construct_input_messages(request)
+        self.assertEqual(messages[0]["role"], "assistant")
+        self.assertEqual(messages[0]["reasoning_content"], "Inspecting")
+        self.assertEqual(messages[0]["tool_calls"][0]["function"]["name"], "exec")
+        self.assertEqual(messages[1]["role"], "tool")
+        self.assertEqual(messages[1]["content"], "READY")
+
     def test_previous_response_replays_assistant_text_not_instructions(self):
         serving = make_serving()
         prev_response = Mock(id="resp_prev")
@@ -152,6 +187,33 @@ class InputMessageConstructionTestCase(CustomTestCase):
 
 
 class ChatToolForwardingTestCase(CustomTestCase):
+    def test_custom_tool_becomes_one_string_chat_function(self):
+        request = ResponsesRequest(
+            model="x",
+            input="run a command",
+            tools=[
+                {
+                    "type": "custom",
+                    "name": "exec",
+                    "description": "Run Code Mode JavaScript.",
+                    "format": {
+                        "type": "grammar",
+                        "syntax": "lark",
+                        "definition": "start: SOURCE",
+                    },
+                }
+            ],
+            store=False,
+        )
+
+        chat_tool = OpenAIServingResponses._response_tools_to_chat_tools(request)[0]
+        self.assertEqual(chat_tool.function.name, "exec")
+        self.assertEqual(chat_tool.function.parameters["required"], ["input"])
+        self.assertEqual(
+            chat_tool.function.parameters["properties"]["input"]["type"], "string"
+        )
+        self.assertEqual(request.tools[0].format["syntax"], "lark")
+
     def test_make_request_passes_function_tools_to_chat_processing(self):
         serving = make_serving()
         seen = {}
@@ -209,6 +271,19 @@ class ChatToolForwardingTestCase(CustomTestCase):
             store=False,
         )
         result = asyncio.run(serving.create_responses(request, raw_request=None))
+        self.assertEqual(getattr(result, "status_code", None), 400)
+
+        serving.use_harmony = True
+        custom_request = ResponsesRequest(
+            model="x",
+            input="hi",
+            tool_choice="required",
+            tools=[{"type": "custom", "name": "exec"}],
+            store=False,
+        )
+        result = asyncio.run(
+            serving.create_responses(custom_request, raw_request=None)
+        )
         self.assertEqual(getattr(result, "status_code", None), 400)
 
     def test_kimi_k3_request_uses_chat_encoder_fields(self):
@@ -433,6 +508,44 @@ class InputItemNormalizationTestCase(CustomTestCase):
             {"role": "tool", "tool_call_id": "call_abc", "content": "42"},
         )
 
+    def test_custom_tool_call_and_output_replay_through_chat_template(self):
+        call = OpenAIServingResponses._normalize_response_message_for_chat(
+            {
+                "type": "custom_tool_call",
+                "id": "ctc_1",
+                "call_id": "call_exec",
+                "name": "exec",
+                "input": "text('READY');",
+            }
+        )
+        self.assertEqual(
+            call,
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_exec",
+                        "type": "function",
+                        "function": {
+                            "name": "exec",
+                            "arguments": '{"input":"text(\'READY\');"}',
+                        },
+                    }
+                ],
+            },
+        )
+        output = OpenAIServingResponses._normalize_response_message_for_chat(
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_exec",
+                "output": [{"type": "input_text", "text": "READY"}],
+            }
+        )
+        self.assertEqual(
+            output,
+            {"role": "tool", "tool_call_id": "call_exec", "content": "READY"},
+        )
+
     def test_unknown_input_item_type_raises(self):
         with self.assertRaises(ValueError):
             OpenAIServingResponses._normalize_response_message_for_chat(
@@ -600,6 +713,81 @@ class OutputItemsTestCase(CustomTestCase):
                 }
             ],
         )
+
+    def _custom_tool_request(self):
+        return ResponsesRequest(
+            model="x",
+            input="inspect the repository",
+            store=False,
+            tools=[
+                {
+                    "type": "custom",
+                    "name": "exec",
+                    "description": "Run Code Mode JavaScript.",
+                    "format": {
+                        "type": "grammar",
+                        "syntax": "lark",
+                        "definition": "start: SOURCE",
+                    },
+                }
+            ],
+        )
+
+    def test_custom_exec_alias_and_direct_shell_prior_become_code_mode_call(self):
+        fake_call = ToolCallItem(
+            tool_index=0,
+            name="functions.exec",
+            parameters=(
+                '{"cmd":"git status --short","yield_time_ms":"15000"}'
+            ),
+        )
+
+        with patch(
+            "sglang.srt.entrypoints.openai.serving_responses.FunctionCallParser"
+        ) as parser_cls:
+            parser = parser_cls.return_value
+            parser.has_tool_call.return_value = True
+            parser.parse_non_stream.return_value = ("", [fake_call])
+            output_items = self.serving._make_response_output_items(
+                self._custom_tool_request(),
+                "raw model output",
+                tokenizer=Mock(),
+                require_reasoning=False,
+            )
+
+        self.assertEqual(len(output_items), 1)
+        call = output_items[0]
+        self.assertIsInstance(call, ResponseCustomToolCall)
+        self.assertEqual(call.name, "exec")
+        self.assertEqual(
+            call.input,
+            "const result = await tools.exec_command("
+            '{"cmd":"git status --short","yield_time_ms":15000});\n'
+            "text(result.output);",
+        )
+
+    def test_custom_exec_preserves_freeform_javascript(self):
+        source = "const result = await tools.exec_command({cmd: 'git status'});"
+        fake_call = ToolCallItem(
+            tool_index=0,
+            name="exec",
+            parameters=json.dumps({"input": source}),
+        )
+
+        with patch(
+            "sglang.srt.entrypoints.openai.serving_responses.FunctionCallParser"
+        ) as parser_cls:
+            parser = parser_cls.return_value
+            parser.has_tool_call.return_value = True
+            parser.parse_non_stream.return_value = ("", [fake_call])
+            output_items = self.serving._make_response_output_items(
+                self._custom_tool_request(),
+                "raw model output",
+                tokenizer=Mock(),
+                require_reasoning=False,
+            )
+
+        self.assertEqual(output_items[0].input, source)
 
     def test_function_tool_call_extracted_via_parser(self):
         serving = self.serving

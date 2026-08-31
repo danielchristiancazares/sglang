@@ -11,7 +11,7 @@ under `docs/`.
 
 Last reconciled with
 [`notes/experiment-log.md`](notes/experiment-log.md) through
-**2026-08-30 15:08 PDT**. A later experiment-log entry or fresh runtime
+**2026-08-30 16:59 PDT**. A later experiment-log entry or fresh runtime
 evidence supersedes every snapshot in this file.
 
 ## Recover context before acting
@@ -179,25 +179,30 @@ codex -p qwen38
 ```
 
 The startup banner must show model `qwen3.8-27b` and provider
-`sglang-qwen38`. For a disposable end-to-end test using the repository and
-multi-chunk shape that exposed the unfinished-chunk failure:
+`sglang-qwen38`. The disposable qualification gate uses a real Code Mode tool
+round trip and the multi-chunk Tombstead prompt shape:
 
 ```powershell
-codex exec -p qwen38 --ephemeral -C C:\Users\Daniel\hauberk `
-  "Return exactly READY"
+codex exec -p qwen38 --ephemeral --color never `
+  -C C:\Users\Daniel\tombstead --json `
+  "Use the exec Code Mode tool exactly once to run git status --short in the current workspace. Read the tool output. Then reply with exactly CODEX TOOL READY and nothing else."
 ```
 
-The final response must be exactly `READY`. The server log must show a first
-prefill chunk of 7,680 tokens with a positive pending-token count, completion
-of the remaining chunk, and a healthy scheduler. Recheck `/health` afterward.
-Qualification uses this multi-chunk prompt shape.
+The JSON event stream must contain exactly one successful command execution,
+its complete `git status --short` output, and visible final agent text exactly
+`CODEX TOOL READY`. The server log must show a first 7,680-token prefill chunk
+with a positive pending-token count, completion of the remaining chunk, a
+second Responses turn that consumes the custom-tool output, and a healthy
+scheduler. Confirm the Tombstead status is unchanged and recheck `/health`
+afterward. This gate qualifies the multi-chunk request and Codex's free-form
+`custom_tool_call` ABI together.
 
 Codex 0.151.0 currently also emits an optional model-catalog refresh warning
 because SGLang's OpenAI-compatible `/v1/models` response uses the
 `object`/`data` schema while that catalog reader expects a `models` field. It
 may also report fallback model metadata for this custom model ID. The explicit
 profile supplies the real context and compaction limits; a successful expected
-banner, completed multi-chunk response, and healthy listener establish the
+banner, completed Code Mode round trip, and healthy listener establish the
 end-to-end gate.
 
 Keep Qwen Codex requests sequential: this lane admits one running request. Exit
