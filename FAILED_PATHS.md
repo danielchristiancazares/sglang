@@ -2217,3 +2217,31 @@ option, or serving dispatch was added.
   MLP-boundary and served gains.
 - Related commit or revert: the experimental engine diff was removed; only the
   evidence record remains.
+
+## PERF-FA082 - Linear-attention b/a affine row fusion
+
+- Hypothesis: combining the two tiny 48-row b/a projections would remove one
+  affine launch from each of 48 recurrent layers with negligible duplicated
+  storage.
+- Scope: native early-out27 v2 `Engine::gated_delta`; process-isolated exact
+  deterministic `6237+128` serving with real 131,072 context/token pools.
+- Attempted change: concatenated only `in_proj_b` and `in_proj_a` packed
+  weights, scales, and biases at load, then split one 96-row quantized-matmul
+  result inside the shared recurrent-layer owner.
+- Benchmark evidence: the adjacent separate-projection control reached
+  **18.845 tok/s**. The candidate reached **18.511 tok/s**, **58.055139 s**
+  TTFT, and **64.915750 s** end to end, a **1.772%** decode regression. It
+  retained **28.89 GB** startup-reported available unified memory.
+- Correctness evidence: exact `6237+128`, `finish_reason=length`, and
+  output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`
+  matched the control. The focused native suite passed all **8 tests**.
+- Failure mode: MLX's separate 48-row operations schedule more efficiently at
+  batch one than one 96-row operation; dispatch-count reduction alone does not
+  reduce the asynchronous graph wall.
+- Why not to retry unchanged: the exact served regression is well beyond the
+  immediately observed run-to-run difference, with memory held constant.
+- Reopen only if: a native fused kernel consumes both original tensors while
+  also eliminating a downstream b/a transform, and its full boundary timing
+  beats the two asynchronous MLX operations.
+- Related commit or revert: the experimental engine diff was removed.
