@@ -7,7 +7,7 @@ resolved launcher arguments.
 
 **Native-Windows reconciled through:** 2026-09-01 06:18 PDT.
 
-**Apple M1 Max Q2 addendum reconciled through:** 2026-08-23 16:25 PDT.
+**Apple M1 Max Q2 addendum reconciled through:** 2026-08-30 20:46 PDT.
 
 ## Primary performance scoreboard
 
@@ -402,12 +402,12 @@ the intended MSVC/CUDA 13.3 environment and cap compilation at two jobs.
 scoreboard. Its repository-native route uses Python ingress, Qwen's official
 tokenizer, a 32,768-token BF16 pool, one request, and 1,024-token prefill
 chunks. Signed PERF-A016 commit
-`52b5326d8e5140b72a26a3909316fb1f665bbd3d` remains the last named-client-
-qualified result. Signed PERF-A021 commit
-`4dfa1ad3efdfe3f9236aa0ed0c841644ab513859` is the current performance and
-capacity baseline. It specializes the Q2_K tensor family inside the same
-mixed-format IQ2_XXS/Q2 checkpoint; checkpoint and scoreboard standing remain
-Q2.
+`52b5326d8e5140b72a26a3909316fb1f665bbd3d` remains the first
+named-client-qualified result. Signed PERF-A021 commit
+`4dfa1ad3efdfe3f9236aa0ed0c841644ab513859` is the current performance,
+capacity, and named-client baseline. It specializes the Q2_K tensor family
+inside the same mixed-format IQ2_XXS/Q2 checkpoint; checkpoint and scoreboard
+standing remain Q2.
 
 The complete Apple baseline has three exact workloads:
 
@@ -461,33 +461,134 @@ cleanup, free listener, and returned GPU state. Session
 input**, **12,544 cached input**, **201 output**, and **142 reasoning-output
 tokens**.
 
-The Apple real-client gate is Codex CLI 0.149.0 with the machine-local
-`qwen38-local` profile over `/v1/responses`. Pin and record these overlay
-identities for each qualification:
+The governing Apple workspace-write client gate is Codex CLI 0.151.0 with the
+dedicated machine-local home
+`/Users/dcazares/.codex/qwen38-local-hardened-home` over `/v1/responses`.
+Record these three bundle identities before and after every qualification:
 
 ```text
-9706003ad8a43ad48e4260f282057c023214c9e66737eae3da88a49188079a1c  $CODEX_HOME/qwen38-local.config.toml
-a67c491a1dd4d4df0f720fb966ac390bd20041d8ed29f02833dfca4424a013f0  $CODEX_HOME/qwen38-local.models.json
+9d7842bb47d15c5b7a63d1507b8e035784bf1ab768de36dbb131088493620409  $CODEX_HOME/config.toml
+862339c156824879852dbdc9ebf096523d6312699fdd8723f13d81091de2ec71  $CODEX_HOME/models.json
+5d59350d7a1568c3c458b05513e8b58ed50d70874f27fb80a06d131e09b9d096  $CODEX_HOME/instructions.md
 ```
 
-The fixed read-only sequential-tool gate is:
+The selected config uses sibling-relative artifact paths, default/exec low
+reasoning, medium Plan-mode reasoning, 10,000-token tool-output truncation, a
+2,400,000-ms idle timeout, zero request and
+stream retries, no shell login startup, core-only secret-filtered initial shell
+inheritance, disabled message-history append, analytics, feedback, and optional
+tool/model-visible surfaces, an explicit trusted decision for the repository,
+an untrusted decision for the fixed gate path, and workspace-write confinement
+with network and implicit temporary roots disabled. Its configured
+30,000-token Total-scope compaction limit resolves to 29,491. No system or
+managed Codex config was present in the qualified window. The ordinary user
+config and rules remained outside this home and byte-stable at
+`97f15d75...5ca9c` / `63d2d91f...61e5` before and after the gate.
+
+The shell policy sets `ZDOTDIR=/var/empty` after core inheritance and before
+spawning unified-exec children. The qualified root-owned 0755 directory was
+empty, and `/etc/zshenv` plus `/etc/zsh/zshenv` were absent. This prevents
+spawned `zsh -c` tools from rereading mutable `~/.zshenv`; values already
+present in the parent Codex environment remain subject to core filtering.
+
+The earlier `qwen38-local*` profile pairs remain historical artifacts. The
+19:46 profile-overlay write was behaviorally successful, while its lower user
+config was not pinned at process start. Preserve its files and recorded hashes
+without using it as the governing reproducibility identity.
+
+After the PERF-A021 endpoint is ready, launch the ordinary interactive client
+through the same selected home:
 
 ```bash
-env SGLANG_API_KEY=local codex exec -p qwen38-local --ephemeral \
-  --color never -C /Users/dcazares/sglang --json \
-  'Use the shell_command tool exactly once to run pwd in the current workspace. After reading its output, reply with exactly CODEX TOOL READY. Do not use any other tool.'
+env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home \
+  SGLANG_API_KEY=local /opt/homebrew/bin/codex --strict-config \
+  -C /Users/dcazares/sglang
 ```
 
-A passing window records the Codex version, both hashes, the pinned catalog
-and observed command-tool surface, exact server ingress and resolved arguments,
-process-scoped API key, request usage, one successful `shell_command`, consumed
-tool output, exact visible final marker, zero client exit, unchanged worktree,
-post-request server health, cache flush, leaf-first cleanup, free listener, and
-returned memory/thermal state. The qualified 2026-08-23 run used `pwd`,
-consumed `/Users/dcazares/sglang`, returned `CODEX TOOL READY`, and accounted
-for 17,871 input, 96 output, and 62 reasoning-output tokens. This gate
-qualifies the profile's read-only sequential shell surface. Windows production
-continues to use the standalone OpenCode2 provider/workload contract above.
+Every future non-interactive Qwen/Codex work or qualification attempt has a
+120-second wall-clock gate around the complete client process tree:
+
+```bash
+env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home \
+  SGLANG_API_KEY=local \
+  /opt/homebrew/bin/timeout --signal=INT --kill-after=10s 120s \
+  /opt/homebrew/bin/codex exec ... </dev/null
+```
+
+Leave GNU `timeout` in its process-group mode; `--foreground` exempts command
+children from the timeout. Exit `124` or forced-cleanup exit `137` fails the
+gate. After either result, record the elapsed time and exact thread, verify the
+client and compiler descendants are absent, and recheck every protected input
+and verifier hash. The configured 2,400,000-ms Codex idle timeout remains a
+transport setting; this outer 120-second bound is the actual-work usability
+contract.
+
+The repository is trusted so root `AGENTS.md` reaches the interactive prompt.
+At qualification, an ignore-independent scan found no project `.codex/**`,
+`hooks.json`, `*.rules`, `.agents/skills/**`, or `AGENTS.override.md` path.
+The dedicated home contained no `rules/`, `skills/`, `AGENTS.md`, or
+`AGENTS.override.md`; `$HOME/.agents/skills` and `/etc/codex/skills` were also
+absent. Future project config, hooks, policy, skills, override instructions, or
+home sidecars can alter the interactive path without moving the three bundle
+hashes, so record their continued absence or identities before launch. The
+ordinary interactive TUI can persist thread rollout/state inside the dedicated
+home; `[history] persistence="none"` specifically disables global message-
+history append.
+
+The fixed default workspace-write gate creates a fresh empty
+`/private/tmp/qwen38-codex-isolated-gate`, records all pre-state, then executes
+without a profile, `-c`, `--sandbox`, reasoning, or capacity override:
+
+```bash
+test ! -e /private/tmp/qwen38-codex-isolated-gate &&
+mkdir -m 700 /private/tmp/qwen38-codex-isolated-gate &&
+env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home \
+  SGLANG_API_KEY=local /opt/homebrew/bin/codex exec \
+  --strict-config --ephemeral --ignore-rules --skip-git-repo-check \
+  --color never -C /private/tmp/qwen38-codex-isolated-gate --json \
+  'Use exec_command exactly once. Set its cmd to this exact script:
+apply_patch <<'"'"'PATCH'"'"'
+*** Begin Patch
+*** Add File: gate.txt
++QWEN38_ISOLATED_WRITE_GATE=passed
+*** End Patch
+PATCH
+After the tool succeeds, reply exactly QWEN38 ISOLATED WRITE READY' </dev/null
+```
+
+The fixed path is explicitly untrusted, and `--ignore-rules` excludes policy
+for this scratch exec. Repository `AGENTS.md` visibility is established by the
+separate repository-CWD prompt-input diagnostic.
+
+A passing window records the Codex version, bundle and ordinary-global hashes,
+system/managed-layer state, strict-load result, exact server ingress and
+arguments, process-scoped API key, complete JSONL or an immutable raw-log
+path/hash, request usage, exactly one successful `file_change`, exact scratch
+contents/size/hash, exact visible final marker, zero client exit, unchanged
+repository worktree, post-request health, cache flush, scratch removal,
+foreground shutdown or verified leaf-first cleanup, free listener, and returned
+memory/thermal state. The 20:46 exact-bundle run added only the 34-byte
+`gate.txt`, matched SHA-256
+`f7ca43b4d2b9698e2f794c8bfffefe78836423c77bde38a7405f96ab12f6729a`,
+returned `QWEN38 ISOLATED WRITE READY`, and used 2,670 input / 115 output / 39
+reasoning-output tokens. Its catalog declares `shell_type=unified_exec`; the
+exposed tool names are `exec_command` and `write_stdin`. All three bundle
+hashes and both ordinary-global hashes were unchanged afterward.
+
+Forced compaction uses process overrides
+`model_auto_compact_token_limit=1000` and Total scope. The retained historical
+recovery run belongs to the immediate medium-reasoning predecessor hashes
+`39ad0f7c97ed30d36d41baf5d2b6ec3c127e2e44baf9aad2aa76f6bbf70c832b` /
+`8fbb54a5407b9279c1abcc61a805bb15067fe27bf4bf6e8346bd80051572dfa5` /
+`8a2fe9b979da48d5bc5a38ec22fb44f50b06de21216e3643b376ba330a4e2279`.
+It recovered from one malformed patch, completed a retry across two observed
+compaction boundaries, preserved its nonce, and exited zero. Its raw JSONL and
+exact warning text were not retained, so a future exact-transcript
+qualification records both warnings and every inference boundary. The
+isolated low bundle owns the clean edit gate; production-threshold near-limit
+compaction and concurrent tools remain separate qualification gates. Windows
+production continues to use the standalone OpenCode2 provider/workload
+contract above.
 
 Every Apple request expected to run longer than five minutes remains under an
 active controller-side watchdog. Poll at intervals of at most 60 seconds and

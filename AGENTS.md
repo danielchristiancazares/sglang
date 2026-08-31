@@ -11,7 +11,7 @@ under `docs/`.
 
 Last reconciled with
 [`notes/experiment-log.md`](notes/experiment-log.md) through
-**2026-08-30 18:04 PDT**. A later experiment-log entry or fresh runtime
+**2026-08-30 20:46 PDT**. A later experiment-log entry or fresh runtime
 evidence supersedes every snapshot in this file.
 
 ## Recover context before acting

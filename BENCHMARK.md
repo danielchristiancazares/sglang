@@ -110,22 +110,22 @@ FNV-1a-64 `6d4d220de481f54e` output. The launch allocated the complete
 32,768-token BF16 KV pool. The later selected Python-ingress route also passed
 exact `32761+1` execution in that pool.
 
-### Selected repository-native SGLang result
+### Historical PERF-A016 repository-native SGLang result
 
-Signed commit `52b5326d8e5140b72a26a3909316fb1f665bbd3d` adds PERF-A016,
+Signed commit `52b5326d8e5140b72a26a3909316fb1f665bbd3d` added PERF-A016,
 which reuses each activation fragment across two output rows for eligible
 batch-one **Q4_K tensors inside this mixed-format IQ2_XXS/Q2 checkpoint**.
-Record standing remains the Q2 checkpoint and M1 Max Q2 scoreboard; `Q4_K`
-names the internal tensor family.
+The record standing at that point remained the Q2 checkpoint and M1 Max Q2
+scoreboard; `Q4_K` names the internal tensor family.
 
-| Metric | Selected native SGLang |
+| Metric | Historical PERF-A016 native SGLang |
 |---|---:|
 | Five-run aggregate generation | **8.586948 tok/s** |
 | Best request-observed generation | **8.591773 tok/s** |
 | Mean end-to-end time | **29.812688 s** |
 | Best end-to-end time | **29.795946 s** |
 | Gain over matched disabled-kernel control | **22.510241%** |
-| llama.cpp Q2 record / selected SGLang | **1.707400x** |
+| llama.cpp Q2 record / PERF-A016 SGLang | **1.707400x** |
 
 After a 30.893266-second warmup, final-source Python-ingress wall times were
 `29.801688, 29.820932, 29.824091, 29.795946, 29.820783 s`. The fresh matched
@@ -134,12 +134,13 @@ control aggregated **7.009167 tok/s** from
 candidate restart aggregated **8.578205 tok/s**. Every response retained the
 same exact `12+256` usage, length finish, token IDs, text, and digest.
 
-The selected route uses Qwen's official tokenizer, Python ingress, a 32,768-
+The historical route used Qwen's official tokenizer, Python ingress, a 32,768-
 token BF16 KV pool, one request, and 1,024-token prefill chunks. It passed
 actual-file candidate/tail parity, sampled reasoning, thinking-disabled
 behavior, parsed tool use and continuation, image/audio-disabled reporting,
-exact `32761+1` capacity, and the named Codex profile gate below. The remaining
-aggregate gap to the route-neutral llama.cpp Q2 record is **41.431420%**.
+exact `32761+1` capacity, and its historical Codex 0.149.0 read-only profile
+gate. Its aggregate gap to the route-neutral llama.cpp Q2 record was
+**41.431420%**.
 
 ### Current PERF-A021 native SGLang baseline
 
@@ -231,16 +232,41 @@ and audio disabled, preserved separate reasoning, and returned final `703` for
 - an independent restart and second performance window;
 - a 5,000-token two-chunk prefill and exact near-capacity evidence for changes
   that affect allocation, cache layout, or residency;
-- standalone Codex CLI integration through the machine-local
-  `qwen38-local` profile and `/v1/responses`, including one read-only
-  `shell_command` round trip and its consumed result.
+- standalone Codex CLI integration through the strict, dedicated
+  `qwen38-local-hardened-home` and `/v1/responses`, including a reversible
+  workspace write and separately attributed post-compaction continuation.
 
-The selected client gate uses Codex CLI 0.149.0 with
-`$CODEX_HOME/qwen38-local.config.toml` and
-`$CODEX_HOME/qwen38-local.models.json`. The qualified task invoked `pwd`
-exactly once, consumed `/Users/dcazares/sglang`, returned exact visible
-`CODEX TOOL READY`, accounted for 62 reasoning-output tokens, and exited zero.
-The earlier process-scoped OpenCode runs remain historical admission evidence.
+The selected current-source client gate uses Codex CLI 0.151.0 with the
+dedicated `CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home`
+bundle. Its config/catalog/instruction SHA-256 values are
+`9d7842bb47d15c5b7a63d1507b8e035784bf1ab768de36dbb131088493620409`,
+`862339c156824879852dbdc9ebf096523d6312699fdd8723f13d81091de2ec71`,
+and `5d59350d7a1568c3c458b05513e8b58ed50d70874f27fb80a06d131e09b9d096`.
+The exact default-config task emitted one successful `file_change`, added the
+expected 34-byte scratch file with SHA-256
+`f7ca43b4d2b9698e2f794c8bfffefe78836423c77bde38a7405f96ab12f6729a`,
+returned exact visible `QWEN38 ISOLATED WRITE READY`, and exited zero with
+2,670 input, 115 output, and 39 reasoning-output tokens. The invocation supplied
+`--strict-config` and `--ignore-rules` and used no profile layer, `-c`,
+`--sandbox`, reasoning, or capacity override. Approval, workspace confinement,
+default/exec low reasoning, and capacity came from the pinned config; Plan mode
+remains medium. `ZDOTDIR=/var/empty` directs spawned non-login zsh tools away
+from mutable user startup files; the root-owned target was empty and system
+zshenv files were absent. The write ran in the untrusted fixed scratch path.
+A separate trusted-repository prompt diagnostic rendered root `AGENTS.md`.
+The qualified tree and dedicated home had no auxiliary project config, hook,
+rule, override-instruction, or skill roots; recheck those inputs before each
+interactive launch.
+
+A separate forced 1,000-token Total-scope gate on the immediate
+medium-reasoning predecessor hashes recovered from one malformed patch,
+completed the retry across two observed compaction boundaries, preserved its
+nonce, and exited zero. Its raw JSONL and exact warning text were not retained,
+so it remains historical continuation evidence rather than an exact-transcript
+qualification. Production compaction remains configured at 30,000; Codex
+applies an effective 29,491-token threshold, whose near-limit runtime
+continuation remains a separate qualification gate. Earlier profile-overlay
+Codex and process-scoped OpenCode runs remain historical admission evidence.
 
 Raw samples, exact process state, and the current native-SGLang Q2 handoff are
 preserved in [`notes/experiment-log.md`](notes/experiment-log.md) and

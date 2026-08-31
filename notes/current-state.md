@@ -1,7 +1,7 @@
 # Current state
 
-**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-12
-DeepSeek V4.1 admission and pinned TurboQuant35 layouts.
+**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-31
+13:21 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -868,8 +868,11 @@ current Apple benchmark baseline and preserves generic aligned, tail, and
 multi-batch fallbacks.
 Signed commit `1ec20a0e87` widens the fixed-memory BF16 Metal decode fence to
 131,073 physical rows. Isolated native admission, the 131,074-row fallback,
-and active sequence length 131,072 all pass; served context qualification
-remains the exact 32,768-token gate.
+and active sequence length 131,072 all pass. Signed commit `5f966ecb0d`
+splits long BF16 tiled decode history and stably reduces the exact 131,072-row
+attention median from **148.078959 ms** online and **65.117542 ms** unsplit to
+**4.338625 ms**. Focused parity, fragmented maps, nonzero storage offsets, and
+12 outstanding asynchronous output lifetimes pass.
 Signed commit `0d1d0ea643` owns PERF-A017's fixed-memory BF16 paged-GQA
 EXTEND mechanism and its separate lazy Metal pipeline.
 Host cleanup leaves this artifact as the only Hugging Face model cache and no
@@ -915,9 +918,9 @@ The first native Rust `/generate` baseline remains **7.001584 tok/s** aggregate,
 official-tokenizer fixed-output boundary with exact token IDs and FNV
 `6d4d220de481f54e`.
 
-PERF-A016 remains the last named-client-qualified repository-native result on
-the tool-capable Python ingress with the same official tokenizer. Its
-final-source five-run window is
+PERF-A016 remains the historical first named-client-qualified
+repository-native result on the tool-capable Python ingress with the same
+official tokenizer. Its final-source five-run window is
 **8.586948 tok/s** aggregate, **8.591773 tok/s** best hit, and **29.812688 s**
 mean E2E. The fresh disabled-kernel control is **7.009167 tok/s**, attributing
 a **22.510241%** full-model gain; an independent candidate restart reaches
@@ -948,18 +951,174 @@ BF16 pool at **18.942 observed prompt tok/s**, **1729.565719 s TTFT**, and
 thinking-disabled `READY`, one parsed multiply call, tool-result reasoning
 continuity, and image/audio-disabled reporting.
 
+The experimental long-context server now allocates real
+`context_length=max_total_tokens=131072` with BF16 KV and one request. Five
+no-buffer Mamba slots use 0.87 GB, the K/V pool uses 8.00 GB, packed weights use
+9.03 GB, and **10.97 GB remains** after allocation. Health and language-only
+reporting pass. The fifth slot is retained as Codex transient-state headroom;
+four- and five-slot experiments both proved that a late prompt-token change can
+miss a compressed terminal recurrent checkpoint, so slot count does not solve
+that radix-path issue.
+
+The current native-MLX early-out27 v2 decode line is signed at `4c1bc4c1e3`.
+Its reusable power-of-two full-attention K/V storage first changed exact
+6,237-history direct decode **17.923409 -> 19.151623 tok/s**. The latest retained
+kernels make each single-token recurrent causal-convolution/state transition
+one Metal launch, fuse the following BF16 SiLU into that same owner, fuse 127
+residual/RMSNorm boundaries into dual-output launches with distinct residual
+storage, combine q/k normalization with float scaling, and combine recurrent-
+output RMS normalization with the SiLU gate across all 48 recurrent layers.
+The convolution/state step improved matched serving **18.7616 -> 18.8914
+tok/s**; residual/RMS fusion improved its matched control **18.8286 -> 19.0484
+tok/s**; recurrent q/k fusion improved the next matched control **19.0900 ->
+19.1610 tok/s**; recurrent output norm/gate fusion improved its fresh matched
+control **19.1260 -> 19.1548 tok/s**; convolution/SiLU fusion improved its
+fresh matched control **19.1730 -> 19.2134 tok/s**. All served requests retained
+exact `6237+128` counts, reasoning output, stream shape, and SHA-256. The latest
+actual-work generation mean leaves a **0.7866 tok/s** gap to the required floor.
+Full-attention q/k/v affine row concatenation is closed under current MLX
+semantics: both the all-row and k/v-only forms changed the production-shape
+deterministic digest despite exact synthetic row arithmetic. PERF-FA084 retains
+their bounded screens. Recurrent beta/decay work inside the q/k normalization
+owner is also closed: the beta-only isolation was neutral, while the complete
+exact owner changed matched long-history decode **19.641655 -> 19.547612
+tok/s**. PERF-FA085 retains the five-pair evidence; selected source and digest
+are restored.
+
+The native engine's command-buffer byte default is now under qualification at
+128 MiB, with explicit `MLX_MAX_MB_PER_BUFFER` values retaining precedence.
+Five exact adjacent direct pairs improve **19.623300 -> 20.153966 tok/s**
+(**+2.704%**), and every candidate run clears 20. Its real 131K served gate is
+the remaining promotion step.
+
+The normal hash-pinned client prompt at `xhigh` renders 6,232 tokens. A midnight
+date update changed exactly one token at index 6,003. Infrastructure priming at
+aligned endpoints 2,048, 4,160, and 5,952 completed in separate bounded windows
+at **81.027809 / 85.022104 / 72.424614 seconds**; the last endpoint sits before
+the mutable date token. Actual Codex thread
+`01a056b0-54e5-7a60-921a-c7a05ef0843a` then completed in about **91.6 seconds**
+under `/opt/homebrew/bin/timeout --signal=INT --kill-after=10s 120s`. It ran
+exactly one `exec_command`, observed exact stdout
+`QWEN38_XHIGH_SPLIT_DECODE_TOOL=passed`, and returned the requested
+`QWEN38_XHIGH_SPLIT_DECODE_READY`. Usage was **12,678 input / 12,328 cached /
+188 output / 131 reasoning-output tokens**. The two server turns reused
+5,952+280 and 6,376+70 prompt tokens. The actual Responses body omitted
+`max_output_tokens`; the default instructions and repository prompt remained
+byte-identical. This qualifies parser-enabled, ordinary-prompt, uncapped-output
+tool use at `xhigh` with real 131K client/server metadata inside the two-minute
+contract. Cold 6K prefill remains the leading interactivity gap and autonomous
+multi-file ownership remains open.
+
 Historical process-scoped OpenCode 1.18.15 runs admitted 13,635 and
-13,691-token agent prompts. The governing Apple real-client gate is Codex CLI
-0.149.0 through the machine-local `qwen38-local` Responses profile. Its last
-execution remains on PERF-A016: one read-only `pwd` tool call returned the
-workspace, its result was consumed, visible final was exact
-`CODEX TOOL READY`, and the client accounted for 17,871 input, 96 output, and
-62 reasoning-output tokens before exiting zero. Profile/catalog SHA-256 values
-are `9706003ad8a43ad48e4260f282057c023214c9e66737eae3da88a49188079a1c`
-and `a67c491a1dd4d4df0f720fb966ac390bd20041d8ed29f02833dfca4424a013f0`.
-The PERF-A021 named-client rerun remains the final promotion gate. Verified
-cleanup leaves every server/client PID absent, port 30000 free, 93% memory
-free, and normal thermal/performance status.
+13,691-token agent prompts. The 18:29 Codex 0.151.0 `qwen38-local` read-only
+gate remains historical evidence with hashes `9706003a...9a1c` and
+`680e762e...e970`. The 19:46 strict profile-overlay write also remains
+historical behavioral evidence at `d347c93e...f0ba` / `eb15e828...1db1` /
+`8a2fe9b9...2279`; it used same-value sandbox/approval pins, and its mutable
+lower user config and rules were not hashed at process start.
+
+The governing Apple workspace-write client gate now uses the dedicated
+`CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home`. Final
+config/catalog/instruction SHA-256 values are
+`9d7842bb47d15c5b7a63d1507b8e035784bf1ab768de36dbb131088493620409`,
+`862339c156824879852dbdc9ebf096523d6312699fdd8723f13d81091de2ec71`,
+and `5d59350d7a1568c3c458b05513e8b58ed50d70874f27fb80a06d131e09b9d096`.
+The exact strict task used no profile layer, `-c`, `--sandbox`, reasoning, or
+capacity override. It issued one successful `file_change` on the first attempt,
+added only `gate.txt` with exact content
+`QWEN38_ISOLATED_WRITE_GATE=passed`, returned visible
+`QWEN38 ISOLATED WRITE READY`, and exited zero with **2,670 input**, **115
+output**, and **39 reasoning-output tokens**. The 34-byte file SHA-256 was
+`f7ca43b4d2b9698e2f794c8bfffefe78836423c77bde38a7405f96ab12f6729a`.
+
+After the PERF-A021 server is ready, the normal interactive entry is:
+
+```bash
+env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home \
+  SGLANG_API_KEY=local /opt/homebrew/bin/codex --strict-config \
+  -C /Users/dcazares/sglang
+```
+
+The repository is trusted so root `AGENTS.md` reaches the interactive prompt;
+the final separate prompt-input diagnostic rendered 21,741 characters and
+contained its exact C++/CUDA-only rule. Qualification scans that did not rely on
+ignore rules found no project `.codex`, hook, rule, override-instruction, or
+skill sidecar; no dedicated-home rule, skill, or override-instruction path; and
+no `$HOME/.agents/skills` or `/etc/codex/skills` directory.
+Recheck those mutable interactive inputs before launch. The fixed scratch gate
+is untrusted and supplies `--ignore-rules` explicitly.
+
+The normal trusted-repository prompt and existing interactive configuration
+remain the authoritative working lane. A one-off Codex 0.151.0 diagnostic with
+`project_doc_max_bytes=0`, `include_environment_context=false`, and reasoning
+effort `none` reduced debug prompt input to 100 tokens; those overrides are
+confined to diagnostics and disposable scratch gates. Compact scratch thread
+`01a05638-3921-7411-9564-f680af8ea1b8` issued a real `printf` tool command,
+received `QWEN38_COMPACT_TOOL=passed`, returned the requested final marker, and
+exited zero in about 52 seconds. A following automatic header-edit prompt
+returned only `ack`, so tool selection for edits remains a supervision point.
+
+Parser-free `--grammar-backend outlines` is retained as an opt-in supervised
+structured subworker on MPS, outside the normal Codex prompt. Four JSON-schema
+Responses requests completed inside their individual 120-second process
+deadlines and generated a header, validation/sort/merge implementation, and
+authored-test intent. Host review preserved repository paths and namespaces and
+corrected generated API/type drift. The strict three-file C++20 build emitted
+exact
+`QWEN38_CPP_MULTI_FILE_GATE=passed`, while the immutable verifier retained SHA-
+256 `37726f73...c9ec0`. This qualifies supervised multi-file repair within the
+two-minute request contract. Autonomous multi-file editing remains open.
+
+Every future non-interactive Qwen/Codex work attempt runs inside
+`/opt/homebrew/bin/timeout --signal=INT --kill-after=10s 120s`. Hybrid
+`UnifiedRadixCache` remains established for delta-sized continuation prefill.
+Default xgrammar vocabulary-mask application currently raises `Unsupported
+device: mps`; retaining Qwen reasoning/tool parsers with Outlines also fails at
+the structural-tag/backend-mask boundary. The selected local structured lane
+therefore omits both parsers and uses reasoning effort `none`. The ordinary
+Qwen-parser Codex lane now owns a successful auto-selected shell tool round
+trip at `xhigh`; required named-tool grammar remains a separate qualification
+target.
+
+A separate 1,000-token Total-scope gate on the immediate medium-reasoning
+predecessor hashes
+`39ad0f7c97ed30d36d41baf5d2b6ec3c127e2e44baf9aad2aa76f6bbf70c832b` /
+`8fbb54a5407b9279c1abcc61a805bb15067fe27bf4bf6e8346bd80051572dfa5` /
+`8a2fe9b979da48d5bc5a38ec22fb44f50b06de21216e3643b376ba330a4e2279`
+supplies historical compaction evidence. The task recovered from a malformed
+patch across two observed compaction boundaries, preserved its nonce, and
+exited zero with 11,093/5,120/3,943 tokens. It is unmatched to the clean low
+task, and its raw JSONL and exact warning text were not retained. Production
+remains configured at 30,000 Total-scope tokens, resolving to 29,491 under
+Codex's 90% clamp; near-limit runtime continuation at that effective threshold
+remains a separate qualification gate.
+
+The isolated lane passes strict config loading and explicitly disables hooks,
+plugins, agents, goals, memories, message-history append, analytics, feedback,
+login-shell startup, web/network tools, and other optional tool/model-visible
+surfaces. It has zero configured MCP servers, and all effective skill-root
+paths were absent; skill-instruction injection and bundled skills are disabled.
+It caps tool output at 10,000 tokens, disables unbounded/request/stream
+retries, uses a 2,400,000-ms idle bound, filters a core-only initial shell
+environment, and sets `ZDOTDIR=/var/empty` before spawned shell startup. The
+root-owned target
+was empty and system zshenv files were absent, so spawned non-login zsh tools
+do not reread `~/.zshenv`. The config trusts the repository, leaves the fixed
+scratch path untrusted, and confines workspace writes with network and implicit
+temporary roots disabled. The catalog declares `shell_type=unified_exec`; its
+exposed tools are `exec_command` and `write_stdin`. The client sends
+`parallel_tool_calls=true` while the instruction bundle requests sequential
+use. Complex multi-file editing, concurrent-tool behavior, and production-
+threshold near-limit compaction remain wider client gates.
+
+Pre/post bundle hashes and the ordinary user config/rules hashes
+`97f15d75...5ca9c` / `63d2d91f...61e5` were stable. System and managed Codex
+layers were absent. Post-tool health, language-only reporting, cache flush,
+and scratch cleanup passed. Foreground shutdown removed root/listener `36097`,
+tracker `36112`, scheduler `36113`, and detokenizer `36114`. In the 20:46
+post-shutdown snapshot, port 30000 and model/compiler/client process sets were
+empty, the fixed scratch path was absent, memory had returned to 92% free with
+zero throttled pages, and thermal/performance status was normal.
 
 A one-shot synchronized batch-one profile now supplies a candidate-selection
 diagnostic.
@@ -1016,10 +1175,9 @@ the matched disabled prompt rate. Every request completed exact `128+1` with
 parity.
 
 The current PERF-A021 baseline has cleared its semantic, sampled, independent-
-restart, and exact-capacity gates. Its **9.189086 tok/s** aggregate leaves a
-**37.324447%** gap to pinned llama.cpp. The named Codex-profile rerun is open,
-and the next measured batch-one decode hotspot remains the compact-scoreboard
-handoff.
+restart, exact-capacity, and isolated-home Codex gates. Its **9.189086 tok/s**
+aggregate leaves a **37.324447%** gap to pinned llama.cpp. The next measured
+batch-one decode hotspot remains the compact-scoreboard handoff.
 
 Long-context EXTEND now has a qualified native mechanism. PERF-A017 implements
 batch-one BF16 paged GQA at 24 query heads, four KV heads, and dimension 256

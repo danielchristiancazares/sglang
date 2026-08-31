@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-09-08 NVIDIA setup and benchmark handoff.
+**Reconciled through:** 2026-08-31 12:43 PDT.
 
 ## Selected production choices
 
@@ -239,7 +239,18 @@ has not.
 
 | Candidate | Status | Why |
 |---|---|---|
-| Bartowski Qwen3.8-27B IQ2_XXS checkpoint | Retained native playground | The current official-tokenizer/Python-ingress baseline reaches **9.189086 tok/s** aggregate on exact `12+256`, passes sampled behavior and tool continuity, and completes exact `32761+1` in the 32K BF16 pool. The named Codex Responses gate last passed on PERF-A016 and remains open on PERF-A021 |
+| Bartowski Qwen3.8-27B IQ2_XXS checkpoint | Retained native playground | The current official-tokenizer/Python-ingress baseline reaches **9.189086 tok/s** aggregate on exact `12+256`, passes sampled behavior and tool continuity, completes exact `32761+1` in the 32K BF16 pool, and passes a strict Codex 0.151.0 scratch edit from a dedicated default/exec-low-reasoning `CODEX_HOME`; the intermediate medium hashes separately retain forced-compaction continuation evidence |
+| Two-minute Apple Qwen/Codex actual-work gate | Parser-enabled xhigh shell round trip qualified at real 131K; autonomous multi-file qualification pending | Keep the normal trusted-repository prompt and hash-pinned isolated home. Wrap every non-interactive attempt with GNU `timeout --signal=INT --kill-after=10s 120s` in process-group mode. With the unchanged 6,232-token prompt primed through a 5,952-token aligned checkpoint, Codex completed one exact `exec_command` plus final response in about 91.6 seconds at 12,678 input / 12,328 cached / 188 output / 131 reasoning-output tokens. The actual Responses body remained uncapped. Cold 6K prefill and automatic multi-file ownership remain open; prompt-elision flags remain diagnostic-only overrides |
+| M1 Max split-history BF16 decode | Retained; signed `5f966ecb0d` | The bounded native Metal split/reduce path changes exact 131K attention decode from 148.078959 ms online and 65.117542 ms unsplit tiled to 4.338625 ms, preserves short-sequence cost, and passes long-context parity plus asynchronous lifetime coverage. `SGLANG_MPS_TILED_DECODE=0` and `SGLANG_MPS_SPLIT_DECODE=0` retain matched controls |
+| Materialized native affine gate/up rows | Rejected | Adjacent deterministic `6237+128` serving changed **18.845 -> 18.782 tok/s** and startup-reported available unified memory **28.92 -> 22.28 GB** with identical output. Reopen only for a one-launch kernel that consumes the two original tensors without duplicated storage |
+| Native linear-attention b/a row fusion | Rejected | Combining the two 48-row affine projections changed adjacent deterministic `6237+128` serving **18.845 -> 18.511 tok/s** with identical output and retained memory headroom; keep the separately scheduled MLX operations |
+| Native recurrent convolution/state fusion | Retained; signed `6ad2c58921` | One decode launch now owns the exact BF16 four-tap causal convolution and distinct shifted next-state output across all 48 recurrent layers. Five exact direct long-history pairs improve **19.120031 -> 19.221589 tok/s** (+0.531%); matched five-sample 131K serving improves **18.7616 -> 18.8914 tok/s** (+0.692%) with identical output/reasoning SHA-256 |
+| Native residual/RMSNorm fusion | Retained; signed `4905d68370` | A dual-output Metal kernel owns 127 single-token residual/normalization boundaries while preserving distinct residual storage. Direct long-history improves **19.222533 -> 19.310857 tok/s** (+0.459%); matched five-sample 131K serving improves **18.8286 -> 19.0484 tok/s** (+1.167%) with exact reasoning output and digest |
+| Native recurrent q/k normalization fusion | Retained; signed `b851d3c9de` | One dual-output Metal launch owns the two RMS reductions, BF16 normalization rounding, and float32 scales repeated by all 48 gated-delta layers. Direct long-history improves **19.319062 -> 19.464738 tok/s** (+0.754%); matched five-sample 131K serving improves **19.0900 -> 19.1610 tok/s** (+0.372%) with exact reasoning output and digest |
+| Native recurrent output norm/gate fusion | Retained; signed `28174b3da2` | One Metal launch owns recurrent-output RMS normalization, precise float32 SiLU gating, and final BF16 conversion in all 48 gated-delta layers. Direct long-history improves **19.469136 -> 19.515718 tok/s** (+0.239%); matched five-sample 131K serving improves **19.1260 -> 19.1548 tok/s** (+0.151%) with exact reasoning output and digest. Extreme-activation parity requires `metal::precise::exp` in the dynamic custom kernel |
+| Native recurrent convolution/SiLU fusion | Retained; signed `4c1bc4c1e3` | The existing single-token convolution/state Metal owner now reproduces both BF16 boundaries of the following SiLU across all 48 gated-delta layers. Direct long-history improves **19.524068 -> 19.632483 tok/s** (+0.555%); matched five-sample 131K serving improves **19.1730 -> 19.2134 tok/s** (+0.211%) with exact reasoning output and digest |
+| Full-attention affine q/k/v row concatenation | Rejected | Full q/k/v and k/v-only forms screened at **20.721378** and **20.672271 tok/s**, yet both changed the selected 256-token digest because production output geometry changes MLX accumulation. Reopen only with a multi-output implementation that preserves each product's accumulation order |
+| Recurrent beta/decay inside q/k normalization | Rejected | Beta-only fusion changed matched long-history decode **19.602405 -> 19.600901 tok/s**; the complete exact owner changed **19.641655 -> 19.547612 tok/s**, with every final pair slower. Preserve MLX's independent scheduling unless a downstream consumer absorbs these transforms |
 | Compact heterogeneous merged GGUF storage on MPS | Retained | Signed `13bea403d6` removes 40 packed copies / 478.125 MiB per forward, improves adjacent `128+32` generation **3.1858 -> 3.309 tok/s**, lowers reported weights **10.03 -> 9.03 GB**, and preserves the exact digest |
 | IQ2_XXS batch-one four-row Metal kernel | Retained | Signed `16b2bf7a06` changes matched projection time **1.176875 -> 0.516000 ms** and served generation **3.309 -> 7.1748 tok/s** with exact behavior across two restarts |
 | Q5_K batch-one four-cohort vocabulary head | Retained | Signed `b19cf4acf3` changes matched head time **19.659291 -> 3.754625 ms**; served deterministic generation reaches **8.0284 tok/s**, with an independent 8.114 tok/s confirmation and exact digest |
@@ -257,10 +268,23 @@ has not.
 | Always-on MLX quantized-query tiling | Rejected on its measured machine | The process-wide policy regressed the measured 5K prompt while only larger score shapes benefited |
 
 Large-batch native-IQ2 prefill is qualified through exact `5000+1` and
-`32761+1` requests. The Apple real-client selection is Codex CLI 0.149.0 via
-the machine-local `qwen38-local` Responses profile; its fixed read-only shell
-round trip consumed the tool result and returned exact `CODEX TOOL READY` on
-PERF-A016. The PERF-A021 rerun remains open.
+`32761+1` requests. The Apple workspace-write client selection is Codex CLI
+0.151.0 via the dedicated machine-local `qwen38-local-hardened-home`.
+Its exact default-config unified-exec run applied one scratch patch on the first
+attempt and completed at 2,670 input / 115 output / 39 reasoning-output tokens.
+The shell policy directs spawned zsh startup to root-owned empty `/var/empty`.
+The trusted repository prompt contains root `AGENTS.md`; qualification also
+records the absence of auxiliary project config/hook/rule/override/skill
+sidecars. Dedicated-home rule/skill/override paths, `$HOME/.agents/skills`, and
+`/etc/codex/skills` were absent. The immediate medium-reasoning predecessor
+hashes own the
+separate forced recovery gate at 11,093/5,120/3,943. That unmatched task
+recovered from a malformed
+patch across two observed compaction boundaries, preserved the written nonce,
+and exited zero; its raw JSONL and exact warning text were not retained. The
+production 30,000-token Total-scope limit resolves to 29,491. Autonomous
+multi-file ownership, parser-enabled required tools, parallel-tool behavior,
+and production-threshold near-limit compaction remain wider gates.
 The earlier 13,635/13,691-token process-scoped OpenCode runs remain historical
 admission evidence. The safe long-pool fallback is retained, and the next
 measured batch-one decode hotspot governs funding. The deleted affine-q4
@@ -280,9 +304,10 @@ fresh baseline, dependency, parity, memory, and capacity evidence.
   `304C9CDDB08FA69E680E6ABE46C02C17F992F904A4AF20B978E4CC4B767EADBD`.
 - Keep OpenCode2's cloud-model configuration stable during local server tuning;
   use process-scoped aliases or wrappers.
-- Treat `$CODEX_HOME/qwen38-local.config.toml` and its static catalog as the
-  machine-local Apple client overlay; pin their hashes and run the fixed
-  read-only Responses tool gate for qualification.
+- Preserve the historical `$CODEX_HOME/qwen38-local*` profile artifacts and
+  their recorded hashes. Qualify the selected Apple client through the pinned
+  `qwen38-local-hardened-home` config/catalog/instruction bundle, its fixed
+  scratch-write Responses gate, and stable pre/post bundle/global hashes.
 - Use exact process ancestry for server lifecycle actions and preserve every
   unrelated user process.
 
