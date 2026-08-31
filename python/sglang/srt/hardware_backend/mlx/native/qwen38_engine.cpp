@@ -142,6 +142,66 @@ constexpr const char* kCausalConvDecodeSource = R"(
         next_state_base[(K - 2) * D] = qkv_base[0];
 )";
 
+constexpr const char* kResidualRmsNormSource = R"(
+        constexpr int N_READS = 4;
+        constexpr int SIMD_SIZE = 32;
+        threadgroup float local_inv_mean[1];
+        threadgroup float local_sums[SIMD_SIZE];
+
+        auto row = threadgroup_position_in_grid.x;
+        auto lid = thread_position_in_threadgroup.x;
+        auto simd_lane = thread_index_in_simdgroup;
+        auto simd_group = simdgroup_index_in_threadgroup;
+
+        constexpr int Iterations =
+            (D + Threads * N_READS - 1) / (Threads * N_READS);
+        InT cached[Iterations][N_READS];
+        float acc = 0.0f;
+        int iteration = 0;
+        for (uint base = lid * N_READS; base < D;
+             base += Threads * N_READS, ++iteration) {
+          for (int i = 0; i < N_READS; ++i) {
+            if (base + i < D) {
+              auto index = row * D + base + i;
+              InT value = x[index] + residual[index];
+              cached[iteration][i] = value;
+              residual_out[index] = value;
+              float value_f = static_cast<float>(value);
+              acc += value_f * value_f;
+            }
+          }
+        }
+
+        acc = simd_sum(acc);
+        if (simd_group == 0) {
+          local_sums[simd_lane] = 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_lane == 0) {
+          local_sums[simd_group] = acc;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_group == 0) {
+          acc = simd_sum(local_sums[simd_lane]);
+          if (simd_lane == 0) {
+            local_inv_mean[0] = metal::precise::rsqrt(acc / D + eps);
+          }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        iteration = 0;
+        for (uint base = lid * N_READS; base < D;
+             base += Threads * N_READS, ++iteration) {
+          for (int i = 0; i < N_READS; ++i) {
+            if (base + i < D) {
+              auto index = row * D + base + i;
+              norm_out[index] = weight[base + i] * static_cast<InT>(
+                  static_cast<float>(cached[iteration][i]) * local_inv_mean[0]);
+            }
+          }
+        }
+)";
+
 std::vector<array> compute_g_fn(const std::vector<array>& xs) {
   return {mx::exp(-mx::exp(astype(xs[0], mx::float32)) * softplus(xs[1] + xs[2]))};
 }
@@ -170,6 +230,15 @@ const mx::fast::CustomKernelFunction& causal_conv_decode_metal() {
   return kernel;
 }
 
+const mx::fast::CustomKernelFunction& residual_rms_norm_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_residual_rms_norm",
+      {"x", "residual", "weight", "eps"},
+      {"residual_out", "norm_out"},
+      kResidualRmsNormSource);
+  return kernel;
+}
+
 } // namespace
 
 std::pair<array, array> causal_conv_decode(
@@ -189,6 +258,40 @@ std::pair<array, array> causal_conv_decode(
           {"InT", mx::fast::TemplateArg{qkv.dtype()}},
           {"K", mx::fast::TemplateArg{K}},
           {"D", mx::fast::TemplateArg{D}},
+      },
+      std::nullopt,
+      false,
+      {});
+  return {outs[0], outs[1]};
+}
+
+std::pair<array, array> residual_rms_norm(
+    const array& x,
+    const array& residual,
+    const array& weight,
+    float eps) {
+  if (x.shape() != residual.shape() || x.ndim() == 0 || weight.ndim() != 1 ||
+      x.shape().back() != weight.shape()[0] || x.dtype() != residual.dtype() ||
+      x.dtype() != weight.dtype()) {
+    throw std::runtime_error("invalid residual RMSNorm inputs");
+  }
+  const int D = static_cast<int>(x.shape().back());
+  const int rows = static_cast<int>(x.size() / static_cast<size_t>(D));
+  int threads = 1024;
+  if (D <= 4096) {
+    const int threads_needed = (D + 3) / 4;
+    threads = ((threads_needed + 31) / 32) * 32;
+  }
+  auto outs = residual_rms_norm_metal()(
+      {x, residual, weight, array(eps)},
+      {x.shape(), x.shape()},
+      {x.dtype(), x.dtype()},
+      {rows * threads, 1, 1},
+      {threads, 1, 1},
+      {
+          {"InT", mx::fast::TemplateArg{x.dtype()}},
+          {"D", mx::fast::TemplateArg{D}},
+          {"Threads", mx::fast::TemplateArg{threads}},
       },
       std::nullopt,
       false,
@@ -605,12 +708,37 @@ array Engine::gated_delta(LinearAttn& lin, const array& x) {
 
 array Engine::forward_hidden(const array& tokens) {
   array h = embed(tokens);
-  for (auto& layer : layers_) {
-    array n = mx::fast::rms_norm(h, layer.input_norm, cfg_.rms_norm_eps);
-    array r = layer.is_linear ? gated_delta(layer.linear, n) : full_attn(layer.attn, n);
-    h = h + r;
-    array n2 = mx::fast::rms_norm(h, layer.post_norm, cfg_.rms_norm_eps);
-    h = h + mlp(layer, n2);
+  const bool single_token = tokens.shape()[1] == 1;
+  if (!single_token) {
+    for (auto& layer : layers_) {
+      array n = mx::fast::rms_norm(h, layer.input_norm, cfg_.rms_norm_eps);
+      array r =
+          layer.is_linear ? gated_delta(layer.linear, n) : full_attn(layer.attn, n);
+      h = h + r;
+      array n2 = mx::fast::rms_norm(h, layer.post_norm, cfg_.rms_norm_eps);
+      h = h + mlp(layer, n2);
+    }
+    return h;
+  }
+
+  array n = mx::fast::rms_norm(
+      h, layers_.front().input_norm, cfg_.rms_norm_eps);
+  for (size_t i = 0; i < layers_.size(); ++i) {
+    auto& layer = layers_[i];
+    array r =
+        layer.is_linear ? gated_delta(layer.linear, n) : full_attn(layer.attn, n);
+    auto post_norm =
+        residual_rms_norm(h, r, layer.post_norm, cfg_.rms_norm_eps);
+    h = post_norm.first;
+    array m = mlp(layer, post_norm.second);
+    if (i + 1 == layers_.size()) {
+      h = h + m;
+    } else {
+      auto next_norm = residual_rms_norm(
+          h, m, layers_[i + 1].input_norm, cfg_.rms_norm_eps);
+      h = next_norm.first;
+      n = next_norm.second;
+    }
   }
   return h;
 }
