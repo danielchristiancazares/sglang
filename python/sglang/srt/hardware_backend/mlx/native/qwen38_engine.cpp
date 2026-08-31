@@ -121,7 +121,7 @@ constexpr const char* kGatedDeltaSource = R"(
         }
 )";
 
-constexpr const char* kCausalConvDecodeSource = R"(
+constexpr const char* kCausalConvDecodeSiluSource = R"(
         auto channel = thread_position_in_grid.x;
         auto batch = thread_position_in_grid.y;
         auto state_base = state + batch * (K - 1) * D + channel;
@@ -133,7 +133,13 @@ constexpr const char* kCausalConvDecodeSource = R"(
           acc += static_cast<float>(state_base[tap * D]) * weight_base[tap];
         }
         acc += static_cast<float>(qkv_base[0]) * weight_base[K - 1];
-        conv_out[batch * D + channel] = static_cast<InT>(acc);
+        InT conv_value = static_cast<InT>(acc);
+        auto sigmoid_low =
+            1 / (1 + metal::precise::exp(metal::abs(conv_value)));
+        InT sigmoid_value =
+            (conv_value < 0) ? sigmoid_low : 1 - sigmoid_low;
+        conv_out[batch * D + channel] =
+            static_cast<InT>(conv_value * sigmoid_value);
 
         auto next_state_base = next_state + batch * (K - 1) * D + channel;
         for (int tap = 0; tap < K - 2; ++tap) {
@@ -361,12 +367,12 @@ const mx::fast::CustomKernelFunction& gated_delta_metal() {
   return kernel;
 }
 
-const mx::fast::CustomKernelFunction& causal_conv_decode_metal() {
+const mx::fast::CustomKernelFunction& causal_conv_decode_silu_metal() {
   static const auto kernel = mx::fast::metal_kernel(
-      "sglang_causal_conv_decode",
+      "sglang_causal_conv_decode_silu",
       {"state", "qkv", "weight"},
       {"conv_out", "next_state"},
-      kCausalConvDecodeSource);
+      kCausalConvDecodeSiluSource);
   return kernel;
 }
 
@@ -399,14 +405,14 @@ const mx::fast::CustomKernelFunction& gated_delta_norm_gate_metal() {
 
 } // namespace
 
-std::pair<array, array> causal_conv_decode(
+std::pair<array, array> causal_conv_decode_silu(
     const array& state,
     const array& qkv,
     const array& weight) {
   int B = static_cast<int>(qkv.shape()[0]);
   int K = static_cast<int>(state.shape()[1]) + 1;
   int D = static_cast<int>(qkv.shape()[2]);
-  auto outs = causal_conv_decode_metal()(
+  auto outs = causal_conv_decode_silu_metal()(
       {state, qkv, weight},
       {{B, 1, D}, {B, K - 1, D}},
       {qkv.dtype(), state.dtype()},
@@ -902,8 +908,8 @@ array Engine::gated_delta(LinearAttn& lin, const array& x) {
   }
   array conv_out = qkv;
   if (S == 1 && ksz > 1) {
-    auto conv = causal_conv_decode(lin.conv_state, qkv, lin.conv1d);
-    conv_out = silu(conv.first);
+    auto conv = causal_conv_decode_silu(lin.conv_state, qkv, lin.conv1d);
+    conv_out = conv.first;
     lin.conv_state = conv.second;
   } else {
     array conv_input = concatenate({lin.conv_state, qkv}, 1);

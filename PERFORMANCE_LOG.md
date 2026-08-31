@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | separate BF16 convolution and SiLU **19.524068 tok/s** mean | fused convolution/SiLU owner **19.632483 tok/s** mean | **+0.108415 / +0.555%**; all five adjacent pairs exact and positive | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 11:25 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate recurrent output RMSNorm and SiLU gate **19.1260 tok/s** mean | fused norm/gate owner **19.1548 tok/s** mean | **+0.0288 / +0.151%**; all ten requests exact | `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, process-isolated five-sample control/candidate windows | 2026-08-31 11:05 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | separate recurrent output RMSNorm and SiLU gate **19.469136 tok/s** mean | fused norm/gate owner **19.515718 tok/s** mean | **+0.046582 / +0.239%**; all five adjacent pairs exact and positive | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 10:50 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate recurrent q/k RMSNorm and scaling **19.0900 tok/s** mean | fused q/k normalization owner **19.1610 tok/s** mean | **+0.0710 / +0.372%**; all ten requests exact | `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, process-isolated five-sample control/candidate windows | 2026-08-31 10:19 PDT |
@@ -751,6 +752,7 @@ tree throughput can be ranked for production.
 | PERF-A044 | Fuse single-token residual addition with the following RMSNorm. | Native Qwen3.8 decoder-layer boundary | Qualified and retained in signed `4905d68370` | The dual-output Metal owner replaces 127 add/normalization pairs and preserves distinct residual storage. Direct long-history changes **19.222533 -> 19.310857 tok/s** (+0.459%); matched five-sample 131K serving changes **18.8286 -> 19.0484 tok/s** (+1.167%). Production-width, nonaligned, and 12-outstanding-output parity pass. |
 | PERF-A045 | Fuse recurrent q/k RMS normalization and float scaling. | Native Qwen3.8 gated-delta decode owner | Qualified and retained in signed `b851d3c9de` | One dual-output Metal launch replaces four operations in each of 48 recurrent layers. Direct long-history improves **19.319062 -> 19.464738 tok/s** (+0.754%); matched five-sample 131K serving improves **19.0900 -> 19.1610 tok/s** (+0.372%). Production `16x128`, multi-simdgroup width 257, and 12-outstanding-output parity pass. |
 | PERF-A046 | Fuse recurrent output RMS normalization with the SiLU gate. | Native Qwen3.8 gated-delta decode owner | Qualified and retained in signed `28174b3da2` | One exact Metal launch replaces the single-token RMSNorm, sigmoid, and elementwise gate chain in each of 48 recurrent layers. Direct long-history improves **19.469136 -> 19.515718 tok/s** (+0.239%); matched five-sample 131K serving improves **19.1260 -> 19.1548 tok/s** (+0.151%). Production `48x128`, nonaligned width 257, extreme activations, and 12-outstanding-output parity pass. |
+| PERF-A047 | Fuse recurrent causal convolution with its BF16 SiLU. | Native Qwen3.8 gated-delta decode owner | Direct gate passed; served qualification pending | The existing convolution/state launch now reproduces both BF16 boundaries of the following sigmoid and multiply, removing two launches in each of 48 recurrent layers. Five adjacent long-history pairs improve **19.524068 -> 19.632483 tok/s** (+0.555%). Production width 10,240, nonaligned width 257, and extreme activation parity pass. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -2904,3 +2906,35 @@ tree throughput can be ranked for production.
   matching workloads were absent afterward, memory returned to 93% free, and
   thermal/performance status remained normal. The clean detached control
   worktree was removed and is reproducible from signed `068f9ca072`.
+
+### 2026-08-31 11:25 PDT - PERF-A047 fused recurrent convolution/SiLU
+
+- Extended the existing single-token causal-convolution/state Metal owner to
+  emit the activated convolution row. It first rounds the four-tap accumulator
+  to BF16, computes the stable BF16 sigmoid with `metal::precise::exp`, rounds
+  that result to BF16, and performs the established BF16 multiply. The shifted
+  next-state output remains distinct. Multi-token forwards retain MLX `conv1d`
+  and SiLU.
+- The first float32 sigmoid formulation failed strict production-shape parity
+  at element 3 (`0.155273` versus `0.15625`). Matching MLX's templated BF16
+  sigmoid arithmetic restored exact output. The strict C++20 test passes at
+  production `(B=1,K=4,D=10240)`, nonaligned `(B=2,K=3,D=257)`, and exact
+  convolution outputs `[-23,23,-113,113]`. The focused native engine suite
+  remains **8 passed** with its existing 16 warnings.
+- The corrected short full-model gate reached **20.630307745 tok/s**, digest
+  `8ea2430e3fa3d56e`, last token `198`. A clean detached signed `8dcf68177c`
+  control produced dylib SHA-256
+  `2ae6591c347f5ff1665d20c510bdd2e22788407d58fe844834c96f6a01af76ea`;
+  the candidate was
+  `16b58ce3056617b49582a180078181fe62442b404085c27910d0aed9fdeca703`.
+- Five adjacent process-isolated long-history control samples were
+  **19.551438201, 19.531679410, 19.531585717, 19.471752586,
+  19.533882708 tok/s**, mean **19.524067724**. Candidate samples were
+  **19.646667601, 19.610726755, 19.638978864, 19.622965103,
+  19.643077544 tok/s**, mean **19.632483173**, a **0.108415449 tok/s /
+  0.555291%** increase. Every candidate exceeded its adjacent control; all ten
+  runs produced digest `faaecee6edebe116`, last token `19360`.
+- Port 30000 remained free throughout the direct window. Post-run memory was
+  93% free, no matching workload remained, and thermal/performance status was
+  normal. The detached control remains available for matched served
+  qualification under real 131,072 context/token pools.
