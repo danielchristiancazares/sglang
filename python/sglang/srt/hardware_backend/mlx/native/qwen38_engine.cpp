@@ -292,6 +292,91 @@ constexpr const char* kGatedDeltaQkNormSource = R"(
         }
 )";
 
+constexpr const char* kFullAttnQkNormRopeSource = R"(
+        constexpr int N_READS = 4;
+        constexpr int SIMD_SIZE = 32;
+        threadgroup float local_inv_mean[1];
+        threadgroup float local_sums[SIMD_SIZE];
+
+        auto row = threadgroup_position_in_grid.x;
+        auto lid = thread_position_in_threadgroup.x;
+        auto simd_lane = thread_index_in_simdgroup;
+        auto simd_group = simdgroup_index_in_threadgroup;
+        constexpr int HeadsPerBatch = Nq + Nk;
+        auto batch = row / HeadsPerBatch;
+        auto combined_head = row % HeadsPerBatch;
+        bool is_q = combined_head < Nq;
+        auto head = is_q ? combined_head : combined_head - Nq;
+        const device InT* input = is_q
+            ? qg + (batch * Nq + head) * (2 * D)
+            : k + (batch * Nk + head) * D;
+        const device InT* weight = is_q ? q_weight : k_weight;
+        device InT* output = is_q
+            ? q_out + (batch * Nq + head) * D
+            : k_out + (batch * Nk + head) * D;
+
+        float acc = 0.0f;
+        for (uint base = lid * N_READS; base < D;
+             base += Threads * N_READS) {
+          for (int i = 0; i < N_READS; ++i) {
+            if (base + i < D) {
+              float value = static_cast<float>(input[base + i]);
+              acc += value * value;
+            }
+          }
+        }
+
+        acc = simd_sum(acc);
+        if (simd_group == 0) {
+          local_sums[simd_lane] = 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_lane == 0) {
+          local_sums[simd_group] = acc;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_group == 0) {
+          acc = simd_sum(local_sums[simd_lane]);
+          if (simd_lane == 0) {
+            local_inv_mean[0] = metal::precise::rsqrt(acc / D + eps);
+          }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint base = lid * N_READS; base < D;
+             base += Threads * N_READS) {
+          for (int i = 0; i < N_READS; ++i) {
+            auto index = base + i;
+            if (index < D && index >= RopeDims) {
+              output[index] = weight[index] * static_cast<InT>(
+                  static_cast<float>(input[index]) * local_inv_mean[0]);
+            }
+          }
+        }
+
+        constexpr int RopePairs = RopeDims / 2;
+        if (lid < RopePairs) {
+          auto index_1 = lid;
+          auto index_2 = lid + RopePairs;
+          InT x1_norm = weight[index_1] * static_cast<InT>(
+              static_cast<float>(input[index_1]) * local_inv_mean[0]);
+          InT x2_norm = weight[index_2] * static_cast<InT>(
+              static_cast<float>(input[index_2]) * local_inv_mean[0]);
+          float d = static_cast<float>(lid) / static_cast<float>(RopePairs);
+          float inv_freq = metal::exp2(-d * log2_base);
+          float L = 1.0f * static_cast<float>(rope_offset);
+          float theta = L * inv_freq;
+          float costheta = metal::fast::cos(theta);
+          float sintheta = metal::fast::sin(theta);
+          float x1 = static_cast<float>(x1_norm);
+          float x2 = static_cast<float>(x2_norm);
+          output[index_1] = static_cast<InT>(
+              x1 * costheta - x2 * sintheta);
+          output[index_2] = static_cast<InT>(
+              x1 * sintheta + x2 * costheta);
+        }
+)";
+
 constexpr const char* kGatedDeltaNormGateSource = R"(
         constexpr int N_READS = 4;
         constexpr int SIMD_SIZE = 32;
@@ -405,6 +490,15 @@ const mx::fast::CustomKernelFunction& gated_delta_qk_norm_metal() {
   return kernel;
 }
 
+const mx::fast::CustomKernelFunction& full_attn_qk_norm_rope_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_full_attn_qk_norm_rope",
+      {"qg", "k", "q_weight", "k_weight", "eps", "log2_base", "rope_offset"},
+      {"q_out", "k_out"},
+      kFullAttnQkNormRopeSource);
+  return kernel;
+}
+
 const mx::fast::CustomKernelFunction& gated_delta_norm_gate_metal() {
   static const auto kernel = mx::fast::metal_kernel(
       "sglang_gated_delta_norm_gate",
@@ -499,6 +593,61 @@ std::pair<array, array> normalize_gated_delta_qk(
       {
           {"InT", mx::fast::TemplateArg{q.dtype()}},
           {"D", mx::fast::TemplateArg{D}},
+          {"Threads", mx::fast::TemplateArg{threads}},
+      },
+      std::nullopt,
+      false,
+      {});
+  return {outs[0], outs[1]};
+}
+
+std::pair<array, array> full_attn_qk_norm_rope(
+    const array& qg,
+    const array& k,
+    const array& q_weight,
+    const array& k_weight,
+    float eps,
+    float rope_theta,
+    int rope_dims,
+    int rope_offset) {
+  if (qg.ndim() != 4 || k.ndim() != 4 || qg.shape()[0] != k.shape()[0] ||
+      qg.shape()[1] != 1 || k.shape()[1] != 1 ||
+      qg.shape().back() != 2 * k.shape().back() ||
+      q_weight.ndim() != 1 || k_weight.ndim() != 1 ||
+      q_weight.shape()[0] != k.shape().back() ||
+      k_weight.shape()[0] != k.shape().back() || qg.dtype() != k.dtype() ||
+      qg.dtype() != q_weight.dtype() || qg.dtype() != k_weight.dtype()) {
+    throw std::runtime_error("invalid full-attention q/k norm/RoPE inputs");
+  }
+  const int B = static_cast<int>(qg.shape()[0]);
+  const int Nq = static_cast<int>(qg.shape()[2]);
+  const int Nk = static_cast<int>(k.shape()[2]);
+  const int D = static_cast<int>(k.shape().back());
+  if (D <= 0 || D > 4096 || rope_dims <= 0 || rope_dims > D ||
+      rope_dims % 2 != 0) {
+    throw std::runtime_error("full-attention q/k norm/RoPE width out of range");
+  }
+  const int threads_needed = (D + 3) / 4;
+  const int threads = ((threads_needed + 31) / 32) * 32;
+  const int rows = B * (Nq + Nk);
+  auto outs = full_attn_qk_norm_rope_metal()(
+      {qg,
+       k,
+       q_weight,
+       k_weight,
+       array(eps),
+       array(std::log2(rope_theta)),
+       array(rope_offset)},
+      {{B, Nq, 1, D}, {B, Nk, 1, D}},
+      {qg.dtype(), k.dtype()},
+      {rows * threads, 1, 1},
+      {threads, 1, 1},
+      {
+          {"InT", mx::fast::TemplateArg{qg.dtype()}},
+          {"D", mx::fast::TemplateArg{D}},
+          {"RopeDims", mx::fast::TemplateArg{rope_dims}},
+          {"Nq", mx::fast::TemplateArg{Nq}},
+          {"Nk", mx::fast::TemplateArg{Nk}},
           {"Threads", mx::fast::TemplateArg{threads}},
       },
       std::nullopt,
@@ -832,16 +981,40 @@ array Engine::full_attn(FullAttn& attn, const array& x) {
   array keys = reshape(attn.k_proj(x), {B, L, n_kv, hd});
   array values = reshape(attn.v_proj(x), {B, L, n_kv, hd});
 
-  queries = mx::fast::rms_norm(queries, attn.q_norm, cfg_.rms_norm_eps);
-  keys = mx::fast::rms_norm(keys, attn.k_norm, cfg_.rms_norm_eps);
-  queries = transpose(queries, {0, 2, 1, 3});
-  keys = transpose(keys, {0, 2, 1, 3});
-  values = transpose(values, {0, 2, 1, 3});
+  if (L == 1) {
+    auto normalized = full_attn_qk_norm_rope(
+        qg,
+        keys,
+        attn.q_norm,
+        attn.k_norm,
+        cfg_.rms_norm_eps,
+        cfg_.rope_theta,
+        rope_dims,
+        attn.offset);
+    queries = normalized.first;
+    keys = normalized.second;
+  } else {
+    queries = mx::fast::rms_norm(queries, attn.q_norm, cfg_.rms_norm_eps);
+    keys = mx::fast::rms_norm(keys, attn.k_norm, cfg_.rms_norm_eps);
+    queries = transpose(queries, {0, 2, 1, 3});
+    keys = transpose(keys, {0, 2, 1, 3});
 
-  queries = mx::fast::rope(
-      queries, rope_dims, /*traditional=*/false, cfg_.rope_theta, 1.0f, attn.offset);
-  keys = mx::fast::rope(
-      keys, rope_dims, /*traditional=*/false, cfg_.rope_theta, 1.0f, attn.offset);
+    queries = mx::fast::rope(
+        queries,
+        rope_dims,
+        /*traditional=*/false,
+        cfg_.rope_theta,
+        1.0f,
+        attn.offset);
+    keys = mx::fast::rope(
+        keys,
+        rope_dims,
+        /*traditional=*/false,
+        cfg_.rope_theta,
+        1.0f,
+        attn.offset);
+  }
+  values = transpose(values, {0, 2, 1, 3});
 
   const int needed = attn.cache_length + L;
   if (attn.cache_capacity < needed) {

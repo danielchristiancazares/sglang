@@ -7552,9 +7552,11 @@ mean 13.929045  17.125658 446.051        39.730
   `http://127.0.0.1:30000/v1`, Responses wire format, 32,768 context,
   30,000-token auto-compaction, medium reasoning, a 900,000-ms stream idle
   timeout, zero retries, `approval_policy=never`, and `sandbox_mode=read-only`.
-  The text-only catalog exposes sequential tools with `shell_type=shell_command`
-  and reasoning summaries disabled. These are intentionally machine-local
-  profile files rather than repository fixtures.
+  The text-only catalog declares `shell_type=shell_command`,
+  `supports_parallel_tool_calls=false`, and reasoning summaries disabled.
+  Exact-tag review later established that Codex ignores the latter two fields;
+  concurrency and reasoning-summary capability remained unqualified. These are
+  intentionally machine-local profile files rather than repository fixtures.
 - The first Codex attempt used the same 8,839-token prompt while the inherited
   300-second SSE idle timeout was still active. Its long Metal prefill crossed
   that client timeout, so Codex exited with the idle-timeout error while the
@@ -7618,7 +7620,7 @@ mean 13.929045  17.125658 446.051        39.730
   a67c491a1dd4d4df0f720fb966ac390bd20041d8ed29f02833dfca4424a013f0  qwen38-local.models.json
   ```
 
-  The exact read-only sequential-tool command was:
+  The exact read-only single-tool smoke command was:
 
   ```text
   env SGLANG_API_KEY=local codex exec -p qwen38-local --ephemeral \
@@ -7630,11 +7632,12 @@ mean 13.929045  17.125658 446.051        39.730
   `/bin/zsh -lc pwd`, received `/Users/dcazares/sglang` with exit code zero,
   consumed that result, and emitted visible final `CODEX TOOL READY` after
   whitespace. The client exited zero and accounted for **17,871 input tokens**
-  across the two Responses turns, **96 output tokens**, and **62 reasoning
-  output tokens**. The profile is an overlay over the installed Codex tool/
-  skill surface; this gate qualifies its pinned read-only, sequential shell
-  path. `git status --short` was identical before and after the task, and the
-  server remained healthy with image/audio understanding false.
+  across the initial and follow-up Responses requests, **96 output tokens**,
+  and **62 reasoning-output tokens**. The profile is an overlay over the
+  installed Codex tool/skill surface; this gate records its pinned read-only
+  single-shell round trip, while concurrency remains unqualified. `git status
+  --short` was identical before and after the task, and the server remained
+  healthy with image/audio understanding false.
 - Flushed the Codex request, then sent `SIGTERM` only to scheduler PID 14735.
   Parent cleanup removed the tracker, detokenizer, listener, and root. All four
   exact PIDs are absent, port 30000 is free, no SGLang/benchmark/Codex client
@@ -13998,6 +14001,1641 @@ mean 13.929045  17.125658 446.051        39.730
 - The 1,956-byte pinned raw capture SHA-256 is `bd655cf335f2e3e647dee6f25c63a8bb09da7998b244efbb2d5bf47238f85a90`. After exit, port 30000 remained free, the benchmark allocation and CUDA context were gone, and no SGLang, compiler, or benchmark process remained. The GPU returned to **1,329 MiB used / 30,859 MiB free** with 18% sampled display utilization, 32 C, and 78.90 W; available RAM was 51,294 MiB and disk traffic was 0.524 MiB/s. The MTP-bearing AttnNVFP4 target and explicit DSpark-v2 draft selection remain unchanged, with no fallback added.
 - Final `clang-format --dry-run --Werror` and `git diff --check` passed. A focused source search found zero segment-1,024 variants and exactly four retained call sites: qualification, quick 6,213, default 6,213, and default 199,000. Final status still contains the initial user-owned paths plus the TurboQuant35 documentation updates; no unrelated path was cleaned, reset, or overwritten.
 
+### 2026-08-30 17:53 PDT - PERF-A021 Codex shell-tool gate passes; local profile capacity repaired
+
+- Began on macOS 26.6.2 from clean local `main` at `de5714c15c`. The user's
+  fresh fetch exposed four linear commits through `origin/main=50b0a1e110`;
+  `git merge --ff-only origin/main` advanced the checkout to that exact tip.
+  The index, worktree, and ordinary untracked set were empty before the
+  launch. The fetched Windows record still ended with its five-slot validation
+  server stopped, and this Mac had no live Windows control channel. The open
+  PERF-A021 named-client gate was therefore the directly executable
+  client smoke check.
+- Fresh Apple preflight found port 30000 free, no SGLang or llama model
+  workload, **91%** memory free, and no macOS thermal or performance warning.
+  The immutable 8.7 GiB IQ2_XXS blob and official tokenizer snapshot were
+  present, `.venv/bin/python` was Python 3.11.15, the editable import resolved
+  below this checkout, and Codex CLI was **0.151.0**. Launched exactly:
+
+  ```text
+  env -u MTL_CAPTURE_ENABLED -u SGLANG_MPS_PROFILE_LAYERS \
+    -u SGLANG_MPS_PROFILE_STAGES -u SGLANG_RUST_SERVER \
+    -u SGLANG_RUST_BUILD_MODE SGLANG_USE_MLX=0 \
+    SGLANG_MPS_IQ2_LARGE_BATCH=1 SGLANG_MPS_Q4_K_BATCH1_ROWS2=1 \
+    SGLANG_MPS_Q2_K_BATCH1_ROWS4=1 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 \
+    --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 32768 --max-total-tokens 32768 \
+    --max-running-requests 1 --chunked-prefill-size 1024 \
+    --max-prefill-tokens 8192 --disable-radix-cache --disable-overlap-schedule \
+    --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
+    --incremental-streaming-output --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved seed was `525766343`. Weight loading used **9.03 GB**, FP32 Mamba
+  state **0.29 GB**, the exact 32,768-token BF16 KV pool **2.00 GB**, and
+  **19.97 GB** remained. The server reported ready at 17:33:09 PDT. Root/listener
+  `18636` owned port 30000 and parented resource tracker `18640`, scheduler
+  `18641`, and detokenizer `18642`. `/health`, `/v1/models`, and `/model_info`
+  passed; the model list reported `max_model_len=32768`, and model info reported
+  generation true with image/audio understanding false.
+- Pre-gate inspection found that the machine-local profile had drifted to
+  `model_context_window=131072`, compaction at `130900`, and the same 131,072
+  values in its static catalog even though the served and capacity-qualified
+  route is 32,768. Pre-repair SHA-256 values were
+  `2cd7907a5cca6cea714e0295402718a64cbbafe09b26bfd459af3f97392a8f84`
+  for `qwen38-local.config.toml` and
+  `0bb352ad24d33c5c2ab696b6c0f898dd8fc5152da0fc42127593f982b400b8bc`
+  for `qwen38-local.models.json`. The gate kept that external state untouched
+  while applying equivalent process-scoped 32,768/30,000 overrides:
+
+  ```text
+  env SGLANG_API_KEY=local codex exec -p qwen38-local --ephemeral \
+    --sandbox read-only -c model_context_window=32768 \
+    -c model_auto_compact_token_limit=30000 --color never \
+    -C /Users/dcazares/sglang --json \
+    'Use the shell_command tool exactly once to run pwd in the current workspace. After reading its output, reply with exactly CODEX TOOL READY. Do not use any other tool.'
+  ```
+
+- The initial Responses request carried **10,560** input tokens. Codex emitted
+  exactly one command item, `/bin/zsh -lc pwd`; it completed at exit zero with
+  exact output `/Users/dcazares/sglang`. The follow-up Responses request carried
+  **10,757** input tokens, consumed that result, and emitted final visible
+  `CODEX TOOL READY` after whitespace. The client exited zero and reported
+  **21,317 input**, **169 output**, and **135 reasoning-output tokens**. No
+  second tool item appeared. The server completed every 1,024-token prefill
+  chunk plus the 320- and 517-token tails without queueing or Mamba-state
+  failure.
+
+  The complete client JSONL event sequence after its stdout startup line was:
+
+  ~~~json
+  {"type":"thread.started","thread_id":"01a0553c-c851-7163-9f85-7c8fd603aed6"}
+  {"type":"turn.started"}
+  {"type":"item.completed","item":{"id":"item_0","type":"error","message":"Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest."}}
+  {"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"\n\n"}}
+  {"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"/bin/zsh -lc pwd","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+  {"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"/bin/zsh -lc pwd","aggregated_output":"/Users/dcazares/sglang\n","exit_code":0,"status":"completed"}}
+  {"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"\n\nCODEX TOOL READY"}}
+  {"type":"turn.completed","usage":{"input_tokens":21317,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":169,"reasoning_output_tokens":135}}
+  ~~~
+
+  The scheduler's two prompt-boundary excerpts were:
+
+  ~~~text
+  [2026-08-30 17:34:42] Prefill batch, #new-seq: 1, #new-token: 1024, #cached-token: 0, full token usage: 0.03, mamba usage: 1.00, #running-req: 0, #queue-req: 0, #pending-token: 9536, cuda graph: False, input throughput (token/s): 15.64
+  [2026-08-30 17:41:04] Prefill batch, #new-seq: 1, #new-token: 320, #cached-token: 0, full token usage: 0.32, mamba usage: 1.00, #running-req: 0, #queue-req: 0, #pending-token: 0, cuda graph: False, input throughput (token/s): 23.61
+  [2026-08-30 17:44:52] Prefill batch, #new-seq: 1, #new-token: 1024, #cached-token: 0, full token usage: 0.03, mamba usage: 1.00, #running-req: 0, #queue-req: 0, #pending-token: 9733, cuda graph: False, input throughput (token/s): 4.48
+  [2026-08-30 17:51:37] Prefill batch, #new-seq: 1, #new-token: 517, #cached-token: 0, full token usage: 0.33, mamba usage: 1.00, #running-req: 0, #queue-req: 0, #pending-token: 0, cuda graph: False, input throughput (token/s): 23.33
+  ~~~
+- Repaired the machine-local context declarations and client truncation policy
+  after the successful gate: the profile now publishes context **32,768** and
+  compaction **30,000**; the catalog publishes context, maximum context, and
+  truncation limit **32,768**. Codex 0.151.0 applies that catalog limit to
+  retained function/custom-tool output; `tool_output_token_limit` is the
+  recognized profile control for the next hardening pass. The resulting
+  SHA-256 values are
+  `9706003ad8a43ad48e4260f282057c023214c9e66737eae3da88a49188079a1c`
+  and `680e762e58fb7d2240e914e59011d6082c4b87367ffd1743f03dde608e83e970`.
+  `jq empty` validates the catalog, and Codex 0.151.0 reports its expected
+  version. The later exact-artifact rerun below owns the hash-pair single-tool
+  gate.
+  This removes a real failure window in which Codex could defer compaction
+  until far beyond the server's physical pool.
+- Post-tool `/health` and `/model_info` passed, the repository status remained
+  clean before documentation reconciliation, macOS still reported no thermal
+  or performance warning, and memory was **75%** free. `POST /flush_cache`
+  logged `Reset HybridReqToTokenPool` and `Cache flushed successfully!`.
+  Foreground Ctrl+C then ended the server session at exit zero. Scheduler and
+  detokenizer printed `KeyboardInterrupt` while receiving the signal, followed
+  by normal application shutdown. PIDs `18636`, `18640`, `18641`, and `18642`
+  disappeared; port 30000 and the matching model-process set were empty,
+  memory returned to **92%** free, and thermal status remained normal.
+
+### 2026-08-30 18:29 PDT - repaired-hash PERF-A021 Codex gate passes and cleans up
+
+- The first gate above exercised process-scoped 32,768/30,000 overrides for one
+  shell round trip. A second independent server and client run exercised the
+  repaired on-disk profile/catalog identities with the same single-tool scope.
+  Exact-tag source review establishes the 29,491-token effective compaction
+  threshold; near-limit transport and compaction remain separate gates. The
+  source remained HEAD 50b0a1e110; the only repository changes at launch were
+  the four documentation/recovery paths from this reconciliation. The profile
+  and catalog were unchanged across the run at:
+
+  ~~~text
+  9706003ad8a43ad48e4260f282057c023214c9e66737eae3da88a49188079a1c  /Users/dcazares/.codex/qwen38-local.config.toml
+  680e762e58fb7d2240e914e59011d6082c4b87367ffd1743f03dde608e83e970  /Users/dcazares/.codex/qwen38-local.models.json
+  ~~~
+
+  The exact permissively loaded TOML content exercised by this gate is:
+
+  ~~~toml
+  model = "qwen3.8-27b-iq2"
+  model_provider = "sglang-local"
+  model_catalog_json = "/Users/dcazares/.codex/qwen38-local.models.json"
+  model_context_window = 32768
+  model_auto_compact_token_limit = 30000
+  model_reasoning_effort = "medium"
+  model_reasoning_summary = "none"
+  model_supports_reasoning_summaries = false
+  approval_policy = "never"
+  sandbox_mode = "read-only"
+
+  [features]
+  fast_mode = false
+
+  [model_providers.sglang-local]
+  name = "Local SGLang Qwen3.8-27B Q2"
+  base_url = "http://127.0.0.1:30000/v1"
+  env_key = "SGLANG_API_KEY"
+  env_key_instructions = "Set SGLANG_API_KEY to any non-empty local value."
+  wire_api = "responses"
+  request_max_retries = 0
+  stream_max_retries = 0
+  stream_idle_timeout_ms = 900000
+  supports_websockets = false
+  ~~~
+
+  The exact permissively loaded catalog content exercised by this gate is:
+
+  ~~~json
+  {
+    "models": [
+      {
+        "slug": "qwen3.8-27b-iq2",
+        "display_name": "Qwen3.8-27B Q2 (local)",
+        "name": "qwen3.8-27b-iq2",
+        "model": "qwen3.8-27b-iq2",
+        "provider": "sglang-local",
+        "description": "Local text-only Qwen3.8-27B Q2 served by SGLang on Apple Silicon.",
+        "context_window": 32768,
+        "max_context_window": 32768,
+        "effective_context_window_percent": 100,
+        "truncation_policy": {
+          "mode": "tokens",
+          "limit": 32768
+        },
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "supported_in_api": true,
+        "priority": 0,
+        "base_instructions": "You are Codex, a careful coding agent working in the user's shared workspace. Follow every developer and repository instruction provided with the request.",
+        "supports_tools": true,
+        "supports_parallel_tool_calls": false,
+        "experimental_supported_tools": [],
+        "supports_reasoning_summaries": false,
+        "support_verbosity": false,
+        "supports_search_tool": false,
+        "input_modalities": ["text"],
+        "default_reasoning_level": "medium",
+        "supported_reasoning_levels": [
+          {
+            "effort": "low",
+            "description": "Low reasoning effort"
+          },
+          {
+            "effort": "medium",
+            "description": "Medium reasoning effort"
+          },
+          {
+            "effort": "high",
+            "description": "High reasoning effort"
+          }
+        ]
+      }
+    ]
+  }
+  ~~~
+
+  Exact-tag Codex 0.151.0 review found that strict config loading rejects the
+  TOML `model_supports_reasoning_summaries` field. The permissive gate ignored
+  it. The catalog silently discards `supports_reasoning_summaries`; its
+  recognized controls are `supports_reasoning_summary_parameter` and
+  `default_reasoning_summary`. The catalog also discards
+  `supports_parallel_tool_calls` while the client sends
+  `parallel_tool_calls=true`. These inert fields remain in the literal artifact
+  above so the recorded hashes continue to identify the exercised pair.
+
+- Relaunched the exact PERF-A021 command recorded in the preceding entry.
+  Resolved seed was 560900217. Weight loading completed in 25.87 seconds at
+  9.03 GB; FP32 Mamba state was 0.29 GB; the 32,768-token BF16 KV pool was
+  2.00 GB; and 19.97 GB remained. The server became ready at 18:00:04 PDT.
+  Root/listener 21103 parented resource tracker 21115, scheduler 21116, and
+  detokenizer 21117. Health, models, and model-info checks passed before the
+  client; the served maximum was 32,768 and image/audio understanding was
+  false.
+- The final client used the repaired files without any capacity override:
+
+  ~~~text
+  env SGLANG_API_KEY=local codex exec -p qwen38-local --ephemeral \
+    --sandbox read-only --color never -C /Users/dcazares/sglang --json \
+    'Use the shell_command tool exactly once to run pwd in the current workspace. After reading its output, reply with exactly CODEX TOOL READY. Do not use any other tool.'
+  ~~~
+
+  Its initial Responses request carried 10,560 input tokens. After a longer stochastic
+  reasoning trace, it issued exactly one /bin/zsh -lc pwd item and received
+  /Users/dcazares/sglang with exit code zero. The follow-up Responses request
+  carried 10,977 input tokens, consumed that result, and returned exact visible
+  CODEX TOOL READY after whitespace. The client exited zero with 21,537 input,
+  413 output, and 379 reasoning-output tokens. The repository status before
+  and after the client contained the same four documentation paths.
+
+  The complete client JSONL sequence after its stdout startup line was:
+
+  ~~~json
+  {"type":"thread.started","thread_id":"01a05555-11a6-7c83-959b-70d969a36328"}
+  {"type":"turn.started"}
+  {"type":"item.completed","item":{"id":"item_0","type":"error","message":"Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest."}}
+  {"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"\n\n"}}
+  {"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"/bin/zsh -lc pwd","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+  {"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"/bin/zsh -lc pwd","aggregated_output":"/Users/dcazares/sglang\n","exit_code":0,"status":"completed"}}
+  {"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"\n\nCODEX TOOL READY"}}
+  {"type":"turn.completed","usage":{"input_tokens":21537,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":413,"reasoning_output_tokens":379}}
+  ~~~
+
+  Prompt boundaries were:
+
+  ~~~text
+  [2026-08-30 18:01:14] Prefill batch, #new-token: 1024, #pending-token: 9536, input throughput (token/s): 20.86
+  [2026-08-30 18:07:35] Prefill batch, #new-token: 320, #pending-token: 0, input throughput (token/s): 23.67
+  [2026-08-30 18:21:11] Prefill batch, #new-token: 1024, #pending-token: 9953, input throughput (token/s): 1.25
+  [2026-08-30 18:28:14] Prefill batch, #new-token: 737, #pending-token: 0, input throughput (token/s): 23.96
+  ~~~
+
+  At 18:01:42 the server logged one detokenizer-heartbeat health warning after
+  20 seconds inside the first long Metal prefill chunk. The scheduler
+  continued normally, both Responses requests completed, and the bounded
+  post-request health and model-info checks passed.
+- POST /flush_cache logged Reset HybridReqToTokenPool and Cache flushed
+  successfully. Foreground Ctrl+C then shut down the owning session at exit
+  zero. Scheduler and detokenizer printed KeyboardInterrupt while receiving
+  the signal, followed by normal application shutdown. PIDs 21103, 21115,
+  21116, and 21117 disappeared; port 30000 and the matching model-process set
+  were empty; memory returned to 92% free; and macOS continued to report no
+  thermal or performance warning.
+- Codex 0.151.0 clamps the configured 30,000-token Total-scope compaction
+  limit to 90% of the 32,768 context, so the effective threshold is 29,491.
+  Exact-tag source review also found retained client hazards:
+  the 900-second stream-idle bound is shorter than the measured
+  1,729.566-second near-capacity TTFT; supports_parallel_tool_calls=false is
+  ignored and the client sends parallel_tool_calls=true; and the catalog omits
+  apply_patch_tool_type, leaving the native patch tool unregistered. The next
+  client-hardening slice preserves this hash pair, creates a separately named
+  strict 0.151.0 pair with recognized reasoning fields, a 10,000-token
+  tool-output limit, and a 2,400,000-ms idle timeout, then qualifies a
+  reversible shell-mediated patch under workspace-write before exercising
+  compaction plus a follow-up tool request. This read-only shell gate is
+  complete.
+
+### 2026-08-30 19:46 PDT - strict Codex scratch-write gates: medium forced recovery, low-reasoning promotion, and cleanup
+
+- Continued on macOS 26.6.2 at `main=origin/main=50b0a1e110`. The worktree
+  contained only the eight documentation/recovery paths already owned by this
+  handoff, with no untracked path. Fresh preflight at 18:47:47 PDT found port
+  30000 free, no SGLang/Codex/compiler tree, **92%** memory free, zero
+  throttled pages, and no thermal or performance warning. The immutable
+  9,393,043,040-byte IQ2_XXS blob, official tokenizer snapshot, editable
+  SGLang import, Python 3.11.15, MPS runtime, and Codex CLI 0.151.0 all passed.
+  The earlier exercised profile/catalog remained byte-identical at
+  `9706003a...9a1c` / `680e762e...e970` throughout this work.
+- Local installed-binary and exact-tag review found four concrete client
+  hazards before launch:
+  - `-p NAME` layers `$CODEX_HOME/NAME.config.toml` over the base user config;
+    a missing name silently falls back to the unrestricted cloud profile;
+  - the historical local profile fails real `--strict-config` loading on
+    unrecognized `model_supports_reasoning_summaries`;
+  - root-positioned `-a never` parses without propagating into noninteractive
+    `ExecCli`, while post-`exec` `-a` is rejected; the working explicit form is
+    exec-scoped `-c 'approval_policy="never"'`;
+  - unspecified base plugins, skills, agents, goals, memories, MCP servers,
+    web search, global instructions, service tier, and unbounded reconnects all
+    survive an ordinary profile overlay.
+- Created a separate three-artifact `qwen38-local-hardened` line outside the
+  repository. The first strict attempt exposed an incomplete disabled-MCP
+  overlay as `invalid transport`; repeating each disabled server's transport
+  fields fixed the real loader. One `codex ... debug prompt-input` observation
+  retained repository `AGENTS.md`, environment, and user input while removing
+  skills, permissions, plugin, and multi-agent blocks. Serialized input was
+  **32,965 bytes** before and **21,457 bytes** after; the exact render command,
+  cwd, and user prompt were not retained, so these are one-off observed sizes
+  rather than a reproducible benchmark. `codex -p qwen38-local-hardened mcp
+  list` reported only `node_repl` and `computer-use`, both disabled. With the
+  endpoint stopped, a real strict exec reached `thread.started` and one bounded
+  connection failure in under one second, establishing parse/discovery and
+  disabled unbounded retries.
+- Launched the exact PERF-A021 server command from the 17:53 entry. Resolved
+  seed was `109860561`; weight load used 9.03 GB in 27.75 seconds, Mamba state
+  used 0.29 GB, the exact 32,768-token BF16 pool used 2.00 GB, and 19.97 GB
+  remained. The server was ready at 19:03:05 PDT. Root/listener `27939`
+  parented tracker `28026`, scheduler `28027`, and detokenizer `28028`.
+  `/health`, `/v1/models`, and `/model_info` passed; maximum context was
+  32,768, generation was enabled, and image/audio understanding was false.
+- The first hardened catalog tried native freeform `apply_patch` with hashes
+  `39ad0f7c97ed30d36d41baf5d2b6ec3c127e2e44baf9aad2aa76f6bbf70c832b` /
+  `f8b2a060ce26c77a5cad4d94f05c399c526fcb5a8840e0c563e740c42c9d9528` /
+  `ab297a5bd4903d60cec84644576713c8b3c5787e495502c86a64a3dcbbbc3e68`.
+  Thread
+  `01a0558f-1ae7-7611-a811-59e1decedba3` sent a 1,925-token first request. The
+  model selected `exec_command` and supplied `justification` without the
+  required `sandbox_permissions`, producing this router error:
+
+  ~~~text
+  `justification` requires an explicit `sandbox_permissions`; use
+  `sandbox_permissions: "require_escalated"` for unsandboxed execution, or
+  omit `justification`.
+  ~~~
+
+  The first inference ended at 19:12:06 after its 1,024+901 prefill and a long
+  medium-reasoning decode. A 2,372-token compaction request then began. The
+  controller intentionally interrupted only client PIDs 28052/28053 because
+  the requested patch had already failed; the server removed the abandoned
+  request, remained healthy, and the scratch directory remained empty.
+- Replaced that unqualified native route with the previously proven
+  `shell_type=shell_command` surface, no native patch registration, and an
+  explicit sole-`apply_patch`-heredoc instruction. Intermediate hashes became
+  `39ad0f7c97ed30d36d41baf5d2b6ec3c127e2e44baf9aad2aa76f6bbf70c832b` /
+  `8fbb54a5407b9279c1abcc61a805bb15067fe27bf4bf6e8346bd80051572dfa5` /
+  `8a2fe9b979da48d5bc5a38ec22fb44f50b06de21216e3643b376ba330a4e2279`.
+  The forced
+  compaction/recovery command was:
+
+  ~~~text
+  env SGLANG_API_KEY=local /opt/homebrew/bin/codex exec \
+    --strict-config -p qwen38-local-hardened --ephemeral \
+    --sandbox workspace-write -c 'approval_policy="never"' \
+    -c model_auto_compact_token_limit=1000 \
+    -c 'model_auto_compact_token_limit_scope="total"' \
+    -c 'sandbox_workspace_write.writable_roots=[]' \
+    -c sandbox_workspace_write.exclude_tmpdir_env_var=true \
+    -c sandbox_workspace_write.exclude_slash_tmp=true \
+    --skip-git-repo-check --color never \
+    -C /private/tmp/qwen38-codex-write-gate-20260830-190147-PDT --json \
+    'Use shell_command exactly once. Set its command to a sole apply_patch heredoc that adds gate.txt in the current workspace with exactly one line of the form QWEN38_WRITE_GATE=<nonce>. Choose <nonce> as exactly 16 lowercase hexadecimal characters and use the same nonce in the file and final response. After the tool result, reply exactly QWEN38 WRITE COMPACT READY <nonce>. Use no other tool. Omit justification and sandbox_permissions.'
+  ~~~
+
+  Thread `01a05599-3921-75a3-a9df-29ed713943bb` exercised five inference
+  requests with exact prompt sizes **1,966, 1,054, 2,631, 2,973, and 2,469**,
+  summing to the client's 11,093 input tokens:
+  1. the initial patch was rejected because the first patch line was malformed;
+  2. the first 1,000-token forced compaction completed and emitted a
+     compaction warning whose exact text was not retained;
+  3. the continuation retried successfully, emitting one completed
+     `file_change` that added `gate.txt` with nonce `a1b2c3d4e5f60789`;
+  4. the successful tool result triggered a second forced compaction warning;
+  5. the final continuation returned exact visible
+     `QWEN38 WRITE COMPACT READY a1b2c3d4e5f60789`.
+
+  The client exited zero with **11,093 input**, **5,120 output**, and **3,943
+  reasoning-output tokens**. The written file was exactly 35 bytes:
+
+  ~~~text
+  QWEN38_WRITE_GATE=a1b2c3d4e5f60789
+  ~~~
+
+  Its SHA-256 was
+  `bc406a2f08b97e241655a978dff75f5172e7080d1c0d8b6d603bfcf6cc06151b`.
+  This is a successful recovery/compaction gate with one failed patch attempt
+  followed by one successful `file_change`. The ephemeral raw JSONL was not
+  retained, so the request sizes and event sequence above are the recovery
+  record; this run does not meet the later exact-transcript contract.
+- An unmatched low-reasoning clean-edit trial used the same strict
+  intermediate artifacts with `model_reasoning_effort="low"` overridden and
+  the separate scratch path
+  `/private/tmp/qwen38-codex-low-gate-20260830-193753-PDT`. The exact full
+  command and raw JSONL were not retained. Thread
+  `01a055ae-5688-7a33-b8b0-3ac36f7409e2` emitted one `file_change` on its first
+  attempt, added the exact 25-byte `QWEN38_WRITE_GATE=passed` file, returned
+  exact `QWEN38 LOW WRITE READY`, and exited zero with **4,136 input**, **141
+  output**, and **70 reasoning-output tokens**. The two prompt sizes were
+  1,984 and 2,152. File SHA-256 was
+  `198ca8e67d1889ea3e58923ad4a5d4ee7d35149ffc0ff3d6725b13f4b5c1f004`.
+  This successful, shorter clean task motivated low reasoning as the fixed
+  scratch-write default. It is not a matched reasoning-effort A/B against the
+  forced-compaction nonce task.
+- Promoted low reasoning only in the hardened profile and catalog, producing
+  final hashes:
+
+  ~~~text
+  d347c93e79fc760bce794b4d839ba6f5d26cc0d94186b98a9ca73ab175aaf0ba  /Users/dcazares/.codex/qwen38-local-hardened.config.toml
+  eb15e8286286ba2dc84a576b87ab40ff4215d54c4cbe84c88ef69384c9151db1  /Users/dcazares/.codex/qwen38-local-hardened.models.json
+  8a2fe9b979da48d5bc5a38ec22fb44f50b06de21216e3643b376ba330a4e2279  /Users/dcazares/.codex/qwen38-local-hardened.instructions.md
+  ~~~
+
+  A fresh cache-flushed run used those exact files without a reasoning or
+  capacity override:
+
+  ~~~text
+  env SGLANG_API_KEY=local /opt/homebrew/bin/codex exec \
+    --strict-config -p qwen38-local-hardened --ephemeral \
+    --sandbox workspace-write -c 'approval_policy="never"' \
+    -c 'sandbox_workspace_write.writable_roots=[]' \
+    -c sandbox_workspace_write.exclude_tmpdir_env_var=true \
+    -c sandbox_workspace_write.exclude_slash_tmp=true \
+    --skip-git-repo-check --color never \
+    -C /private/tmp/qwen38-codex-default-gate-20260830-194145-PDT --json \
+    'Use shell_command exactly once. Set its command to this exact script:
+  apply_patch <<'"'"'PATCH'"'"'
+  *** Begin Patch
+  *** Add File: gate.txt
+  +QWEN38_WRITE_GATE=passed
+  *** End Patch
+  PATCH
+  The complete write scope is gate.txt. After the tool reports success, reply with exactly QWEN38 DEFAULT WRITE READY. Use no other tool. Omit justification and sandbox_permissions.'
+  ~~~
+
+  Thread `01a055b1-f1c7-7f01-b0df-4f69e64127c2` emitted exactly one started
+  and completed `file_change`, with zero command-execution item, and returned
+  exact `QWEN38 DEFAULT WRITE READY`. It exited zero with **4,111 input**, **118
+  output**, and **47 reasoning-output tokens**. Server prompt sizes were 1,984
+  and 2,127. The only scratch artifact was the expected 25-byte file with the
+  same `198ca8e...1f004` SHA-256; the repository status remained the same eight
+  documentation paths.
+- The final hardened TOML content is:
+
+  ~~~toml
+  model = "qwen3.8-27b-iq2"
+  model_provider = "sglang-local-hardened"
+  model_catalog_json = "/Users/dcazares/.codex/qwen38-local-hardened.models.json"
+  model_instructions_file = "/Users/dcazares/.codex/qwen38-local-hardened.instructions.md"
+  model_context_window = 32768
+  model_auto_compact_token_limit = 30000
+  model_auto_compact_token_limit_scope = "total"
+  tool_output_token_limit = 10000
+  model_reasoning_effort = "low"
+  plan_mode_reasoning_effort = "medium"
+  model_reasoning_summary = "none"
+  service_tier = "default"
+  personality = "none"
+  approval_policy = "never"
+  sandbox_mode = "workspace-write"
+  web_search = "disabled"
+  include_permissions_instructions = false
+  include_apps_instructions = false
+  include_collaboration_mode_instructions = false
+  include_environment_context = true
+  notify = []
+
+  [features]
+  apps = false
+  default_mode_request_user_input = false
+  goals = false
+  guardian_approval = false
+  memories = false
+  multi_agent_v2 = false
+  plugins = false
+  shell_tool = true
+  unbounded_connection_retries = false
+  unified_exec = true
+  view_image = false
+  workspace_dependencies = false
+  prevent_idle_sleep = true
+
+  [agents]
+  enabled = false
+
+  [skills]
+  include_instructions = false
+  config = []
+
+  [skills.bundled]
+  enabled = false
+
+  [orchestrator.skills]
+  enabled = false
+
+  [orchestrator.mcp]
+  enabled = false
+
+  [mcp_servers.node_repl]
+  command = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl"
+  args = []
+  startup_timeout_sec = 120
+  enabled = false
+
+  [mcp_servers.computer-use]
+  command = "./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient"
+  args = ["mcp"]
+  enabled = false
+
+  [sandbox_workspace_write]
+  network_access = false
+  writable_roots = []
+  exclude_tmpdir_env_var = true
+  exclude_slash_tmp = true
+
+  [model_providers.sglang-local-hardened]
+  name = "Local SGLang Qwen3.8-27B Q2 hardened"
+  base_url = "http://127.0.0.1:30000/v1"
+  env_key = "SGLANG_API_KEY"
+  env_key_instructions = "Set SGLANG_API_KEY to any non-empty local value."
+  wire_api = "responses"
+  request_max_retries = 0
+  stream_max_retries = 0
+  stream_idle_timeout_ms = 2400000
+  requires_openai_auth = false
+  supports_websockets = false
+  ~~~
+
+  The final catalog content is:
+
+  ~~~json
+  {
+    "models": [
+      {
+        "slug": "qwen3.8-27b-iq2",
+        "display_name": "Qwen3.8-27B Q2 (local hardened)",
+        "description": "Local text-only Qwen3.8-27B Q2 served by SGLang.",
+        "context_window": 32768,
+        "max_context_window": 32768,
+        "effective_context_window_percent": 100,
+        "truncation_policy": {
+          "mode": "tokens",
+          "limit": 10000
+        },
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "supported_in_api": true,
+        "priority": 0,
+        "base_instructions": "You are Codex, a careful coding agent working in the shared workspace. Follow every developer, AGENTS.md, and user instruction. Inspect before editing, preserve intent and existing behavior, make requested changes, verify them, and report concise evidence. Use shell_command sequentially. For file edits, set its command to a sole apply_patch heredoc. Omit justification and sandbox_permissions for workspace-sandboxed commands.",
+        "include_skills_usage_instructions": false,
+        "include_plugin_usage_instructions": false,
+        "include_apps_usage_instructions": false,
+        "supports_reasoning_summary_parameter": false,
+        "default_reasoning_summary": "none",
+        "support_verbosity": false,
+        "supports_image_detail_original": false,
+        "supports_search_tool": false,
+        "use_responses_lite": false,
+        "node_repl_disabled": true,
+        "multi_agent_version": "disabled",
+        "experimental_supported_tools": [],
+        "input_modalities": [
+          "text"
+        ],
+        "default_reasoning_level": "low",
+        "supported_reasoning_levels": [
+          {
+            "effort": "low",
+            "description": "Low reasoning effort"
+          },
+          {
+            "effort": "medium",
+            "description": "Medium reasoning effort"
+          },
+          {
+            "effort": "high",
+            "description": "High reasoning effort"
+          }
+        ]
+      }
+    ]
+  }
+  ~~~
+
+  The one-line instruction file is:
+
+  ~~~text
+  You are Codex, a careful coding agent working in the shared workspace. Follow every developer, AGENTS.md, and user instruction. Inspect before editing, preserve intent and existing behavior, make requested changes, verify them, and report concise evidence. Use shell_command sequentially. For file edits, set its command to a sole apply_patch heredoc. Omit justification and sandbox_permissions for workspace-sandboxed commands.
+  ~~~
+- Post-gate health and language-only model info passed. Every scratch file was
+  verified, deleted through host `apply_patch`, and its exact empty directory
+  removed with `rmdir`; all three scratch paths are absent. Cache flush logged
+  `Reset HybridReqToTokenPool` and `Cache flushed successfully!`. Foreground
+  Ctrl+C exited zero; scheduler/detokenizer received the signal, then normal
+  application shutdown completed. PIDs 27939/28026/28027/28028 disappeared,
+  port 30000 and model/compiler/client process sets are empty, memory returned
+  to **93%** free with zero throttled pages, and thermal/performance status is
+  normal. The final repository worktree still contains only the eight
+  documentation paths from this reconciliation. The server is stopped.
+- Current scope: the final strict low-reasoning hashes own one clean reversible
+  workspace edit. The immediate medium-reasoning predecessor owns forced
+  two-compaction recovery. Complex multi-file edits, concurrent tools, and
+  production-threshold near-limit compaction remain wider client gates.
+
+### 2026-08-30 20:11 PDT - isolated Codex home passes the exact default-config write gate
+
+- A skeptical artifact review found that the 19:46 `-p` gate layered its three
+  pinned files above mutable `/Users/dcazares/.codex/config.toml` and loaded
+  `/Users/dcazares/.codex/rules/default.rules`. The ordinary config had been
+  atomically rewritten at 19:42 during the gate window, so its current bytes
+  could not prove the lower layer loaded at process start. Exact-tag review
+  also found safety-relevant inherited/default values for shell environment,
+  login startup, hooks, image generation, optional tools, history, telemetry,
+  and project trust. The 19:46 edit behavior remains valid; its three overlay
+  hashes are no longer the governing reproducibility identity.
+- Created the dedicated
+  `/Users/dcazares/.codex/qwen38-local-hardened-home` outside the repository.
+  `config.toml` owns the complete selected policy and uses sibling-relative
+  `models.json` and `instructions.md`. The catalog and instruction files are
+  byte-identical to the 19:46 final artifacts. Final bundle SHA-256 values are:
+
+  ~~~text
+  a764dc285fb4d895410c033698119347a5a471488c99936bd63206e10d7b9984  /Users/dcazares/.codex/qwen38-local-hardened-home/config.toml
+  eb15e8286286ba2dc84a576b87ab40ff4215d54c4cbe84c88ef69384c9151db1  /Users/dcazares/.codex/qwen38-local-hardened-home/models.json
+  8a2fe9b979da48d5bc5a38ec22fb44f50b06de21216e3643b376ba330a4e2279  /Users/dcazares/.codex/qwen38-local-hardened-home/instructions.md
+  ~~~
+
+- The final isolated config is:
+
+  ~~~toml
+  model = "qwen3.8-27b-iq2"
+  model_provider = "sglang-local-hardened"
+  model_catalog_json = "models.json"
+  model_instructions_file = "instructions.md"
+  model_context_window = 32768
+  model_auto_compact_token_limit = 30000
+  model_auto_compact_token_limit_scope = "total"
+  tool_output_token_limit = 10000
+  model_reasoning_effort = "low"
+  plan_mode_reasoning_effort = "medium"
+  model_reasoning_summary = "none"
+  service_tier = "default"
+  personality = "none"
+  approval_policy = "never"
+  approvals_reviewer = "user"
+  sandbox_mode = "workspace-write"
+  allow_login_shell = false
+  web_search = "disabled"
+  include_permissions_instructions = false
+  include_apps_instructions = false
+  include_collaboration_mode_instructions = false
+  include_environment_context = true
+  notify = []
+  check_for_update_on_startup = false
+  suppress_unstable_features_warning = true
+
+  [features]
+  apps = false
+  artifact = false
+  auth_elicitation = false
+  browser_use = false
+  browser_use_external = false
+  browser_use_full_cdp_access = false
+  chronicle = false
+  code_mode = false
+  code_mode_host = false
+  compaction_image_budget = false
+  computer_use = false
+  content_item_kinds = false
+  current_time_reminder = false
+  default_mode_request_user_input = false
+  enable_mcp_apps = false
+  enable_request_compression = true
+  external_agent_memory_import = false
+  fast_mode = false
+  goals = false
+  guardian_approval = false
+  guardian_ext = false
+  guardianv2 = false
+  hooks = false
+  image_generation = false
+  in_app_browser = false
+  in_app_chat = false
+  in_app_dictation = false
+  in_app_local_automation = false
+  in_app_updates = false
+  memories = false
+  mentions_v2 = false
+  multi_agent = false
+  multi_agent_v2 = false
+  network_proxy = false
+  personality = false
+  plugins = false
+  plugin_sharing = false
+  realtime_conversation = false
+  recommended_plugins = false
+  remote_compaction_v2 = true
+  remote_plugin = false
+  request_permissions_tool = false
+  rollout_budget = false
+  shell_tool = true
+  shell_snapshot = false
+  skill_mcp_dependency_install = false
+  skill_search = false
+  standalone_web_search = false
+  token_budget = false
+  tool_call_mcp_elicitation = false
+  tool_suggest = false
+  unbounded_connection_retries = false
+  unified_exec = true
+  view_image = false
+  workspace_dependencies = false
+  prevent_idle_sleep = true
+
+  [feedback]
+  enabled = false
+
+  [analytics]
+  enabled = false
+
+  [history]
+  persistence = "none"
+
+  [tools.experimental_request_user_input]
+  enabled = false
+
+  [tools.update_plan]
+  enabled = false
+
+  [agents]
+  enabled = false
+
+  [skills]
+  include_instructions = false
+  config = []
+
+  [skills.bundled]
+  enabled = false
+
+  [orchestrator.skills]
+  enabled = false
+
+  [orchestrator.mcp]
+  enabled = false
+
+  [sandbox_workspace_write]
+  network_access = false
+  writable_roots = []
+  exclude_tmpdir_env_var = true
+  exclude_slash_tmp = true
+
+  [shell_environment_policy]
+  inherit = "core"
+  ignore_default_excludes = false
+  exclude = []
+  include_only = []
+  set = {}
+  experimental_use_profile = false
+
+  [model_providers.sglang-local-hardened]
+  name = "Local SGLang Qwen3.8-27B Q2 hardened"
+  base_url = "http://127.0.0.1:30000/v1"
+  env_key = "SGLANG_API_KEY"
+  env_key_instructions = "Set SGLANG_API_KEY to any non-empty local value."
+  wire_api = "responses"
+  request_max_retries = 0
+  stream_max_retries = 0
+  stream_idle_timeout_ms = 2400000
+  requires_openai_auth = false
+  supports_websockets = false
+
+  [projects."/Users/dcazares/sglang"]
+  trust_level = "untrusted"
+
+  [projects."/private/tmp/qwen38-codex-isolated-gate"]
+  trust_level = "untrusted"
+  ~~~
+
+- Before the isolated server launch, `main=origin/main=50b0a1e110`; the
+  worktree contained only the same eight documentation paths and no untracked
+  file. Port 30000, SGLang/Codex/model/compiler process sets, and both future
+  scratch paths were empty. Memory was 92% free with zero throttled pages,
+  swap used 717.50 MiB of 2 GiB, and macOS reported no thermal or performance
+  warning. `/etc/codex/config.toml`, `/etc/codex/requirements.toml`,
+  `/etc/codex/managed_config.toml`, and both `com.openai.codex` managed
+  preference payloads were absent.
+- Launched exactly:
+
+  ~~~text
+  env -u MTL_CAPTURE_ENABLED -u SGLANG_MPS_PROFILE_LAYERS \
+    -u SGLANG_MPS_PROFILE_STAGES -u SGLANG_RUST_SERVER \
+    -u SGLANG_RUST_BUILD_MODE SGLANG_USE_MLX=0 \
+    SGLANG_MPS_IQ2_LARGE_BATCH=1 SGLANG_MPS_Q4_K_BATCH1_ROWS2=1 \
+    SGLANG_MPS_Q2_K_BATCH1_ROWS4=1 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 \
+    --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 32768 --max-total-tokens 32768 \
+    --max-running-requests 1 --chunked-prefill-size 1024 \
+    --max-prefill-tokens 8192 --disable-radix-cache --disable-overlap-schedule \
+    --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
+    --incremental-streaming-output --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Resolved seed was `604396299`. Weight loading used 9.03 GB in 26.73 seconds,
+  Mamba state used 0.29 GB, the exact 32,768-token BF16 KV pool used 2.00 GB,
+  and 19.97 GB remained. The server was ready at 20:00:56 PDT. Root/listener
+  `31773` parented tracker `31778`, scheduler `31779`, and detokenizer `31780`.
+  `/health`, `/v1/models`, and `/model_info` passed; maximum context was 32,768,
+  generation was enabled, and image/audio understanding was false.
+- A preliminary isolated gate loaded config hash
+  `d56ed660809ee318ab4052b86201923d439f2e5a311e19f41cd79731edbbddf6` and passed
+  one first-attempt 34-byte scratch write in thread
+  `01a055c3-f9d4-7b11-893a-ddb17fcb32b3` at 4,078/133/57 tokens. Codex
+  atomically added trusted project entries during startup, changing the config
+  to `b6654245722c072e507d2949a8643ec6172e52ee6a477c77b59cf3a8f82cb4e0`;
+  this exposed another mutable input and disqualified the
+  preliminary identity. The file and timestamped scratch directory were
+  verified and removed.
+- Exact-tag review then pinned every desired default-on surface, core-only
+  secret-filtered shell inheritance, no login startup, no history or telemetry,
+  and the fixed repository/scratch paths. One gate began with trusted-path
+  config hash `62105124ebeac50f17abf48f4bb3c2024a302ce9b7f3800db7ac091e87f39a83`;
+  it was intentionally interrupted after only
+  `thread.started` and `turn.started`, before any file event, when the review
+  established that trusted paths could admit project config and hooks. The
+  exact client exited, the scratch remained empty, cache flush passed, and the
+  server stayed healthy. Both path decisions were changed to explicit
+  `untrusted`, producing final config hash
+  `a764dc285fb4d895410c033698119347a5a471488c99936bd63206e10d7b9984`.
+- The final cache-flushed gate created the fixed empty scratch directory and
+  executed exactly, with no profile, `-c`, `--sandbox`, reasoning, or capacity
+  override:
+
+  ~~~text
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home \
+    SGLANG_API_KEY=local /opt/homebrew/bin/codex exec \
+    --strict-config --ephemeral --ignore-rules --skip-git-repo-check \
+    --color never -C /private/tmp/qwen38-codex-isolated-gate --json \
+    'Use shell_command exactly once. Set its command to this exact script:
+  apply_patch <<'"'"'PATCH'"'"'
+  *** Begin Patch
+  *** Add File: gate.txt
+  +QWEN38_ISOLATED_WRITE_GATE=passed
+  *** End Patch
+  PATCH
+  The complete write scope is gate.txt. After the tool reports success, reply with exactly QWEN38 ISOLATED WRITE READY. Use no other tool. Omit justification and sandbox_permissions.'
+  ~~~
+
+  Thread `01a055c9-f5e8-7621-9822-acfeaa1a9c45` emitted this complete retained
+  event sequence:
+
+  ~~~json
+  {"type":"thread.started","thread_id":"01a055c9-f5e8-7621-9822-acfeaa1a9c45"}
+  {"type":"turn.started"}
+  {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"\n\n"}}
+  {"type":"item.started","item":{"id":"item_1","type":"file_change","changes":[{"path":"/private/tmp/qwen38-codex-isolated-gate/gate.txt","kind":"add"}],"status":"in_progress"}}
+  {"type":"item.completed","item":{"id":"item_1","type":"file_change","changes":[{"path":"/private/tmp/qwen38-codex-isolated-gate/gate.txt","kind":"add"}],"status":"completed"}}
+  {"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"\n\nQWEN38 ISOLATED WRITE READY"}}
+  {"type":"turn.completed","usage":{"input_tokens":2843,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":260,"reasoning_output_tokens":184}}
+  ~~~
+
+  The two server prompt sizes were exactly 1,285 and 1,558 tokens, summing to
+  the client input count. The client exited zero. The sole scratch artifact was
+  exactly 34 bytes:
+
+  ~~~text
+  QWEN38_ISOLATED_WRITE_GATE=passed
+  ~~~
+
+  Its SHA-256 was
+  `f7ca43b4d2b9698e2f794c8bfffefe78836423c77bde38a7405f96ab12f6729a`.
+  Repository status remained the same eight documentation paths.
+- All three bundle hashes were unchanged before and after the final gate. The
+  ordinary user config and rules also remained byte-identical at
+  `97f15d75737344d4995c42350b50f424d617d94960b550ca0146a09a8c05ca9c`
+  and `63d2d91f30d58a8fa11d34431c1e6996f1b8c7424ac25dc6c4f150c892ce61e5`.
+  Post-gate health and language-only model info passed. The exact scratch file
+  was deleted through host `apply_patch`, both isolated scratch directories
+  were removed with `rmdir`, and cache flush logged `Reset
+  HybridReqToTokenPool` plus `Cache flushed successfully!`.
+- Foreground Ctrl+C exited zero; scheduler/detokenizer received the signal,
+  followed by normal application shutdown. PIDs 31773/31778/31779/31780 are
+  absent; port 30000 and matching model/compiler/client process sets are empty;
+  memory returned to 92% free with zero throttled pages; swap used 693.50 MiB;
+  and thermal/performance status is normal. The repository retains only the
+  eight documentation paths and no untracked file. The server is stopped.
+- Current scope: the isolated low-reasoning bundle owns one clean reversible
+  scratch edit with a complete event transcript and stable effective config.
+  The immediate medium-reasoning predecessor owns historical forced-compaction
+  recovery with missing raw warning text. Complex multi-file edits, concurrent
+  tools, and production-threshold near-limit compaction remain wider client
+  gates.
+
+### 2026-08-30 20:29 PDT - trusted-repository unified-exec bundle passes the Codex write gate
+
+- A final exact-tag artifact audit refined the 20:11 selection in three places:
+  the repository must be trusted for root `AGENTS.md` to reach actual-work
+  prompts, Codex 0.151.0's exposed unified shell tools are `exec_command` and
+  `write_stdin`, and `exec_command`'s command field is `cmd`. The selected
+  catalog now declares `shell_type="unified_exec"`; the catalog and instruction file say
+  `Use exec_command sequentially` and `set its cmd to a sole apply_patch
+  heredoc`. The scratch path remains explicitly untrusted.
+- The governing external artifact identities are:
+
+  ~~~text
+  a1ce8b8e0e81c0acdd803a93480ce5facd97c0d8d1b6db6acccbb4c8862981bf  /Users/dcazares/.codex/qwen38-local-hardened-home/config.toml
+  862339c156824879852dbdc9ebf096523d6312699fdd8723f13d81091de2ec71  /Users/dcazares/.codex/qwen38-local-hardened-home/models.json
+  5d59350d7a1568c3c458b05513e8b58ed50d70874f27fb80a06d131e09b9d096  /Users/dcazares/.codex/qwen38-local-hardened-home/instructions.md
+  ~~~
+
+  Relative to the complete 20:11 artifact printout, the final config changes
+  only the repository decision to:
+
+  ~~~toml
+  [projects."/Users/dcazares/sglang"]
+  trust_level = "trusted"
+
+  [projects."/private/tmp/qwen38-codex-isolated-gate"]
+  trust_level = "untrusted"
+  ~~~
+
+  The final catalog changes the shell metadata and base instruction to:
+
+  ~~~json
+  "shell_type": "unified_exec",
+  "base_instructions": "You are Codex, a careful coding agent working in the shared workspace. Follow every developer, AGENTS.md, and user instruction. Inspect before editing, preserve intent and existing behavior, make requested changes, verify them, and report concise evidence. Use exec_command sequentially. For file edits, set its cmd to a sole apply_patch heredoc. Omit justification and sandbox_permissions for workspace-sandboxed commands."
+  ~~~
+
+  The one-line `instructions.md` contains that same instruction text exactly.
+  `jq empty` passed for the catalog. Default mode and noninteractive exec use
+  low reasoning; Plan mode remains explicitly medium. `[history] persistence="none"`
+  disables global message-history append, while an
+  ordinary non-ephemeral TUI can retain thread rollout/state in this home.
+  `allow_login_shell=false` suppresses login-shell startup and core-only
+  filtering governs the initial environment; zsh still reads its ordinary
+  `.zshenv`.
+- Trust and prompt-input checks used the final catalog and the reconciled root
+  instructions. From `/Users/dcazares/sglang`, this project-surface scan:
+
+  ~~~text
+  rg --files --hidden -g '.codex/**' -g '!**/.git/**' -g 'hooks.json' -g '*.rules'
+  ~~~
+
+  exited 1 with zero output and found no unignored matching project path. The
+  dedicated home had no
+  `rules/` directory and no current skill root; the effective core MCP server
+  set was empty. These absences are part of the interactive trust boundary:
+  later project config, hooks, rules, skills, or home rules require a fresh
+  manifest or hashes.
+- A post-cleanup read-only prompt diagnostic executed at 20:33:11 PDT exactly
+  from the repository:
+
+  ~~~text
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home SGLANG_API_KEY=local /opt/homebrew/bin/codex -C /Users/dcazares/sglang debug prompt-input 'Return exactly READY'
+  ~~~
+
+  It exited zero with 21,743 captured stdout characters. Injected-context
+  message `msg_01a055e0-cce4-7292-a365-aa35c97a231a` contained exact heading
+  `# AGENTS.md instructions for /Users/dcazares/sglang` and exact unique rule
+  `Do NOT add new Python code. Anything new must be in C++ or CUDA.`; user
+  message `msg_01a055e0-cce4-7292-a365-aa483078bbd3` contained the requested
+  text. Skill, plugin, and permission instruction blocks were absent. The
+  reconciled `AGENTS.md` SHA-256 was
+  `44d7a6b183ddf567614a23a77888668cef0c593a3748a61c949b5569c5efda1c`.
+- Recovery-ledger clarification for the two intermediate 20:11 attempts:
+  the preliminary auto-rewrite run used timestamped scratch path
+  `/private/tmp/qwen38-codex-isolated-gate-20260830-200121-PDT`, thread
+  `01a055c3-f9d4-7b11-893a-ddb17fcb32b3`, the same strict/ephemeral/rule-
+  ignored exec shape, and a prompt beginning `Use shell_command exactly once.
+  Set its command to this exact script:`. Codex changed config identity from
+  `d56ed660...ddf6` to
+  `b6654245...b4e0` during startup; the task later exited zero after one
+  34-byte write at 4,078 input / 133 output / 57 reasoning-output tokens.
+  The exact full JSONL, cached-usage fields, artifact digest, and pre/post
+  config bytes were not retained. The trusted-both-path attempt used fixed
+  path `/private/tmp/qwen38-codex-isolated-gate`, thread
+  `01a055c8-4743-7363-8646-6e11f017ebcb`, config hash `62105124...a83`, and
+  the same shell-command task. It emitted only `thread.started` and
+  `turn.started`; it was interrupted before a file event. Its OS client PID,
+  exact signal transcript, usage, and exit status were not retained. The empty
+  fixed directory was removed before recreation, and both exact `rmdir`
+  operands were the timestamped path above and the fixed path. This preserves
+  the remaining provenance limits instead of promoting either attempt.
+- Before the final server restart,
+  `main=origin/main=50b0a1e1104640b45dbda2a6e210af05d9a0e8fe`. The worktree
+  contained the same eight tracked documentation paths and no untracked file.
+  Port 30000 and the relevant server/model/compiler process sets were empty.
+  Memory was 92% free with zero throttled pages, swap use was 685.50 MiB, and
+  macOS reported no thermal or performance warning. The ordinary user config
+  and rule hashes were
+  `97f15d75737344d4995c42350b50f424d617d94960b550ca0146a09a8c05ca9c`
+  and `63d2d91f30d58a8fa11d34431c1e6996f1b8c7424ac25dc6c4f150c892ce61e5`.
+  The repository `.codex` path and dedicated-home `rules` path were absent.
+- Launched the second/final PERF-A021 server exactly:
+
+  ~~~text
+  env -u MTL_CAPTURE_ENABLED -u SGLANG_MPS_PROFILE_LAYERS \
+    -u SGLANG_MPS_PROFILE_STAGES -u SGLANG_RUST_SERVER \
+    -u SGLANG_RUST_BUILD_MODE SGLANG_USE_MLX=0 \
+    SGLANG_MPS_IQ2_LARGE_BATCH=1 SGLANG_MPS_Q4_K_BATCH1_ROWS2=1 \
+    SGLANG_MPS_Q2_K_BATCH1_ROWS4=1 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 \
+    --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 32768 --max-total-tokens 32768 \
+    --max-running-requests 1 --chunked-prefill-size 1024 \
+    --max-prefill-tokens 8192 --disable-radix-cache --disable-overlap-schedule \
+    --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
+    --incremental-streaming-output --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  The resolved seed was `805928454`. Weight loading used 9.03 GB in 16.67
+  seconds, Mamba state used 0.29 GB, the exact 32,768-token BF16 KV pool used
+  2.00 GB, and 19.97 GB remained. The server became ready at 20:21:17 PDT.
+  Root/listener `33801` parented tracker `33842`, scheduler `33843`, and
+  detokenizer `33844`. `/health`, `/v1/models`, and `/model_info` passed;
+  served model `qwen3.8-27b-iq2` reported 32,768 maximum context, generation
+  enabled, and image/audio understanding false.
+- One cache-flushed intermediate task exercised the corrected instruction names
+  before the catalog metadata correction. Its identities were config
+  `a1ce8b8e...2981bf`, catalog `69a10eca...8504`, and instructions
+  `5d59350d...9d096`; the catalog still said `shell_type="shell_command"`.
+  Thread `01a055d6-da35-7442-b61a-0e7d70fed555` emitted one successful
+  `file_change`, exact final `QWEN38 ISOLATED WRITE READY`, and zero exit at
+  2,741 input / 149 output / 73 reasoning-output tokens. The 34-byte artifact
+  matched the final content/hash and was removed through host `apply_patch` and
+  `rmdir`. This remains refinement evidence because the metadata and actual
+  unified tool surface disagreed. Cache flush passed before the final gate.
+- At 20:26:35 PDT the selected bundle hashes were the final trio above, the
+  ordinary-global hashes were unchanged, the fixed scratch directory was fresh
+  and empty, the server ancestry/listener remained exact, and health plus
+  language-only model reporting passed. The final client ran from repository
+  host cwd with fixed scratch `-C` and this exact one-command invocation:
+
+  ~~~text
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home SGLANG_API_KEY=local /opt/homebrew/bin/codex exec --strict-config --ephemeral --ignore-rules --skip-git-repo-check --color never -C /private/tmp/qwen38-codex-isolated-gate --json $'Use exec_command exactly once. Set its cmd to this exact script:\napply_patch <<\'PATCH\'\n*** Begin Patch\n*** Add File: gate.txt\n+QWEN38_ISOLATED_WRITE_GATE=passed\n*** End Patch\nPATCH\nAfter the tool succeeds, reply exactly QWEN38 ISOLATED WRITE READY'
+  ~~~
+
+  `--strict-config` supplied strict loading and `--ignore-rules` supplied
+  user/project rule exclusion. The config supplied approval policy,
+  workspace-write confinement, default/exec low reasoning, and capacity. The
+  process wrote `Reading additional input from stdin...` before the JSONL and
+  then emitted this complete retained sequence:
+
+  ~~~json
+  {"type":"thread.started","thread_id":"01a055da-e3ba-7b03-9384-be480e8ce20c"}
+  {"type":"turn.started"}
+  {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"\n\n"}}
+  {"type":"item.started","item":{"id":"item_1","type":"file_change","changes":[{"path":"/private/tmp/qwen38-codex-isolated-gate/gate.txt","kind":"add"}],"status":"in_progress"}}
+  {"type":"item.completed","item":{"id":"item_1","type":"file_change","changes":[{"path":"/private/tmp/qwen38-codex-isolated-gate/gate.txt","kind":"add"}],"status":"completed"}}
+  {"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"\n\nQWEN38 ISOLATED WRITE READY"}}
+  {"type":"turn.completed","usage":{"input_tokens":2662,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":113,"reasoning_output_tokens":37}}
+  ~~~
+
+  The two server prompt sizes were exactly 1,262 and 1,400 tokens, summing to
+  the client input count. The client exited zero. The sole artifact was exactly
+  34 bytes:
+
+  ~~~text
+  QWEN38_ISOLATED_WRITE_GATE=passed
+  ~~~
+
+  Its SHA-256 was
+  `f7ca43b4d2b9698e2f794c8bfffefe78836423c77bde38a7405f96ab12f6729a`.
+  All three bundle hashes and both ordinary-global hashes remained unchanged
+  after the request. Repository status remained the same eight documentation
+  paths. Health passed at 20:28:56 PDT.
+- The artifact was deleted through host `apply_patch`; exact directory
+  `/private/tmp/qwen38-codex-isolated-gate` was removed with `rmdir`. Cache
+  flush logged `Reset HybridReqToTokenPool` and `Cache flushed successfully!`
+  at 20:29:11 PDT. Memory was 92% free with zero throttled pages, and macOS
+  reported no thermal or performance warning. Foreground Ctrl+C then produced
+  the expected child `KeyboardInterrupt` traces, completed normal application
+  shutdown, and exited zero. PIDs 33801/33842/33843/33844 disappeared; port
+  30000 was free; matching SGLang/model/compiler worker sets were empty; and the
+  scratch path was absent. Post-shutdown memory remained 92% free with zero
+  throttled pages.
+  The repository retains only the eight tracked documentation paths and no
+  untracked file. The server is stopped.
+- Scope of the 20:29 artifact: the unified-exec bundle plus the observed
+  trusted-repo instruction surface owns one clean reversible scratch edit. The
+  scratch exec is rule-isolated; ordinary interactive safety also depends on the recorded
+  absence or hashes of dedicated-home rules and trusted project config/hooks/
+  rules/skills. The earlier medium bundle owns historical forced-compaction
+  recovery. Complex multi-file work, concurrent tool calls, and continuation
+  at the effective 29,491-token production compaction threshold remain separate
+  qualification gates.
+
+### 2026-08-30 20:46 PDT - ZDOTDIR-isolated bundle passes the final Codex write gate
+
+- Post-20:29 exact-tag review identified one remaining spawned-shell input.
+  Non-login `zsh -c` still resolves a per-user `.zshenv` after Codex filters
+  the inherited environment. `/Users/dcazares/.zshenv` was 21 bytes, mtime
+  2023-01-13 16:17:34 PST, and SHA-256
+  `787ab203279ada7ab10fd7c252f9b414ef4185d632ca2a9d2d38307cd8cca606`;
+  its sole command sourced `/Users/dcazares/.cargo/env`, whose 300-byte mtime
+  matched and whose SHA-256 was
+  `8566c299618b2cd21dd0c2bf98b416819a05bc484418691b72635cca342f7343`.
+  Neither file was prehashed for the 20:29 gate, so that gate remains direct
+  behavioral evidence with this environmental provenance limit.
+- Changed only the isolated config's shell policy from `set = {}` to:
+
+  ~~~toml
+  [shell_environment_policy]
+  inherit = "core"
+  ignore_default_excludes = false
+  exclude = []
+  include_only = []
+  set = { ZDOTDIR = "/var/empty" }
+  experimental_use_profile = false
+  ~~~
+
+  Codex 0.151.0 applies `shell_environment_policy.set` while constructing the
+  unified-exec child environment, before spawning the non-login `zsh -c`.
+  Zsh therefore resolves its user startup lookup through `/var/empty` instead
+  of `$HOME`. `/var/empty` was root:sys, mode 0755, and empty;
+  `/etc/zshenv` and `/etc/zsh/zshenv` were absent. The setting prevents spawned
+  non-login zsh processes from rereading `$HOME/.zshenv`; values already present
+  in the parent Codex environment remain subject to core filtering.
+- Final config/catalog/instruction SHA-256 values are:
+
+  ~~~text
+  9d7842bb47d15c5b7a63d1507b8e035784bf1ab768de36dbb131088493620409  /Users/dcazares/.codex/qwen38-local-hardened-home/config.toml
+  862339c156824879852dbdc9ebf096523d6312699fdd8723f13d81091de2ec71  /Users/dcazares/.codex/qwen38-local-hardened-home/models.json
+  5d59350d7a1568c3c458b05513e8b58ed50d70874f27fb80a06d131e09b9d096  /Users/dcazares/.codex/qwen38-local-hardened-home/instructions.md
+  ~~~
+
+  `jq empty` had already passed for the unchanged catalog, whose shell metadata
+  is `unified_exec` and whose exact instruction names `exec_command` plus
+  `cmd`. The stored repository decision remained `trusted`; the fixed scratch
+  path remained `untrusted`.
+- Trust was retested against the stored config path. A temporary config with
+  repository trust `untrusted` hashed
+  `c92d23b9960dff3f0a8552eec2f05a59bf20b3f7f85fa355e364fac2f6128a1d`;
+  its no-override repository prompt rendered only 1,553 characters and omitted
+  root `AGENTS.md`. Restoring the stored `trusted` value returned the exact
+  `9d7842bb...0409` identity and restored the full instruction prompt. A CLI
+  `-c` trust override against an already trusted base retained the full prompt,
+  showing that such a late override does not reproduce the stored-config trust
+  decision for this check.
+- The final ignore-independent project scan was:
+
+  ~~~text
+  rg --files --hidden --no-ignore -g '.codex/**' -g '!**/.git/**' -g 'hooks.json' -g '*.rules' -g '.agents/skills/**' -g 'AGENTS.override.md'
+  ~~~
+
+  It exited 1 with zero output. Dedicated-home `rules/`, `skills/`,
+  `AGENTS.md`, and `AGENTS.override.md` were absent. `$HOME/.agents/skills`,
+  repository `.agents/skills`, and `/etc/codex/skills` were absent. The intended
+  repository instruction files remained root `AGENTS.md` and
+  `docs/AGENTS.md`; only the root file applies at repository cwd. System and
+  managed Codex config remained absent from the preceding exact audit.
+- Before launch at 20:38:08 PDT,
+  `main=origin/main=50b0a1e1104640b45dbda2a6e210af05d9a0e8fe`. The worktree
+  contained the same eight tracked documentation paths and no untracked file.
+  Port 30000 was free; relevant SGLang/model/compiler and matching gate-client
+  process sets were empty; and the fixed scratch path was absent. Memory was
+  92% free with zero throttled pages, swap use was
+  685.50 MiB, and thermal/performance status was normal. The final bundle
+  hashes above, root `AGENTS.md`, project/sidecar absences, root-owned empty
+  `/var/empty` target, and ordinary user config/rule hashes
+  `97f15d75737344d4995c42350b50f424d617d94960b550ca0146a09a8c05ca9c` /
+  `63d2d91f30d58a8fa11d34431c1e6996f1b8c7424ac25dc6c4f150c892ce61e5`
+  were recorded.
+- Launched exactly:
+
+  ~~~text
+  env -u MTL_CAPTURE_ENABLED -u SGLANG_MPS_PROFILE_LAYERS \
+    -u SGLANG_MPS_PROFILE_STAGES -u SGLANG_RUST_SERVER \
+    -u SGLANG_RUST_BUILD_MODE SGLANG_USE_MLX=0 \
+    SGLANG_MPS_IQ2_LARGE_BATCH=1 SGLANG_MPS_Q4_K_BATCH1_ROWS2=1 \
+    SGLANG_MPS_Q2_K_BATCH1_ROWS4=1 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 \
+    --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 32768 --max-total-tokens 32768 \
+    --max-running-requests 1 --chunked-prefill-size 1024 \
+    --max-prefill-tokens 8192 --disable-radix-cache --disable-overlap-schedule \
+    --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
+    --incremental-streaming-output --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Resolved seed was `67396869`. Weight loading used 9.03 GB in 16.65 seconds,
+  Mamba state used 0.29 GB, the exact 32,768-token BF16 KV pool used 2.00 GB,
+  and 19.97 GB remained. The server became ready at 20:38:56 PDT.
+  Root/listener `36097` parented tracker `36112`, scheduler `36113`, and
+  detokenizer `36114`. `/health`, `/v1/models`, and `/model_info` passed;
+  served model `qwen3.8-27b-iq2` reported 32,768 context, generation enabled,
+  and image/audio understanding false.
+- A first cache-flushed gate under the new config began at 20:39:50 PDT.
+  Thread `01a055e6-e65d-7572-b89e-f5afcebaa7f2` emitted one successful
+  `file_change`, exact final `QWEN38 ISOLATED WRITE READY`, and zero exit with
+  2,666 input / 119 output / 43 reasoning-output tokens. The artifact was
+  removed before its host size/digest were independently captured, so this run
+  remains refinement evidence. The temporary trust test above then ran, and
+  the config returned byte-for-byte to `9d7842bb...0409` before the final gate.
+- At 20:43:20 PDT, the exact final trio and ordinary-global hashes were stable,
+  the server ancestry/listener and root-owned empty `/var/empty` target
+  remained exact,
+  cache flush logged success, and a fresh empty fixed scratch directory had
+  been created explicitly. The final client ran from repository host cwd with
+  scratch `-C` and explicit EOF on non-TTY stdin:
+
+  ~~~text
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home SGLANG_API_KEY=local /opt/homebrew/bin/codex exec --strict-config --ephemeral --ignore-rules --skip-git-repo-check --color never -C /private/tmp/qwen38-codex-isolated-gate --json $'Use exec_command exactly once. Set its cmd to this exact script:\napply_patch <<\'PATCH\'\n*** Begin Patch\n*** Add File: gate.txt\n+QWEN38_ISOLATED_WRITE_GATE=passed\n*** End Patch\nPATCH\nAfter the tool succeeds, reply exactly QWEN38 ISOLATED WRITE READY' </dev/null
+  ~~~
+
+  Codex printed `Reading additional input from stdin...`; `/dev/null` supplied
+  immediate EOF and zero appended bytes. Thread
+  `01a055ea-2b98-7e80-a5a3-a55db0d08ad3` emitted this complete JSONL:
+
+  ~~~json
+  {"type":"thread.started","thread_id":"01a055ea-2b98-7e80-a5a3-a55db0d08ad3"}
+  {"type":"turn.started"}
+  {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"\n\n"}}
+  {"type":"item.started","item":{"id":"item_1","type":"file_change","changes":[{"path":"/private/tmp/qwen38-codex-isolated-gate/gate.txt","kind":"add"}],"status":"in_progress"}}
+  {"type":"item.completed","item":{"id":"item_1","type":"file_change","changes":[{"path":"/private/tmp/qwen38-codex-isolated-gate/gate.txt","kind":"add"}],"status":"completed"}}
+  {"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"\n\nQWEN38 ISOLATED WRITE READY"}}
+  {"type":"turn.completed","usage":{"input_tokens":2670,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":115,"reasoning_output_tokens":39}}
+  ~~~
+
+  The two server prompt sizes were 1,262 and 1,408 tokens, summing exactly to
+  the client input count. The client exited zero. The sole artifact was 34
+  bytes with exact content:
+
+  ~~~text
+  QWEN38_ISOLATED_WRITE_GATE=passed
+  ~~~
+
+  Its SHA-256 was
+  `f7ca43b4d2b9698e2f794c8bfffefe78836423c77bde38a7405f96ab12f6729a`.
+  All three bundle and both ordinary-global hashes were unchanged afterward.
+  Repository status retained the same eight documentation paths. Health passed
+  at 20:45:40 PDT.
+- Host `apply_patch` deleted the verified artifact, exact fixed directory
+  `/private/tmp/qwen38-codex-isolated-gate` was removed with `rmdir`, and cache
+  flush logged `Reset HybridReqToTokenPool` plus `Cache flushed successfully!`
+  at 20:45:55 PDT. The resident-server sample was 92% free memory with zero
+  throttled pages and normal thermal/performance state. Foreground Ctrl+C then
+  produced the expected scheduler/detokenizer `KeyboardInterrupt` traces,
+  completed normal application shutdown, and exited zero. At 20:46:04 PDT,
+  PIDs 36097/36112/36113/36114 were absent; port 30000 was free; matching
+  server/model/compiler/gate-client process sets were empty; and the scratch
+  path was absent. Memory was 92% free, swap use was 685.50 MiB, and
+  thermal/performance status remained normal.
+- After reconciliation, the final read-only repository prompt diagnostic ran
+  at 20:46:41 PDT:
+
+  ~~~text
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home SGLANG_API_KEY=local /opt/homebrew/bin/codex -C /Users/dcazares/sglang debug prompt-input 'Return exactly READY'
+  ~~~
+
+  It exited zero with 21,741 captured stdout characters. Injected-context
+  message `msg_01a055ed-28ea-70a2-ac1f-2969d3c67730` contained root AGENTS
+  heading and exact rule `Do NOT add new Python code. Anything new must be in
+  C++ or CUDA.`; user message
+  `msg_01a055ed-28ea-70a2-ac1f-29700523199c` contained the requested text.
+  Skill, plugin, and permission instruction blocks were absent. Final root
+  `AGENTS.md` SHA-256 was
+  `d4f1d84c464e7dbda0791792e60046317b163d3d2ceded6a9fb963dfd93ac0ab`.
+- Current scope: the final unified-exec bundle owns one exact reversible write
+  in the untrusted, rule-isolated scratch path; the separate final prompt
+  diagnostic proves root repository instructions under the stored trusted
+  decision. The actual-work repository path still depends on the recorded
+  absence or hashes of its trusted config/hook/rule/skill/override surfaces.
+  Complex multi-file work, concurrent tool calls, and continuation at the
+  effective 29,491-token production compaction threshold remain separate
+  qualification gates. The server is stopped and the scratch path is absent.
+
+### 2026-08-30 21:26 PDT - actual-work control exposes full-prefix replay on every tool turn
+
+- Continuation began from `main=origin/main=50b0a1e1104640b45dbda2a6e210af05d9a0e8fe`.
+  The worktree held the same eight tracked recovery documents plus a fresh,
+  nonignored four-file C++20 fixture confined to
+  `test/qwen38_codex_actual_work_gate`; there were no other untracked paths.
+  Pre-gate memory was 92% free with zero throttled pages, swap use was 669.50
+  MiB, and thermal/performance status was normal. Port 30000 and the relevant
+  server/model/client/compiler sets were empty. Controller Codex PIDs
+  16975/16976 were recorded and preserved. The bundle identities remained
+  `9d7842bb...0409`, `862339c1...ec71`, and `5d59350...9d096`; root
+  `AGENTS.md` remained `d4f1d84c...c0ab`; the ignore-independent sidecar scan
+  again returned no path.
+- The temporary fixture defines a public token-span API, one production
+  implementation, authored tests, and an independent fixed contract verifier.
+  Seed SHA-256 values were:
+
+  ~~~text
+  a945811c7e48c0bb48c389a13c752261afe17b6ab2dbb8edc9bc120746bcdcd4  include/qwen38_gate/token_spans.hpp
+  c4e55d6568ccb4b20d1f59f6cb51c0c3a185c064d51cba76ec405299c03d2ef3  src/token_spans.cpp
+  1bcd2c90229dbbd118890fbb07ae8f9ab51432d6b2be7c23b25ed28e2a348fea  tests/token_spans_test.cpp
+  37726f739052d14922187eaeeb4ed4d0f9a172e337052aef3ad397f17bfc9ec0  tests/contract_test.cpp
+  ~~~
+
+  The exact strict seed build exited one as designed because the fixed verifier
+  required the absent `NormalizationStatus`, `NormalizationResult`, and
+  two-argument `NormalizeTokenSpans` API:
+
+  ~~~text
+  /usr/bin/c++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -Iinclude src/token_spans.cpp tests/token_spans_test.cpp tests/contract_test.cpp -o token_spans_test
+  ~~~
+- Launched the exact PERF-A021 command from the 20:46 entry with no argument
+  change. Resolved seed was `374459570`. Weight loading used 9.03 GB in 17.30
+  seconds, one FP32 Mamba slot used 0.29 GB, the exact 32,768-token BF16 KV pool
+  used 2.00 GB, and 19.97 GB remained. The server was ready at 21:06:47 PDT.
+  Root/listener PID 39418 parented tracker 39426, scheduler 39427, and
+  detokenizer 39428. Health, model list, and model info passed; generation was
+  enabled, context was 32,768, and image/audio understanding was false.
+- The actual-work client ran at repository cwd with the trusted-project layer,
+  no profile/config/sandbox/reasoning/capacity override, no rule bypass, and
+  explicit stdin EOF:
+
+  ~~~text
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home \
+    SGLANG_API_KEY=local /opt/homebrew/bin/codex exec --strict-config \
+    --ephemeral --color never -C /Users/dcazares/sglang --json \
+    'You are working in a dirty shared repository. Every pre-existing change is user-owned and must remain byte-for-byte unchanged. Your only writable task area is test/qwen38_codex_actual_work_gate. Do not edit, create, delete, rename, format, stage, or commit anything elsewhere. Do not use Python or start background processes. Inspect the fixture before editing. Run this exact baseline command from the fixture directory before editing and use its nonzero compiler output as evidence: /usr/bin/c++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -Iinclude src/token_spans.cpp tests/token_spans_test.cpp tests/contract_test.cpp -o token_spans_test. Upgrade the token-span normalization API and implementation. Modify each of these three files meaningfully: include/qwen38_gate/token_spans.hpp, src/token_spans.cpp, and tests/token_spans_test.cpp. Keep tests/contract_test.cpp byte-for-byte unchanged; it is the fixed verifier. The header must expose enum class NormalizationStatus : std::uint8_t with kOk=0, kInvalidSpan=1, and kLimitExceeded=2; struct NormalizationResult final containing status, std::vector<TokenSpan> spans, and std::uint64_t covered_tokens; and [[nodiscard]] NormalizationResult NormalizeTokenSpans(std::span<const TokenSpan> spans, std::uint64_t token_limit). Treat spans as half-open [begin,end). Scan input order and immediately return kInvalidSpan for begin greater than end, or kLimitExceeded for end greater than token_limit. Every failure returns an empty span vector and zero covered tokens. Bounds-check valid empty spans and then ignore them. On success sort by begin then end, merge overlaps and adjacency when next.begin is at most current.end, and sum merged lengths exactly once. Handle UINT64_MAX endpoints and limits without overflow. Update tests/token_spans_test.cpp for the new API and add at least four independent checks covering success, invalid input, limit failure, and a boundary or empty-span case. Use C++20 and the standard library only. After editing, rerun the exact compile command and then ./token_spans_test until both exit zero. Inspect final changed paths and confirm every task change is confined to the allowed directory. Finish with at most six concise bullets naming files changed, behavior implemented, baseline failure, exact passing commands and marker, and confinement evidence. End with this exact line: QWEN38_CPP_MULTI_FILE_GATE=passed' </dev/null
+  ~~~
+
+  The exact one-line task confined all writes to the fixture, required the
+  baseline build before editing, required meaningful header/source/authored-test
+  changes while preserving `tests/contract_test.cpp`, specified input-order
+  validation, half-open coalescing, unique coverage, and `UINT64_MAX` safety,
+  required the strict build plus executable pass, and required final marker
+  `QWEN38_CPP_MULTI_FILE_GATE=passed`. Thread
+  `01a05600-8f3a-7f70-862c-d9a01aaf95fb` emitted `thread.started` and
+  `turn.started`, then sequentially inspected repository status, the fixture
+  directory, its complete file list, and the public header. It correctly
+  observed and preserved the eight pre-existing documentation changes. No
+  `file_change` event occurred.
+- This control established the actual latency blocker before implementation.
+  The client resent the growing full conversation on every Responses tool
+  continuation, while `--disable-radix-cache` selected `ChunkCache`, whose
+  prefix match is always empty and insertion is a no-op. Server evidence was:
+
+  ~~~text
+  prompt tokens  cached tokens  representative sustained prefill
+  6697           0              24.36-25.49 token/s
+  7159           0              24.77-25.54 token/s
+  7599           0              24.01-25.41 token/s
+  ~~~
+
+  The later continuations therefore spent roughly 4.7-5.2 minutes replaying a
+  prefix whose newly appended tool/result tail was only about 440-462 tokens.
+  Codex 0.151.0 HTTP Responses sends `store=false`, a full accumulated prompt,
+  and no `previous_response_id`; SGLang drops the unsupported
+  `prompt_cache_key`. Radix matching itself is content-addressed by token IDs,
+  so no prompt-cache-key adapter is required for the single-user local lane.
+- Interrupted only the exact client after this conclusion, before any edit.
+  Its current server request was removed from TokenizerManager; the client
+  exited one. All four fixture hashes and every pre-existing document hash were
+  unchanged. Health passed, cache flush logged `Reset HybridReqToTokenPool` and
+  `Cache flushed successfully!`, and foreground Ctrl+C exited zero after the
+  expected child signal traces and normal application shutdown. PIDs
+  39418/39426/39427/39428 were absent, port 30000 was free, relevant process
+  sets were empty, memory was 92% free with zero throttled pages, swap use was
+  835.94 MiB, and thermal/performance status remained normal.
+- Next candidate is the source-supported MPS hybrid radix path. A matched
+  launch pins page size one, `no_buffer`, four logical Mamba slots, and seed
+  67396869; the candidate omits only `--disable-radix-cache`. Four slots cover
+  the three-slot source admission floor plus one transient reserve. Require
+  `UnifiedRadixCache`, positive cached-prefix counts, delta-sized continuation
+  work, the complete multi-file repair, independent edge checks, cache-flush
+  recovery, exact capacity, and post-capacity tool continuation before
+  promotion.
+
+### 2026-08-30 21:58 PDT - hybrid radix proves prefix reuse; the two-minute actual-work gate remains open
+
+- Continuation retained `main=origin/main=50b0a1e1104640b45dbda2a6e210af05d9a0e8fe`,
+  the same eight modified recovery documents, and the four-file untracked
+  `test/qwen38_codex_actual_work_gate` fixture. Its header, source, authored
+  test, and fixed-verifier SHA-256 values remained
+  `a945811c...bcdcd4`, `c4e55d65...d2ef3`, `1bcd2c90...348fea`, and
+  `37726f73...c9ec0`. The selected bundle remained
+  `9d7842bb...0409` / `862339c1...ec71` / `5d59350...9d096`; root
+  `AGENTS.md` remained `d4f1d84c...c0ab`.
+- The matched radix candidate changed only the cache selection from the 21:26
+  control. Its exact resolved launch was:
+
+  ~~~text
+  env -u MTL_CAPTURE_ENABLED -u SGLANG_MPS_PROFILE_LAYERS -u SGLANG_MPS_PROFILE_STAGES -u SGLANG_RUST_SERVER -u SGLANG_RUST_BUILD_MODE SGLANG_USE_MLX=0 SGLANG_MPS_IQ2_LARGE_BATCH=1 SGLANG_MPS_Q4_K_BATCH1_ROWS2=1 SGLANG_MPS_Q2_K_BATCH1_ROWS4=1 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 --kv-cache-dtype bfloat16 --context-length 32768 --max-total-tokens 32768 --max-running-requests 1 --chunked-prefill-size 1024 --max-prefill-tokens 8192 --page-size 1 --mamba-radix-cache-strategy no_buffer --max-mamba-cache-size 4 --random-seed 67396869 --disable-overlap-schedule --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Root/listener `40847` parented tracker `40854`, scheduler `40855`, and
+  detokenizer `40856`. The server became ready at 21:27:31 PDT after loading
+  9.03 GB in 25.00 seconds. Four Mamba slots used 0.03 GB convolution plus
+  0.70 GB SSM state, the exact 32,768-token BF16 KV pool used 2.00 GB, and
+  19.97 GB remained. Startup reported `UnifiedRadixCache`, `(FULL, MAMBA)`,
+  `UnifiedTreeCore`, and hybrid SSM enabled. Health, models, and model info
+  passed with generation enabled and image/audio understanding disabled.
+- Real repository thread `01a05613-6166-7641-9118-a3ff5a799663` used the same
+  multi-file prompt and frozen fixture as the 21:26 control. Its initial turn
+  remained a roughly 6,697-token cold prefill. Subsequent server records were:
+
+  ~~~text
+  cached prefix  new tail
+  6785           295
+  7140           219
+  7414           210
+  7680           200
+  ~~~
+
+  Those delta-prefills completed in roughly 9-20 seconds instead of the
+  control's 4.7-5.2 minutes. The model inspected repository status and every
+  fixture file, then produced a later response for more than four minutes at
+  roughly 2.65-2.8 tok/s near 10K context before its next tool call. The exact
+  client was interrupted; it exited one. `file_change` count remained zero and
+  every fixture/document hash remained exact. This qualifies content-addressed
+  hybrid radix reuse while leaving the complete repair gate pending.
+- Source/config inspection established a narrow thinking-disabled control:
+  `-c 'model_reasoning_effort="none"'` sends Responses effort `none`, which
+  resolves to `thinking=false` and `enable_thinking=false` in the Qwen chat
+  template. Repository-root minimal-tool thread
+  `01a05625-2f9d-78a2-929c-de2b9a191ba0` ran this first wall-clock probe:
+
+  ~~~text
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home SGLANG_API_KEY=local /opt/homebrew/bin/timeout --foreground --signal=INT --kill-after=10s 120s /opt/homebrew/bin/codex exec --strict-config -c 'model_reasoning_effort="none"' --ephemeral --color never -C /Users/dcazares/sglang --json 'Use exec_command exactly once. Set its cmd to git status --short -- test/qwen38_codex_actual_work_gate. After the command succeeds, reply exactly QWEN38_NONE_TOOL_READY.' </dev/null
+  ~~~
+
+  It reached exit `124` at about 120 seconds before a tool event. The server
+  processed three cold 1,024-token chunks with pending counts 5,168, 4,144,
+  and 3,120. The repository prompt therefore exceeds the two-minute cold-start
+  contract at the observed roughly 25 tok/s prefill rate. Review of GNU
+  `timeout` then found that `--foreground` exempts command children; all later
+  gates omit that option and verify descendants explicitly.
+- A compact patch-worker gate was created at the fixed untrusted
+  `/private/tmp/qwen38-codex-isolated-gate`. Seed header/source/test hashes were
+  `136542d0...f720`, `22301d84...4110`, and `4bcc1834...30e4`. The strict
+  C++20 baseline exited one solely because the immutable test referenced the
+  absent `SaturatingAccumulate` API. An independent audit added the stronger
+  `(1, UINT64_MAX, UINT32_MAX)` overflow case before freezing the test at
+  `cb82a355...30dd`; the header and source hashes stayed exact. The output
+  binary was absent before both attempts.
+- Scratch thread `01a05629-3578-7c91-b704-e98766e2d1d9` used the initial
+  foreground wrapper and reached exit `124`. Its 1,430-token cold prefill was
+  followed by cached delta turns, but generated tool payloads first supplied
+  `justification` without a sandbox permission and then requested escalation
+  under approval `never`. Both router calls failed. Source/test hashes stayed
+  exact and no binary appeared. This run is timeout-refinement evidence only.
+- Corrected scratch thread `01a0562b-c1a6-7fb3-ae56-ab2dc40630a4` used these
+  resolved client arguments and the authoritative embedded file contents/API
+  specification:
+
+  ~~~text
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home SGLANG_API_KEY=local /opt/homebrew/bin/timeout --signal=INT --kill-after=10s 120s /opt/homebrew/bin/codex exec --strict-config -c 'model_reasoning_effort="none"' --ephemeral --ignore-rules --skip-git-repo-check --color never -C /private/tmp/qwen38-codex-isolated-gate --json '<embedded exact header/source and immutable tests; require one apply_patch adding the declaration and out-of-line overflow-safe definition, then one cmd/workdir-only strict compile plus executable run, then exact QWEN38_TWO_MINUTE_GATE_READY>' </dev/null
+  ~~~
+
+  The exact requested tool command was:
+
+  ~~~text
+  /usr/bin/c++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -Iinclude src/saturating_counter.cpp tests/saturating_counter_test.cpp -o saturating_counter_gate_retry && ./saturating_counter_gate_retry
+  ~~~
+
+  Server ingress was entirely cold: 1,024 plus 702 new tokens, zero cached.
+  Decode then ran around 5.97-6.74 tok/s through approximately 300 generated
+  tokens. The process-group watchdog interrupted the request at 120 seconds;
+  the client exited `124` before its first tool event. Post-run hashes remained
+  `136542d0...f720`, `22301d84...4110`, and `cb82a355...30dd`; the compiler
+  binary remained absent; the exact scratch-client/compiler descendant query
+  was empty; and health still passed.
+- Host `apply_patch` removed the three scratch sources and exact leaf-to-root
+  `rmdir` cleanup removed `/private/tmp/qwen38-codex-isolated-gate`; their
+  contents remain recoverable from this entry's specification and hashes.
+  Verified leaf-first SIGINT of detokenizer `40856` and scheduler `40855`
+  triggered the launcher's expected child-failure cleanup; session exit was
+  one. PIDs `40847/40854/40855/40856`, port 30000, and matching
+  server/model/client/compiler sets were absent afterward. Memory returned to
+  93% free with zero throttled pages, encrypted swap use was 883.00 MiB, and
+  thermal/performance status remained normal.
+- Durable handoff: every future non-interactive Qwen/Codex work attempt uses
+  process-group GNU `timeout --signal=INT --kill-after=10s 120s`. Exit `124` or
+  `137` is a failed usability gate, followed by exact descendant and protected-
+  hash verification. Hybrid radix cache reuse is established. Cold repository
+  prefill and unconstrained tool-call generation still exceed the two-minute
+  contract, so the earlier one-file scratch write remains the narrow qualified
+  surface and actual multi-file work remains open.
+
+### 2026-08-30 22:24 PDT - parser-free structured patch lane completes a supervised multi-file gate
+
+- Continuation began at `main=origin/main=50b0a1e1104640b45dbda2a6e210af05d9a0e8fe`
+  with the same eight user-owned modified recovery documents and four untracked
+  actual-work fixture sources. The frozen header/source/authored-test/verifier
+  hashes were `a945811c...bcdcd4`, `c4e55d65...d2ef3`,
+  `1bcd2c90...348fea`, and `37726f73...c9ec0`. The strict baseline compile
+  exited one because the fixed verifier referenced the absent two-argument
+  normalization API.
+- Codex 0.151.0 prompt inspection established the smallest supported client
+  ingress. `project_doc_max_bytes=0`, `include_environment_context=false`, and
+  `model_reasoning_effort="none"` reduced `codex debug prompt-input` from the
+  previously measured 5,434-token ordinary input to a 100-token user item.
+  These were one-off diagnostic/scratch overrides; the normal trusted-
+  repository prompt and existing interactive configuration remain the working
+  defaults. Codex exposes no configuration control for `tool_choice` or
+  `max_output_tokens` in this release.
+- Compact Codex thread `01a05638-3921-7411-9564-f680af8ea1b8` used this exact
+  process-group-bounded shape:
+
+  ~~~text
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home \
+    SGLANG_API_KEY=local \
+    /opt/homebrew/bin/timeout --signal=INT --kill-after=10s 120s \
+    /opt/homebrew/bin/codex exec --strict-config --ephemeral \
+    --ignore-rules --color never --json \
+    -C /Users/dcazares/sglang/test/qwen38_codex_actual_work_gate \
+    -c project_doc_max_bytes=0 -c include_environment_context=false \
+    -c 'model_reasoning_effort="none"' \
+    '<immediate printf tool prompt>' </dev/null
+  ~~~
+
+  It issued the real command `/usr/bin/printf QWEN38_COMPACT_TOOL=passed`,
+  received exact successful output, returned `QWEN38_COMPACT_TOOL_READY`, and
+  exited zero in about 52 seconds. Usage was 2,157 input, 1,079 cached input,
+  81 output, and zero reasoning-output tokens. A following one-file header
+  thread `01a05639-6963-7a30-bceb-4e18d5edd8c7` returned only `ack` with 1,133
+  input and two output tokens; it emitted no tool event and left the header
+  exact. Compact automatic tool use is therefore qualified while automatic
+  edit selection remains unqualified.
+- Direct named-tool forcing exposed two grammar/device boundaries. The default
+  xgrammar backend crashed the scheduler in
+  `xgrammar_backend.py:143` with `RuntimeError: Unsupported device: mps` while
+  applying its vocabulary mask. An Outlines restart retaining the Qwen
+  reasoning/tool parsers returned `Failed to compile structural_tag grammar`
+  for a required named tool. Its plain JSON-schema request then returned
+  `'OutlinesGrammarBackend' object has no attribute 'allocate_vocab_mask'`:
+  `ReasonerGrammarBackend` expects backend-level mask delegates that the
+  Outlines grammar object owns. Each failed server tree was cleaned before the
+  next launch, and the fixture hashes stayed exact.
+- The successful route omitted both parsers, retained Responses
+  `reasoning.effort=none`, and selected Outlines:
+
+  ~~~text
+  env -u MTL_CAPTURE_ENABLED -u SGLANG_MPS_PROFILE_LAYERS \
+    -u SGLANG_MPS_PROFILE_STAGES -u SGLANG_RUST_SERVER \
+    -u SGLANG_RUST_BUILD_MODE SGLANG_USE_MLX=0 \
+    SGLANG_MPS_IQ2_LARGE_BATCH=1 SGLANG_MPS_Q4_K_BATCH1_ROWS2=1 \
+    SGLANG_MPS_Q2_K_BATCH1_ROWS4=1 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 \
+    --served-model-name qwen3.8-27b-iq2 --load-format gguf \
+    --dtype float32 --kv-cache-dtype bfloat16 --context-length 32768 \
+    --max-total-tokens 32768 --max-running-requests 1 \
+    --chunked-prefill-size 1024 --max-prefill-tokens 8192 --page-size 1 \
+    --mamba-radix-cache-strategy no_buffer --max-mamba-cache-size 4 \
+    --random-seed 67396869 --disable-overlap-schedule \
+    --grammar-backend outlines --incremental-streaming-output \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Resolved `reasoning_parser=None` and `tool_call_parser=None`. Root/listener
+  44848 parented tracker 44857, scheduler 44858, and detokenizer 44859. Weight
+  loading used 9.03 GB in 15.55 seconds, four Mamba slots used 0.73 GB, the
+  exact 32,768-token BF16 KV pool used 2.00 GB, 19.97 GB remained, and
+  `UnifiedRadixCache` initialized. Health, model list, and startup generation
+  passed.
+- Four parser-free `/v1/responses` requests used Outlines JSON-schema output,
+  `reasoning.effort=none`, and an outer
+  `/opt/homebrew/bin/timeout --signal=INT --kill-after=10s 120s`; curl also had
+  `--max-time 115`. Every request exited zero inside the process deadline:
+
+  ~~~text
+  stage                 response id       wall       input/output  result
+  permissive patch      resp_d13876...    14.1 s     171/28        schema-valid one-line diff stub
+  complete header lines resp_1eea48...    ~60.0 s    354/271       complete, repository-correct API
+  complete source lines resp_f03f66...    ~95.3 s    308/520       correct validation/sort/merge core; wrapper drift
+  complete test lines   resp_9186ab...    ~55.8 s    245/270       correct adjacency intent; type/signature drift
+  ~~~
+
+  Requiring 25-40 complete header lines prevented the earlier schema-valid
+  stub. The generated header preserved `TokenSpan` and supplied the requested
+  enum, result, equality, and two-argument declaration. Host review applied
+  repository formatting. The source draft supplied input-order validation,
+  sorting, overlap/adjacency merging, and unique coverage; host review retained
+  the existing include path/namespace, removed duplicate public declarations,
+  ignored validated empty spans before sorting, and added the required utility
+  include. The test draft selected the required adjacency case; host review
+  restored `TokenSpan`, `NormalizationResult`, `covered_tokens`, and the boolean
+  `RunAuthoredTests` contract. This qualifies a supervised structured patch
+  lane. Autonomous multi-file Codex editing remains open.
+- Final strict verification was:
+
+  ~~~text
+  /usr/bin/c++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror \
+    -Iinclude src/token_spans.cpp tests/token_spans_test.cpp \
+    tests/contract_test.cpp -o token_spans_test
+  ./token_spans_test
+  QWEN38_CPP_MULTI_FILE_GATE=passed
+  ~~~
+
+  An independent read-only review then found that the authored test still had
+  one success check while the work contract required four independent cases.
+  Host review added success, invalid-span precedence, limit failure, and exact-
+  `UINT64_MAX` empty/boundary cases. The success/boundary inputs also cover
+  strict containment, a one-token gap, and overlapping spans ending at
+  `UINT64_MAX`. The same warning-as-error compile and executable gate repeated
+  successfully with the exact marker above.
+  Final header/source/authored-test hashes are
+  `16d988f8bef9a5ddf601bd7b5023b8a8f25d639b2bfa3adde4e74303550bcb6f`,
+  `e5a6734af2e2946bef7165aa82eda5354060c475a055d551213e2130be5ec7b0`,
+  and `458caf371525ebcc30ffb2e2920e3698043ecb1c723819f8fc4e2afe06525eac`.
+  Immutable `tests/contract_test.cpp` stayed
+  `37726f739052d14922187eaeeb4ed4d0f9a172e337052aef3ad397f17bfc9ec0`.
+  The disposable compiler output was removed after verification.
+- Verified leaf-first SIGINT of detokenizer 44859 and scheduler 44858 triggered
+  the launcher's expected child-failure cleanup. PIDs 44848/44857/44858/44859,
+  port 30000, and matching SGLang processes were absent afterward. Memory was
+  92% free, encrypted swap use was 747.00 MiB, and thermal/performance status
+  was normal. Parser-free structured output is retained as an opt-in supervised
+  subworker under the 120-second process-tree deadline. The normal Codex prompt
+  remains authoritative; automatic multi-file ownership and parser-enabled
+  required tools remain qualification targets.
+- The collaborator explicitly retained the normal default prompt after this
+  experiment. Reverification returned the established config/catalog/
+  instruction hashes `9d7842bb...0409`, `862339c1...ec71`, and
+  `5d59350d...d096`. Future work keeps those defaults and treats prompt-elision
+  flags as disposable diagnostic overrides only.
+
 ### 2026-08-31 00:22 PDT - split-history Metal decode and an exact 131K xhigh Codex tool turn pass
 
 - Resumed on `main` from `50b0a1e110` with the existing modified documentation
@@ -14116,3 +15754,1630 @@ mean 13.929045  17.125658 446.051        39.730
   uncapped-output `xhigh` Codex tool round trip inside the requested two-minute
   contract at a real 131K client/server context. The server remains live for
   the autonomous multi-file gate; PID and port state are runtime snapshots.
+
+### 2026-08-31 00:35 PDT - autonomous multi-file gate exposes the no-buffer prefix miss
+
+- Revalidated the five-slot 131K listener at PID 53732, the complete launch
+  arguments, health endpoint, clean `git diff --check`, and the frozen C++
+  fixture before traffic. The four fixture hashes remained
+  `16d988f...b6f`, `e5a6734...7b0`, `458caf3...eac`, and
+  `37726f7...ec0`; an independent strict C++20 baseline build exited zero with
+  `QWEN38_CPP_MULTI_FILE_GATE=passed`.
+- Thread `01a056bc-5476-7871-a6e1-e86396648099` received an autonomous task to
+  add `ContainsToken` across the fixture header, implementation, and authored
+  tests, compile it with `-O2 -Wall -Wextra -Wpedantic -Werror`, run the fresh
+  binary, and return an exact completion marker. The actual Codex command used
+  the unchanged isolated home, process-scoped 131,072 context, 117,964 compact
+  threshold, `xhigh` reasoning, no output-token cap, and the required
+  `/opt/homebrew/bin/timeout --signal=INT --kill-after=10s 120s` outer process
+  deadline.
+- The client emitted only `thread.started` and `turn.started`, then the outer
+  timeout exited 124 after 120 seconds. Server evidence showed a full recurrent
+  miss despite the previous successful task's aligned warm prefix: three
+  1,024-token prefill chunks completed at 00:33:41, 00:34:22, and 00:35:04
+  with `cached-token: 0`; 3,311 prompt tokens still remained when cancellation
+  arrived. No model tool event occurred. Post-timeout hashes were byte-identical,
+  `ContainsToken` remained absent, no Codex/compiler/binary process survived,
+  and the same server listener passed health.
+- This is a measured rejection of the current `no_buffer` five-slot launch as
+  an interactive shared-prefix configuration: it retains only the terminal
+  recurrent state and cannot reuse the normal prompt when the final task
+  diverges. The next matched experiment selects `extra_buffer_lazy`, already
+  qualified on the native-Windows lane, and tests automatic shared-prefix
+  retention before another autonomous client attempt.
+
+### 2026-08-31 01:59 PDT - lazy-buffer preflight closes the non-overlap combination
+
+- Continued at signed `main=7b454141fd`, two commits ahead of `origin/main`,
+  with the existing eight modified recovery documents and four-file untracked
+  actual-work fixture preserved as collaborator-owned state. Port 30000 and
+  the relevant SGLang, compiler, and model process sets were empty. System
+  memory was 92% free with zero throttled pages, encrypted swap use was
+  743.56 MiB, the Apple M1 Max GPU reported no active compute owner, and
+  thermal/performance status was normal. The selected Codex bundle and four
+  fixture hashes remained exact.
+- The first matched follow-up changed only
+  `--mamba-radix-cache-strategy no_buffer` to `extra_buffer_lazy`; it retained
+  the exact 131,072-token context/pool, BF16 KV, five slots, page size one,
+  seed 67396869, parser pair, native-MPS controls, and
+  `--disable-overlap-schedule`. Weight loading completed in 15.45 seconds and
+  used 9.03 GB. Memory-pool configuration then failed closed at
+  `_calculate_mamba_ratio` with the source assertion
+  `Lazy extra buffer requires overlap schedule (--disable-overlap-schedule is incompatible)`.
+  No listener became ready and no request was sent.
+- The launcher killed its failed tree. Port 30000, SGLang/model/compiler
+  process sets, and throttled pages were clear afterward; memory returned to
+  92% free and thermal/performance status remained normal. Source inspection
+  confirms the supported non-overlap strategy is eager `extra_buffer`: lazy
+  mode saves the second ping-pong slot only under overlap scheduling. The next
+  arm therefore retains the established Apple non-overlap schedule and changes
+  the cache strategy to `extra_buffer` before testing divergent shared-prefix
+  reuse.
+- The supported eager/non-overlap arm resolved exactly as intended and loaded
+  the 9.03 GB checkpoint in 18.16 seconds. Five Mamba slots used 0.03 GB of
+  convolution state and 0.84 GB of SSM state; the exact 131,072-token BF16 KV
+  pool used 4.00 GB each for K and V and left 10.97 GB available.
+  `UnifiedRadixCache`, hybrid GDN, parser pair, and all requested capacities
+  initialized. During the launcher's first six-token warmup, the prefill
+  completed and the first decode transition segfaulted in
+  `set_mamba_track_indices_from_reqs` at the pinned-CPU-to-MPS index transfer.
+  The native stack ended in `at::native::mps::mps_copy_` and the Apple AGX blit
+  path; macOS retained
+  `python3.11-2026-08-31-020032.ips`. The parent detected scheduler PID 58346
+  exit `-11`, waited for GPU activity to settle, and killed the exact tree.
+  No external request reached the listener.
+- Post-crash checks found no port owner, SGLang/model/compiler process, or
+  throttled page. This rejects eager `extra_buffer` plus the established Apple
+  non-overlap schedule on current source. The next supported arm pairs
+  `extra_buffer_lazy` with overlap scheduling, retaining every other launch
+  input, and must pass startup generation before any Codex traffic.
+- Omitting `--disable-overlap-schedule` did not select overlap on native MPS.
+  The resolved arguments still reported `disable_overlap_schedule=True` because
+  `ServerArgs._handle_mps_backends` forces that value whenever the MLX backend
+  is inactive. The lazy launch consequently reached the same configuration
+  assertion after its 24.41-second weight load and cleaned its exact tree.
+  There is no inverse CLI flag, so `extra_buffer_lazy` is unreachable on the
+  current native-MPS server without a source change.
+- The eager crash reduced independently of SGLang and the model. On installed
+  PyTorch 2.11.0/MPS, constructing the one-element INT64 CPU tensor with
+  `pin_memory=True` exited 139 even before a device copy or tensor print; the
+  same result held when `.to(mps)` was nominally blocking. An unpinned CPU
+  tensor transferred with `non_blocking=True`, synchronized, and round-tripped
+  exact `[[0]]`. PyTorch's own current DataLoader path disables pinned memory
+  on MPS because the backend does not support it. This proves the crash owner
+  is the unconditional pinned allocation in
+  `set_mamba_track_indices_from_reqs`, while the repository's no-new-Python
+  rule precludes the direct dispatch fix in this task.
+- A source-supported alternative remains available: `no_buffer` needs three
+  free Mamba slots when admitting a new cached request. The prior five-slot
+  sequence created three aligned priming checkpoints and two completed
+  tool-turn leaves. Source accounting therefore predicts that admission of the
+  next divergent task evicted the three oldest checkpoints, including the
+  reusable 5,952-token state, before the match. The next matched candidate
+  raises only the no-buffer pool from five to eight slots, enough to admit one
+  request without evicting those five cached states, and repeats the aligned-
+  prime plus autonomous gate.
+
+### 2026-08-31 02:24 PDT - eight no-buffer states retain the real-work prefix
+
+- Continued at signed `main=7b454141fd`, two commits ahead of `origin/main`,
+  with the same collaborator-owned document and fixture changes preserved.
+  The matched launch changed only the no-buffer state pool from five slots to
+  eight:
+
+  ~~~bash
+  env -u MTL_CAPTURE_ENABLED -u SGLANG_MPS_PROFILE_LAYERS -u SGLANG_MPS_PROFILE_STAGES -u SGLANG_RUST_SERVER -u SGLANG_RUST_BUILD_MODE SGLANG_USE_MLX=0 SGLANG_MPS_IQ2_LARGE_BATCH=1 SGLANG_MPS_Q4_K_BATCH1_ROWS2=1 SGLANG_MPS_Q2_K_BATCH1_ROWS4=1 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/blobs/b01f668356e5799fd76315bd6abc0e45234580409ebc5c8fb4b675e3c10dc2b9 --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 --served-model-name qwen3.8-27b-iq2 --load-format gguf --dtype float32 --kv-cache-dtype bfloat16 --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --chunked-prefill-size 1024 --max-prefill-tokens 8192 --page-size 1 --mamba-radix-cache-strategy no_buffer --max-mamba-cache-size 8 --random-seed 67396869 --disable-overlap-schedule --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Foreground launcher PID 58566 owned worker children 58569, 58570, and 58571.
+  The 9.03 GB checkpoint loaded in 16.15 seconds. Eight Mamba slots used
+  0.05 GB of convolution state and 1.27 GB of SSM state; the exact 131,072-
+  token BF16 KV pool used 4.00 GB each for K and V. The resolved server retained
+  one running request, page size one, both parsers, hybrid SSM radix caching,
+  and the requested context/token pool. Its built-in six-token generation,
+  `/health`, `/v1/models`, `/model_info`, and `/v1/loads` all passed;
+  `/model_info` kept image and audio understanding disabled. Post-start memory
+  was 86% free with zero throttled pages and normal thermal/performance status.
+- Captured the autonomous Codex Responses request at a loopback diagnostic
+  listener, validated it through SGLang's `ResponsesRequest`, converted its
+  instructions/items/tools through `OpenAIServingResponses`, and called the
+  live server's `/v1/tokenize`. The rendered request was exactly 6,382 tokens.
+  Three process-group-bounded `/generate` primes used `max_new_tokens=0` and
+  lengths 2,048, 4,160, and 5,952. Raw elapsed times were respectively
+  **80.812044**, **84.803776**, and **72.123153 seconds**; the latter two
+  started with exactly 2,048 and 4,160 cached tokens. A strict C++20 fixture
+  build with `-O2 -Wall -Wextra -Wpedantic -Werror` then passed the exact
+  marker `QWEN38_CPP_MULTI_FILE_GATE=passed`. Disposable binary
+  `/private/tmp/qwen38_actual_work_pre_58566` was removed and is recoverable by
+  rerunning that recorded build.
+- The real autonomous gate used this exact client command:
+
+  ~~~bash
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home SGLANG_API_KEY=local /opt/homebrew/bin/timeout --signal=INT --kill-after=10s 120s /opt/homebrew/bin/codex exec --strict-config --ephemeral --ignore-rules -C /Users/dcazares/sglang -c model_context_window=131072 -c model_auto_compact_token_limit=117964 -c 'model_reasoning_effort="xhigh"' --color never --json 'Work autonomously in test/qwen38_codex_actual_work_gate. Add a [[nodiscard]] ContainsToken(std::span<const TokenSpan> spans, std::uint64_t token) noexcept API across the public header and implementation. It must use half-open span semantics, return true exactly when begin <= token < end for any span, handle unsorted overlapping and empty spans, and remain overflow-safe at UINT64_MAX. Add at least four independent authored test cases covering a hit, both excluded boundaries, unsorted overlap, empty spans, and UINT64_MAX. Then compile include/qwen38_gate/token_spans.hpp, src/token_spans.cpp, tests/token_spans_test.cpp, and tests/contract_test.cpp with /usr/bin/c++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror, run the fresh binary, and reply exactly QWEN38_AUTONOMOUS_MULTI_FILE_READY.' </dev/null
+  ~~~
+
+  Thread `01a0571d-4e19-7bf0-9bdd-37fa3baa42af` exited 124 at the exact
+  120-second outer deadline. The first model request reused **5,952** prompt
+  tokens and prefetched 430; its tool continuation reused **6,480** and
+  prefetched 223. This confirms the eight-slot source-supported configuration
+  preserves the aligned real-work prefix through a divergent request and its
+  first continuation. The model emitted one blank text item, then invoked
+  `/bin/zsh -c 'ls -la test/qwen38_codex_actual_work_gate 2>/dev/null || echo
+  "NOT FOUND"; ls include/qwen38_gate 2>/dev/null; ls src 2>/dev/null; ls
+  tests 2>/dev/null'`. The first listing succeeded; the three repository-root
+  relative listings failed, so the combined tool exited one.
+- Throughput remains outside the actual-work contract. Server decode reached
+  about **0.83 tok/s** on the first 6.4K-prefix turn and **1.02 tok/s** on the
+  continuation; cancellation arrived before any edit. All four fixture hashes
+  stayed exact, `ContainsToken` remained absent, no Codex/compiler/binary
+  descendant survived, and the listener passed `/health` afterward. The next
+  matched measurement isolates deterministic long-prefix `/generate` decode
+  on this live server, followed by a synchronized native layer/stage profile.
+
+### 2026-08-31 03:51 PDT - affine-q4 MLX lane reaches 19.279 sampled tok/s
+
+- Resumed from signed `main=7b454141fd` with the collaborator-owned recovery
+  documents and four-file actual-work fixture preserved. The selected Codex
+  config/catalog/instruction SHA-256 values remained
+  `9d7842bb47d15c5b7a63d1507b8e035784bf1ab768de36dbb131088493620409`,
+  `862339c156824879852dfdc9ebf096523d6312699fdd8723f13d81091de2ec71`,
+  and `5d59350d7a1568c3c458b05513e8b58ed50d70874f27fb80a06d131e09b9d096`.
+  The Codex harness and its three frozen artifacts were unchanged throughout
+  this entry. Port 30000, relevant SGLang/compiler process sets, memory, and
+  thermal state were checked before each isolated launch. Initial and final
+  memory were 92% free; macOS reported no thermal or performance warning.
+
+- Established a fresh MLX 0.32.0 affine-q4/q4-KV endpoint baseline with the
+  immutable full checkpoint at revision
+  `3e6447f082e89cc7f0bc6e5441afd38dfce760ff`. The resolved launch was:
+
+  ~~~bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=1 SGLANG_MLX_CLEAR_CACHE_STEPS=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff --served-model-name qwen3.8-27b-iq2 --language-model-only --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --chunked-prefill-size 4096 --max-prefill-tokens 8192 --disable-radix-cache --mlx-kv-cache-bits 4 --mlx-kv-cache-group-size 64 --mlx-enable-sampling --sampling-defaults model --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Five consecutive exact deterministic scores using
+  `.venv/bin/python scripts/windows/bench_openai_stream.py --model
+  qwen3.8-27b-iq2 --input-tokens 128 --output-tokens 256 --temperature 0
+  --skip-warmup --timeout 600` were
+  `19.046, 19.058, 19.006, 19.090, 19.034 tok/s`, mean **19.0468**.
+  Every request preserved exact counts, reasoning, length termination, output
+  SHA-256
+  `df00bc9380ea6fcc5b0c4aea8694a3a01f29ee8e483afe19c9e8202e9c7c146c`,
+  and reasoning SHA-256
+  `1b45e66ba0245377a41c4da996a3a96cc0d7e0957fbaba2d7fd8683a4011939c`.
+
+- Upgraded the isolated environment with
+  `uv pip install --python .venv/bin/python mlx==0.32.2`, which moved both
+  `mlx` and `mlx-metal` from 0.32.0 to 0.32.2. The exact matched q4-KV launch
+  then produced `19.190, 19.133, 19.131, 19.119, 19.143 tok/s`, mean
+  **19.1432**, with both deterministic digests unchanged. Five production-
+  sampled runs at temperature 1.0, top-p 0.95, top-k 20, and presence penalty
+  1.5 produced `19.013, 18.989, 19.013, 18.952, 18.985 tok/s`, mean
+  **18.9904**. Each sampled request completed exact `128+256`, preserved
+  reasoning, and emitted a distinct stochastic digest.
+
+- Raised the existing optional dependency floor in
+  `python/pyproject_other.toml` from an unconstrained `mlx` entry to
+  `mlx>=0.32.2`. TOML parsing, `git diff --check`, and the focused MLX sampling
+  tests passed: **26 tests and 11 subtests**. `uv pip check` continued to report
+  the checkout's pre-existing monolithic editable-install incompatibilities,
+  including CUDA-only packages on this Apple environment; the MLX change added
+  no new conflict. Signed commit `45b50cc4c3` records the validated 0.506% win.
+
+- Screened the full affine-q3 text checkpoint
+  `lukaskremla/Qwen3.8-27B-3bit-MLX-TextOnly` at immutable revision
+  `c98bba5926f51fec1c8d8737e577221673f524d7`. Its three model shards have
+  SHA-256 values
+  `4c9c94cd17eb73791ddddb67998b2305fb0a1855d0ebff09091d81990b67096a`,
+  `14675b05ac9dc2e1fdd619aba7da31000125a71679f9e56b5e067ad2714def4c`,
+  and `0b513fb9aeee3104f93d8e7bb18c22424cb42f006a98f981a27c9bcf8ecdb308`;
+  config SHA-256 is
+  `f01025d9054b0bea4d64c278bcb92aeb94d2a1fd7a5ca222b116ed1e2ee392b0`.
+  The existing loader needed `--quantization mlx_q4` because the checkpoint's
+  quantization method string is empty; load-time inspection recognized the
+  stored three-bit/group-64 tensors and skipped conversion. The otherwise
+  matched q4-KV 131K server yielded
+  `17.972, 17.961, 17.941 tok/s`, mean **17.958**, with exact counts and stable
+  output digest `2f8a3468...212d`. PERF-FA066 closes the unchanged checkpoint.
+
+- Screened the official full `mlx-community/Qwen3.8-27B-mxfp4` checkpoint at
+  immutable revision `97ab0819817ab1c61d7d39f9169fc71999915641`; config
+  SHA-256 is
+  `884bd5501a13d4ae53b3f10ffeef0fc1bc24ab61282f4e9f307d0d9c26d9848e`.
+  The matched direct probe loaded each checkpoint with `mlx_lm.load`, supplied
+  128 token ids, consumed 32 warm decode tokens through `generate_step`, then
+  timed 256 tokens through the same generator and synchronized Metal. MXFP4
+  took **13.7770639 s / 18.5816079 tok/s**, digest
+  `c1c07e6...f9c4`. Affine q4 with q4 KV took
+  **13.1193529 s / 19.5131576 tok/s**, digest `67e7e5...1012`.
+  PERF-FA067 records the 4.774% direct-loop regression.
+
+- Rebuilt the ignored native engine against the selected dependency with:
+
+  ~~~bash
+  env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx zsh python/sglang/srt/hardware_backend/mlx/native/build.sh
+  ~~~
+
+  The linker warned that the packaged `libmlx` targets macOS 26.2 while the
+  repository dylib target is 26.0. The rebuilt artifact remained ignored at
+  `python/sglang/srt/hardware_backend/mlx/native/libqwen38_engine.dylib`.
+  Selecting `SGLANG_USE_MLX_NATIVE_GRAPH=1` on the affine-q4 checkpoint with
+  BF16 native attention KV and the same logical 131K pools produced five exact
+  deterministic scores:
+  `19.359, 19.278, 19.262, 19.286, 19.310 tok/s`, mean **19.2990**. Every
+  request preserved exact counts, reasoning, length termination, and one
+  deterministic digest. Source tracing confirmed that the C ABI currently
+  returns `mx::argmax` token ids from prefill/decode; it does not expose logits
+  to the existing sampled SGLang path. This route remains a profiling candidate
+  pending sampled-semantics support.
+
+- Measured the affine-q4 direct loop with BF16 attention KV using this exact
+  command:
+
+  ~~~bash
+  .venv/bin/python -c 'import hashlib,time; import mlx.core as mx; from mlx_lm import load; from mlx_lm.generate import generate_step; p="/Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff"; m,t=load(p); g=generate_step(mx.array([1]*128),m,max_tokens=288); warm=[next(g)[0] for _ in range(32)]; tic=time.perf_counter(); out=[next(g)[0] for _ in range(256)]; mx.synchronize(); dt=time.perf_counter()-tic; raw=bytes().join(int(x).to_bytes(4,"little") for x in out); print({"kv":"bf16","warm_tokens":len(warm),"timed_tokens":len(out),"seconds":dt,"tok_s":len(out)/dt,"digest":hashlib.sha256(raw).hexdigest(),"active_memory":mx.get_active_memory(),"peak_memory":mx.get_peak_memory()})'
+  ~~~
+
+  Result: **13.03243799997 s / 19.6432931429 tok/s**, digest
+  `0e7df4e27eecdd1f7b4c05ebc87dba25c6fb5f1365ddb33b56a566ddd4907882`,
+  15,345,477,492 active bytes, and 15,681,118,050 peak bytes. This is a 0.667%
+  direct-loop gain over q4 KV.
+
+- Carried BF16 KV into the complete server by omitting only the two q4-KV
+  arguments from the selected launch. Resolved arguments reported real
+  `context_length=131072`, `max_total_tokens=131072`, one running request,
+  `mlx_kv_cache_bits=None`, sampling enabled, both Qwen parsers, incremental
+  output, and disabled CUDA graph phases. Five deterministic exact scores were
+  `19.449, 19.430, 19.418, 19.439, 19.401 tok/s`, mean **19.4274**. Their
+  output/reasoning SHA-256 was
+  `3ba443214f3715b7d03ca7b9c63ecb7cbbe559445d48b9909701617fdbe0865d`.
+  Five exact production-sampled scores were
+  `19.283, 19.287, 19.253, 19.284, 19.286 tok/s`, mean **19.2786**. The sampled
+  output digests began `f16a66b4`, `85d5385b`, `7cfc0880`, `6ba38d89`, and
+  `3e8049ac`; every request preserved reasoning, exact counts, and length
+  termination. The deterministic and sampled gains over q4 KV are 1.485% and
+  1.518%. The live remaining sampled gap to the required floor is
+  **0.7214 tok/s / 3.74%**.
+
+- Each foreground server was stopped with `Ctrl+C` after its isolated window.
+  Final checks found port 30000 free, no matching SGLang/model/compiler
+  process, 92% system memory free, and normal thermal/performance state. HEAD
+  ended at signed `45b50cc4c3`, three commits ahead of `origin/main`; all
+  collaborator-owned document and fixture paths remained present for the next
+  optimization iteration.
+
+### 2026-08-31 04:21 PDT - q2 clears the speed floor and mixed precision localizes the tool-quality boundary
+
+- Preflight found `main` at signed `45b50cc4c3`, three commits ahead of
+  `origin/main`, with the same collaborator-owned document and fixture changes
+  present. Port 30000 and the SGLang/compiler process sets were empty; system
+  memory was 93% free with zero throttled pages. Frozen Codex files retained
+  hashes `9d7842bb...0409`, `862339c1...2ec71`, and `5d59350...9d096`.
+
+- Downloaded and treated as immutable revision
+  `33b90b60fd7ba16b668854e049bd65e22d6afddf` of
+  `lukaskremla/Qwen3.8-27B-2bit-MLX-TextOnly`, totaling 8,429,901,563 bytes.
+  A 128-input, 32-warm-token, 256-timed-token direct target loop reached
+  **21.054588 tok/s** with q4 attention KV and **21.134311 tok/s** with BF16
+  KV. Launched the exact full-model server as:
+
+  ~~~bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=1 SGLANG_MLX_CLEAR_CACHE_STEPS=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--lukaskremla--Qwen3.8-27B-2bit-MLX-TextOnly/snapshots/33b90b60fd7ba16b668854e049bd65e22d6afddf --served-model-name qwen3.8-27b-iq2 --language-model-only --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --chunked-prefill-size 4096 --max-prefill-tokens 8192 --disable-radix-cache --mlx-enable-sampling --sampling-defaults model --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Five deterministic exact `128+256` scores were
+  `21.161, 21.066, 21.054, 21.046, 21.050 tok/s`, mean **21.0754**. Five
+  production-sampled scores were
+  `20.890, 20.902, 20.912, 20.900, 20.912 tok/s`, mean **20.9032**. The
+  language-only `/model_info` gate passed. A sampled arithmetic request ended
+  with empty completion content and no `703`; the tool request emitted
+  repetition and no parsed call. PERF-FA068 closes the unchanged full-q2
+  checkpoint despite its speed.
+
+- Screened group-128 affine selections in memory against the q4 base. Moving
+  all 64 MLP down projections to group 128 reached **19.593617 tok/s** with q4
+  KV and **19.681944 tok/s** with BF16 KV. A broader 385-module selection,
+  retaining the linear-attention `in_proj_z`/`out_proj` and full-attention
+  output projections at group 64, reached **19.781749 tok/s** with BF16 KV.
+  Exact warmup and timed counts passed. PERF-FA069 records the insufficient
+  direct-loop margin.
+
+- Loaded the q4 base and q2 donor together and substituted original donor
+  module objects, preserving the donor's quantization provenance. A gate/up
+  only selection covering 128 MLP projections reached **20.018831 tok/s** in
+  the direct BF16-KV loop. Greedy arithmetic remained coherent and concluded
+  `703`. A raw Qwen chat-template tool probe emitted exactly one structurally
+  valid call:
+
+  ~~~text
+  <tool_call>
+  <function=multiply>
+  <parameter=a>
+  37
+  </parameter>
+  <parameter=b>
+  19
+  </parameter>
+  </function>
+  </tool_call>
+  ~~~
+
+  This establishes q2 gate/up as the currently measured quality-preserving
+  boundary, with too little standalone server margin.
+
+- Added all 240 linear-attention modules from the q2 donor while preserving q4
+  embeddings, LM head, 64 MLP down projections, and every full-attention
+  module. The 368-module selection reached **20.523690 tok/s** in memory and
+  retained coherent greedy arithmetic. Wrote it once to the distinct derived
+  artifact
+  `/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2GDN-Q4Anchors-v1`.
+  Its `selective-q2-manifest.json` records base/donor revisions, every selected
+  module, and file SHA-256 values. Reloading reached **20.526347 tok/s** with
+  the same deterministic token digest.
+
+- Launched the derived artifact with the same exact command as full q2, changing
+  only `--model-path`. Five deterministic scores were
+  `20.309, 20.287, 20.286, 20.291, 20.299 tok/s`, mean **20.2944**. Five
+  production-sampled scores were
+  `20.144, 20.145, 20.148, 20.156, 20.148 tok/s`, mean **20.1482**. Sampled
+  arithmetic returned `703` and `/model_info` stayed language-only. The exact
+  multiply request emitted two malformed calls named `...` and finished by
+  length. PERF-FA070 retains this rejected boundary and its immutable artifact.
+
+- Stopped each foreground server with `Ctrl+C`. Final checks found port 30000
+  free, no matching SGLang/model/compiler process, and 93% system memory free.
+  The next experiment keeps q2 gate/up and narrows the q2 linear-attention
+  subset until direct speed has sampled-server margin and the exact raw tool
+  form remains intact.
+
+### 2026-08-31 05:20 PDT - selective q2 clears short sampled floor; frozen xhigh continuation OOMs
+
+- Continued on `main=45b50cc4c3`, three signed commits ahead of
+  `origin/main`, with the collaborator-owned recovery documents and actual-work
+  fixture preserved. The Codex config, model catalog, and instruction files
+  stayed byte-identical at SHA-256
+  `9d7842bb47d15c5b7a63d1507b8e035784bf1ab768de36dbb131088493620409`,
+  `862339c156824879852dfdc9ebf096523d6312699fdd8723f13d81091de2ec71`,
+  and `5d59350d7a1568c3c458b05513e8b58ed50d70874f27fb80a06d131e09b9d096`.
+  Port 30000, process ownership, memory pressure, and thermal state were checked
+  between isolated launches. The final crash cleanup left the port and all
+  matching SGLang/Metal compiler processes absent, memory 92% free, zero
+  throttled pages, and no thermal or performance warning.
+
+- Continued the q4/RTN-q2 in-memory boundary search. The raw tool-safe core of
+  all 128 MLP gate/up, all 48 linear-attention `in_proj_qkv`, and all 48
+  `in_proj_z` modules reached about **20.287 tok/s** directly. Adding every
+  linear-attention output projection reached about **20.496 tok/s** and called
+  the wrong tool. Middle-24 output layers rambled to the output limit;
+  first-24 passed. The first-26 and first-27 boundaries each retained one raw
+  multiply call, while first-28 repeated. Quantizing every linear-attention
+  module in the first 36 layers reached **20.358 tok/s** with JSON-like rather
+  than canonical tool output; quantizing all eligible modules in the first 48
+  layers reached **20.456 tok/s** and repeated to the output limit.
+
+- Selected the last measured raw-tool-safe boundary and wrote it once to the
+  distinct immutable artifact
+  `/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2`.
+  It uses affine-q4 base revision `3e6447f082e89cc7f0bc6e5441afd38dfce760ff`
+  and RTN-q2 donor revision
+  `33b90b60fd7ba16b668854e049bd65e22d6afddf`, with 251 donor modules:
+  128 gate/up, 48 qkv, 48 z, and linear-attention output projections in GDN
+  layers `0,1,2,4,5,6,8,9,10,12,13,14,16,17,18,20,21,22,24,25,26,28,29,30,32,33,34`.
+  Its `selective-q2-manifest.json` records the complete selection and hashes.
+  Direct in-memory throughput was **20.423946 tok/s**; exact reload was
+  **20.412561 tok/s** with token digest beginning `90c684`. Manifest artifact
+  hashes are: README `748c...`, chat template `c3cf...`, config `2c7943...`,
+  generation config `e70c...`, model shards `b278d7...`, `ccd381...`, and
+  `917105...`, index `33f226...`, tokenizer `06b950...`, and tokenizer config
+  `8f781f...`. The complete hashes remain in the immutable manifest.
+
+- With radix disabled, BF16 KV, one request, exact 131,072 context/token pools,
+  and one-step stream/receive cadence, five deterministic exact `128+256`
+  samples were `20.213, 20.185, 20.194, 20.209, 20.198 tok/s`, mean
+  **20.1998**. Five required sampled scores were
+  `20.063, 20.069, 20.063, 20.056, 20.062 tok/s`, mean **20.0626**. Changing
+  only stream and scheduler receive intervals from one to four produced
+  `20.082, 20.074, 20.067, 20.082, 20.076 tok/s`, mean **20.0762**; the
+  **0.068%** difference is below a useful signal and is PERF-FA073.
+
+- The standard sampled arithmetic probe returned coherent reasoning and final
+  content `703`. The first OpenAI tool probe returned exactly one parsed
+  `multiply({"a":37,"b":19})` call with `finish_reason=tool_calls`.
+  Three subsequent sampled tool-result cycles exposed unstable behavior: one
+  contradicted itself and truncated after reasoning `707` while reporting
+  `703`, one stopped cleanly with `703`, and one emitted a second multiply
+  call. `/model_info` continued to report image and audio understanding false.
+
+- Launched the production-shaped radix arm with this exact command:
+
+  ~~~bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=1 SGLANG_MLX_CLEAR_CACHE_STEPS=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 --served-model-name qwen3.8-27b-iq2 --language-model-only --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --max-mamba-cache-size 5 --chunked-prefill-size 512 --max-prefill-tokens 8192 --mlx-enable-sampling --sampling-defaults model --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --stream-interval 4 --scheduler-recv-interval 4 --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Resolved arguments retained the real 131,072 pools and context, one request,
+  five FP32 auxiliary-state slots, `UnifiedRadixCache`, `no_buffer` auxiliary
+  caching, BF16 attention KV, and both Qwen parsers. The attention pool occupied
+  about 8,192.1 MiB and the checkpoint about 11.3 GB. Five required sampled
+  exact scores were `20.091, 20.092, 20.074, 20.068, 20.081 tok/s`, mean
+  **20.0812**. All five individually cleared 20 tok/s.
+
+- Screened two additional immutable primary artifacts. YoozLabs
+  `Qwen3.8-27B-lean-4bit-mlx` revision
+  `55c317fadb679431afef61ddd97a4ac2522ca420` uses q3 gate/up, q6
+  self-attention value/head anchors, and q4 elsewhere; its exact direct BF16-KV
+  loop reached **18.553117 tok/s** and is PERF-FA071. PocketAiHub
+  `Qwen3.8-27B-MLX` 2bit AWQ revision
+  `dcc3732f8c93ccf5580bf7a55e4ae639a40f194c` reached **20.796459 tok/s**
+  directly, then emitted placeholder-example loops instead of the multiply
+  call. Mixing AWQ gate/up plus linear-attention modules into q4 reached about
+  **20.298 tok/s** with empty output; adding down projections reached about
+  **20.758 tok/s** and produced only `</think>`. PERF-FA072 closes unchanged
+  and selectively mixed AWQ forms.
+
+- Exercised the radix endpoint through the frozen Codex 0.151.0 xhigh harness
+  with this exact client command:
+
+  ~~~bash
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home SGLANG_API_KEY=local /opt/homebrew/bin/timeout --signal=INT --kill-after=10s 120s /opt/homebrew/bin/codex exec --strict-config --ephemeral --ignore-rules -C /Users/dcazares/sglang -c model_context_window=131072 -c model_auto_compact_token_limit=117964 -c 'model_reasoning_effort="xhigh"' --color never --json 'Use exec_command exactly once. Set cmd to /usr/bin/printf QWEN38_XHIGH_20TPS_TOOL=passed. After it succeeds, reply exactly QWEN38_XHIGH_20TPS_READY.'
+  ~~~
+
+  Thread `01a057bf-7c5f-71d0-953f-75376e06ebdd` supplied a roughly
+  6,237-token cold prompt. After the first chunk, 512-token prefill chunks ran
+  at roughly 107--111 tok/s and completed in about 57 seconds. Decode telemetry
+  at that live context was about **19.2 tok/s**, below the user floor. The model
+  emitted an empty agent message, then attempted an exec request containing an
+  invalid approval/prefix-rule shape that Codex rejected under its fixed never-
+  approval policy. A second `/v1/responses` continuation arrived at 05:17:17.
+  At 05:17:44, Metal failed `mx.async_eval` from
+  `tp_worker._async_extend_batch` with
+  `kIOGPUCommandBufferCallbackErrorOutOfMemory`; Codex exited one after the
+  stream disconnected. The scheduler/server crash path removed its process
+  tree. Existing unrelated Codex PIDs had no connection to port 30000 and were
+  preserved.
+
+- Source tracing after cleanup found that `SGLANG_MLX_CLEAR_CACHE_STEPS`
+  applies only to periodic decode finalization. Request release and auxiliary
+  snapshot storage already call `mx.clear_cache()`. The existing
+  `SGLANG_MLX_CACHE_LIMIT_GB` control is applied before model loading and bounds
+  recycled Metal buffers; PERF-A033 will isolate that value against the same
+  frozen continuation. Quantized KV remains radix-disabled because the shared
+  pool stores floating-point K/V. The active requirements remain simultaneous:
+  at least 20 tok/s at real Codex prefix lengths, repeated tool correctness,
+  and a surviving 131K-capable radix continuation.
+
+### 2026-08-31 05:43 PDT - cache cap rejected; MLX deferred Mamba COW is missing
+
+- Preflight and every relaunch boundary found port 30000 and the relevant
+  SGLang/Metal compiler process sets empty, system memory at 92% free with zero
+  throttled pages, and no thermal or performance warning. Frozen Codex config,
+  catalog, and instruction hashes remained `9d7842bb...0409`,
+  `862339c1...2ec71`, and `5d59350...9d096`.
+
+- Relaunched early-out27 v2 with the exact production-shaped command from the
+  05:20 entry plus `SGLANG_MLX_CACHE_LIMIT_GB=1`. The resolved arguments kept
+  real 131,072 context and token pools, one request, five FP32 auxiliary-state
+  slots, BF16 attention KV, 512-token chunks, and both Qwen parsers. Five
+  required sampled `128+256` scores were
+  `20.069, 20.069, 20.063, 20.068, 20.054 tok/s`, mean **20.0646**. The cap's
+  delta from the uncapped **20.0812** mean is -0.083%, below a useful signal.
+
+- Replayed the frozen Codex 0.151.0 xhigh command from the 05:20 entry. Thread
+  `01a057c8-...` completed the roughly 6,237-token prompt at approximately
+  107--111 prompt tok/s and decoded for more than 60 seconds at approximately
+  **19.02--19.28 tok/s**. The bounded 120-second client ended before a valid
+  tool call. The server remained reachable immediately after that timeout.
+
+- Used a bounded two-request OpenAI replay against the same live endpoint. The
+  first request contained `"alpha " * 6200 + "Reply READY"`, produced one
+  token from a 6,257-token prompt, and completed. The immediate request appended
+  the returned assistant item and a user `DONE`, again requesting one token.
+  It matched the cached prefix and then failed in
+  `tp_worker._async_extend_batch -> mx.async_eval` with Metal
+  `kIOGPUCommandBufferCallbackErrorOutOfMemory`. A clean restart changing only
+  `--chunked-prefill-size 512 -> 256` completed the first request and failed at
+  the same second-request boundary. PERF-FA075 and PERF-FA076 retain the two
+  rejected controls.
+
+- Repeated the exact 512-token/cap-one-GiB replay with immutable full affine-q2
+  revision `33b90b60fd7ba16b668854e049bd65e22d6afddf`, using the existing
+  `--quantization mlx_q4` loader selection required by its stored metadata.
+  Startup reported approximately **24.12 GB** available GPU memory versus
+  **21.65 GB** for early-out27 v2. Both requests completed: the first in
+  **57.387437 s** at 6,257 prompt tokens, and the second in **64.289053 s** at
+  6,275 prompt tokens. Server telemetry for the second request reported 131 new
+  tokens, 6,144 cached tokens, and only **2.04 new tok/s**. This isolates enough
+  residency to survive while demonstrating that the prefix hit does not restore
+  the recurrent checkpoint used by MLX execution.
+
+- Source tracing established the reachable failure. Unified radix matching
+  assigns `req.mamba_cow_src_index`; scheduling allocates the destination and
+  `_collect_deferred_mamba_cow_and_clear` publishes
+  `batch.mamba_cow_src_indices` and `batch.mamba_cow_dst_indices`. The generic
+  model runner consumes them through
+  `_maybe_execute_deferred_mamba_cow_and_clear`. The reachable
+  `MlxTPWorker.async_forward_batch_generation_mlx` path has no corresponding
+  consumer even though `MlxAuxiliaryStatePool.copy_from` exists. Its subsequent
+  restore sees an empty destination, and `prefill_start` acquires a slot and
+  replays `full_token_ids`. This explains both v2's second-request OOM and the
+  full-q2 control's 64-second cached-prefix latency. PERF-A034 now targets the
+  state handoff within the C++/CUDA-only implementation boundary.
+
+- Stopped the full-q2 foreground server at 05:38:44 PDT. Final checks found its
+  process tree absent, port 30000 free, no matching compiler worker, memory 92%
+  free, and normal thermal status.
+
+### 2026-08-31 06:40 PDT - native prefix/cache wins; custom split attention rejected
+
+- Continued on `main` from signed `42ee99493e`, with the collaborator-owned
+  recovery-document and actual-work-fixture changes preserved. The frozen Codex
+  config, catalog, and instruction hashes remained exactly
+  `9d7842bb47d15c5b7a63d1507b8e035784bf1ab768de36dbb131088493620409`,
+  `862339c156824879852dbdc9ebf096523d6312699fdd8723f13d81091de2ec71`,
+  and `5d59350d7a1568c3c458b05513e8b58ed50d70874f27fb80a06d131e09b9d096`.
+  Native dylibs throughout this batch were built with:
+
+  ~~~bash
+  env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx python/sglang/srt/hardware_backend/mlx/native/build.sh
+  ~~~
+
+  Every build succeeded against MLX 0.32.2 with the known linker warning that
+  `libmlx.dylib` targets macOS 26.2 while the local compile target is 26.0.
+
+- Committed exact native prompt-state reuse as signed `24686a37b1`. The C++
+  engine now records the precise token sequence represented by its attention
+  and recurrent state. At a request boundary it retains that state only when
+  the new prompt has the history as an exact strict prefix, then clears the
+  decode pipeline and forwards the nonempty suffix. MTP remains on hard reset.
+  A direct 128-token prompt, 16 generated-token history, 16-token suffix, and
+  32-token continuation took **1.927515499992296 s** with reuse and
+  **3.06313275010325 s** after a forced fresh prefill. Output lists were equal
+  with SHA-256
+  `9ab2e8830abbe71df5999d71a2b6a90eff4b1c3dcb11eee7ca67b81304255413`.
+  The earlier server replay measured a **58.459993 s** 6,257-token first prompt
+  and a **0.416196 s** exact-prefix continuation with 16 new tokens and the same
+  output token. The focused native suite passed 8 tests, and `git diff --check`
+  passed.
+
+- Native multi-chunk prefill remains incomplete. With
+  `--chunked-prefill-size 4096`, the first 4,096-token native chunk ran at about
+  **57.79 prompt tok/s**, then the next extend chunk called the native route's
+  non-callable `SimpleNamespace` model and raised
+  `TypeError: 'types.SimpleNamespace' object is not callable`. The bounded
+  server experiment therefore used one 8,192-token prefill chunk. PERF-FA077
+  records that an 8,192-token bridge does not qualify 131K prompt ingestion.
+
+- The native server used this resolved experiment command:
+
+  ~~~bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 SGLANG_MLX_CLEAR_CACHE_STEPS=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 --served-model-name qwen3.8-27b-iq2 --language-model-only --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --max-mamba-cache-size 5 --chunked-prefill-size 8192 --max-prefill-tokens 8192 --disable-radix-cache --mlx-enable-sampling --sampling-defaults model --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --stream-interval 4 --scheduler-recv-interval 4 --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Resolved arguments retained `context_length=131072`,
+  `max_total_tokens=131072`, `max_running_requests=1`, five Mamba slots, both
+  parsers, and a language-only surface. The frozen client command was:
+
+  ~~~bash
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home SGLANG_API_KEY=local /opt/homebrew/bin/timeout --signal=INT --kill-after=10s 180s /opt/homebrew/bin/codex exec --strict-config --ephemeral --ignore-rules -C /Users/dcazares/sglang -c model_context_window=131072 -c model_auto_compact_token_limit=117964 -c 'model_reasoning_effort="xhigh"' --color never --json 'Use exec_command exactly once. Set cmd to /usr/bin/printf QWEN38_XHIGH_20TPS_TOOL=passed. After it succeeds, reply exactly QWEN38_XHIGH_20TPS_READY.'
+  ~~~
+
+  Thread `01a057e7-fff6-7910-beca-0b04f0662529` prefetched 6,236 tokens in
+  about **74.6 s / 83.62 prompt tok/s**. Greedy native decode began near
+  **18.51 tok/s** and declined to approximately **17.95--18.0 tok/s**. It did
+  not emit a valid Codex JSON tool event or exact final response before the
+  bound. The abort was clean and health passed; PERF-FA080 closes the unchanged
+  greedy C ABI.
+
+- Committed reusable full-attention storage as signed `5ac91e2f22`. Full
+  attention now maintains power-of-two BF16 K/V arrays through slice updates,
+  tracking rope offset, logical cache length, and physical capacity separately.
+  Snapshot/restore covers all three; hard resets retain allocation and set the
+  logical length to zero. A matched direct workload used the immutable
+  early-out27 v2 artifact, deterministic 6,237-token IDs, 32 warm tokens, and
+  128 timed decode tokens. The committed concatenation control measured
+  **7.141498667187989 s / 17.923408792065324 tok/s**. Reusable storage measured
+  **6.683506540954113 s / 19.15162336053122 tok/s**, a **6.853%** gain. Both
+  produced exact digest
+  `382dd93cb724783226eae6ede000d6b62bbbc6439c8a39178cb9bb0ba8a27112`.
+  The 8-test native suite and `git diff --check` passed.
+
+- Screened custom Metal attention over the committed contiguous cache. A
+  four-SIMD-group-per-query split-16 form measured **15.931997 tok/s**. A
+  paired-head shared-K/V form measured **13.068068** at 16 splits and
+  **15.863200 tok/s** at 32. The ported 8-query by 64-key simdgroup-matrix
+  algorithm measured **18.475598**, **19.117317**, and **18.922351 tok/s** at
+  8, 16, and 32 splits. Every arm retained the exact control digest. Fast math
+  and disabling redundant contiguity normalization moved the 8-split result
+  only from **18.460132** to **18.475598 tok/s**. PERF-FA078/PERF-FA079 retain
+  the complete negative evidence; all experimental custom-attention source was
+  removed and the ignored dylib was rebuilt from signed `5ac91e2f22`.
+
+- Final cleanup found port 30000 free and no matching SGLang, Metal compiler,
+  clang, or CUDA process. System memory was 93% free with zero throttled pages;
+  thermal and performance warning levels were normal. The branch ended seven
+  signed commits ahead of `origin/main`, with only the pre-existing
+  collaborator-owned document/fixture paths modified or untracked. The next
+  profile starts outside full attention from the **19.151623 tok/s**
+  long-history native control.
+
+### 2026-08-31 07:46 PDT - materialized native gate/up fusion rejected
+
+- Continued on `main=14fd46b11a`, eight signed commits ahead of `origin/main`,
+  while preserving the collaborator-owned recovery-document and actual-work
+  fixture changes. The performance skill's required analysis-agent batch could
+  not start because the thread limit exposes one total active slot. Local source
+  tracing established that `Engine::forward_hidden` sends all 64 target layers
+  through `Engine::mlp`, and `mtp_forward` uses the same owner.
+
+- The candidate concatenated each MLP's packed affine gate/up weights, scales,
+  and biases at load, then used one double-height quantized matmul and split the
+  result. The native dylib was built against MLX 0.32.2 with:
+
+  ~~~bash
+  env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx python/sglang/srt/hardware_backend/mlx/native/build.sh
+  ~~~
+
+  The focused native suite passed all eight tests. The known link warning
+  remained: MLX targets macOS 26.2 while the local build target is 26.0.
+
+- Built the exact committed control from detached worktree
+  `/private/tmp/sglang-perf-a039-baseline` at `14fd46b11a`, writing only the
+  ignored native dylib in the primary checkout. Both arms used this launch,
+  changing only the dylib source:
+
+  ~~~bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 SGLANG_MLX_CLEAR_CACHE_STEPS=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 --served-model-name qwen3.8-27b-iq2 --language-model-only --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --max-mamba-cache-size 5 --chunked-prefill-size 8192 --max-prefill-tokens 8192 --disable-radix-cache --mlx-enable-sampling --sampling-defaults model --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --stream-interval 4 --scheduler-recv-interval 4 --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Resolved arguments retained exact 131,072 context/token pools, one request,
+  five auxiliary-state slots, BF16 attention KV, both Qwen parsers, and a
+  language-only surface. The exact client command for each arm was:
+
+  ~~~bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup --timeout 600
+  ~~~
+
+- The committed control measured **18.845 decode tok/s**, **107.348 observed
+  prompt tok/s**, **58.100626 s TTFT**, and **64.839787 s** end to end. The
+  fused candidate measured **18.782 decode tok/s**, **106.424 observed prompt
+  tok/s**, **58.605376 s TTFT**, and **65.367119 s** end to end. Both completed
+  exact `6237+128`, ended by length, and produced identical output/reasoning
+  SHA-256 `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  Startup reported **28.92 GB** available unified memory for the control and
+  **22.28 GB** for the candidate.
+
+- Rejected and removed the candidate. PERF-FA081 records that the physical
+  concatenation reduces 131K residency margin while regressing decode 0.334%.
+  Each server was stopped through its foreground terminal. Final checks found
+  port 30000 free, no SGLang/clang process, 92% system memory free, zero
+  throttled pages, and no thermal or performance warning. The three idle
+  system-owned `MTLCompilerService` processes with parent PID 1 were preserved.
+  The clean detached control worktree was removed after measurement; it is
+  reproducible from signed commit `14fd46b11a`.
+  The next profile remains outside full attention and materialized MLP fusion,
+  from the signed **19.151623 tok/s** direct native control.
+
+### 2026-08-31 07:52 PDT - linear-attention b/a projection fusion rejected
+
+- From signed `main=3fab0442c8`, changed only the native C++ Qwen3.8 engine to
+  concatenate the two 48-row `in_proj_b`/`in_proj_a` affine tensors during
+  loading and split one 96-row result in the shared `Engine::gated_delta`
+  consumer. This reaches all 48 linear-attention layers and leaves the 16 full-
+  attention layers and MTP path unchanged. The ignored dylib built against MLX
+  0.32.2 with the known 26.0/26.2 linker warning, and all eight focused native
+  tests passed.
+
+- Used the exact PERF-A039 131K launch and deterministic exact `6237+128`
+  client command. The candidate measured **18.511 decode tok/s**,
+  **107.432 observed prompt tok/s**, **58.055139 s TTFT**, and **64.915750 s**
+  end to end, versus the immediately preceding signed control's **18.845
+  decode tok/s**. It completed exact `6365`, ended by length, and retained
+  output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  Startup reported **28.89 GB** available unified memory, so the 1.772%
+  regression is separate from PERF-A039's large copied-weight residency.
+
+- Rejected and removed the candidate. PERF-FA082 records that the two
+  independent 48-row MLX products schedule faster than one 96-row product at
+  batch one. The foreground server was stopped; port 30000 and matching SGLang/
+  clang processes were absent afterward, system memory was 92% free with zero
+  throttled pages, and thermal/performance status was normal. The three idle
+  system `MTLCompilerService` processes remained untouched.
+
+### 2026-08-31 08:09 PDT - direct native benchmark retained
+
+- Signed the A040 rejection ledger as `a764c0fdb4` on `main`, then added the
+  C++20-only `benchmark/mac/bench_qwen38_native.cpp` harness. Existing modified
+  recovery documents and the untracked actual-work fixture remain user-owned
+  and outside the commit index.
+
+- Built the harness with:
+
+  ~~~bash
+  clang++ -std=c++20 -O3 -Wall -Wextra -Werror -I.venv/lib/python3.11/site-packages/mlx/include -Ipython/sglang/srt/hardware_backend/mlx/native benchmark/mac/bench_qwen38_native.cpp -L.venv/lib/python3.11/site-packages/mlx/lib -Wl,-rpath,.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o /private/tmp/bench_qwen38_native
+  ~~~
+
+  Compilation passed with the known warning that the local target is macOS
+  26.0 and `libmlx.dylib` targets 26.2. Invoking the executable with no
+  arguments returned status 2 and its usage line. The restored native engine's
+  focused unit suite passed all eight tests.
+
+- Exact validation command:
+
+  ~~~bash
+  /private/tmp/bench_qwen38_native python/sglang/srt/hardware_backend/mlx/native/libqwen38_engine.dylib /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 6237 32 128
+  ~~~
+
+  The final synchronized run measured **6.695759125 s / 19.116577764 tok/s**,
+  digest `13eb9a7159a2612f`, and last token `17343`. Two preceding process-
+  isolated validations measured **19.147007666** and **19.154027701 tok/s**
+  with the same digest; decode returns a concrete next token on every call, so
+  their end-of-loop synchronization was already downstream of the scalar
+  result. The signed historical direct result is **19.151623 tok/s** with the
+  same digest.
+
+- An initial RAII `dlclose` design exited with status 139 after completing the
+  run. The crash report placed the fault in `mlx::core::Compiled` destruction
+  from the process-lifetime compile cache after engine code had been unloaded.
+  Keeping the dylib handle alive through teardown removed the crash. A bounded
+  LLDB attempt was stopped leaf-first by exact PIDs after it stalled; the
+  debugserver and target were confirmed absent.
+
+- Captured `/private/tmp/qwen38-native.trace` with the `Metal System Trace`
+  template for a `128 / 8 / 256` direct run. The trace completed successfully
+  and showed dense command-buffer/encoder activity, while the default template
+  emitted generic `Compute Command` labels and disabled Shader Timeline data.
+  Native stage attribution therefore remains the next profiling seam.
+
+- Preflight and cleanup found port 30000 free, no matching SGLang, Qwen38,
+  clang, or Metal process, zero throttled pages, and normal thermal/performance
+  status. System memory reported 806,960 free 16 KiB pages before validation.
+
+### 2026-08-31 08:37 PDT - fused single-token convolution/state clears direct gate
+
+- Signed the direct benchmark harness as `bd52acb255`, then traced the native
+  engine and exact installed MLX 0.32.2 source. Every target recurrent layer
+  reaches `Engine::gated_delta`; at `S=1`, the existing implementation creates
+  a four-row input from the three-row state and new QKV row, calls MLX's
+  depthwise-convolution fast path, and retains a sliced three-row state. The
+  selected owner is the decode-only convolution/state transition shared by all
+  48 recurrent layers. Multi-token prefill is a distinct sequence operation
+  and keeps the established general path.
+
+- Verified MLX tag `v0.32.2` at source commit
+  `1f8e74e3f12f31365464a6867c6579f0e9b29d85` in a temporary read-only clone.
+  Its `depthwise_conv_1d` kernel walks the four taps in increasing order,
+  accumulates float, and casts once to the output type. The candidate custom
+  Metal kernel preserves that order and BF16 rounding while writing a distinct
+  shifted next-state allocation in the same launch. This preserves snapshots,
+  asynchronous decode-pipeline state, and future-cycle output lifetimes.
+
+- The first native build failed at C++ compilation because `mlx::core::array`
+  has no empty constructor. Initializing the branch handle from the existing
+  lazy QKV array fixed the construction with no eager work. The restored build
+  then passed with the known macOS 26.0/MLX 26.2 link warning. All eight focused
+  native engine tests passed.
+
+- Created an exact committed control in detached worktree
+  `/private/tmp/sglang-perf-a042-control` at `bd52acb255` and built its ignored
+  dylib against the same installed MLX. Both arms used the signed standalone
+  benchmark and early-out27 v2 artifact. The short screening command shape was
+  `128 32 256`. Five interleaved control samples were **20.205545384,
+  20.045464575, 20.168646321, 20.161978922, 20.152874510 tok/s**, mean
+  **20.146901942**. Five candidate samples were **20.240218516,
+  20.216070641, 20.211577849, 20.222552548, 20.220024805**, mean
+  **20.222088872 tok/s**, a **0.373%** increase. Every digest was
+  `8ea2430e3fa3d56e`; every last token was `198`.
+
+- Representative exact command shape:
+
+  ~~~bash
+  /private/tmp/bench_qwen38_native LIBRARY /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 6237 32 256
+  ~~~
+
+  Five interleaved control samples were **19.142256306, 19.143053543,
+  19.069096138, 19.125503891, 19.120242954 tok/s**, mean **19.120030566**.
+  Candidate samples were **19.189543678, 19.229916100, 19.237294682,
+  19.223291482, 19.227896674**, mean **19.221588523 tok/s**, a **0.531%**
+  increase. Every digest was `faaecee6edebe116`; every last token was `19360`.
+
+- Added the C++-only isolated parity test and compiled it with strict warnings:
+
+  ~~~bash
+  clang++ -std=c++20 -O3 -Wall -Wextra -Werror -isystem .venv/lib/python3.11/site-packages/mlx/include -Ipython/sglang/srt/hardware_backend/mlx/native test/registered/unit/hardware_backend/mlx/test_qwen38_causal_conv_decode.cpp -Lpython/sglang/srt/hardware_backend/mlx/native -Wl,-rpath,/Users/dcazares/sglang/python/sglang/srt/hardware_backend/mlx/native -lqwen38_engine -L.venv/lib/python3.11/site-packages/mlx/lib -Wl,-rpath,/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o /private/tmp/test_qwen38_causal_conv_decode
+  ~~~
+
+  The production `(B=1,K=4,D=10240)` shape and a non-aligned
+  `(B=2,K=3,D=257)` shape match MLX BF16 convolution and shifted state exactly.
+  The first strict compile used `-I` for MLX and promoted warnings from MLX's
+  installed headers; marking that dependency include as `-isystem` retains
+  `-Werror` for repository code and passes.
+
+- PERF-A042 is retained from direct evidence, with process-isolated served
+  qualification under real 131,072 context/token pools next. Port 30000 stayed
+  free throughout direct testing. No server was launched. The detached control
+  worktree remains available until served A/B completes.
+
+### 2026-08-31 08:53 PDT - fused convolution/state clears served 131K gate
+
+- Signed the retained native kernel and its isolated parity coverage as
+  `6ad2c58921`. The worktree remained intentionally dirty only in the existing
+  user-owned recovery documents, `AGENTS.md`, `BENCHMARK.md`, and the untracked
+  `test/qwen38_codex_actual_work_gate/` fixture. The candidate ignored dylib
+  SHA-256 was
+  `42471b53aa2c7df08fa35a9f4bbe0024ef3c60741e00b21fd822f854377df9ba`.
+  A detached clean control worktree at `bd52acb255` produced dylib SHA-256
+  `e0ae523b64663a156224c1030fae9fc99477de0ad292b5618caa1f02ccaed1ca`.
+
+- Both arms used this resolved production-shaped launch from their respective
+  worktrees:
+
+  ~~~bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 SGLANG_MLX_CLEAR_CACHE_STEPS=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 --served-model-name qwen3.8-27b-iq2 --language-model-only --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --max-mamba-cache-size 5 --chunked-prefill-size 8192 --max-prefill-tokens 8192 --disable-radix-cache --mlx-enable-sampling --sampling-defaults model --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --stream-interval 4 --scheduler-recv-interval 4 --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Resolved arguments confirmed `context_length=max_total_tokens=131072`, one
+  running request, five Mamba slots, 8,192-token prefill chunks, both parsers,
+  and language-only mode. Startup reported 28.92 GB available unified memory.
+  `/model_info` reported image and audio understanding disabled. This launch
+  had no MTP path configured.
+
+- Each sample used:
+
+  ~~~bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup --timeout 600
+  ~~~
+
+  Five control samples measured **18.796, 18.688, 18.719, 18.844, 18.761
+  decode tok/s**, mean **18.7616**. Their prompt rates were **107.122,
+  107.051, 107.469, 107.467, 107.472 tok/s**, mean **107.3162**; TTFTs were
+  **58.223382, 58.262032, 58.035597, 58.036583, 58.033986 s**, mean
+  **58.118316**; end-to-end times were **64.980077, 65.057836, 64.820271,
+  64.776274, 64.803261 s**, mean **64.887544**.
+
+  Five candidate samples measured **18.806, 19.003, 18.847, 18.918, 18.883
+  decode tok/s**, mean **18.8914**, a **0.1298 tok/s / 0.692%** increase.
+  Their prompt rates were **107.377, 107.477, 107.472, 107.472, 107.470
+  tok/s**, mean **107.4536**; TTFTs were **58.084950, 58.031057, 58.033856,
+  58.033499, 58.034592 s**, mean **58.043591**; end-to-end times were
+  **64.838171, 64.714212, 64.772331, 64.746675, 64.760156 s**, mean
+  **64.766309**.
+
+- Every request completed exact `6237+128=6365` tokens with
+  `finish_reason=length`, 585 reasoning characters, 33 response fragments,
+  and identical output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  The candidate therefore clears the served gate and remains the selected
+  native recurrent owner.
+
+- Stopped both foreground server trees through `Ctrl+C`. Control PIDs `68665`,
+  `68668`, `68669`, and `68670`, plus candidate PIDs `68818`, `68823`, `68824`,
+  and `68825`, were absent afterward. Port 30000 was free; matching SGLang,
+  Qwen38, clang, and Metal workload scans were empty; zero pages were throttled;
+  thermal/performance status was normal. The clean detached control worktree
+  `/private/tmp/sglang-perf-a042-control` was removed and the signed candidate
+  dylib restored. The actual-work served generation floor is now **1.1086
+  tok/s** above the selected mean.
+
+### 2026-08-31 09:01 PDT - native MTP-2 topology rejected with exact telemetry
+
+- Extended the existing C++ native benchmark with an optional MTP directory,
+  using the already-exported C ABI for sidecar load, availability, and last
+  speculative block width. The regular target-only invocation keeps its
+  scheduled two-token decode pipeline; an MTP invocation uses the engine's
+  unscheduled prefill contract. Strict C++20 compilation passed with the known
+  macOS 26.0/MLX 26.2 link warning.
+- Preflight found port 30000 free, 93% system memory free, zero throttled pages,
+  and normal thermal/performance status. The only matching compiler service was
+  an idle system-owned `MTLCompilerService` process, which remained untouched.
+- Exact candidate command:
+
+  ~~~bash
+  /private/tmp/bench_qwen38_native python/sglang/srt/hardware_backend/mlx/native/libqwen38_engine.dylib /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 128 32 256 /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-MTP-4bit/snapshots/b643c01b6d3b094e325edb6ebd832e16c486c575
+  ~~~
+
+  The pinned sidecar measured **26.528607417 s / 9.649959984 tok/s**. It
+  performed 135 target refills with mean emitted width **1.888888889** and
+  produced digest `8ea2430e3fa3d56e`, last token `198`.
+- The matching target-only command omitted the final directory and measured
+  **12.680987083 s / 20.187702923 tok/s**, with the same digest and last token.
+  The MTP stream is therefore exact, and its current recurrent target-verify
+  topology regresses throughput **52.199%** despite healthy acceptance.
+  PERF-FA083 closes this unchanged route; representation/depth screens require
+  new block-cost evidence at the recurrent verification owner.
+
+### 2026-08-31 09:26 PDT - fused residual/RMS owner clears direct gate
+
+- Traced MLX v0.32.2's exact Metal RMSNorm implementation and selected the
+  single-token decoder residual boundary shared by all target layers. Added one
+  C++-owned Metal kernel that rounds `h + residual` to BF16, writes the distinct
+  residual output, performs the same four-value reduction order and
+  `metal::precise::rsqrt`, and writes the weighted BF16 normalized output.
+  Multi-token prefill and target verification keep the general MLX path.
+- Reorganized only the single-token native target loop to carry each normalized
+  result into the next layer. The kernel now replaces 64 attention-residual
+  add/RMS pairs and 63 inter-layer MLP-residual add/RMS pairs. Initial input
+  normalization, the final MLP residual, and final model normalization remain
+  separate. Each launch emits distinct residual/normalized arrays, preserving
+  downstream ownership and snapshot lifetime.
+- Native build passed against installed MLX 0.32.2 with the known macOS
+  26.0/26.2 link warning. The strict C++ test matched exact BF16 residual and
+  normalized output at `(rows=1,width=5120)` and `(rows=3,width=257)`. Twelve
+  queued calls with different residuals remained exact when evaluated later.
+  The existing focused suite finished **8 passed** with its pre-existing
+  warnings.
+- Built a clean control dylib from signed `c2f1cc780d` in detached worktree
+  `/private/tmp/sglang-perf-a044-control`. Six interleaved process-isolated
+  controls on `6237 / 32 warm / 256 timed` were **19.240066536,
+  19.231638028, 19.227116061, 19.189970182, 18.417971049,
+  19.223873648 tok/s**. Candidates were **19.285123935, 19.320820335,
+  19.330695010, 19.309766245, 19.318736030, 19.307878548 tok/s**. Pair deltas
+  were **+0.045057399, +0.089182307, +0.103578949, +0.119796063,
+  +0.900764981, +0.084004900 tok/s**. All twelve digests were
+  `faaecee6edebe116`; every last token was `19360`.
+- The fifth control was an isolated unclassified outlier; the following control
+  returned to the established band. System state after the window was 93% free
+  with zero throttled pages and normal thermal/performance status. The complete
+  six-sample means are **19.088439251 -> 19.312170017 tok/s**. The five controls
+  inside the repeated band average **19.222532891** and their paired candidates
+  average **19.310856815 tok/s**, a conservative **0.459481%** gain. All six
+  paired comparisons favor the candidate. Process-isolated served qualification
+  under real 131,072 context/token pools remains next.
+
+### 2026-08-31 09:42 PDT - fused residual/RMS clears served 131K gate
+
+- Signed the retained C++/Metal implementation and parity coverage as
+  `4905d68370`; signature verification passed. Built the exact signed
+  `c2f1cc780d` control in detached worktree
+  `/private/tmp/sglang-perf-a044-control`. Its native dylib SHA-256 was
+  `62d1b10fb8423c0ccc090f5f8ef61a949678131d6b70c016e80a4cff84581762`;
+  the signed candidate dylib was
+  `593367be85f60377ee2ede15b7da8f14c1f77931e9593d71e0fa141e746879ff`.
+- Launched the control with
+  `PYTHONPATH=/private/tmp/sglang-perf-a044-control/python` and the candidate
+  with `PYTHONPATH=/Users/dcazares/sglang/python`, keeping every other launch
+  argument identical to PERF-A042's production-shaped 131K command. Both
+  resolved `context_length=max_total_tokens=131072`, one request, five Mamba
+  slots, 8,192-token prefill chunks, the Qwen3/Qwen3 Coder parsers, language-
+  only mode, and no MTP path. Startup reported 28.92 GB available unified
+  memory for each arm.
+- Each sample used exact deterministic `6237+128` through
+  `bench_openai_stream.py --temperature 0 --skip-warmup`. Control decode rates
+  were **18.737, 18.826, 18.816, 18.933, 18.831 tok/s**, mean **18.8286**;
+  prompt rates were **107.108, 107.100, 107.033, 106.948, 106.928**, mean
+  **107.0234**; TTFTs were **58.230808, 58.235199, 58.271497, 58.318072,
+  58.329138 s**, mean **58.276943**; end-to-end times were **65.008703,
+  64.981053, 65.021118, 65.025907, 65.073351 s**, mean **65.022026**.
+- Candidate decode rates were **19.041, 19.082, 18.993, 19.032, 19.094
+  tok/s**, mean **19.0484**, a **0.2198 tok/s / 1.167373%** gain. Prompt rates
+  were **107.369, 107.152, 106.929, 106.909, 106.927**, mean **107.0572**;
+  TTFTs were **58.089276, 58.206865, 58.328668, 58.339406, 58.329342 s**,
+  mean **58.258711**; end-to-end times were **64.759082, 64.862401,
+  65.015390, 65.012268, 64.980557 s**, mean **64.925940**.
+- All ten requests completed exact total 6,365, `finish_reason=length`, 585
+  reasoning characters, 33 fragments, and output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  Stopped both foreground server trees through `Ctrl+C`; expected child
+  `KeyboardInterrupt` traces accompanied clean root exit. Port 30000 and model
+  processes were absent afterward. Memory returned to 93% free with zero
+  throttled pages and normal thermal/performance status. The clean detached
+  control worktree was removed; it is reproducible from signed `c2f1cc780d`.
+  The selected served mean is now **19.0484 tok/s**, leaving **0.9516 tok/s**
+  to the required floor.
+
+### 2026-08-31 10:04 PDT - fused recurrent q/k normalization clears direct gate
+
+- Started from signed `80ef84925e` on `main`, ahead of `origin/main` by 16.
+  Existing modified recovery documents, `AGENTS.md`, `BENCHMARK.md`, and the
+  untracked actual-work fixture remained user-owned. Added a C++-owned
+  dual-output Metal kernel at `Engine::gated_delta`, the governing owner for
+  all 48 recurrent layers. Single-token q/k rows now share one RMS reduction
+  launch and emit float32 scaling results. Multi-token execution retains the
+  established pair of MLX RMSNorm and scale operations.
+- The kernel reproduces MLX v0.32.2's four-values-per-thread reduction,
+  `simd_sum` topology, `metal::precise::rsqrt`, BF16 normalized-value rounding,
+  and subsequent float32 scale multiplication. Its distinct q/k arrays preserve
+  downstream asynchronous lifetime. A new C++20-only parity executable covers
+  production `(1,1,16,128)`, three-row width 257, and twelve unevaluated
+  dual-output calls with distinct k inputs; every element and dtype matched the
+  established operations exactly.
+- The initial repository build command used `build.sh`'s historical
+  `/Users/dcazares/sglang/.venv-mps` default and failed because that environment
+  is absent. The successful native build was:
+
+  ~~~bash
+  env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx python/sglang/srt/hardware_backend/mlx/native/build.sh
+  ~~~
+
+  It completed with the known installed MLX macOS 26.2 versus host target 26.0
+  link warning. The strict parity build was:
+
+  ~~~bash
+  clang++ -std=c++20 -O3 -Wall -Wextra -Werror -isystem .venv/lib/python3.11/site-packages/mlx/include -Ipython/sglang/srt/hardware_backend/mlx/native test/registered/unit/hardware_backend/mlx/test_qwen38_gated_delta_qk_norm.cpp -Lpython/sglang/srt/hardware_backend/mlx/native -Wl,-rpath,/Users/dcazares/sglang/python/sglang/srt/hardware_backend/mlx/native -lqwen38_engine -L.venv/lib/python3.11/site-packages/mlx/lib -Wl,-rpath,/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o /private/tmp/test_qwen38_gated_delta_qk_norm
+  ~~~
+
+  The executable printed `qwen38 gated-delta q/k normalization parity passed`.
+  The focused existing suite command
+  `.venv/bin/python -m pytest test/registered/unit/hardware_backend/mlx/test_native_qwen38_engine.py -q`
+  finished **8 passed** with 16 existing warnings.
+- A short synchronized candidate screen at `128 / 32 warm / 256 timed` reached
+  **20.499511573 tok/s**, digest `8ea2430e3fa3d56e`, last token `198`. Built a
+  clean control from signed `80ef84925e` in detached worktree
+  `/private/tmp/sglang-qwen38-qknorm-control`. Control dylib SHA-256 was
+  `eb18f32aa07e1e9507c8da8c213137857b96a06d5e4e639625217a67d72c0f2c`;
+  candidate SHA-256 was
+  `b987bd6df0b87e6f5a55a1bb33365bb7376ac04e4cff9fea8b0358903b4ab947`.
+- Five adjacent, process-isolated long-history pairs used exact command shape
+  `/private/tmp/bench_qwen38_native LIBRARY CHECKPOINT 6237 32 256`. Controls
+  were **19.295294515, 19.321204026, 19.330268553, 19.311036105,
+  19.337509088 tok/s**, mean **19.319062457**. Candidates were
+  **19.436753936, 19.473608274, 19.475632911, 19.464942442,
+  19.472753890 tok/s**, mean **19.464738291**. Pair deltas were
+  **+0.141459421, +0.152404248, +0.145364358, +0.153906337,
+  +0.135244802 tok/s**. The mean gain is **0.145675833 tok/s / 0.754052292%**.
+  All ten runs produced digest `faaecee6edebe116`, last token `19360`.
+- Port 30000 stayed free and no model/benchmark process survived. Post-window
+  memory had zero throttled pages; thermal and performance status remained
+  normal. `git diff --check` passed. The detached signed control remains
+  available for a matched five-sample served qualification using real 131,072
+  context/token pools.
+
+### 2026-08-31 10:19 PDT - fused recurrent q/k normalization clears served 131K gate
+
+- Signed the retained implementation and parity coverage as `b851d3c9de`;
+  signature verification passed. Rebuilt signed control `80ef84925e` in clean
+  detached worktree `/private/tmp/sglang-qwen38-qknorm-control`. The served
+  control dylib SHA-256 was
+  `20fbcab3321afcc0ac73eabc4573bbcd306148da548c8df9eccb60b25456e234`;
+  signed candidate SHA-256 was
+  `b987bd6df0b87e6f5a55a1bb33365bb7376ac04e4cff9fea8b0358903b4ab947`.
+- The control set
+  `PYTHONPATH=/private/tmp/sglang-qwen38-qknorm-control/python`; the candidate
+  set `PYTHONPATH=/Users/dcazares/sglang/python`. Both used this remaining exact
+  launch command:
+
+  ~~~bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 SGLANG_MLX_CLEAR_CACHE_STEPS=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 --served-model-name qwen3.8-27b-iq2 --language-model-only --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --max-mamba-cache-size 5 --chunked-prefill-size 8192 --max-prefill-tokens 8192 --disable-radix-cache --mlx-enable-sampling --sampling-defaults model --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --stream-interval 4 --scheduler-recv-interval 4 --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Both resolved `context_length=max_total_tokens=131072`, one request, five
+  Mamba slots, 8,192-token chunks, both parsers, language-only mode, and no MTP
+  path. Startup reported 28.92 GB available unified memory for each arm.
+  `/health`, `/v1/models`, and `/model_info` passed; image and audio
+  understanding remained disabled.
+- Every sample used exact deterministic `6237+128` through
+  `.venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup --timeout 600`.
+  Control decode rates were **19.128, 19.082, 19.062, 19.094, 19.084 tok/s**,
+  mean **19.0900**; prompt rates were **107.175, 107.460, 107.458, 107.473,
+  107.476**, mean **107.4084**; TTFTs were **58.194470, 58.040105,
+  58.041111, 58.033367, 58.031437 s**, mean **58.068098**; end-to-end times
+  were **64.833876, 64.695445, 64.703620, 64.684722, 64.686315 s**, mean
+  **64.720796**.
+- Candidate decode rates were **19.152, 19.144, 19.159, 19.177, 19.173
+  tok/s**, mean **19.1610**, a **0.0710 tok/s / 0.371922%** gain. Prompt rates
+  were **107.190, 107.476, 107.473, 107.469, 107.462**, mean **107.4140**;
+  TTFTs were **58.186618, 58.031557, 58.033253, 58.035499, 58.039300 s**,
+  mean **58.065245**; end-to-end times were **64.817751, 64.665343,
+  64.661994, 64.658078, 64.663059 s**, mean **64.693245**. Every paired
+  candidate decode sample exceeded its control.
+- All ten requests completed total 6,365, `finish_reason=length`, 585 reasoning
+  characters, 33 fragments, and output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  Both foreground servers exited zero after `Ctrl+C`; the expected child
+  `KeyboardInterrupt` traces accompanied cleanup. Port 30000 and matching
+  model/client processes were absent afterward. Memory returned with zero
+  throttled pages and thermal/performance status remained normal. Removed the
+  clean detached control worktree; it is recoverable from signed `80ef84925e`.
+  The selected served mean is now **19.1610 tok/s**, leaving **0.8390 tok/s**
+  to the required floor.
+
+### 2026-08-31 10:50 PDT - recurrent output norm/gate clears direct gate
+
+- Resumed `main` at signed `068f9ca072`, ahead of `origin/main` by 18. The
+  existing modified `AGENTS.md`, `BENCHMARK.md`, compact recovery documents,
+  experiment log, and untracked actual-work fixture remained user-owned. Port
+  30000 was free, no matching model/compiler workload was active, memory was
+  92% free, and thermal/performance status was normal before the GPU window.
+- Added a C++-owned single-output Metal kernel at `Engine::gated_delta`, the
+  shared owner of all 48 recurrent layers. The single-token path now combines
+  recurrent-output RMS normalization, the float32 `z * sigmoid(z)` gate, and
+  the final BF16 conversion in one launch. It preserves MLX v0.32.2's
+  four-values-per-thread RMS reduction, `simd_sum` topology, and
+  `metal::precise::rsqrt`. Multi-token execution retains the established MLX
+  operations.
+- The first full-model screens reached **20.603432555** and **20.579855310
+  tok/s**, yet both changed the required short digest from
+  `8ea2430e3fa3d56e` to `a6562984e670e10e`. Expanded C++ parity inputs from a
+  small activation range to exact integers in `[-113,113]`; the delayed-output
+  case then reproduced a one-BF16-ULP discrepancy at output 6, element 3266:
+  `-1.11293e-07` versus `-1.10827e-07`. Volatile float locals and explicit
+  threadgroup materialization left the mismatch unchanged. That index uses
+  `z=-23`, isolating the dynamically compiled exponential. Replacing
+  `metal::exp` with `metal::precise::exp` restored exact parity; the diagnostic
+  barriers were removed and the simplified single-pass kernel stayed exact.
+- Rebuilt with the exact command
+  `env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx python/sglang/srt/hardware_backend/mlx/native/build.sh`.
+  Strict C++20 compilation and execution of
+  `test_qwen38_gated_delta_norm_gate.cpp` passed at production
+  `(rows=48,width=128)`, nonaligned `(rows=3,width=257)`, extreme activations,
+  and twelve unevaluated outputs. The focused command
+  `env PYTHONPATH=python .venv/bin/python -m pytest -q test/registered/unit/hardware_backend/mlx/test_native_qwen38_engine.py`
+  passed **8 tests** with the existing 16 warnings. `git diff --check` passed.
+- The corrected bounded full-model command
+  `/private/tmp/bench_qwen38_native python/sglang/srt/hardware_backend/mlx/native/libqwen38_engine.dylib /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 128 32 256`
+  measured **12.432703458 s / 20.590855470 tok/s**, digest
+  `8ea2430e3fa3d56e`, last token `198`.
+- Created clean detached control worktree
+  `/private/tmp/sglang-perf-a046-control` at signed `068f9ca072` and built its
+  native library against the same installed MLX 0.32.2. The control dylib
+  SHA-256 was
+  `746e230fcee3f328fd2cb54d329210bb8dd8db07ff4a5617270f4c865870f7c2`;
+  candidate SHA-256 was
+  `5865de3c7e3956986076ebc3a57aadcb84e2058cfad3fa42a0a6eb244bf31a1d`.
+  Each long-history arm used the corresponding dylib with exact arguments
+  `6237 32 256` in `/private/tmp/bench_qwen38_native`.
+- Five adjacent process-isolated controls measured **19.478588247,
+  19.453995931, 19.478673901, 19.480679024, 19.453745231 tok/s**, mean
+  **19.469136467**. Candidates measured **19.516119108, 19.516004982,
+  19.516870482, 19.532189316, 19.497406122 tok/s**, mean **19.515718002**.
+  The gain is **0.046581535 tok/s / 0.239258353%**; every adjacent pair favors
+  the candidate. All ten runs produced digest `faaecee6edebe116`, last token
+  `19360`.
+- No benchmark process survived the window; port 30000 remained free. Memory
+  returned to 93% free and thermal/performance status remained normal. The
+  detached control stays available for the matched five-sample served gate at
+  real 131,072 context/token pools. The implementation and direct evidence are
+  ready for a signed recovery commit.
+
+### 2026-08-31 11:05 PDT - recurrent output norm/gate clears served 131K gate
+
+- Signed the retained implementation, strict parity test, and direct evidence
+  as `28174b3da2`; `git verify-commit` reported a good EDDSA signature. The
+  exact signed `068f9ca072` control remained in clean detached worktree
+  `/private/tmp/sglang-perf-a046-control`. Its native dylib SHA-256 was
+  `746e230fcee3f328fd2cb54d329210bb8dd8db07ff4a5617270f4c865870f7c2`;
+  signed candidate SHA-256 was
+  `5865de3c7e3956986076ebc3a57aadcb84e2058cfad3fa42a0a6eb244bf31a1d`.
+- Launched the control with
+  `PYTHONPATH=/private/tmp/sglang-perf-a046-control/python` and the candidate
+  with `PYTHONPATH=/Users/dcazares/sglang/python`; all remaining arguments were
+  identical:
+
+  ~~~bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 SGLANG_MLX_CLEAR_CACHE_STEPS=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 --served-model-name qwen3.8-27b-iq2 --language-model-only --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --max-mamba-cache-size 5 --chunked-prefill-size 8192 --max-prefill-tokens 8192 --disable-radix-cache --mlx-enable-sampling --sampling-defaults model --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --stream-interval 4 --scheduler-recv-interval 4 --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Both resolved `context_length=max_total_tokens=131072`, one running request,
+  five Mamba slots, 8,192-token chunks, language-only mode, both Qwen parsers,
+  disabled CUDA graphs, no MTP path, and 28.92 GB startup-reported available
+  unified memory. `/health` and `/v1/models` passed; `/model_info` reported
+  image and audio understanding disabled.
+- Every sample used
+  `.venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup --timeout 600`.
+  Control decode rates were **19.055, 19.045, 19.200, 19.185, 19.145 tok/s**,
+  mean **19.1260**; prompt rates were **107.158, 107.464, 107.474, 107.466,
+  107.459**, mean **107.4042**; TTFTs were **58.203759, 58.037812,
+  58.032373, 58.036728, 58.040503 s**, mean **58.070235**; end-to-end times
+  were **64.868631, 64.706115, 64.647024, 64.656504, 64.674158 s**, mean
+  **64.710486**.
+- Candidate decode rates were **19.109, 19.117, 19.254, 19.177, 19.117
+  tok/s**, mean **19.1548**, a **0.0288 tok/s / 0.150580362%** gain. Prompt
+  rates were **107.160, 107.448, 107.462, 107.479, 107.471**, mean
+  **107.4040**; TTFTs were **58.202476, 58.046579, 58.038876, 58.030193,
+  58.034050 s**, mean **58.070435**; end-to-end times were **64.848483,
+  64.689819, 64.635030, 64.652652, 64.677380 s**, mean **64.700673**.
+- All ten requests completed exact total 6,365, `finish_reason=length`, 585
+  reasoning characters, 33 nonempty fragments, and output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  Control server process `71837` and candidate server process `71967` stopped
+  through foreground `Ctrl+C`; expected child `KeyboardInterrupt` traces
+  accompanied clean root exit. Port 30000 and matching model/client/compiler
+  processes were absent afterward. Memory returned to 93% free and
+  thermal/performance status remained normal.
+- Removed clean detached control worktree
+  `/private/tmp/sglang-perf-a046-control`; it is reproducible from signed
+  `068f9ca072`. The current selected served mean is **19.1548 tok/s**, leaving
+  **0.8452 tok/s** to the required 20 tok/s floor. The next candidate begins
+  from signed `28174b3da2`.
+
+### 2026-08-31 11:25 PDT - fused recurrent convolution/SiLU clears direct gate
+
+- Began from signed `8dcf68177c` on `main`, ahead of `origin/main` by 20.
+  Existing modified recovery documents, `AGENTS.md`, `BENCHMARK.md`, and the
+  untracked actual-work fixture remained user-owned. Port 30000 was free, no
+  model/compiler workload was active, memory was 92% free, and
+  thermal/performance status was normal before the GPU window.
+- Moved the BF16 SiLU following each single-token recurrent causal convolution
+  into the existing C++/Metal convolution/state owner. The custom kernel
+  retains the exact four-tap float accumulator, rounds convolution output to
+  BF16, computes MLX's stable sigmoid, rounds that intermediate to BF16, and
+  performs the BF16 product. The shifted recurrent state remains a distinct
+  output. Multi-token execution retains the general MLX `conv1d` and SiLU path.
+- The first implementation evaluated sigmoid in float32 and the strict
+  production-shape test caught element 3 at `0.155273` versus `0.15625`.
+  Copying MLX's templated BF16 arithmetic and using
+  `metal::precise::exp` restored exact output. The updated C++20 parity test
+  passes `(B=1,K=4,D=10240)`, `(B=2,K=3,D=257)`, and exact convolution values
+  `[-23,23,-113,113]`. Rebuilt with the installed MLX 0.32.2 prefix and the
+  known macOS 26.0/26.2 linker warning. The focused native command
+  `env PYTHONPATH=python .venv/bin/python -m pytest -q test/registered/unit/hardware_backend/mlx/test_native_qwen38_engine.py`
+  passed **8 tests** with the existing 16 warnings; `git diff --check` passed.
+- The bounded full-model command
+  `/private/tmp/bench_qwen38_native python/sglang/srt/hardware_backend/mlx/native/libqwen38_engine.dylib /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 128 32 256`
+  measured **12.408927834 s / 20.630307745 tok/s**, digest
+  `8ea2430e3fa3d56e`, last token `198`.
+- Created clean detached control worktree
+  `/private/tmp/sglang-perf-a047-control` at signed `8dcf68177c` and built its
+  native library against the same installed dependency. Control dylib SHA-256
+  was `2ae6591c347f5ff1665d20c510bdd2e22788407d58fe844834c96f6a01af76ea`;
+  candidate SHA-256 was
+  `16b58ce3056617b49582a180078181fe62442b404085c27910d0aed9fdeca703`.
+- Five adjacent process-isolated controls at exact `6237 / 32 warm / 256
+  timed` measured **19.551438201, 19.531679410, 19.531585717, 19.471752586,
+  19.533882708 tok/s**, mean **19.524067724**. Candidates measured
+  **19.646667601, 19.610726755, 19.638978864, 19.622965103,
+  19.643077544 tok/s**, mean **19.632483173**. The gain is **0.108415449
+  tok/s / 0.555291298%**; every adjacent pair favors the candidate. All ten
+  runs produced digest `faaecee6edebe116`, last token `19360`.
+- No benchmark process survived; port 30000 stayed free. Post-window memory
+  was 93% free and thermal/performance status remained normal. The detached
+  signed control remains available for the matched five-sample served gate at
+  real 131,072 context/token pools. The candidate is ready for a signed
+  recovery commit.
+
+### 2026-08-31 11:41 PDT - fused recurrent convolution/SiLU clears served 131K gate
+
+- Qualified signed `4c1bc4c1e3` on `main`, ahead of `origin/main` by 21,
+  against clean detached signed control `8dcf68177c` in
+  `/private/tmp/sglang-perf-a047-control`. Existing modified recovery
+  documents, `AGENTS.md`, `BENCHMARK.md`, and the untracked actual-work fixture
+  remained user-owned. Control dylib SHA-256 was
+  `2ae6591c347f5ff1665d20c510bdd2e22788407d58fe844834c96f6a01af76ea`;
+  candidate SHA-256 was
+  `16b58ce3056617b49582a180078181fe62442b404085c27910d0aed9fdeca703`.
+- The control set
+  `PYTHONPATH=/private/tmp/sglang-perf-a047-control/python`; the candidate set
+  `PYTHONPATH=/Users/dcazares/sglang/python`. Both used the remaining exact
+  launch command:
+
+  ~~~bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 SGLANG_MLX_CLEAR_CACHE_STEPS=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 --served-model-name qwen3.8-27b-iq2 --language-model-only --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --max-mamba-cache-size 5 --chunked-prefill-size 8192 --max-prefill-tokens 8192 --disable-radix-cache --mlx-enable-sampling --sampling-defaults model --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --stream-interval 4 --scheduler-recv-interval 4 --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ~~~
+
+  Both resolved `context_length=max_total_tokens=131072`, one running request,
+  five Mamba slots, 8,192-token chunks, language-only mode, both Qwen parsers,
+  inactive MTP, and disabled graph capture. Startup reported 28.92 GB
+  available unified memory for each arm. `/health`, `/v1/models`, and
+  `/model_info` passed; image and audio understanding remained disabled.
+- Every sample used exact deterministic `6237+128` through
+  `.venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup --timeout 600`.
+  Control decode rates were **19.119, 19.233, 19.116, 19.122, 19.275 tok/s**,
+  mean **19.1730**; prompt rates were **107.184, 107.463, 107.470, 107.457,
+  107.460**, mean **107.4068**; TTFTs were **58.189843, 58.038429, 58.034870,
+  58.041972, 58.040081 s**, mean **58.069039**; end-to-end times were
+  **64.832367, 64.641508, 64.678497, 64.683546, 64.629054 s**, mean
+  **64.692994**.
+- Candidate decode rates were **19.199, 19.224, 19.215, 19.217, 19.212
+  tok/s**, mean **19.2134**, a **0.0404 tok/s / 0.210713%** gain. Prompt rates
+  were **107.122, 107.468, 107.467, 107.473, 107.470**, mean **107.4000**;
+  TTFTs were **58.223225, 58.036090, 58.036512, 58.033005, 58.034694 s**,
+  mean **58.072705**; end-to-end times were **64.838271, 64.642552,
+  64.645842, 64.641716, 64.645031 s**, mean **64.682682**.
+- All ten requests completed total 6,365, `finish_reason=length`, 585 reasoning
+  characters, 33 response fragments, output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`,
+  and the established empty visible-content SHA-256. Control root process
+  `72627` and candidate root process `72769` exited zero after foreground
+  `Ctrl+C`; expected child `KeyboardInterrupt` traces accompanied shutdown.
+  Port 30000, both PIDs, and matching launch processes were absent afterward.
+  Memory returned to 92% free with zero throttled pages; thermal/performance
+  status remained normal.
+- Removed the clean detached control worktree; it is recoverable from signed
+  `8dcf68177c`. The selected served mean is now **19.2134 tok/s**, leaving
+  **0.7866 tok/s** to the required 20 tok/s floor. The next kernel pass begins
+  from signed `4c1bc4c1e3` at the single-token gated-delta update owner.
+
+### 2026-08-31 11:51 PDT - full-attention affine row fusion fails exactness gate
+
+- Continued from signed `ca6ce221fa`, ahead of `origin/main` by 22, with the
+  existing user-owned document and actual-work fixture changes preserved. Port
+  30000 and matching server/compiler workloads were absent; memory was 92%
+  free with zero throttled pages and thermal/performance status was normal.
+- Checkpoint provenance showed linear-attention z is affine q2 while b/a remain
+  q4 anchors, closing exact z/b/a concatenation. Full-attention q+gate, k, and
+  v are all affine q4. Implemented a C++ load-time row concatenation that
+  validates format and tail shapes, realizes the combined packed arrays, and
+  detaches them from their source graph. One product then emitted q+gate/k/v
+  rows for all 16 target full-attention layers and the retained MTP layer.
+- Rebuilt with
+  `env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx python/sglang/srt/hardware_backend/mlx/native/build.sh`;
+  the known macOS 26.0/26.2 link warning remained. A strict C++20 test used
+  separate affine q4 shapes 96/32/32 over six input rows, matched every float32
+  bit, verified detached packed arrays, and rejected mixed bit widths. The
+  focused native suite passed **8 tests** with its existing 16 warnings.
+- The all-row full-model command
+  `/private/tmp/bench_qwen38_native python/sglang/srt/hardware_backend/mlx/native/libqwen38_engine.dylib /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 128 32 256`
+  measured **12.354390750 s / 20.721377944 tok/s**, digest
+  `12bb3edf3d51feac`, last token `198`. The selected exact control digest for
+  this shape is `8ea2430e3fa3d56e`.
+- Narrowed the candidate to keep q+gate separate and combine only equal-shaped
+  k/v rows. After a clean rebuild, the same command measured **12.383738500 s /
+  20.672271140 tok/s**, digest `af06cc7ce5e094be`, last token `198`. The two
+  production forms therefore select different MLX accumulation geometry and
+  both fail exact full-model trajectory preservation despite synthetic row
+  parity.
+- Removed the helper, fused fields, dispatch changes, and C++ test through an
+  explicit patch. PERF-FA084 closes this route. A selected-source dylib rebuild
+  and exact short digest confirmation precede the next candidate. Long-history
+  and served windows were skipped because exactness failed at the first gate.
+
+### 2026-08-31 12:43 PDT - recurrent beta/decay fusion loses matched decode
+
+- Continued on `main` from signed `8ac4b782ed`, ahead of `origin/main` by 23.
+  Existing modified recovery documents, `AGENTS.md`, `BENCHMARK.md`, and the
+  untracked actual-work fixture remained user-owned. Port 30000 and matching
+  benchmark processes were absent before the scored window; memory was 93%
+  free with zero throttled pages and thermal/performance status was normal.
+- Extended the single-token q/k normalization Metal owner used by all 48
+  recurrent layers. The first form added exact BF16 `sigmoid(b)` output. A
+  five-pair process-isolated window used exact command shape
+  `/private/tmp/bench_qwen38_native LIBRARY /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 6237 32 256`.
+  Controls were **19.638388671, 19.506610078, 19.639510205, 19.573368799,
+  19.654147905 tok/s**, mean **19.602405132**. Candidates were
+  **19.614193474, 19.601099692, 19.599034755, 19.581726545,
+  19.608448830**, mean **19.600900659**, a **-0.001504472 tok/s /
+  -0.007675%** change. Pair deltas were **-0.024195197, +0.094489614,
+  -0.040475450, +0.008357746, -0.045699075 tok/s**. Every run retained digest
+  `faaecee6edebe116`, last token `19360`.
+- Expanded the same owner to calculate compiled `compute_g`. Exactness work
+  separated `DecayT` from the q/k input type and reproduced MLX's compiled
+  log-add-exp: fast `metal::exp`/`metal::log` for softplus, plus
+  `metal::precise::exp` for the outer decay operations. The diagnostic tuple
+  that exposed the final one-bit difference was `a=-6.53125`, `A_log=-3`,
+  `dt_bias=9.5625`, yielding actual `0.857903719 [0x3f5b9f94]` before the
+  compiled-reference correction. The widened strict C++20 test passed BF16 and
+  float32 q/k, production 16-to-48 topology, width 257, the recovered tuple,
+  extreme ranges, and twelve outstanding outputs. The focused native engine
+  suite earlier remained **8 passed** with its existing 16 warnings.
+- Built a clean detached signed control at
+  `/private/tmp/sglang-perf-a049-control`. Its dylib SHA-256 was
+  `de3570833a1800ca9fcbed6dec41d217662a9cea24a7ea65f6541cab9368424e`;
+  the final beta/decay candidate was
+  `a8e770c7755ca2293d49bd672c48b95cd9299993148b0842dd02c3f43606848c`.
+  The exact short candidate screen measured **12.426563042 s /
+  20.601030159 tok/s**, digest `8ea2430e3fa3d56e`, last token `198`.
+- Five adjacent full-candidate controls measured **19.644892037,
+  19.594597286, 19.665576690, 19.652227855, 19.650983123 tok/s**, mean
+  **19.641655398**. Candidates measured **19.494418723, 19.583726912,
+  19.555902888, 19.570241386, 19.533772471 tok/s**, mean **19.547612476**.
+  Pair deltas were **-0.150473314, -0.010870374, -0.109673802,
+  -0.081986469, -0.117210652 tok/s**. The mean regression is
+  **-0.094042922 tok/s / -0.478793%**. All ten runs retained digest
+  `faaecee6edebe116`, last token `19360`.
+- Removed the complete experimental source/test diff through an explicit
+  patch. The initial default build invocation found the retired `.venv-mps`
+  path; the explicit installed MLX prefix rebuild passed with the established
+  macOS 26.0/26.2 linker warning. The restored selected dylib SHA-256 is
+  `16b58ce3056617b49582a180078181fe62442b404085c27910d0aed9fdeca703`.
+  Its short confirmation measured **12.373267375 s / 20.689765463 tok/s**,
+  digest `8ea2430e3fa3d56e`, last token `198`. PERF-FA085 closes this placement:
+  serial scalar exponentials inside the normalization dispatch give up useful
+  MLX overlap. The clean detached control remains recoverable from signed
+  `8ac4b782ed` and is ready for removal after its status check.
+
+### 2026-08-31 13:21 PDT - native command-buffer budget clears direct 20 tok/s
+
+- Continued from signed `ef3c030fa7`, ahead of `origin/main` by 24, preserving
+  the existing user-owned recovery documents and actual-work fixture. Removed
+  the clean A049 worktree after its detached status check. Port 30000 and
+  matching model workloads were absent before direct measurements; memory was
+  93% free with zero throttled pages and thermal/performance status was normal.
+- A Metal System Trace over exact `128 / 4 warm / 16 timed` showed roughly
+  2,200 command-buffer frames across the 20 scheduled decode forwards. MLX
+  0.32.2 selects 50 operations and 50 MiB per command buffer on the M1 Max;
+  its device accounts each distinct input array's full `data_size()` before
+  committing. Fresh process screens changed only `MLX_MAX_MB_PER_BUFFER`:
+  64/128/256/512/1024/2048 MiB reached **20.858446616,
+  21.090391865, 21.084653536, 21.117690695, 21.085125460, and
+  21.070154446 tok/s** on the short exact shape. The 128 MiB point is the
+  smallest observed plateau. `MLX_MAX_OPS_PER_BUFFER` values 20/50/100/200
+  reached **20.435484974, 20.668206410, 20.642151948, and 20.657352460
+  tok/s**, closing that independent axis.
+- An external 128 MiB long-history screen reached **20.186745533 tok/s** with
+  digest `faaecee6edebe116`, last token `19360`. Two isolated real-131K
+  stream-4/scheduler-4 requests reached **19.917 and 19.933 client decode
+  tok/s** while server telemetry reported approximately **20.10--20.20
+  tok/s**. Stream interval 8 reached **19.925**, and scheduler receive interval
+  8 reached **19.927**, preserving exact output while closing both cadence
+  variants.
+- Placed the 128 MiB default in the native `Engine` constructor's first-member
+  initializer. The earlier constructor-body placement ran after MLX array
+  members initialized the device and retained 50 MiB behavior; moving the
+  configuration into the `cfg_` initializer installed it before every MLX
+  member. Explicit environment values retain precedence. Built with
+  `env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx python/sglang/srt/hardware_backend/mlx/native/build.sh`; the established
+  macOS 26.0/26.2 linker warning remained. The candidate dylib SHA-256 was
+  `6c6df982252d170426ee3a1d505c9157bd4ebf5f0e17cd8d2d3a4193d8671688`.
+  Its no-override short screen reached **21.025485404 tok/s**, digest
+  `8ea2430e3fa3d56e`, last token `198`; an explicit 50 MiB control reached
+  **20.663320571** with the same output. The focused native suite passed
+  **8 tests** with its existing 16 warnings. `git diff --check` passed.
+- Created clean detached signed control
+  `/private/tmp/sglang-perf-a050-control` at `ef3c030fa7` and built against the
+  same MLX. Its dylib SHA-256 was
+  `846065a857cd29f6946ffa4e0fc36166eaf9fc3f176bfc4340d6abcdabad2213`.
+  Every paired arm used exact command shape
+  `/private/tmp/bench_qwen38_native LIBRARY /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 6237 32 256`.
+- Controls measured **19.645876112, 19.578931372, 19.640621068,
+  19.602503035, 19.648569033 tok/s**, mean **19.623300124**. Candidates
+  measured **20.174844979, 20.120396667, 20.187648928, 20.157111892,
+  20.129828219**, mean **20.153966137**. Pair deltas were **+0.528968867,
+  +0.541465295, +0.547027860, +0.554608857, +0.481259186 tok/s**. The mean
+  gain is **+0.530666013 tok/s / +2.704265%**. Every candidate clears 20;
+  all ten runs retained digest `faaecee6edebe116`, last token `19360`.
+  Post-window memory remained 93% free with zero throttled pages and
+  thermal/performance status was normal. The clean detached control remains
+  available for the real-131K served qualification.
+
+### 2026-08-31 13:35 PDT - served initialization order limits the internal default
+
+- Began the committed `6ca2d5437e` real-131K served arm with
+  `MLX_MAX_MB_PER_BUFFER` absent from the process environment. The first
+  startup stopped before model allocation because `qwen38_engine.cpp` had a
+  newer filesystem timestamp than the ignored native library, so the wrapper
+  entered its automatic build path without an `MLX_PREFIX` include location.
+  Rebuilt the committed source explicitly with
+  `env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx python/sglang/srt/hardware_backend/mlx/native/build.sh`; the known macOS
+  26.0/26.2 linker warning remained and the rebuilt SHA-256 matched the
+  qualified candidate exactly at
+  `6c6df982252d170426ee3a1d505c9157bd4ebf5f0e17cd8d2d3a4193d8671688`.
+- The second launch resolved the intended 131,072 context and token pools,
+  one running request, five Mamba slots, 8,192-token chunks, both Qwen
+  parsers, and language-only mode. `/health`, `/v1/models`, and `/model_info`
+  passed; the model advertised length 131,072 with image and audio
+  understanding disabled.
+- One exact deterministic `6237+128` client request measured **19.257 tok/s**,
+  **107.180 prompt tok/s**, **58.191717 s TTFT**, and **64.786740 s** end to
+  end. It completed total 6,365 with `finish_reason=length`, 585 reasoning
+  characters, 33 fragments, and the established SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  This matches the 50 MiB served range rather than the externally configured
+  128 MiB screens. SGLang imports and initializes MLX before constructing the
+  native engine, so the constructor initializer cannot govern the already
+  created Metal device on this process path. The direct-engine win remains
+  valid; real serving requires process-start configuration or an earlier
+  native owner.
+- Server root PID `75989` exited after foreground `Ctrl+C`; the expected child
+  `KeyboardInterrupt` traces accompanied shutdown. Port 30000 and matching
+  server/model/compiler processes were absent afterward. The next served arm
+  supplies the same 128 MiB value at process start while retaining every other
+  launch and request control.
+
+### 2026-08-31 13:42 PDT - process-start command-buffer budget nearly clears served floor
+
+- Relaunched signed `6ca2d5437e` with the identical real-131K server command
+  and added only process-start `MLX_MAX_MB_PER_BUFFER=128`. The server again
+  resolved 131,072 context/token pools, one running request, five Mamba slots,
+  8,192-token chunks, both Qwen parsers, disabled graph capture, and the
+  language-only surface.
+- Five sequential exact deterministic `6237+128` client samples measured
+  **19.917, 19.945, 19.943, 19.938, and 19.940 tok/s**, mean
+  **19.9366 tok/s**. Prompt rates were **107.199, 107.102, 107.206, 107.055,
+  and 106.927**, mean **107.0978 tok/s**. TTFTs were **58.181270,
+  58.234313, 58.177679, 58.259770, and 58.329313 s**, mean
+  **58.236469 s**. End-to-end times were **64.557630, 64.601882,
+  64.545915, 64.629363, and 64.698384 s**, mean **64.606635 s**.
+- Against the matched five-sample 50 MiB control mean of **19.2260 tok/s**,
+  process-start 128 MiB improves client decode by **0.7106 tok/s / 3.696%**.
+  All requests completed exact total 6,365, `finish_reason=length`, 585
+  reasoning characters, 33 fragments, empty visible content, and established
+  output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  The client mean remains **0.0634 tok/s** below the required floor while
+  server telemetry settles around 20.11--20.20 tok/s.
+- Root PID `76107` stopped through foreground `Ctrl+C`; expected child
+  `KeyboardInterrupt` traces accompanied clean HTTP shutdown. Port 30000 and
+  matching model/client/compiler processes were absent afterward.
+
+### 2026-08-31 13:48 PDT - MLX SDPA block count exposes the next decode win
+
+- Inspected the exact installed dependency source at official MLX tag
+  `v0.32.2`, commit `1f8e74e3f12f31365464a6867c6579f0e9b29d85`. On the M1 Max,
+  decode attention at 6,237 tokens selects 128 SDPA blocks by default; the
+  supported `MLX_SDPA_BLOCKS` override rounds positive values to a multiple of
+  32.
+- Process-isolated direct screens retained `MLX_MAX_MB_PER_BUFFER=128` and
+  changed only SDPA blocks at exact `6237 / 32 warm / 256 timed`. Block counts
+  32/64/96/128 reached **19.116925846, 20.419125823, 19.541540885, and
+  20.139173026 tok/s** respectively. A second 64-block sample reached
+  **20.391260024 tok/s**. Every screen retained digest
+  `faaecee6edebe116`, last token `19360`.
+- The 64-block point wins both adjacent comparisons by roughly 1.3%, enough
+  to clear the remaining served gap if it carries through the client path.
+  The next gate places this supported override before the first native SDPA
+  call, preserving explicit process-environment precedence, then runs the
+  strict short and real-131K served checks.
+
+### 2026-08-31 13:59 PDT - SDPA block win fails served exactness and is removed
+
+- Added a supported 64-block native default before the first SDPA dispatch.
+  The focused native suite passed **8 tests** with its existing 16 warnings;
+  the short exact model screen reached **21.092959722 tok/s** with digest
+  `8ea2430e3fa3d56e`, last token `198`. An explicit 128-block compatibility
+  override reached **21.081464440** with the same output.
+- The real-131K server launched with only process-start
+  `MLX_MAX_MB_PER_BUFFER=128`; the native constructor supplied 64 SDPA blocks.
+  One deterministic `6237+128` request reached **20.146 client tok/s**,
+  **106.962 prompt tok/s**, **58.310183 s TTFT**, and **64.614082 s** end to
+  end. Token counts and `finish_reason=length` remained exact, while reasoning
+  grew from 585 to 620 characters and SHA-256 changed to
+  `69f3577805ed5ae85d2f8253eb3ec10f89ac7246897d6d5de9061ee6f665715c`.
+- Narrowed the candidate to keep adaptive SDPA for prefill, materialize the
+  prompt's first token completely, and switch to 64 blocks only for decode.
+  The focused suite again passed **8 tests**; its short exact screen reached
+  **21.185624439 tok/s** with the established digest. The served request
+  reached **20.127 client tok/s**, **107.296 prompt tok/s**, **58.128933 s
+  TTFT**, and **64.438713 s** end to end, yet produced the same changed
+  620-character reasoning digest. This localizes the deterministic trajectory
+  change to decode reduction order.
+- Removed both experimental forms with an explicit patch. Rebuilt selected
+  A050 source using the installed MLX prefix; dylib SHA-256 returned exactly
+  to `6c6df982252d170426ee3a1d505c9157bd4ebf5f0e17cd8d2d3a4193d8671688`.
+  A final short confirmation reached **21.135133773 tok/s**, digest
+  `8ea2430e3fa3d56e`, last token `198`. `git diff --check` passed. Both server
+  roots (`76698`, `76891`) stopped through foreground `Ctrl+C`; expected child
+  interruption traces accompanied clean HTTP shutdown, and port 30000 plus
+  matching workloads were absent afterward.
+
+### 2026-08-31 14:18 PDT - exact full-attention q/k fusion reaches 19.9886 served tok/s
+
+- Continued on `main` from signed `49e5bffb99`, ahead of `origin/main` by 26.
+  Existing modified recovery documents, `AGENTS.md`, `BENCHMARK.md`, and the
+  untracked actual-work fixture remained user-owned. Port 30000 and matching
+  model/compiler workloads were absent before the candidate gate; the machine
+  reported no thermal or performance warning.
+- Added one custom Metal owner for single-token full-attention q/k RMS
+  normalization, head transpose, and partial RoPE. Each of the 16 applicable
+  layers now replaces the separate normalization, transpose, and rotary
+  graphs with one dispatch per q/k pair. The kernel preserves MLX's
+  `N_READS=4` accumulation, two-SIMD reduction, precise reciprocal square
+  root, BF16 normalization boundary, `exp2` inverse frequency, and fast
+  sine/cosine operations. Multi-token prefill continues through the original
+  MLX operations.
+- Built with exact command
+  `env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx python/sglang/srt/hardware_backend/mlx/native/build.sh`.
+  It passed with the established macOS 26.0/26.2 linker warning. Candidate
+  dylib SHA-256 is
+  `5bbb6d04bb3d905c209f98758e773e35a9bac88a5b2f11346571cccf67bf34b4`.
+  The focused command
+  `env PYTHONPATH=python .venv/bin/python -m pytest -q test/registered/unit/hardware_backend/mlx/test_native_qwen38_engine.py`
+  passed **8 tests** with 16 existing warnings. `git diff --check` passed.
+- The short direct command shape
+  `/private/tmp/bench_qwen38_native python/sglang/srt/hardware_backend/mlx/native/libsglang_qwen38.dylib /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 128 32 256`
+  under process-start `MLX_MAX_MB_PER_BUFFER=128` reached **12.059392500 s /
+  21.228266681 tok/s**, digest `8ea2430e3fa3d56e`, last token `198`. The
+  exact 6,237-history shape reached **12.672202500 s / 20.201697377 tok/s**,
+  digest `faaecee6edebe116`, last token `19360`. The selected A050 five-run
+  direct mean is **20.153966137 tok/s**.
+- Launched the served candidate with exact resolved command
+  `env -u SGLANG_RUST_SERVER -u MLX_SDPA_BLOCKS -u MLX_METAL_FAST_SYNCH MLX_MAX_MB_PER_BUFFER=128 PYTHONPATH=/Users/dcazares/sglang/python SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 SGLANG_MLX_CLEAR_CACHE_STEPS=0 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 --served-model-name qwen3.8-27b-iq2 --language-model-only --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --max-mamba-cache-size 5 --chunked-prefill-size 8192 --max-prefill-tokens 8192 --disable-radix-cache --mlx-enable-sampling --sampling-defaults model --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --stream-interval 4 --scheduler-recv-interval 4 --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000`.
+  The live server resolved real 131,072 context/token pools, one request, five
+  Mamba slots, both parsers, inactive graph capture, and language-only mode.
+- Five sequential commands
+  `.venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-iq2 --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup --timeout 600`
+  measured decode **19.997, 19.989, 19.990, 19.984, 19.983 tok/s**, mean
+  **19.9886**. Prompt rates were **107.379, 107.149, 107.134, 106.913,
+  106.925 tok/s**, mean **107.1000**. TTFTs were **58.084097, 58.208849,
+  58.216918, 58.337130, 58.330512 s**, mean **58.235501 s**. End-to-end
+  times were **64.435021, 64.562469, 64.570006, 64.692116, 64.685882 s**,
+  mean **64.589099 s**.
+- The five-run gain over A050's qualified **19.9366 tok/s** served mean is
+  **+0.0520 tok/s / +0.260824%**. Every request completed exact total 6,365,
+  `finish_reason=length`, 585 reasoning characters, 33 fragments, empty
+  visible content, and established output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  Server telemetry settled around 20.15--20.27 tok/s. Root PID `77368`
+  stopped through foreground `Ctrl+C`; expected child interruption traces
+  accompanied HTTP shutdown. Port 30000 plus matching model/compiler
+  processes were absent afterward, memory returned to ordinary display
+  residency, and thermal/performance status remained normal. The selected
+  client mean leaves **0.0114 tok/s** to the required floor.

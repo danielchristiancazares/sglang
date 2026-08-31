@@ -161,6 +161,15 @@ std::pair<mlx::core::array, mlx::core::array> normalize_gated_delta_qk(
     float q_scale,
     float k_scale,
     float eps);
+std::pair<mlx::core::array, mlx::core::array> full_attn_qk_norm_rope(
+    const mlx::core::array& qg,
+    const mlx::core::array& k,
+    const mlx::core::array& q_weight,
+    const mlx::core::array& k_weight,
+    float eps,
+    float rope_theta,
+    int rope_dims,
+    int rope_offset);
 mlx::core::array gated_delta_norm_gate(
     const mlx::core::array& recurrent_out,
     const mlx::core::array& z,

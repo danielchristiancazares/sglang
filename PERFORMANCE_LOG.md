@@ -4,7 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
-| M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | MLX 50 MiB command-buffer budget **19.2260 tok/s** mean | process-start 128 MiB budget **19.9366 tok/s** mean | **+0.7106 / +3.696%**; all ten requests exact; **0.0634 tok/s** remains to the client floor | `MLX_MAX_MB_PER_BUFFER=128 ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, isolated five-sample control/candidate windows | 2026-08-31 13:42 PDT |
+| M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | MLX 50 MiB command-buffer budget **19.2260 tok/s** mean | 128 MiB plus fused full-attention q/k norm/RoPE **19.9886 tok/s** mean | **+0.7626 / +3.966%**; all measured requests exact; **0.0114 tok/s** remains to the client floor | `MLX_MAX_MB_PER_BUFFER=128 ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, five-sample candidate window against qualified controls | 2026-08-31 14:18 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | MLX 50 MiB command-buffer budget **19.623300 tok/s** mean | native-engine 128 MiB default **20.153966 tok/s** mean | **+0.530666 / +2.704%**; every candidate clears 20 and all five pairs are exact | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 13:21 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | separate recurrent beta/decay graphs **19.641655 tok/s** mean | beta/decay inside q/k normalization owner **19.547612 tok/s** mean | **-0.094043 / -0.479%**; all five adjacent pairs exact and slower; rejected | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 12:43 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | separate BF16 convolution and SiLU **19.1730 tok/s** mean | fused convolution/SiLU owner **19.2134 tok/s** mean | **+0.0404 / +0.211%**; all ten requests exact | `bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, process-isolated five-sample control/candidate windows | 2026-08-31 11:41 PDT |
@@ -3076,3 +3076,33 @@ tree throughput can be ranked for production.
   `6c6df982252d170426ee3a1d505c9157bd4ebf5f0e17cd8d2d3a4193d8671688`;
   its short confirmation retained digest `8ea2430e3fa3d56e`, last token `198`,
   at **21.135133773 tok/s**.
+
+### 2026-08-31 14:18 PDT - PERF-A052 full-attention q/k norm and RoPE fusion
+
+- Added a single-token Metal owner for the 16 full-attention layers' q/k
+  RMS normalization, head transpose, and partial rotary embedding. One
+  threadgroup owns each head, reproduces MLX's four-value reduction order,
+  precise reciprocal square root, BF16 normalization boundary, and fast
+  rotary trigonometry. Multi-token prefill retains the established MLX graph.
+- The installed-MLX build passed with the known macOS 26.0/26.2 link warning.
+  The candidate dylib SHA-256 is
+  `5bbb6d04bb3d905c209f98758e773e35a9bac88a5b2f11346571cccf67bf34b4`.
+  The focused native engine suite passed **8 tests** with its existing 16
+  warnings, and `git diff --check` passed.
+- The exact short direct screen reached **21.228266681 tok/s**, digest
+  `8ea2430e3fa3d56e`, last token `198`. The exact 6,237-history direct screen
+  reached **20.201697377 tok/s**, digest `faaecee6edebe116`, last token
+  `19360`; the qualified A050 direct mean is **20.153966137 tok/s**.
+- Five sequential real-131K client samples measured **19.997, 19.989,
+  19.990, 19.984, and 19.983 tok/s**, mean **19.9886 tok/s**. This is a
+  **+0.0520 tok/s / +0.260824%** gain over the qualified A050 served mean.
+  Mean prompt throughput was **107.1000 tok/s**, mean TTFT was
+  **58.235501 s**, and mean end-to-end latency was **64.589099 s**.
+- Every request completed exact `6237+128=6365`, `finish_reason=length`, 585
+  reasoning characters, 33 fragments, empty visible content, and established
+  output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  Server telemetry settled around 20.15--20.27 tok/s. Port 30000, matching
+  workloads, and compiler processes were absent after shutdown; memory
+  returned to ordinary residency and thermal/performance status was normal.
+  The selected client mean now leaves **0.0114 tok/s** to the required floor.

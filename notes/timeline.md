@@ -702,20 +702,21 @@ code changes, or process state matter.
 
 - The machine-local `$CODEX_HOME/qwen38-local.config.toml` profile selects the
   local Q2 model, SGLang's Responses endpoint, 32,768 context, medium reasoning,
-  a 900-second stream-idle bound, read-only sandboxing, and sequential tools.
-  Its static catalog identifies a text-only `shell_command` surface. Codex CLI
-  is 0.149.0; profile/catalog SHA-256 values begin `9706003a` and `a67c491a`.
+  a 900-second stream-idle bound, and read-only sandboxing. Its static catalog
+  identifies a text-only `shell_command` surface and declares sequential tools;
+  concurrency remained unqualified. Codex CLI is 0.149.0; profile/catalog
+  SHA-256 values begin `9706003a` and `a67c491a`.
 - A fixed no-tool run first admitted 8,839 input tokens, preserved 38 reasoning-
   output tokens, returned exact visible `CODEX READY`, and exited zero. The
   final read-only tool gate then issued `/bin/zsh -lc pwd` exactly once,
   consumed `/Users/dcazares/sglang`, returned exact visible
   `CODEX TOOL READY`, and exited zero with 17,871 input, 96 output, and 62
-  reasoning-output tokens across two Responses turns.
+  reasoning-output tokens across the initial and follow-up Responses requests.
 - The worktree remained unchanged across the Codex tool run, the server stayed
   healthy, cache flush succeeded, and verified leaf-first cleanup returned
   port 30000, 94% free memory, and normal thermal status. The earlier
   process-scoped OpenCode requests remain chronological admission evidence;
-  the named Codex profile owns the current Apple real-client decision.
+  the named Codex profile owned the Apple real-client decision at PERF-A016.
 
 ### Fixed-memory Metal EXTEND reaches the 131K isolated rung
 
@@ -835,8 +836,129 @@ code changes, or process state matter.
 - Current-source exact `32761+1` passes in the 32,768-token BF16 pool at
   **18.942 prompt tok/s**, **1729.565719 s TTFT**, and **1729.565822 s E2E**.
   Sampled reasoning, arithmetic, thinking-disabled, parsed tool call,
-  continuation, and language-only gates pass. The named Codex profile last
-  ran on PERF-A016 and remains PERF-A021's final promotion gate.
+  continuation, and language-only gates pass.
+- Codex CLI 0.151.0 then exercised the repaired, hash-pinned machine-local
+  profile/catalog pair in one PERF-A021 shell-tool gate. One `pwd` shell call
+  returned the workspace, the follow-up Responses request consumed it, and
+  final visible output was exact
+  `CODEX TOOL READY`; usage was 21,537 input, 413 output, and 379
+  reasoning-output tokens. Health, cache flush, foreground shutdown,
+  free-listener, memory, and thermal gates pass. The configured 30,000-token
+  compaction limit resolves to 29,491. At that point, near-limit transport/
+  compaction, concurrent tools, and a reversible workspace edit remained
+  client-hardening work.
+
+### Strict Codex scratch editing qualifies; compaction recovery remains historical
+
+- A separate `qwen38-local-hardened` overlay passes real 0.151.0 strict config
+  loading, removes model-visible plugin/agent/MCP surfaces, disables unbounded
+  retries, bounds tool output, expands the idle timeout to 40 minutes, and
+  confines workspace writes. Repository `AGENTS.md` and environment context
+  remain visible in one
+  observed 32,965-to-21,457-byte prompt render whose exact command was not
+  retained.
+- A forced 1,000-token compaction run on the immediate medium-reasoning
+  predecessor hashes recovers from one malformed patch across two observed
+  compaction boundaries, successfully writes a nonce-bearing file, preserves
+  that nonce into final output, and exits zero. Its raw JSONL and exact warning
+  text were not retained, so this is historical continuation evidence.
+- An unmatched low-reasoning clean-edit trial completes one first-attempt patch
+  at 4,136/141/70 tokens. Promoting it into the overlay is independently
+  confirmed with no reasoning or capacity override at **4,111 input / 118
+  output / 47 reasoning-output tokens**, exact `QWEN38 DEFAULT WRITE READY`,
+  and the expected file hash; same-value sandbox/approval pins remained. The
+  mutable lower user config and rules were not pinned at process start.
+  All scratch paths were removed, and verified foreground shutdown returned the
+  listener, processes, memory, and thermal state to the recorded idle snapshot.
+
+### Isolated Codex home narrows the mutable-config boundary
+
+- Exact-tag review found that `-p` composes a profile above the ordinary user
+  config and loads exec-policy rules. It also found default-on login-shell,
+  hooks, image generation, optional tools, and broad shell-environment
+  inheritance that the profile hashes did not identify.
+- At that stage, the dedicated `qwen38-local-hardened-home` held sibling-relative,
+  hash-pinned config/catalog/instructions. It explicitly pinned the shell-only
+  surface, low reasoning, 32K/30K Total capacity, core-only filtered shell
+  inheritance, no login startup, untrusted exact paths, workspace confinement,
+  disabled optional tool/model-visible features, zero retries, and a 40-minute
+  idle timeout.
+- The exact default-config gate used no profile, `-c`, `--sandbox`, reasoning,
+  or capacity override. It emitted one first-attempt `file_change`, returned
+  exact `QWEN38 ISOLATED WRITE READY`, and exited zero at **2,843 input / 260
+  output / 184 reasoning-output tokens**. Bundle and ordinary-global hashes
+  were stable pre/post. Cleanup returned port, processes, scratch, memory, and
+  thermal state to idle.
+
+### Trusted-repository unified exec became the Apple Codex handoff at 20:29
+
+- The 20:29 repository trust decision admitted root `AGENTS.md`; an exact
+  post-change prompt-input diagnostic contained its heading and C++/CUDA-only
+  rule. The qualified tree had no project `.codex`, hook, or rule surface, and
+  the dedicated home had no `rules/` directory. Those mutable inputs received
+  a fresh absence/hash preflight before interactive work.
+- The 20:29 catalog declared `shell_type=unified_exec`, and the instructions
+  named `exec_command` plus its `cmd` argument. The 20:29 config/catalog/
+  instruction hashes began `a1ce8b8e`, `862339c1`, and `5d59350d`.
+- The 20:29 strict scratch gate emitted one first-attempt `file_change`,
+  returned exact `QWEN38 ISOLATED WRITE READY`, and exited zero at **2,662
+  input / 113 output / 37 reasoning-output tokens**. Stable hashes, health,
+  cache flush, artifact cleanup, verified foreground shutdown, free memory,
+  and thermal state completed the gate.
+
+### Spawned zsh startup is isolated in the current Apple Codex handoff
+
+- Exact-tag review found that non-login `zsh -c` still resolves a per-user
+  `.zshenv` after core environment filtering. The selected config now sets
+  `ZDOTDIR=/var/empty` before unified-exec child creation. The target is
+  root-owned 0755 and empty, and both system zshenv paths are absent.
+- Current config/catalog/instruction hashes begin `9d7842bb`, `862339c1`, and
+  `5d59350d`. The final strict task uses explicit stdin EOF, emits one first-
+  attempt `file_change`, returns exact `QWEN38 ISOLATED WRITE READY`, and exits
+  zero at **2,670 input / 115 output / 39 reasoning-output tokens**. The exact
+  34-byte artifact and stable pre/post identities pass.
+- A separate repository-CWD prompt diagnostic confirms the trusted root
+  `AGENTS.md` and C++/CUDA-only rule. Ignore-independent scans find no auxiliary
+  project/home config, hook, rule, override-instruction, or skill surfaces.
+  Cleanup returns the listener, process sets, scratch path, memory, and thermal
+  state to the recorded idle snapshot.
+
+### Actual-work Codex testing adds a two-minute process-tree watchdog
+
+- A repository multi-file C++ control exposed full Responses-prefix replay
+  under `ChunkCache`: 6,697-7,599 prompt tokens were recomputed at roughly
+  24-25 tok/s on successive tool turns, taking about 4.7-5.2 minutes each.
+- The matched four-slot hybrid `UnifiedRadixCache` candidate reused 6,785,
+  7,140, 7,414, and 7,680 prefix tokens while admitting only 295, 219, 210,
+  and 200 new tokens. Follow-up prefill fell to roughly 9-20 seconds. A later
+  response decoded for more than four minutes before its next tool call, and
+  the requested repository repair remained untouched.
+- The usability contract now wraps every future non-interactive Qwen/Codex
+  attempt with GNU `timeout --signal=INT --kill-after=10s 120s`. Both a cold
+  repository-root minimal tool gate and a compact fully specified scratch C++
+  repair reached exit `124`. The corrected process-group cutoff left the
+  frozen scratch hashes exact, produced no binary, and left no client/compiler
+  descendant. Wider actual-work qualification remains open.
+
+### Parser-free structured output completes the supervised two-minute repair gate
+
+- One-off prompt-elision diagnostics reduced Codex 0.151.0 ingress to 100
+  tokens, and a compact scratch thread issued a real command and exited zero in
+  about 52 seconds. The normal trusted-repository prompt and existing
+  interactive configuration remain authoritative; elision flags are confined
+  to disposable diagnostics.
+- Default xgrammar mask application failed on MPS, and parser-wrapped Outlines
+  exposed structural-tag/backend-mask incompatibilities. A controlled restart
+  omitted both parsers and successfully served Outlines JSON-schema Responses
+  with reasoning effort `none`.
+- Four individually process-bounded structured requests generated the header,
+  normalization algorithm, and authored-test intent. Host review corrected
+  repository wrapper/API drift. Independent review then expanded the authored
+  suite to the four required categories. The strict warning-as-error build and
+  immutable verifier emitted exact `QWEN38_CPP_MULTI_FILE_GATE=passed`.
+- This retains an opt-in supervised subworker for bounded actual work.
+  Autonomous multi-file tool ownership and parser-enabled required tools remain
+  open qualification targets.
 
 ## 2026-09-01
 
