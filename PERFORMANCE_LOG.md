@@ -5,6 +5,7 @@
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
 | M1 Max native full-Q4 target-only prefill, sampled served `6237+128`, real 131K pools | one-shot native prefill: Metal OOM before generation | internal 2,048-token prefill: **19.300 tok/s**, **109.988 prompt tok/s**, **56.706198 s TTFT**, **63.286374 s E2E** | exact 6,365-token request now completes with coherent reasoning; direct long-history decode is **19.586705 tok/s** and short decode remains above 20 with an exact digest; **0.700 tok/s** remains to the served floor | exact target-only server/client contract plus `SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048` | 2026-09-01 07:09 PDT |
+| M1 Max full-Q4 affine-W4 batch-one QMV, direct `128 / 32 warm / 128 timed` | stock MLX **20.339874670 tok/s** | one-SIMD-per-output **10.456143330 tok/s**; quant-parameter subgroup broadcast **7.773375044 tok/s** | **-48.593% / -61.783%**; both native forms removed after exact standalone parity and full-model screens | candidate dylib plus `SGLANG_MLX_NATIVE_BATCH_ONE_QMV=1` under the target-only direct contract | 2026-09-01 07:28 PDT |
 | M1 Max DFlash2 selected-q M=2/M=8 budget, sampled served `6237+128`, real 131K pools | adjacent current-source threshold-disabled **15.883 / 15.908 / 15.900 / 15.899 / 15.897 tok/s**, mean **15.8974** | mean-q6 threshold 0.62 **16.167 / 16.181 / 16.178 / 16.179 / 16.183 tok/s**, mean **16.1776** | **+0.2802 / +1.763%**; all requests exact with a stable coherent digest; 23 M=2 and 19 M=8 cycles per request; retained opt-in with **3.8224 tok/s** to the floor | exact PERF-A076 server/client contract plus `SGLANG_MLX_NATIVE_DFLASH_MEAN_Q_THRESHOLD=0.62` | 2026-09-01 06:54 PDT |
 | M1 Max DFlash2 M=8 gate/up dispatch fusion, sampled direct `128 / 32 warm / 128 timed` | separate SG16/B32 gate/up five-sample mean **26.943319961 tok/s** | paired two-plane dispatch five-sample mean **26.964966176 tok/s** | **+0.021646215 / +0.08034%**, with two of five adjacent pairs flat/slower; exact trajectory preserved and complexity rejected. Sequential fused-SwiGLU arm regressed trace throughput **26.801071247 -> 26.413620964** | PERF-A077 exact PERF-A076 direct contract at selector temperature 1.15 | 2026-09-01 06:18 PDT |
 | M1 Max DFlash2 selector calibration, sampled served `6237+128`, real 131K pools | adjacent selector temperature 1.0: **15.434 / 15.449 / 15.443 / 15.443 / 15.443 tok/s**, mean **15.4424** | selector temperature 1.15: **15.870 / 15.884 / 15.890 / 15.896 / 15.893 tok/s**, mean **15.8866** | **+0.4442 / +2.876%**; exact 6,365 tokens in every sample, stable coherent digest within each setting, mean emitted width **3.878788 -> 4.031250**; retained opt-in with **4.1134 tok/s** to the floor | exact PERF-A065 contract plus `SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE=1.15` | 2026-09-01 06:04 PDT |
@@ -4141,3 +4142,31 @@ tree throughput can be ranked for production.
   the default path unchanged. Target-only long-history decode remains
   **0.700 tok/s** below the client floor, making single-token target arithmetic
   and serving-loop cost the next active branch. See PERF-FA110.
+
+### 2026-09-01 07:28 PDT - PERF-A080 batch-one affine QMV screen
+
+- Reproduced current signed source at the representative deterministic direct
+  shape: `6237 / 32 warm / 128 timed` reached **6.496580792 s /
+  19.702671928 tok/s**, digest `e339db7c4c119325`, and last token 95726.
+  This remains consistent with the preceding **19.586704594 tok/s** sampled
+  long-history result and isolates native sampling to a small fraction of the
+  remaining served gap.
+- Added a temporary affine-W4/G64 Metal QMV with eight SIMD groups per
+  threadgroup and one SIMD group per output row. The first form dequantized
+  each packed word independently. The second loaded each scale and bias once
+  per eight-lane quantization group and broadcast them with `simd_shuffle`.
+  Both used FP32 accumulation and BF16 output behind one opt-in switch.
+- Strict library/test builds passed. Standalone parity covered batch one at
+  K/N `128/128`, `5120/64`, and `512/6144`; maximum absolute difference from
+  MLX was **0.03125**. The original small-batch and M8 parity matrix also
+  passed unchanged.
+- Against the current short target-only control of **20.339874670 tok/s**, the
+  independent-load form reached **10.456143330 tok/s** and the subgroup-
+  broadcast form reached **7.773375044 tok/s**, regressions of **48.593%** and
+  **61.783%**. Both full-model screens produced the same candidate digest
+  `e446d211f2e2ff25` and last token 15.
+- The native QMV, public helper, test additions, and environment switch were
+  removed through `apply_patch`; `git diff --check` returned clean before this
+  record update. PERF-FA111 closes this scalar-output geometry. A future
+  affine route requires a stock-competitive matrix/SIMD tile or a fused
+  downstream consumer that eliminates measured work.

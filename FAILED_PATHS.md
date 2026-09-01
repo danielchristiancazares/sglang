@@ -3090,3 +3090,33 @@ option, or serving dispatch was added.
 - Related commit or revert: PERF-A079 retains checked opt-in target-only
   internal chunking at 2,048; the absent-value default preserves one-shot
   behavior.
+
+## PERF-FA111 - One-SIMD-per-output affine-W4 batch-one QMV
+
+- Hypothesis: a dedicated batch-one Metal QMV can beat MLX's generic affine
+  quantized product across the full-Q4 target projections and close the final
+  target-only decode gap.
+- Scope: affine-W4/G64 BF16-input target products, full-Q4 target-only direct
+  decoding, and exact short `128 / 32 warm / 128 timed` admission.
+- Attempted change: assigned one SIMD group to each output row and eight output
+  rows to each 256-thread group. The first form loaded scale and bias per
+  packed word. A second form loaded each parameter pair once per quantization
+  group and broadcast it across the corresponding eight lanes.
+- Benchmark evidence: stock MLX reached **20.339874670 tok/s**. The independent
+  parameter-load form reached **10.456143330 tok/s** (**-48.593%**), and the
+  subgroup-broadcast form reached **7.773375044 tok/s** (**-61.783%**).
+- Correctness evidence: strict library/test builds passed. Batch-one parity at
+  K/N `128/128`, `5120/64`, and `512/6144` stayed within **0.03125** maximum
+  absolute BF16 difference. Both full-model candidates completed 128 tokens
+  with one shared digest and final token.
+- Failure mode: scalar-output SIMD geometry leaves MLX's tuned matrix/vector
+  memory and instruction schedule far ahead. `simd_shuffle` plus divergent
+  parameter ownership further increases the full-model cost.
+- Closure basis: two parameter-loading strategies lose by roughly twofold or
+  more at the reachable whole-model path, leaving no admission margin for
+  narrower shape tuning of this geometry.
+- Reopen only if: a matrix-tiled batch-one kernel, dependency-level QMV
+  primitive, or fused downstream consumer first beats stock MLX on real target
+  tensors.
+- Related commit or revert: all experimental C++/Metal/header/test changes
+  were removed; PERF-A080 records the result.

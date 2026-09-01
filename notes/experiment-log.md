@@ -20057,3 +20057,64 @@ mean 13.929045  17.125658 446.051        39.730
   free with zero throttled pages, and thermal/performance status was normal.
   PERF-A079 retains chunk 2,048 as an opt-in capacity setting. Target-only
   single-token arithmetic and serving-loop cost are the next active branch.
+
+### 2026-09-01 07:28 PDT - scalar-output batch-one affine QMV rejected
+
+- Began from clean signed
+  `33a5bb36b9b3e7dca931b5103025d0d91f3be494`, 60 commits ahead of
+  `origin/main`. Port 30000 and Qwen/SGLang benchmark/compiler workloads were
+  clear; only the ordinary macOS Metal compiler services were resident.
+  Memory was 94% free with zero throttled pages, and thermal/performance status
+  was normal.
+- Reproduced the deterministic long-history control with:
+
+  ```bash
+  env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 \
+    /private/tmp/bench_qwen38_native \
+    python/sglang/srt/hardware_backend/mlx/native/libqwen38_engine.dylib \
+    /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    6237 32 128
+  ```
+
+  It reached **6.496580792 s / 19.702671928 tok/s**, digest
+  `e339db7c4c119325`, and last token 95726. The neighboring sampled result is
+  **19.586704594 tok/s**. A bounded Metal System Trace of sampled
+  `6237 / 1 warm / 128 timed` decode is retained at
+  `/private/tmp/qwen38-full-q4-target-long.trace`; its exported GPU intervals
+  show repeated roughly **1.4--1.54 ms** execution spans and roughly **14 ms**
+  command-buffer latency. The default template left Shader Timeline disabled,
+  so the artifact supplies cadence evidence without kernel attribution.
+- Temporarily added a C++/Metal affine-W4/G64 batch-one QMV behind
+  `SGLANG_MLX_NATIVE_BATCH_ONE_QMV=1`. Eight SIMD groups shared one 256-thread
+  group, with one SIMD group reducing each output row in FP32. The first form
+  loaded BF16 scale/bias per packed word. The second loaded them once per
+  quantization group and used `simd_shuffle` across each eight-lane cohort.
+- The exact strict library build used `clang++ -std=c++20 -O3 -fPIC -shared
+  -Wall -Wextra -Werror`, externalized the installed MLX headers, and emitted
+  `/private/tmp/libqwen38_batch_one_qmv_candidate.dylib`. Only the established
+  macOS 26.0 / MLX 26.2 linker warning remained. The standalone strict test
+  passed batch-one K/N `128/128`, `5120/64`, and `512/6144` with maximum
+  absolute BF16 difference **0.03125**, plus the complete retained
+  small-batch/M8 parity matrix.
+- Both candidate screens used:
+
+  ```bash
+  env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    SGLANG_MLX_NATIVE_BATCH_ONE_QMV=1 \
+    /private/tmp/bench_qwen38_native \
+    /private/tmp/libqwen38_batch_one_qmv_candidate.dylib \
+    /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    128 32 128
+  ```
+
+  The independent-load form reached **12.241607250 s / 10.456143330 tok/s**.
+  The subgroup-broadcast form reached **16.466463959 s / 7.773375044 tok/s**.
+  Both produced digest `e446d211f2e2ff25` and last token 15. Against the
+  current-source short control **20.339874670 tok/s**, these are regressions of
+  **48.592882%** and **61.782581%**.
+- Removed the native QMV source, helper, switch, and parity additions through
+  `apply_patch`. `git diff --check` and the clean worktree check passed before
+  this record change. Candidate dylib/test binaries remain reproducible
+  temporary artifacts in `/private/tmp`; the 15 MiB trace remains available
+  for later attribution. PERF-FA111 closes the scalar-output SIMD geometry.
