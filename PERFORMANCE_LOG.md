@@ -4,8 +4,9 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
-| M1 Max native early-out27 v2, sampled served `6237+128`, real 131K pools | selected 128-partial sampled screen **19.941 tok/s** | opt-in 64-partial xhigh lane **20.1722 tok/s** mean | **+0.2312 / +1.159%**; all five samples clear 20; xhigh Codex shell round trip passes | `MLX_SDPA_BLOCKS=64 SGLANG_MLX_NATIVE_SAMPLING=1 ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup`, five sequential samples | 2026-08-31 16:46 PDT |
-| M1 Max native early-out27 v2, cold Codex 0.151.0 xhigh shell-tool turn, real 131K pools | uncapped deterministic/sampled turns replayed prompts or timed out at 120 s | **one `/bin/pwd`, one final marker, exit 0 in about 81.8 s** | prompt snapshot replays only the appended continuation; 12,894 input / 502 output / 332 reasoning-output tokens | hash-pinned isolated `CODEX_HOME`, strict config, ephemeral 120-second command recorded in the experiment log | 2026-08-31 16:40 PDT |
+| M1 Max native early-out27 v2, request-local sampled served `6237+128`, real 131K pools | signed `883da94` restart **20.1356 tok/s** mean | request-boundary reseed **20.1556 tok/s** mean | **+0.0200 / +0.099%**; five samples **20.155/20.148/20.157/20.152/20.166**, every sample clears 20 and shares one digest | `MLX_SDPA_BLOCKS=64 SGLANG_MLX_NATIVE_SAMPLING=1 ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup`, five sequential samples | 2026-08-31 17:43 PDT |
+| M1 Max native early-out27 v2, first sampled served `6237+128` window, real 131K pools | selected 128-partial sampled screen **19.941 tok/s** | opt-in 64-partial first window **20.1722 tok/s** mean | **+0.2312 / +1.159%**; all five samples clear 20; the first xhigh shell round trip passed and later order-replay exposed process-global RNG drift | same production-sampled command, five sequential samples | 2026-08-31 16:46 PDT |
+| M1 Max native early-out27 v2, Codex 0.151.0 xhigh shell-tool turn, real 131K pools | first sampled turn: one `/bin/pwd`, final marker, exit 0 in about 81.8 s | fixed-seed request replay reaches the valid `/bin/pwd` and then emits a malformed `write_stdin` handle | speed and prompt-snapshot reuse pass; broader structured-output qualification remains active | hash-pinned isolated `CODEX_HOME`, strict config, ephemeral 120-second command recorded in the experiment log | 2026-08-31 17:43 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | fused full-attention q/k norm/RoPE **19.9886 tok/s** mean | reduced RMS barriers **20.0173 tok/s** combined ten-request mean | **+0.0287 / +0.144%**; first and independent windows clear 20 in aggregate | `MLX_MAX_MB_PER_BUFFER=128 ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, two five-sample restarts | 2026-08-31 15:21 PDT |
 | M1 Max native early-out27 v2, deterministic served `6237+128`, real 131K pools | MLX 50 MiB command-buffer budget **19.2260 tok/s** mean | 128 MiB plus fused full-attention q/k norm/RoPE **19.9886 tok/s** mean | **+0.7626 / +3.966%**; all measured requests exact; **0.0114 tok/s** remains to the client floor | `MLX_MAX_MB_PER_BUFFER=128 ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 0 --skip-warmup`, five-sample candidate window against qualified controls | 2026-08-31 14:18 PDT |
 | M1 Max native early-out27 v2, direct deterministic 6,237-history decode, 32 warm + 256 timed | MLX 50 MiB command-buffer budget **19.623300 tok/s** mean | native-engine 128 MiB default **20.153966 tok/s** mean | **+0.530666 / +2.704%**; every candidate clears 20 and all five pairs are exact | `bench_qwen38_native ... 6237 32 256`, process-isolated adjacent control/candidate pairs | 2026-08-31 13:21 PDT |
@@ -761,6 +762,8 @@ tree throughput can be ranked for production.
 | PERF-A046 | Fuse recurrent output RMS normalization with the SiLU gate. | Native Qwen3.8 gated-delta decode owner | Qualified and retained in signed `28174b3da2` | One exact Metal launch replaces the single-token RMSNorm, sigmoid, and elementwise gate chain in each of 48 recurrent layers. Direct long-history improves **19.469136 -> 19.515718 tok/s** (+0.239%); matched five-sample 131K serving improves **19.1260 -> 19.1548 tok/s** (+0.151%). Production `48x128`, nonaligned width 257, extreme activations, and 12-outstanding-output parity pass. |
 | PERF-A047 | Fuse recurrent causal convolution with its BF16 SiLU. | Native Qwen3.8 gated-delta decode owner | Qualified and retained in signed `4c1bc4c1e3` | The existing convolution/state launch now reproduces both BF16 boundaries of the following sigmoid and multiply, removing two launches in each of 48 recurrent layers. Five adjacent long-history pairs improve **19.524068 -> 19.632483 tok/s** (+0.555%); matched five-sample 131K serving improves **19.1730 -> 19.2134 tok/s** (+0.211%). Production width 10,240, nonaligned width 257, extreme activation parity, and exact served reasoning output pass. |
 | PERF-A048 | Concatenate full-attention q/k/v affine rows at load and issue fewer quantized products. | Native Qwen3.8 full-attention projection owner | Rejected and removed | Full q/k/v fusion screened at **20.721377944 tok/s** with digest `12bb3edf3d51feac`; q plus fused k/v screened at **20.672271140 tok/s** with digest `af06cc7ce5e094be`. Both diverge from exact control digest `8ea2430e3fa3d56e` because production row geometry changes MLX accumulation. See PERF-FA084. |
+| PERF-A054 | Sample the full supported distribution and reuse exact prompt-boundary native state for Codex continuations. | Native Qwen3.8 sampler, reasoning bound, and recurrent/KV snapshots | Retained in signed `883da94`; behavior qualification active | The independent committed restart averages **20.1356 tok/s** with every sample above 20. A first xhigh tool turn passed; later request-order replay exposed process-global RNG ownership and low-bit structured-output instability. |
+| PERF-A055 | Reinitialize the configured native sampling stream at each unrelated full request reset. | Native Qwen3.8 engine request boundary | Validated reproducibility fix; retained in this change | Five `6237+128` samples average **20.1556 tok/s**, all exceed 20, and all share SHA-256 `91dbc7056abfdc989aaee9e1d0f1fa3abc410637aabe144ac2ab0ea9bd97df3e`. Strict-prefix and prompt-snapshot continuations retain their ongoing stream. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -3159,3 +3162,34 @@ tree throughput can be ranked for production.
   `bd6b79adfcbc3125`, last token `28322`. The three focused C++ parity
   binaries pass, the native pytest suite passes **8 tests** with 16 existing
   warnings, and `git diff --check` passes.
+
+### 2026-08-31 17:43 PDT - PERF-A055 request-boundary sampling ownership
+
+- The independent signed-`883da94` restart produced sampled decode results
+  **20.163, 20.165, 20.123, 20.073, and 20.154 tok/s**, mean **20.1356**.
+  Every request completed exact `6237+128=6365` with
+  `finish_reason=length`. Running the xhigh shell-tool gate after this window
+  changed its trajectory because MLX's process-global random stream had been
+  advanced by the five unrelated benchmark requests.
+- The engine now stores the configured native seed and reapplies it from the
+  full `Engine::reset()` owner. Exact terminal-prefix and prompt-snapshot
+  continuations enter through `begin_request()` and preserve the active stream;
+  unrelated prompts perform the full reset and receive the configured stream
+  origin. This makes request outcome independent of earlier unrelated traffic.
+- Five sequential real-131K sampled requests after the change measured
+  **20.155, 20.148, 20.157, 20.152, and 20.166 tok/s**, mean **20.1556**.
+  Mean prompt throughput was **107.12 tok/s**, mean TTFT **58.224555 s**, and
+  mean end-to-end latency **64.525519 s**. Every request completed 6,365
+  tokens with `finish_reason=length` and identical output/reasoning SHA-256
+  `91dbc7056abfdc989aaee9e1d0f1fa3abc410637aabe144ac2ab0ea9bd97df3e`.
+- Fixed-seed replay also made the remaining behavior issue reproducible: the
+  low-bit model completes the requested `/bin/pwd`, then can construct an
+  alphanumeric `write_stdin.session_id`. Greedy-after-reasoning and one-call
+  turn truncation were screened and removed; PERF-FA089 and PERF-FA090 preserve
+  those results.
+- The installed-MLX native rebuild retains the established macOS 26.0/26.2
+  link warning. Q/k normalization plus full-attention RoPE, recurrent
+  norm/gate, and residual RMSNorm C++ parity pass. The focused native engine
+  suite passes **8 tests** with 16 existing warnings, and `git diff --check`
+  passes. This change is selected as a request-semantics/reproducibility win;
+  xhigh structured-output qualification continues independently.

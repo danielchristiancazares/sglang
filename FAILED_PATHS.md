@@ -2422,3 +2422,64 @@ option, or serving dispatch was added.
   the repeated greedy trajectory.
 - Related commit or revert: no source change; the selected interactive lane
   uses native stochastic sampling with seed 42.
+
+## PERF-FA089 - Sample reasoning and switch to greedy structured output
+
+- Hypothesis: retaining temperature/top-p/top-k sampling inside `<think>` and
+  switching to argmax after `</think>` would preserve xhigh reasoning diversity
+  while stabilizing tool syntax from the low-bit checkpoint.
+- Scope: native early-out27 v2, real 131K pools, fixed request-local seeds,
+  128- and 256-token reasoning bounds, and the exact Codex `/bin/pwd` gate.
+- Attempted change: added an opt-in post-reasoning argmax policy. A follow-up
+  also discarded the already sampled two-token-pipeline lookahead when the
+  reasoning-end token was emitted and recomputed that boundary token greedily.
+- Benchmark evidence: decode telemetry remained around **20.1--20.4 tok/s**.
+  The five-request throughput workload stays wholly inside its reasoning
+  section and retained the **20.1556 tok/s** request-reseed window.
+- Correctness evidence: seed 42 with a 256-token cap completed one requested
+  tool and final marker after first attempting a disallowed escalation. A
+  128-token cap completed one `/bin/pwd` and the final marker while Codex's
+  router reported trailing function-argument characters. Recomputing the
+  reasoning-close lookahead preserved that same extra malformed tool tail.
+  Seed 67396869 produced duplicate fields and a string session handle and
+  timed out.
+- Failure mode: argmax after the reasoning boundary does not supply the tool
+  schema or the completed-command state needed to choose a valid structured
+  continuation. The low-bit model still emits malformed or unnecessary tool
+  calls.
+- Why not to retry unchanged: both the precomputed-lookahead and boundary-
+  replacement forms reached the same parser failure class across two seeds
+  and two reasoning bounds.
+- Reopen only if: checkpoint precision, schema-constrained native decoding, or
+  a measured tool-state representation changes the structured logits.
+- Related commit or revert: all greedy-after-reasoning source changes were
+  removed; request-boundary RNG ownership was retained separately.
+
+## PERF-FA090 - End each assistant response after its first tool call
+
+- Hypothesis: forcing the assistant-end token immediately after one complete
+  Qwen3-Coder tool block would remove a malformed parallel-call tail while
+  retaining sequential tools on later Codex continuations.
+- Scope: native early-out27 v2, sampled reasoning plus greedy structured
+  output, 128-token reasoning bound, exact xhigh `/bin/pwd` gate, real 131K
+  pools, and one running request.
+- Attempted change: added an opt-in native transition from the tool-call-end
+  token directly to the assistant-end token, discarding the pipeline's next
+  proposal.
+- Benchmark evidence: server decode telemetry remained around **20.0--20.4
+  tok/s** throughout the bounded run.
+- Correctness evidence: the first response emitted exactly one valid
+  `/bin/pwd`, and Codex observed `/Users/dcazares/sglang`. Each following turn
+  then tried `write_stdin` with fabricated alphanumeric handle `"85dfe4"`;
+  Codex reported schema errors and the 120-second wrapper exited **124**.
+- Failure mode: truncating the parallel tail removes the error result that had
+  prompted the model to recover. The next assistant response reconstructs the
+  same invalid `write_stdin` call, so turn serialization moves the defect
+  across requests.
+- Why not to retry unchanged: the policy worsened the authoritative behavior
+  gate from exit zero with one router error to repeated router errors and a
+  timeout.
+- Reopen only if: a native grammar can validate tool arguments against the
+  supplied schema or model quality removes the fabricated handle.
+- Related commit or revert: the one-call transition was removed before
+  commit; the native tool stream retains its original multi-call behavior.
