@@ -19307,3 +19307,158 @@ mean 13.929045  17.125658 446.051        39.730
   server/direct/compiler processes are clear. Memory returned to 93% free
   with zero throttled pages and macOS reports normal thermal/performance
   status. `git diff --check` passes.
+
+### 2026-09-01 05:10 PDT - bounded DSpark low-budget probe cooldown
+
+- Continued from clean signed
+  `1fa23169dbc08e31d5099f5ca4696fa0ce6cffa6` on `main`, 54 commits ahead of
+  `origin/main`. Its EDDSA signature verified as good. Port 30000 and matching
+  server/direct/compiler processes were clear, memory was 93% free with zero
+  throttled pages, and macOS reported normal thermal/performance status.
+- A committed ratio-1.75 trace over exact sampled `128 / 32 warm / 256 timed`
+  exposed long contiguous regimes. Early low-confidence M=2 blocks emitted
+  one or two tokens in roughly 130 ms; later M=8 blocks repeatedly emitted
+  six through eight in roughly 226--230 ms. The trace reached
+  **24.342952260 tok/s**, 47 refills, mean width **5.553191489**, digest
+  `75fac01a0ef1f7d8`, and last token 19. The matched no-trace candidate control
+  reached **24.494388127 tok/s** with identical refills, width, digest, and
+  last token.
+- Added checked opt-in
+  `SGLANG_MLX_NATIVE_DSPARK_BYPASS_REFILLS=0..1024`. A positive value requires
+  the trained-confidence budget. After that budget selects the M=2 target
+  tier, the engine completes the selected exact p/q block, then executes the
+  configured number of exact target-only refills before forcing a new draft
+  probe. Each bypass advances the target recurrent/full-attention state and
+  the DSpark target-hidden context from the same captured target forward.
+  Request reset clears the countdown; absent or zero preserves existing
+  behavior.
+- Extracted the target-only speculative refill shared by the existing DFlash
+  and DSpark reasoning-cap paths and the new DSpark bypass. The original cap
+  callers retain their prior state transitions. The bypass caller closes
+  reasoning when its immediately emitted sampled token is the closing marker.
+  Trace reports each remaining bypass count. All implementation remains C++.
+- The first strict warning-as-error candidate dylib built with only the known
+  macOS 26.0 / MLX 26.2 linker warning. Cooldown direct screens used the exact
+  ratio-1.75 environment and produced:
+
+  | Bypass refills | Tok/s | Refills | Mean width | Digest | Last token |
+  |---:|---:|---:|---:|---|---:|
+  | 4 | 19.198827552 | 151 | 1.695364238 | `0ac2b2c5d4a276aa` | 318 |
+  | 8 | 17.781301933 | 175 | 1.462857143 | `95097c9c6a902a29` | 2 |
+  | 16 | 24.332648695 | 104 | 2.500000000 | `8ba2492d6be2c050` | 2 |
+  | 32 | 19.215717015 | 173 | 1.479768786 | `2b0096f784c1bdaf` | 5952 |
+
+  Every setting follows a different exact stochastic trajectory. Sixteen was
+  admitted to the natural workload; PERF-FA103 closes 4/8/32 unchanged.
+- Temporarily tested scheduling cooldown from the actual preceding emitted
+  width. Minimum-useful-width thresholds three/five/six reached respectively
+  **16.160295443 / 19.319338815 / 18.686185376 tok/s**. Width five and six
+  shared digest `104b9dd15cebf891`; width three produced
+  `8f2080982a3e9adb`. The trigger feeds sampling changes back into its own
+  predictor and is closed in PERF-FA102. Removed its parser, state, and branch.
+  One strict build during that removal placed the returned selected-width
+  variable at the DFlash call and failed warning-as-error as unused while the
+  DSpark caller lacked it. Corrected the two call sites; no failing binary was
+  used for measurement.
+- Rebuilt the repository dylib with the active MLX prefix. The exact selected
+  server command was the PERF-A073 launch with this single additional setting:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER -u MLX_METAL_FAST_SYNCH \
+    MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    PYTHONPATH=/Users/dcazares/sglang/python \
+    SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 \
+    SGLANG_MLX_CLEAR_CACHE_STEPS=0 SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_MTP_DIR=/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DSpark-MLX-AffineQ4 \
+    SGLANG_MLX_NATIVE_SMALL_BATCH_QMM=1 \
+    SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1 \
+    SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT=1 \
+    SGLANG_MLX_NATIVE_TRACE_SPEC=1 \
+    SGLANG_MLX_NATIVE_DSPARK_CONFIDENCE_COST_RATIO=1.75 \
+    SGLANG_MLX_NATIVE_DSPARK_BYPASS_REFILLS=16 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    --served-model-name qwen3.8-27b --language-model-only \
+    --context-length 131072 --max-total-tokens 131072 \
+    --max-running-requests 1 --max-mamba-cache-size 5 \
+    --chunked-prefill-size 8192 --max-prefill-tokens 8192 \
+    --disable-radix-cache --mlx-enable-sampling --sampling-defaults model \
+    --random-seed 42 --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --stream-interval 4 --scheduler-recv-interval 4 \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments retained real 131,072 context/token pools, one running
+  request, five auxiliary slots, 8,192-token prefill chunks, seed 42, both
+  Qwen parsers, incremental output, language-only mode, and disabled radix
+  cache/graphs. `/health`, `/v1/models`, and `/model_info` passed; maximum
+  model length was 131,072 and image/audio understanding remained disabled.
+- Every real sample ran the exact PERF-A073 client command:
+
+  ```bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b --input-tokens 6237 --output-tokens 128 \
+    --temperature 1.0 --top-p 0.95 --top-k 20 \
+    --presence-penalty 1.5 --skip-warmup --timeout 600
+  ```
+
+- Preliminary foreground root PID 13110 produced exact 6,365 tokens at
+  **17.031 generation tok/s**, **109.202 prompt tok/s**, **57.114227 s TTFT**,
+  and **64.571419 s** end to end. It exited through `Ctrl+C`; its verified
+  children and listener cleared before the repeated launch.
+- Fresh foreground root PID 13381 produced these six sequential exact
+  requests:
+
+  | Sample | Generation tok/s | Prompt tok/s | TTFT (s) | E2E (s) | Output fragments |
+  |---:|---:|---:|---:|---:|---:|
+  | 1 | 17.028 | 109.097 | 57.169134 | 64.627466 | 32 |
+  | 2 | 17.080 | 109.225 | 57.102521 | 64.538133 | 32 |
+  | 3 | 17.036 | 109.444 | 56.987802 | 64.442807 | 32 |
+  | 4 | 17.102 | 109.354 | 57.034992 | 64.460885 | 32 |
+  | 5 | 14.952 | 109.320 | 57.052937 | 65.546617 | 33 |
+  | 6 | 17.011 | 109.360 | 57.031910 | 64.497597 | 32 |
+
+  The first-five mean is **16.6396 tok/s**, **+3.0338 / +22.297844%** over
+  PERF-A073's **13.6058** mean. Samples 1--4 and recovery sample 6 average
+  **17.0514 tok/s**, **+3.4456 / +25.324494%**. Sample 5 is retained in the
+  headline mean. Its identical trajectory showed draft, verify, sampling, and
+  commit stages inflating together, including several commit spikes; the next
+  sample recovered. A post-sample snapshot showed 73.27% CPU idle and macOS
+  reported no thermal/performance warning. No specific competing client was
+  established, so the ledger labels it transiently contended without silently
+  excluding it.
+- All six repeated requests completed exact 6,365 tokens with
+  `finish_reason=length`, coherent reasoning, and shared reasoning/output
+  SHA-256
+  `1d1398eb3dfe3ae4813c1e53c12258506484e0821e19361a2286495c685a8851`.
+  The all-sample mean exceeds the selected DFlash2 real sample by
+  **1.3116 tok/s** and remains **3.3604 tok/s** below the required floor.
+  This is the strongest measured speculative serving lane, still opt-in and
+  awaiting an independent promotion window.
+- Final default regressions used the strict candidate dylib. DSpark with
+  cooldown and confidence budget unset reached **9.984645618 tok/s**, 14
+  refills, width **2.428571429**, digest `5a38c7070d7badeb`, and last token 16.
+  DFlash reached **31.390866129 tok/s**, 19 refills, width **6.684210526**,
+  digest `46bd4bb035b72c2b`, and last token 20. Bypass 16 with confidence ratio
+  unset failed closed before execution with
+  `DSpark bypass refills require confidence budgeting`.
+- Final strict warning-as-error library and standalone-test builds pass with
+  the established external linker warning. The test passes YaRN offsets
+  0/9,000/131,071, confidence/budget coverage, and final marker
+  `qwen38 DSpark YaRN/confidence parity passed`. The repository dylib rebuilt
+  from final source; focused native pytest passed **8 tests** with 16 existing
+  warnings. `git diff --check` passes.
+- Health passed after the final request. Root PID 13381 exited through
+  `Ctrl+C`; the master reported application shutdown complete and cleaned its
+  children, with the detokenizer receiving `-9` during final master cleanup.
+  Port 30000 and matching server/direct/compiler processes are clear. Memory
+  returned to 93% free with zero throttled pages and thermal/performance status
+  is normal.
+- Retain cooldown 16 behind its explicit opt-in and keep the default disabled.
+  Periodic cooldown alone cannot remove the remaining floor gap because every
+  probe still pays complete draft and target verification. The next branch
+  requires a cheap pre-draft signal or another target-only decode improvement.

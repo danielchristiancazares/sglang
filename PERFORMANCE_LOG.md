@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native DSpark low-budget probe cooldown, sampled served `6237+128`, real 131K pools | confidence-budget ratio 1.75 mean **13.6058 tok/s** | 16 target-only refills after each M=2 choice: first five **17.028 / 17.080 / 17.036 / 17.102 / 14.952 tok/s**, mean **16.6396**; recovery **17.011** | all-sample **+3.0338 / +22.298%**; five normal samples within the six-request window mean **17.0514**; one transiently contended sample retained; exact tokens and one shared reasoning/output SHA-256 | PERF-A074 exact PERF-A073 contract plus `SGLANG_MLX_NATIVE_DSPARK_BYPASS_REFILLS=16` | 2026-09-01 05:10 PDT |
 | M1 Max native DSpark trained-confidence M=2/M=8 budget, sampled served `6237+128`, real 131K pools | adjacent fixed-M=8 control **11.313 tok/s** | ratio **1.75**: **13.595 / 13.609 / 13.603 / 13.607 / 13.615 tok/s**, mean **13.6058** | **+2.2928 / +20.267%**; every sample completed exact 6,365 tokens with one shared reasoning/output SHA-256; retained opt-in while DFlash2 holds **15.328** and target-only holds above **20** | exact PERF-A068 server/client contract plus `SGLANG_MLX_NATIVE_DSPARK_CONFIDENCE_COST_RATIO=1.75` | 2026-09-01 04:43 PDT |
 | M1 Max native DSpark fixed verification-width sweep, sampled direct `128 / 1 warm / 32 timed` | seven drafts / target M=8 **10.025000 tok/s**, width **2.428571** | one draft / target M=2 **11.920231 tok/s**, width **1.6**; M=3/4/5/6/7 **8.861866 / 8.353200 / 7.544333 / 4.104266 / 4.139508 tok/s** | M=2 is the only useful short tier; M=6/7 hit a slow generic affine-QMM tier, while selected SG16/B32 makes M=8 faster; fixed shortening remains below 20 | PERF-A072 candidate dylib, exact PERF-A068 environment plus `SGLANG_MLX_NATIVE_DSPARK_VERIFY_DRAFT_TOKENS=1..7` | 2026-09-01 04:18 PDT |
 | M1 Max native DSpark trained-confidence telemetry, sampled direct `128 / 1 warm / 32 timed` | affine-W4 **10.050625 tok/s**, width **2.428571** | trace-enabled confidence **10.071235 tok/s**, width **2.428571** | exact digest/last token retained; steady draft **36.58--36.88 ms** includes confidence; timing movement is diagnostic noise | PERF-A071 candidate dylib with the existing trace flag and otherwise exact PERF-A068 environment | 2026-09-01 04:11 PDT |
@@ -793,6 +794,7 @@ tree throughput can be ranked for production.
 | PERF-A071 | Execute the official trained DSpark confidence head and expose exact per-position survival telemetry. | Native DSpark loader, BF16 hidden/Markov feature projection, FP32 sigmoid, and existing speculative trace | Retained; cost-based scheduler work active | Direct trace preserves width **2.428571**, digest `5a38c7070d7badeb`, and last token 16 at **10.071235 tok/s**. The natural served request preserves exact baseline reasoning SHA-256 at **11.303 tok/s**. Confidence spans useful regimes and remains probabilistic under exact p/q sampling. |
 | PERF-A072 | Generalize exact speculative verification to checked one-through-seven-token prefixes and measure every DSpark target batch. | Shared native p/q verifier, accepted-state commit, DSpark prefix selection, and trace telemetry | Retained as opt-in profiling/scheduling infrastructure; fixed short widths rejected | Default DSpark and DFlash reproduce their exact selected trajectories. DSpark target M=2 reaches **11.920231 tok/s**; M=3/4/5/6/7 reach **8.861866 / 8.353200 / 7.544333 / 4.104266 / 4.139508**, and selected M=8 reaches **10.025000**. The useful adaptive geometry is therefore binary M=2/M=8 under the current kernels. See PERF-FA100. |
 | PERF-A073 | Budget each DSpark target verification from the trained current-block survival probabilities and measured M=2/M=8 cycle-cost ratio. | Native DSpark confidence head, shared exact verifier, dense-q prefix slicing, and opt-in scheduler | Retained opt-in at ratio **1.75**; fixed M=8 remains the default | Five real-131K-pool sampled `6237+128` requests average **13.6058 tok/s**, **+20.267%** over the adjacent **11.313 tok/s** control, with exact token counts and one shared reasoning/output SHA-256. Ratio 1.4 regresses to **10.916 tok/s** because live full/short cycle cost is about 1.77. See PERF-FA101. |
+| PERF-A074 | Skip a bounded number of DSpark draft/verify probes after the confidence scheduler selects the low-value M=2 tier. | Native DSpark refill scheduler, exact target-only target/draft-context advance, and trace telemetry | Retained opt-in at **16** bypass refills; default remains disabled | The first five real samples average **16.6396 tok/s**, including a retained transiently contended **14.952** sample; five normal samples within six requests average **17.0514**. Every request completes exact 6,365 tokens with shared SHA-256 `1d1398eb...`. The selected setting remains **3.3604 tok/s** below the floor. See PERF-FA102/103. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -3846,3 +3848,54 @@ tree throughput can be ranked for production.
   **13.6058 tok/s** remains **1.7222 tok/s** below selected DFlash2 and
   **6.3942 tok/s** below the requested floor. The next DSpark cost branch is a
   bounded target-only bypass for low-value draft cycles.
+
+### 2026-09-01 05:10 PDT - PERF-A074 DSpark low-budget probe cooldown
+
+- Added checked opt-in `SGLANG_MLX_NATIVE_DSPARK_BYPASS_REFILLS=0..1024`.
+  After a confidence-budgeted block selects the measured M=2 tier, the next
+  configured number of refills execute exact target-only decode while
+  advancing the DSpark target-hidden cache from the same captured target
+  states. The countdown then forces a fresh DSpark probe. Request reset clears
+  the countdown; a positive value requires confidence budgeting; absent or
+  zero keeps the existing default path.
+- Extracted the existing reasoning-cap target-only block into the shared
+  speculative refill owner. DFlash and ordinary DSpark cap paths retain their
+  previous behavior. A bypassed DSpark refill additionally observes a sampled
+  reasoning-close token at its immediate emission boundary.
+- On sampled direct `128 / 32 warm / 256 timed`, ratio-1.75 without cooldown
+  reached **24.494388127 tok/s**, 47 refills, width **5.553191489**, digest
+  `75fac01a0ef1f7d8`. Cooldowns 4/8/16/32 reached respectively
+  **19.198827552 / 17.781301933 / 24.332648695 / 19.215717015 tok/s** on
+  different exact trajectories. Sixteen was the only cooldown admitted to
+  the real workload; PERF-FA103 closes the others unchanged.
+- A preliminary exact real-131K-pool `6237+128` request at cooldown 16 reached
+  **17.031 tok/s**, **109.202 prompt tok/s**, **57.114227 s TTFT**, and
+  **64.571419 s** end to end. A fresh repeated launch produced first-five
+  decode rates **17.028 / 17.080 / 17.036 / 17.102 / 14.952 tok/s**, mean
+  **16.6396**, followed by a recovered sixth sample at **17.011 tok/s**.
+  Five normal samples within the six-request window average **17.0514 tok/s**.
+- The fifth repeated sample retained the identical output while live draft,
+  verify, sample, and commit stages inflated together; it is retained as a
+  transiently contended **14.952 tok/s** observation. macOS reported no
+  thermal or performance warning, the following sample recovered, and no
+  specific competing process was established. All six raw results remain in
+  the experiment ledger.
+- Every repeated request completed exact 6,365 tokens with
+  `finish_reason=length`, coherent reasoning, and shared output/reasoning
+  SHA-256
+  `1d1398eb3dfe3ae4813c1e53c12258506484e0821e19361a2286495c685a8851`.
+  The first-five mean improves PERF-A073 by **3.0338 tok/s / 22.297844%** and
+  exceeds the selected DFlash2 sample by **1.3116 tok/s**. It remains
+  **3.3604 tok/s** below the requested floor, so this is retained opt-in
+  infrastructure with an independent promotion window still open.
+- Warning-as-error native library and standalone-test builds pass; focused
+  native pytest passes **8 tests** with 16 existing warnings. Default DSpark
+  reproduces width **2.428571429** and digest `5a38c7070d7badeb`; DFlash
+  reproduces width **6.684210526** and digest `46bd4bb035b72c2b`. Invalid
+  bypass-without-budget configuration fails closed. Health, language-only
+  metadata, shutdown, listener/process cleanup, 93% free memory, and normal
+  thermal status pass.
+- Decision: retain cooldown 16 as the best measured speculative serving lane,
+  default disabled. The next scheduler candidate requires a cheap pre-draft
+  signal that suppresses probe cost while preserving access to high-yield
+  regions; periodic widening alone cannot supply the remaining floor margin.

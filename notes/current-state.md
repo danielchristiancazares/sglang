@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-04:43 PDT.
+05:10 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -271,6 +271,18 @@ reasoning/output digest. Fixed M=8 remains the DSpark default; the adaptive
 lane is **1.7222 tok/s** behind selected DFlash2 and **6.3942 tok/s** behind
 the requested floor. A bounded target-only bypass for predicted low-value
 draft cycles is the next cost candidate.
+
+An additional opt-in cooldown now skips sixteen DSpark probes after the
+confidence budget selects M=2, advancing target and draft context through
+exact target-only refills before forcing a fresh probe. The first five real
+samples reach **17.028 / 17.080 / 17.036 / 17.102 / 14.952 tok/s**, mean
+**16.6396**; the fifth is retained as transiently contended, and the recovery
+sample reaches **17.011**. Five normal samples within the six-request window
+average **17.0514 tok/s**. Every request completes exact 6,365 tokens with one
+shared reasoning/output digest. Cooldown sixteen is the strongest measured
+speculative serving lane and remains opt-in; it retains a **3.3604 tok/s** gap
+to the floor on the all-sample mean. A cheap pre-draft signal or further
+target-only improvement is required to remove periodic probe cost.
 
 Two DSpark proposal-fidelity candidates are closed. Independently applying
 target top-k/top-p filtering to each draft row fell to **6.997461 tok/s** and

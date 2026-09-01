@@ -143,6 +143,25 @@ float native_dspark_confidence_cost_ratio() {
   return ratio;
 }
 
+int native_dspark_bypass_refills() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_DSPARK_BYPASS_REFILLS");
+  if (value == nullptr || *value == '\0') {
+    return 0;
+  }
+  int count = 0;
+  const std::string_view text(value);
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), count);
+  if (error != std::errc() || end != text.data() + text.size() || count < 0 ||
+      count > 1024) {
+    throw std::runtime_error(
+        "SGLANG_MLX_NATIVE_DSPARK_BYPASS_REFILLS must be an integer from 0 "
+        "through 1024");
+  }
+  return count;
+}
+
 enum class LinearAttnOverrideScope {
   kOutProjection,
   kQkvProjection,
@@ -2542,6 +2561,7 @@ void Engine::load_dspark(
   dspark_confidence_bias_ = dense("confidence_head.proj.bias", {1});
   dspark_verify_draft_tokens_ = native_dspark_verify_draft_tokens();
   dspark_confidence_cost_ratio_ = native_dspark_confidence_cost_ratio();
+  dspark_bypass_refills_ = native_dspark_bypass_refills();
   if (dspark_confidence_cost_ratio_ > 0.0f &&
       dspark_verify_draft_tokens_ != kDraftTokens) {
     throw std::runtime_error(
@@ -2550,6 +2570,11 @@ void Engine::load_dspark(
   if (dspark_confidence_cost_ratio_ > 0.0f && !sampling_enabled_) {
     throw std::runtime_error(
         "DSpark confidence budgeting requires native sampling");
+  }
+  if (dspark_bypass_refills_ > 0 &&
+      dspark_confidence_cost_ratio_ <= 0.0f) {
+    throw std::runtime_error(
+        "DSpark bypass refills require confidence budgeting");
   }
 
   dspark_layers_.clear();
@@ -2589,6 +2614,7 @@ void Engine::load_dspark(
 
 void Engine::dspark_reset() {
   dspark_context_offset_ = 0;
+  dspark_bypass_remaining_ = 0;
   for (DSparkLayer& layer : dspark_layers_) {
     layer.attn.keys = array(0);
     layer.attn.values = array(0);
@@ -3247,7 +3273,7 @@ void Engine::draft_commit_verified_prefix(
   async_eval(std::move(committed_states));
 }
 
-void Engine::verify_speculative_block(
+int Engine::verify_speculative_block(
     int32_t token,
     const array& draft_tokens,
     const array& proposal_indices,
@@ -3523,6 +3549,20 @@ void Engine::verify_speculative_block(
         elapsed_ms(sample_done, finished),
         elapsed_ms(started, finished));
   }
+  return draft_token_count;
+}
+
+int32_t Engine::target_only_spec_refill(int32_t token) {
+  int32_t input[1] = {token};
+  TargetForward target = forward_hidden_captured(
+      array(input, {1, 1}, mx::int32));
+  last_hidden_ = last_token(target.hidden);
+  draft_append_context(target.captured, 1);
+  array next = select_token(target.hidden);
+  eval(next);
+  spec_buf_[0] = next.item<int32_t>();
+  spec_buf_n_ = 1;
+  return spec_buf_[0];
 }
 
 void Engine::dflash_spec_refill(int32_t token) {
@@ -3533,15 +3573,7 @@ void Engine::dflash_spec_refill(int32_t token) {
   if (reasoning_open_ && max_reasoning_tokens_ > 0 &&
       selected_reasoning_tokens_ + kDraftTokens + 1 >=
           max_reasoning_tokens_) {
-    int32_t input[1] = {token};
-    TargetForward target = forward_hidden_captured(
-        array(input, {1, 1}, mx::int32));
-    last_hidden_ = last_token(target.hidden);
-    draft_append_context(target.captured, 1);
-    array next = select_token(target.hidden);
-    eval(next);
-    spec_buf_[0] = next.item<int32_t>();
-    spec_buf_n_ = 1;
+    target_only_spec_refill(token);
     return;
   }
 
@@ -3570,15 +3602,20 @@ void Engine::dspark_spec_refill(int32_t token) {
   if (reasoning_open_ && max_reasoning_tokens_ > 0 &&
       selected_reasoning_tokens_ + draft_token_count + 1 >=
           max_reasoning_tokens_) {
-    int32_t input[1] = {token};
-    TargetForward target = forward_hidden_captured(
-        array(input, {1, 1}, mx::int32));
-    last_hidden_ = last_token(target.hidden);
-    draft_append_context(target.captured, 1);
-    array next = select_token(target.hidden);
-    eval(next);
-    spec_buf_[0] = next.item<int32_t>();
-    spec_buf_n_ = 1;
+    target_only_spec_refill(token);
+    return;
+  }
+  if (dspark_bypass_remaining_ > 0) {
+    --dspark_bypass_remaining_;
+    if (native_spec_trace_enabled()) {
+      std::fprintf(
+          stderr,
+          "qwen38_dspark bypass remaining=%d\n",
+          dspark_bypass_remaining_);
+    }
+    if (target_only_spec_refill(token) == 248069) {
+      reasoning_open_ = false;
+    }
     return;
   }
 
@@ -3627,7 +3664,7 @@ void Engine::dspark_spec_refill(int32_t token) {
         dspark_confidence_weight_,
         dspark_confidence_bias_);
   }
-  verify_speculative_block(
+  const int selected_draft_tokens = verify_speculative_block(
       token,
       draft_tokens,
       array(0),
@@ -3637,6 +3674,10 @@ void Engine::dspark_spec_refill(int32_t token) {
       /*greedy=*/!sampled,
       dspark_confidence_cost_ratio_,
       "dspark");
+  if (confidence_budget && dspark_bypass_refills_ > 0 &&
+      selected_draft_tokens == 1) {
+    dspark_bypass_remaining_ = dspark_bypass_refills_;
+  }
 }
 
 void Engine::spec_refill(int32_t token) {

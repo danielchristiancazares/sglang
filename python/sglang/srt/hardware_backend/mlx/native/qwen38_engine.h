@@ -236,6 +236,7 @@ class Engine {
       int32_t anchor);
   void draft_commit_verified_prefix(
       const TargetForward& verified, int token_count);
+  int32_t target_only_spec_refill(int32_t token);
   void dflash_spec_refill(int32_t token);
   void load_dspark(
       const std::unordered_map<std::string, mlx::core::array>& weights);
@@ -259,7 +260,7 @@ class Engine {
   void draft_append_context(
       const std::vector<mlx::core::array>& captured,
       int token_count);
-  void verify_speculative_block(
+  int verify_speculative_block(
       int32_t token,
       const mlx::core::array& draft_tokens,
       const mlx::core::array& proposal_indices,
@@ -327,6 +328,8 @@ class Engine {
   mlx::core::array dspark_confidence_bias_{0};
   int dspark_verify_draft_tokens_ = 7;
   float dspark_confidence_cost_ratio_ = 0.0f;
+  int dspark_bypass_refills_ = 0;
+  int dspark_bypass_remaining_ = 0;
   std::vector<DSparkLayer> dspark_layers_;
   std::vector<LayerSnap> snap_;
   int32_t spec_buf_[8]{};
