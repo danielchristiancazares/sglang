@@ -953,7 +953,7 @@ constexpr const char* kAffineM8KsplitQmmSource = R"(
         constexpr ushort KStep = 8;
         constexpr ushort SimdGroups = 16;
         constexpr uint K = KConst;
-        constexpr uint PackedK = K / 8;
+        constexpr uint PackedBytes = K * Bits / 8;
         constexpr uint QuantGroups = K / 64;
         constexpr uint KChunk = K / SimdGroups;
 
@@ -989,17 +989,46 @@ constexpr const char* kAffineM8KsplitQmmSource = R"(
           for (ushort pack_in_tile = 0; pack_in_tile < 4; ++pack_in_tile) {
             const uint k_base = k_start + pack_in_tile * 8;
             const uint output = output_start + output_column;
-            const uint packed = w[output * PackedK + k_base / 8];
+            const device uchar* packed =
+                reinterpret_cast<const device uchar*>(w) +
+                output * PackedBytes + k_base * Bits / 8;
             const uint parameter = output * QuantGroups + k_base / 64;
             const float scale = static_cast<float>(scales[parameter]);
             const float bias = static_cast<float>(biases[parameter]);
+            threadgroup bfloat* destination =
+                staged_w + simd_id * KTile * OutputTile +
+                pack_in_tile * 8 * OutputTile + output_column;
+            if constexpr (Bits == 4) {
+              const uint packed_word =
+                  *reinterpret_cast<const device uint*>(packed);
 #pragma unroll
-            for (ushort value = 0; value < 8; ++value) {
-              const uint quantized = (packed >> (value * 4)) & 0xfu;
-              staged_w[
-                  simd_id * KTile * OutputTile +
-                  (pack_in_tile * 8 + value) * OutputTile + output_column] =
-                  static_cast<bfloat>(scale * quantized + bias);
+              for (ushort value = 0; value < 8; ++value) {
+                const uint quantized =
+                    (packed_word >> (value * 4)) & 0xfu;
+                destination[value * OutputTile] =
+                    static_cast<bfloat>(scale * quantized + bias);
+              }
+            } else {
+              const uint byte0 = packed[0];
+              const uint byte1 = packed[1];
+              const uint byte2 = packed[2];
+              const uint byte3 = packed[3];
+              const uint byte4 = packed[4];
+              const uint quantized[8] = {
+                  byte0 & 0x1fu,
+                  (byte0 >> 5) | ((byte1 & 0x03u) << 3),
+                  (byte1 >> 2) & 0x1fu,
+                  (byte1 >> 7) | ((byte2 & 0x0fu) << 1),
+                  (byte2 >> 4) | ((byte3 & 0x01u) << 4),
+                  (byte3 >> 1) & 0x1fu,
+                  (byte3 >> 6) | ((byte4 & 0x07u) << 2),
+                  byte4 >> 3,
+              };
+#pragma unroll
+              for (ushort value = 0; value < 8; ++value) {
+                destination[value * OutputTile] =
+                    static_cast<bfloat>(scale * quantized[value] + bias);
+              }
             }
           }
           simdgroup_barrier(mem_flags::mem_threadgroup);
@@ -1475,14 +1504,16 @@ array QLinear::operator()(const array& x) const {
     if (native_m8_ksplit_qmm_enabled() && x.shape()[1] == 8 &&
         x.dtype() == mx::bfloat16 && w.dtype() == mx::uint32 &&
         scales.dtype() == mx::bfloat16 && biases.dtype() == mx::bfloat16 &&
-        group_size == 64 && bits == 4 && input_features % 512 == 0 &&
+        group_size == 64 && (bits == 4 || bits == 5) &&
+        input_features % 512 == 0 &&
         output_features % 32 == 0) {
       if (native_qmm_trace_enabled()) {
         std::fprintf(
             stderr,
-            "qwen38_qmm m8_ksplit rows=8 K=%d N=%d bits=4\n",
+            "qwen38_qmm m8_ksplit rows=8 K=%d N=%d bits=%d\n",
             input_features,
-            output_features);
+            output_features,
+            bits);
       }
       return affine_qmm_m8_ksplit(*this, x);
     }
@@ -1561,13 +1592,13 @@ array affine_qmm_m8_ksplit(const QLinear& linear, const array& x) {
       linear.w.dtype() != mx::uint32 ||
       linear.scales.dtype() != mx::bfloat16 ||
       linear.biases.dtype() != mx::bfloat16 || linear.group_size != 64 ||
-      linear.bits != 4) {
+      (linear.bits != 4 && linear.bits != 5)) {
     throw std::runtime_error("invalid M8 K-split affine QMM inputs");
   }
   const int input_features = static_cast<int>(x.shape()[2]);
   const int output_features = static_cast<int>(linear.w.shape()[0]);
   if (input_features % 512 != 0 || output_features % 32 != 0 ||
-      linear.w.shape()[1] * 8 != input_features ||
+      linear.w.shape()[1] * 32 != input_features * linear.bits ||
       linear.scales.shape() != mx::Shape{
           output_features, input_features / linear.group_size} ||
       linear.biases.shape() != linear.scales.shape()) {
@@ -1584,7 +1615,10 @@ array affine_qmm_m8_ksplit(const QLinear& linear, const array& x) {
       {x.dtype()},
       {512, output_features / 32, 1},
       {512, 1, 1},
-      {{"KConst", mx::fast::TemplateArg{input_features}}},
+      {
+          {"KConst", mx::fast::TemplateArg{input_features}},
+          {"Bits", mx::fast::TemplateArg{linear.bits}},
+      },
       std::nullopt,
       false,
       {});

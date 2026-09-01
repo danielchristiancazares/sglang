@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max affine-Q5 target plus DFlash2, sampled direct `128 / 32 warm / 128 timed` | generic affine-Q5 verifier **11.506669050 tok/s**, M=8 about **363--368 ms** | native Q5 M=8 K-split **13.721235888 tok/s**, M=8 about **228--229 ms** | **+2.214566838 tok/s / +19.246%**; representative five-bit unpack parity passes; target-only remains faster at **16.322505765 tok/s** | PERF-A092 candidate dylib with the exact PERF-A091 DFlash command | 2026-09-01 11:49 PDT |
 | M1 Max Qwen3.8-27B affine-Q5/G64 native target, sampled direct `128 / 32 warm / 128 timed` | GGUF Q5 1K-FP8 five-run mean **7.2614 tok/s** | first native affine-Q5 sample **16.322505765 tok/s** | **+9.061105765 tok/s / +124.781%**; immutable 18.51 GB five-bit target loads without source changes; served 131K and behavior gates pending | `bench_qwen38_native` with native sampling seed 42 and the pinned affine-Q5 snapshot | 2026-09-01 11:43 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S, Q4_K token embedding, exact 131K FP8 KV pool, sampled served `128+32` | same-artifact BF16: **0.315 tok/s**, **5.616 prompt tok/s**, **22.790664 s TTFT**, **121.240667 s E2E** | FP8 five-run mean **3.237 tok/s**, **5.8974 prompt tok/s**, **21.705304 s TTFT**, **31.286811 s E2E** | cache **8.00 -> 4.00 GB**, reported headroom **0.99 -> 6.99 GB**; **10.276x / +927.619%** generation; exact capacity, reasoning, arithmetic, and tools pass | exact PERF-A090 server contract; five cache-flushed ordinary sampled requests | 2026-09-01 11:29 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S, Q4_K token embedding, 1K FP8 KV pool, sampled served `128+32` | same-artifact BF16 smoke: **7.086 tok/s**, **5.809 prompt tok/s**, **22.033405 s TTFT**, **26.408174 s E2E** | native FP8 five-run mean **7.2614 tok/s**, **5.8668 prompt tok/s**, **21.818682 s TTFT**, **26.087973 s E2E** | first native FP8 capacity lane; **+0.1754 tok/s / +2.475%** versus the prior same-artifact smoke; exact lengths, reasoning, arithmetic, and tools pass | PERF-A089 server contract; five cache-flushed ordinary sampled requests | 2026-09-01 11:17 PDT |
@@ -827,6 +828,7 @@ tree throughput can be ranked for production.
 | PERF-A089 | Supply the missing MPS E4M3FN value conversion while preserving SGLang's byte-backed generic KV pool. | Existing native Metal extension, narrow MPS `aten::_to_copy` specialization, contiguous/strided FP32-to-FP8 and FP8-to-FP32 kernels | Retained; exact 131K qualification active | 400,006 CPU-reference encodes and all 256 raw decodes match bit-exactly; offset/strided/empty and ordinary BF16 fallback checks pass. A 1K FP8 server warms and five sampled requests average **7.2614 tok/s** with arithmetic/tools preserved. No Python source changed. |
 | PERF-A090 | Qualify the native FP8 conversion at the requested exact token pool. | Q4_K-embedding Q5 artifact, one FP32 Mamba slot, 131,072-token byte-backed FP8 K/V pool, sampled behavior | Retained exact-capacity selection; additional residency reduction active | Exact K/V allocation falls **8.00 -> 4.00 GB** and reported headroom rises **0.99 -> 6.99 GB**. Five sampled requests average **3.237 tok/s**, **10.276x** the matched BF16 result, while the full pool remains **55.42%** below the 1K FP8 mean. See PERF-FA118. |
 | PERF-A091 | Move the Q5 target onto the compiled native MLX engine with a genuine affine five-bit checkpoint. | Pinned text-only Qwen3.8-27B affine-Q5/G64 snapshot, native target loader, and sampled direct decode | Artifact retained; native five-bit verifier optimization active | Revision `2568951b...c2f05` contains 498 U32 packed tensors, 1,349 BF16 tensors, and no vision tensors. Direct `128 / 32 / 128` reaches **16.322505765 tok/s**, **2.248x** the GGUF Q5 1K-FP8 mean. The unchanged Q4-tuned DFlash path reaches only **11.506669050 tok/s** because affine-Q5 M=8 falls through the generic verifier; see PERF-FA119. |
+| PERF-A092 | Decode affine five-bit weights inside the shared M=8 K-split verifier. | Native Metal SG16/B32 target QMM, affine Q5/G64 bitstream, and exact p/q DFlash decode | Retained opt-in verifier win; target-only remains selected | Representative K/N parity passes at maximum error **0.03125 / 0.0625 / 0.107422**. M=8 falls from about **363--368 to 228--229 ms** and direct throughput rises **11.506669050 -> 13.721235888 tok/s** (**+19.246%**). The unchanged full-Q4 path preserves exact digest/width and improves in the adjacent sample. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -4577,3 +4579,28 @@ tree throughput can be ranked for production.
   the five-bit target uses generic MLX QMM. PERF-FA119 closes that unchanged
   composition. Next: add exact affine-five-bit unpacking to the common native
   M=8 verifier, validate parity, and rerun fixed-cycle plus natural serving.
+
+### 2026-09-01 11:49 PDT - PERF-A092 affine-Q5 M=8 K-split verifier
+
+- Generalized the selected SG16/B32 M=8 K-split Metal kernel over affine bits
+  four/five. Five-bit rows use MLX's exact eight-values/five-bytes packed
+  order; each SIMD lane decodes one output column into the existing BF16
+  32x32 tile. Four-bit rows keep their aligned 32-bit decode branch.
+- A new strict C++ test compares the native result with MLX
+  `quantized_matmul` at Q5 K/N `512/256`, `5120/64`, and `17408/32`.
+  Maximum absolute errors are **0.03125 / 0.0625 / 0.107422**. The rejected
+  K=256 shape fails closed. The complete pre-existing 2/4-bit small-batch,
+  M=8, dense, and user-owned batch-one suite also passes.
+- The exact PERF-A091 DFlash trace improves from **11.506669050** to
+  **13.721235888 tok/s**, a **+19.246%** gain. M=8 verification falls from
+  about **363--368 ms** to **228--229 ms**. The candidate completes 128 timed
+  tokens with 41 refills, mean width **3.170731707**, digest
+  `142b1268bcf49768`, and last token 271. The changed BF16 reduction grouping
+  changes the sampled trajectory, so fixed cycle cost and exact p/q execution
+  are retained alongside throughput.
+- A full-Q4 regression through the generalized kernel preserves exact digest
+  `79bf856f14024a3e`, last token 20, 32 refills, and mean width 3.84375. The
+  candidate reached **22.286223210 tok/s** versus the adjacent original-kernel
+  sample at **20.581517098 tok/s**. Retain the Q5 verifier under the existing
+  opt-in QMM controls. Target-only affine Q5 at **16.322505765 tok/s** remains
+  faster, so proposal quality and target-cycle bytes remain active.

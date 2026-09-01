@@ -276,8 +276,13 @@ directly and reaches **16.322505765 tok/s** on sampled direct
 `128 / 32 warm / 128 timed`, **2.248x** the GGUF Q5 1K-FP8 mean. Exact served
 131K, reasoning/tools, and Codex gates remain pending. The unchanged selected
 DFlash controls regress to **11.506669050 tok/s** because five-bit M=8 target
-verification falls through to generic MLX QMM. Native five-bit K-split
-verification is the active kernel branch.
+verification falls through to generic MLX QMM. PERF-A092 adds exact
+five-byte/eight-value affine-Q5 unpacking to the selected SG16/B32 K-split
+kernel. Representative parity passes, M=8 verification falls to about
+**228--229 ms**, and the same direct composition rises to
+**13.721235888 tok/s** (**+19.246%**). Target-only remains faster at
+**16.322505765 tok/s**; proposal quality and target-cycle bytes own the next
+gap.
 
 The unchanged Q5_K_M artifact is closed on this loader because mixed merged
 weights contain Q8_0 shards unsupported by the native Metal merge path. The
