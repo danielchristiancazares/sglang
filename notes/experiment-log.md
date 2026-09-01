@@ -18004,3 +18004,200 @@ mean 13.929045  17.125658 446.051        39.730
   existing C++ `Engine::load_mtp` seam, preserving the current Python ABI,
   then implement hidden capture, block drafting, exact p/q verification, and
   compact recurrent accepted-path commit.
+
+### 2026-09-01 01:44 PDT - native DFlash2 reaches decode and exposes the prefill boundary
+
+- Began from signed HEAD `ee0419918e0cfcceb215d15886b8848dd025fd29`
+  on `main`, 33 commits ahead of `origin/main`. The only source changes were
+  the user-owned native DFlash2 runtime work in `qwen38_engine.cpp` and
+  `qwen38_engine.h`. Port 30000 and matching server/compiler processes were
+  absent, system memory was 94% free, pages throttled were zero, and macOS
+  reported no thermal or performance warning.
+- Rebuilt the native dylib through the checked-in `build.sh`; the established
+  macOS 26.0 / MLX 26.2 linker warning remained. The focused native engine
+  suite passed **8 tests** with 16 existing warnings. The rebuilt dylib
+  SHA-256 was
+  `b7a39c9a684f167bfbc594b115dce755b7597de862232d3d20fc886a5d584ade`.
+- A matched full-Q4 eight-token direct screen measured the stock MLX affine
+  path at steady draft **41.288--41.686 ms** and target verify
+  **352.531--356.089 ms**. The selective native small-batch affine QMM reduced
+  steady draft to **34.211--37.378 ms** and target verify to
+  **305.130--305.604 ms**, with the accepted-prefix tape commit at
+  **1.992--2.324 ms**. Both used seed 67396869 and the same random-token
+  acceptance shape, seven refills and mean emitted width **1.142857**.
+- Extending the custom QMM to the exact affine `17408 -> 5120` down projection
+  regressed the same full-Q4 cycle: steady draft **34.906--38.626 ms** and
+  verify **314.693--315.150 ms**. The matched selected library retained
+  **34.211--37.378 / 305.130--305.604 ms**. The exact-down dispatch was
+  removed; the selected route again requires at least 6,144 output features.
+- Launched the full immutable Q4 target, exact derived DFlash2 W4 draft, real
+  `context_length=max_total_tokens=131072`, one request, BF16 KV, native
+  sampling seed 42, 64 SDPA blocks, custom small-batch QMM, tape commit, and an
+  8,192-token server prefill chunk. Health, model list, and model info passed;
+  the served model was `qwen3.8-27b` and image/audio understanding remained
+  disabled. Warm decode reached steady cycles near **343--347 ms** and one
+  natural six-token warmup cycle accepted five drafts, emitting width six.
+- Exact Codex 0.151.0 xhigh thread
+  `01a05c21-d8b6-7032-8c62-bd087b9aa7f7` entered `/v1/responses`, then the
+  scheduler failed during its roughly 6.2K-token first prefill with Metal
+  command-buffer error `Insufficient Memory
+  (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)`. The client reported
+  a disconnected response body and exited 1. The verified server tree exited
+  through its crash handler.
+- A one-variable relaunch reduced the server chunk to 2,048. Its first 2,048
+  tokens completed at **67.46 prompt tok/s** with 4,180 pending tokens. The
+  following SGLang continuation entered `_forward_lazy_token` and attempted
+  to call the native runner's `SimpleNamespace` model stub, raising
+  `TypeError: 'types.SimpleNamespace' object is not callable`. Exact xhigh
+  thread `01a05c23-5cc9-7aa3-ba0f-bb4022ce7564` disconnected and exited 1.
+  This establishes that external multi-chunk continuation bypasses the native
+  prefill entry after the first chunk. The next implementation owner is the
+  native C++ `Engine::prefill`: internally bound DFlash target/capture work
+  while retaining one SGLang-native prefill call and the existing Python ABI.
+
+### 2026-09-01 02:03 PDT - native DFlash2 completes the real xhigh tool gate
+
+- Continued from signed HEAD `ee0419918e0cfcceb215d15886b8848dd025fd29`
+  on `main`, 33 commits ahead of `origin/main`. The runtime work remained
+  isolated to `qwen38_engine.cpp`, `qwen38_engine.h`, native C++ parity tests,
+  and the recovery records. Port 30000 was free before each deliberate launch;
+  matching server and benchmark processes were absent, system memory was 94%
+  free, and macOS reported no thermal or performance warning.
+- Completed the native DFlash2 runtime through the existing `Engine::load_mtp`
+  entry. The loader recognizes the exact 175-tensor affine-W4/G64 artifact and
+  validates the Qwen3.8 target dimensions. It loads five draft layers,
+  dynamic attention/MLP convolutions, rank-256 top-16 selector embeddings,
+  and the target language head. Target execution captures hidden states after
+  layers 5, 19, 33, 47, and 61. Draft execution uses the exact eight-token
+  block, mask id 248070, 2,048-token sliding context with 64 sink positions,
+  32 query heads, 8 KV heads, head dimension 128, and RoPE theta 10,000,000.
+- Verification executes the target over the anchor and seven proposals,
+  computes the target distribution, applies strict lossless p/q acceptance,
+  and samples the nonnegative residual after the first rejection. Full
+  acceptance samples the final target row. Partial acceptance restores only
+  logical state through a verified-prefix tape: convolution inputs rebuild
+  the short recurrent window; normalized keys, FP32 decay, and FP32 innovation
+  deltas replay the recurrent state; full-attention cache length/offset commit
+  the accepted prefix; and target captures extend the DFlash context.
+- Added an opt-in Metal affine product for BF16 activations and affine W2/W4,
+  group-size-64 weights at rows 6--8 and output widths at least 6,144. A
+  matched full-Q4 screen moved steady draft from **41.288--41.686 ms** to
+  **34.211--37.378 ms** and verify from **352.531--356.089 ms** to
+  **305.130--305.604 ms**. Tape commit in natural cycles is typically
+  **2--6 ms**, versus **83--191 ms** for restore/re-forward. The exact
+  `17408 -> 5120` dispatch regressed verify to **314.693--315.150 ms**, so it
+  was removed. A broader `N >= 5120` predicate was also removed.
+- Moved DFlash prefill working-set ownership into native `Engine::prefill`.
+  The branch divides target/capture computation into internal 2,048-token
+  arrays and synchronizes each unit while preserving a single external SGLang
+  call. The unused full-prompt MLX array is no longer constructed on this
+  branch. Direct full-Q4 plus DFlash runs completed both 4,096 and 6,237 input
+  tokens without the previous Metal OOM. This placement covers every native
+  DFlash prefill and retains the existing Python/C ABI.
+- The successful server launch was:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER -u MLX_METAL_FAST_SYNCH \
+    MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    PYTHONPATH=/Users/dcazares/sglang/python \
+    SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 \
+    SGLANG_MLX_CLEAR_CACHE_STEPS=0 \
+    SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_MTP_DIR=/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-MLX-AffineQ4 \
+    SGLANG_MLX_NATIVE_SMALL_BATCH_QMM=1 \
+    SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT=1 \
+    SGLANG_MLX_NATIVE_TRACE_SPEC=1 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    --served-model-name qwen3.8-27b --language-model-only \
+    --context-length 131072 --max-total-tokens 131072 \
+    --max-running-requests 1 --max-mamba-cache-size 5 \
+    --chunked-prefill-size 8192 --max-prefill-tokens 8192 \
+    --disable-radix-cache --mlx-enable-sampling --sampling-defaults model \
+    --random-seed 42 --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --stream-interval 4 --scheduler-recv-interval 4 \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments retained real 131,072 context and total-token pools, one
+  running request, five auxiliary slots, BF16 KV, 8,192-token outer prefill,
+  radix disabled, native sampling seed 42, both Qwen parsers, incremental
+  output, and language-only mode. `/health`, `/v1/models`, and `/model_info`
+  passed; image and audio understanding remained disabled.
+- Exact bounded client command was:
+
+  ```bash
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home \
+    SGLANG_API_KEY=local \
+    /opt/homebrew/bin/timeout --signal=INT --kill-after=10s 240s \
+    /opt/homebrew/bin/codex exec --strict-config --ephemeral --ignore-rules \
+    -C /Users/dcazares/sglang \
+    -c model_context_window=131072 \
+    -c model_auto_compact_token_limit=117964 \
+    -c 'model_reasoning_effort="xhigh"' \
+    --color never --json \
+    'Use exec_command exactly once. Set cmd to /usr/bin/printf QWEN38_DFLASH2_TOOL=passed. After it succeeds, reply exactly QWEN38_DFLASH2_READY.'
+  ```
+
+  Thread `01a05c29-42b4-7ee3-ab20-a4454e592c06` prefetched 6,228 tokens in
+  about 56 seconds at **90.75 prompt tok/s**. It issued exactly one tool,
+  `/bin/zsh -c '/usr/bin/printf QWEN38_DFLASH2_TOOL=passed'`; stdout was exact
+  and exit status was zero. The final response was exact
+  `QWEN38_DFLASH2_READY`, Codex exited zero, and usage was 12,821 input, 359
+  output, and 306 reasoning-output tokens. First-response generation telemetry
+  settled around **7.6--11.85 tok/s**. The 6,593-token tool-result continuation
+  prefetched at **73.12 prompt tok/s** and reached **15.20 generation tok/s**
+  during high acceptance. Natural draft acceptance ranged from zero through
+  seven.
+- Temporarily reduced the block to four tokens and three proposals. Steady
+  draft measured **18.735--19.078 ms**, verify **170.274--170.941 ms**, and
+  total **191.727--192.747 ms**. Random-token mean emitted width remained
+  **1.142857**; even perfect width four provides about 20.85 tok/s before
+  serving overhead. Restored production constants to block eight and seven
+  proposals and recorded the fixed block-four route in `FAILED_PATHS.md`.
+- Rebuilt the restored current source to
+  `/private/tmp/libsglang_qwen38_dflash_commit.dylib` with:
+  `env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx
+  /bin/zsh python/sglang/srt/hardware_backend/mlx/native/build.sh
+  /private/tmp/libsglang_qwen38_dflash_commit.dylib`. The established external
+  macOS 26.0 / MLX 26.2 linker warning remained.
+- Added C++-only parity coverage for the affine small-batch kernel and
+  recurrent tape replay. W2/W4 rows 2, 7, and 8 passed at K/N 128; W4 passed
+  K=5,120/N=64 with maximum absolute difference 0.0625 and K=64/N=6,144
+  exactly; invalid group size failed closed. Recurrent prefix lengths 1--7 at
+  the production 16/48 heads and 128/128 dimensions reproduced the direct
+  FP32 state with maximum error zero. Both strict `-Wall -Wextra -Werror`
+  binaries passed. `clang-format --dry-run --Werror` passed for both new test
+  files.
+- The first focused native-engine pytest invocation omitted `MLX_PREFIX`; its
+  build selected the stale `.venv-mps` default and failed to find MLX headers.
+  The exact rerun
+  `env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx
+  PYTHONPATH=python .venv/bin/python -m pytest -q
+  test/registered/unit/hardware_backend/mlx/test_native_qwen38_engine.py`
+  passed **8 tests** with 16 existing warnings.
+- Current restored-source direct command used the rebuilt library, full-Q4
+  target, exact DFlash W4 draft, 128 prompt tokens, 32 warm tokens, 128 timed
+  tokens, native sampling seed 42, selected QMM, tape commit, 64 SDPA blocks,
+  and 128 MiB command buffers. It completed in **13.763225584 s** at
+  **9.300145465 tok/s**, 40 refills, mean emitted width **3.175**, digest
+  `41bf022415fb9842`, and last token 21. After the cold refill, steady cycles
+  were generally **342--346 ms**, draft **34--37 ms**, verify **305--306 ms**,
+  sampling about 0.6--0.7 ms, and partial commit about 2--4.4 ms.
+- The successful server was stopped with `Ctrl+C`; root PID 9311 and its
+  children exited through the signal handler. Port 30000 is free, no matching
+  SGLang/benchmark/compiler work remains, memory returned to 94% free, and
+  macOS thermal/performance status is normal. The next measured candidate is
+  an M=8 K-split affine-W4 verification kernel; target verify remains the
+  dominant **305--306 ms** stage and the real-client 20 tok/s gate remains
+  open.
+- Committed the native runtime, bounded prefill owner, selected QMM, recurrent
+  tape, and both C++ parity tests as signed commit
+  `d57a6ac11c8317943a94a7092e8242f2bb730aed`
+  (`feat(mps): add native DFlash2 runtime`). The EDDSA signature verifies as
+  good. `main` is now 34 commits ahead of `origin/main`; only the recovery and
+  performance records remain modified for the follow-up evidence commit.
