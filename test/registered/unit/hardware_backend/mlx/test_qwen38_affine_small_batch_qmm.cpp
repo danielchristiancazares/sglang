@@ -46,7 +46,7 @@ bool CheckParity(int rows, int input_features, int output_features, int bits) {
       mx::float32);
   mx::array actual = mx::astype(
       sglang::mlx_qwen38::affine_qmm_small_batch(linear, input), mx::float32);
-  const bool check_m8 = rows == 8 && bits == 4 && input_features % 256 == 0 &&
+  const bool check_m8 = rows == 8 && bits == 4 && input_features % 512 == 0 &&
                         output_features % 16 == 0;
   mx::array m8 =
       check_m8
@@ -120,6 +120,35 @@ bool RejectsInvalidShape() {
   return false;
 }
 
+bool RejectsUnsupportedM8Shape() {
+  constexpr int kRows = 8;
+  constexpr int kInputFeatures = 256;
+  constexpr int kOutputFeatures = 256;
+  const auto input_values = MakeValues(
+      static_cast<std::size_t>(kRows) * kInputFeatures, 0.017f, 0.25f);
+  const auto weight_values =
+      MakeValues(static_cast<std::size_t>(kOutputFeatures) * kInputFeatures,
+                 0.013f, 0.125f);
+  mx::array input = mx::astype(
+      mx::array(input_values.data(), {1, kRows, kInputFeatures}, mx::float32),
+      mx::bfloat16);
+  mx::array dense_weight =
+      mx::astype(mx::array(weight_values.data(),
+                           {kOutputFeatures, kInputFeatures}, mx::float32),
+                 mx::bfloat16);
+  std::vector<mx::array> quantized =
+      mx::quantize(dense_weight, 64, 4, "affine");
+  sglang::mlx_qwen38::QLinear linear{
+      quantized[0], quantized[1], quantized[2], 64, 4, true};
+  try {
+    (void)sglang::mlx_qwen38::affine_qmm_m8_ksplit(linear, input);
+  } catch (const std::runtime_error &error) {
+    return std::string_view(error.what()) ==
+           "unsupported M8 K-split affine QMM shape";
+  }
+  return false;
+}
+
 } // namespace
 
 int main() {
@@ -130,9 +159,9 @@ int main() {
       }
     }
   }
-  if (!CheckParity(8, 256, 256, 4) || !CheckParity(8, 5120, 64, 4) ||
-      !CheckParity(8, 256, 6144, 4) || !CheckParity(6, 64, 6144, 4) ||
-      !RejectsInvalidShape()) {
+  if (!CheckParity(8, 512, 256, 4) || !CheckParity(8, 5120, 64, 4) ||
+      !CheckParity(8, 512, 6144, 4) || !CheckParity(6, 64, 6144, 4) ||
+      !RejectsInvalidShape() || !RejectsUnsupportedM8Shape()) {
     return 1;
   }
   std::cout << "qwen38 affine small-batch QMM parity passed\n";
