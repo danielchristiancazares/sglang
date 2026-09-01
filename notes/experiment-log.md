@@ -20781,3 +20781,81 @@ mean 13.929045  17.125658 446.051        39.730
   record. Next: qualify the derived target at real 131K capacity, then return
   to a materially cheaper draft/verification topology rather than this closed
   same-GGUF configuration.
+
+### 2026-09-01 10:39 PDT - Exact 131K BF16 Q5 capacity passes and pages heavily
+
+- Started from signed commit
+  `aeb4f10a60612f4cbc63580f8db9354643102b38`
+  (`perf(mps): vectorize Q6_K batch-four rows`) on `main`, 67 commits ahead of
+  `origin/main`. Its EDDSA signature verified good. The modified
+  `qwen38_engine.cpp`, `qwen38_engine.h`, and
+  `test_qwen38_affine_small_batch_qmm.cpp` paths remained pre-existing
+  user-owned work and stayed outside this diagnostic. The configured single
+  agent slot continued to leave the skill-required analysis-only subagent
+  batch unavailable while this root was active.
+- Launched the derived Q5 target with the exact requested token pool:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=0 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenF16.gguf \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-Q5_K_S.gguf \
+    --served-model-name qwen3.8-27b-q5 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 131072 \
+    --max-total-tokens 131072 --max-running-requests 1 \
+    --max-mamba-cache-size 1 --mem-fraction-static 0.95 \
+    --chunked-prefill-size 2048 --max-prefill-tokens 8192 --page-size 1 \
+    --disable-radix-cache --disable-overlap-schedule \
+    --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
+    --incremental-streaming-output \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments preserved exact
+  `context_length=max_total_tokens=131072`, `max_req_input_len=131066`, one
+  running request, one Mamba slot, page size one, and BF16 KV. Model loading
+  took **85.26 s** at **21.37 GB**. The FP32 Mamba slot occupied **0.29 GB**.
+  The exact KV pool allocated **4.00 GB K + 4.00 GB V** and reported
+  **0.00 GB** available afterward. Startup and warmup completed.
+- `/health` and `/v1/models` passed. The model list exposed
+  `qwen3.8-27b-q5` at maximum length 131,072, and `/model_info` reported image
+  and audio understanding disabled. Root/listener PID 22576 owned tracker,
+  scheduler, and detokenizer PIDs 22581/22582/22583.
+- One capacity-residency diagnostic used the ordinary sampled profile:
+
+  ```bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b-q5 --input-tokens 128 --output-tokens 32 \
+    --temperature 1.0 --top-p 0.95 --top-k 20 \
+    --presence-penalty 1.5 --skip-warmup --timeout 600
+  ```
+
+  It completed exact `128+32=160` tokens with `finish_reason=length`, 32
+  reasoning-only fragments, prompt throughput **5.271 tok/s**, TTFT
+  **24.284058 s**, generation **0.102 tok/s**, and E2E **329.689187 s**.
+  The output SHA-256 was
+  `cc65fefb92f3743a9f64cc3aacad97e317a513daf94bc17657ad9889d485928d`.
+  Memory pressure fell into the **28--50% free** range during the request and
+  cumulative swap traffic rose materially, with zero throttled pages and no
+  recorded thermal warning. This single sample establishes the residency
+  boundary; its 0.102 tok/s result makes a repeated five-sample window
+  unnecessary for selecting this unchanged pool.
+- The foreground tree exited through `Ctrl+C` at 10:36:50 PDT. Port 30000,
+  PIDs 22576/22581/22582/22583, matching server/client/compiler work, and
+  listeners were absent afterward. Memory recovered to **94% free**, swap
+  settled at **470.19 MiB used**, pages throttled remained zero, and
+  `pmset -g therm` reported no thermal or performance warning.
+- A direct stock-FP8 capability probe then attempted an MPS
+  `torch.float8_e4m3fn` allocation, FP32-to-FP8 conversion, indexed pool
+  write, gather, and FP32 conversion. PyTorch 2.10.0 rejected the first
+  conversion with `TypeError: Trying to convert Float8_e4m3fn to the MPS
+  backend but it does not have support for that dtype.` The existing
+  `--kv-cache-dtype fp8_e4m3` route therefore cannot allocate its generic MHA
+  pool on this runtime.
+- Decision: exact 131K BF16 capacity is functional and performance-rejected on
+  the 32 GB M1 Max because the 21.37 GB derived model plus 8.00 GB KV pool and
+  runtime working set force paging. Preserve the exact 131K contract while
+  reducing resident bytes. The next candidate is native Q5_K token embedding
+  support for the immutable 19.68 GB source artifact; a uint8-backed native
+  compressed-KV owner remains the larger subsequent lever.
