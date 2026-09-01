@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-11:29 PDT.
+14:25 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -295,6 +295,207 @@ p/q rejection. The best calibration screen reaches only **6.380162135 tok/s**
 at mean width **2.285714286**, so this MTP head remains an experimental probe.
 Target-only affine Q5 stays selected and batch-one target weight traversal owns
 the active speed gap.
+
+PERF-A094 now supplies an opt-in batch-one affine-Q5/G64 Metal QMV that decodes
+each five-byte pack directly, reuses a 16-value BF16 activation fragment across
+four output rows per SIMD group, and accumulates in FP32. Representative K/N
+parity against MLX `quantized_matmul` passes at maximum absolute error
+**0.03125 / 0.03125 / 0.0234375**. With the selected command-buffer controls,
+one complete sampled `128 / 32 warm / 128 timed` screen reaches
+**17.823163930 tok/s**, **+1.500658165 / +9.194%** over the original affine-Q5
+target baseline and **2.176836070 tok/s** below the floor. The target trajectory
+is preserved against the adjacent native-kernel screens. This remains an
+opt-in candidate pending a repeated matched window, exact 131K serving, and
+Codex qualification. A concurrent gate/up stream experiment caused a bounded
+custom-Metal event stall and is closed; use one sequential MLX stream.
+
+PERF-A095 replaces the selected kernel's two packed-four-byte plus two scalar
+weight reads with three packed reads over the same ten bytes. Strict host
+compilation passes, while a bounded 45-second standalone parity attempt still
+waits on the inherited custom-Metal event state. The timeout removed the test
+cleanly and left no compiler helper, server, benchmark, or port listener. Keep
+the source uncommitted until a fresh Metal session passes parity and a matched
+full-model screen.
+
+PERF-A096 adds a smaller aggregate-Q5 checkpoint candidate. The immutable
+`maglun/Qwen3.8-27B-MLX-Mixed-4.95bpw` revision
+`596b8067f7cf429007bb668874ffee7e917c8340` is now cached without its separate
+vision shard. Its four language shards contain exactly **16,645,209,088 tensor
+bytes**, **9.999%** fewer than the uniform-Q5 checkpoint, and all four match
+the release SHA-256 manifest. The inventory is exactly the native engine's
+1,655 required language tensors: 1,253 BF16 and 402 U32 tensors, with 162
+affine-Q4 and 240 affine-Q5 matrices, every one group 64, zero missing or
+extra language keys, and zero packed-shape/bit-width errors. The text aggregate
+is **4.9510 bits per weight**; direct throughput, exact 131K capacity, behavior,
+and Codex qualification remain unmeasured until the Metal session is fresh.
+
+The reachable quantized-linear stream refines the aggregate artifact estimate.
+Excluding the embedding table, uniform Q5 traverses **17,615,093,760 bytes**
+per target token and the mixed checkpoint traverses **15,877,570,560 bytes**,
+a **1,737,523,200-byte / 9.863831687%** reduction. Pure byte scaling of the
+PERF-A094 result projects **19.773598394 tok/s**, only **0.226401606 tok/s**
+below the floor; measured full-Q4/Q5 interpolation is more conservative, so
+the fresh-session result remains the admission evidence.
+
+PERF-A097 identifies a likely correctness defect in the native matched-MTP
+seed. `Engine::select_token` retains the target's raw pre-final-norm residual,
+while the target logits apply `final_norm_` separately; both native sampled
+and greedy MTP drafting feed that raw value into `mtp_forward`. Upstream
+Qwen3.5 returns the final-normalized target hidden state to the standard MTP
+worker. The pinned MTPLX 2.9.0 Qwen3.8 contract independently selects
+`base_hidden_variant=post_norm`, embedding-before-hidden concatenation,
+post-norm recurrent hidden, and local/cache positions. Native concatenation
+and recurrent normalization already match; the initial target seed does not.
+
+The corresponding published INT4/G64 head is cached independently at exact
+revision `123db8bcc7101455b00d9aad36c0e760c6e7de02`. Its
+**238,934,249-byte** `mtp.safetensors` has SHA-256
+`c58feddc584f37971c72af1f0da95e0099478487009936b3c26ddd88844fab10`,
+contains the exact 31-tensor one-layer Qwen3.8 MTP shape, and preserves all
+seven BF16 norm tensors bit-for-bit against the existing five-bit sidecar.
+Its eight affine matrices are Q4/G64 and carry an `mtp.` namespace. Signed
+commit `0da5c5a135` teaches the shared native MTP loader to accept that namespace
+while preserving unprefixed sidecars. Signed commit `1b328149c7` adds the
+opt-in `SGLANG_MLX_NATIVE_MTP_POST_NORM_SEED=1` correction at the common
+sampled/greedy seed owner. Both compile under strict warnings. Published
+depth-three exact-sampling acceptance is **0.958762887 / 0.872852234 /
+0.759450172**, making the post-norm arm the first fresh-session MTP ablation.
+Committed MTP history and position origin remain isolated follow-up variables;
+the native engine currently clears the MTP attention cache at each refill,
+while the published server path uses committed history.
+
+Offline Metal AIR inspection also queues PERF-A098 after PERF-A095. Apple
+Metal 32023.883 scalarizes PERF-A095's packed byte vectors to ten aligned-one
+byte loads. An alignment-safe `packed_ushort4` plus scalar `ushort` mapping
+generates five aligned-two 16-bit loads. Every admitted Q5 row and lane begins
+at an even address because K is a multiple of 512 and each lane advances ten
+bytes. This remains source-only evidence until PERF-A095 has a fresh-session
+runtime result.
+
+PERF-A100 refines that queued 16-bit form into a continuous Q5 bitstream. A
+standalone Metal 3.2 control reproduces PERF-A095's ten aligned-one `i8` loads
+and ten byte extensions. The candidate emits five aligned-two `i16` loads and
+five word extensions, forms two 32-bit windows plus a 16-bit tail, and needs
+cross-window reconstruction only for fields 6 and 12. The alignment proof is
+unchanged. Keep this source candidate behind PERF-A095 so the next fresh
+session measures one variable at a time.
+
+PERF-A101 adds a paired-lane mapping above that continuous-bitstream form.
+Each even SIMD lane reads both adjacent ten-byte packs through five aligned
+32-bit loads; three native SIMD shuffles deliver the words needed by its odd
+neighbor. AIR preserves that masked mapping. Dynamic weight-load operations
+fall from 160 to 80 per SIMD group and output row while bytes remain 320. A
+standalone C++ pack/unpack check passes **1,001,026** deterministic cases.
+Fresh-session Metal parity and a matched kernel benchmark determine whether
+the shuffle cost earns admission after PERF-A095/PERF-A100.
+
+PERF-A103 supplies a branchless middle point. Each lane rounds its ten-byte
+segment back to the pair's aligned 20-byte base and reads three aligned 32-bit
+words. The two lanes overlap one word, so the SIMD group issues **96** dynamic
+loads while the union of addresses remains the exact 320-byte Q5 block. Metal
+AIR lowers reconstruction to two funnel shifts and selects, with no SIMD
+shuffles. A standalone C++ pack/unpack check passes **1,016,386** cases; its
+strict full dylib and standalone Metal parity executable are prebuilt from
+signed `92a979bce7`. Runtime ranking belongs beside PERF-A100/A101 after the
+fresh-session parity gate.
+
+PERF-A104 layers a four-way FP32 dot formulation over PERF-A103. In an
+explicit isolated control, Metal AIR retains sixteen scalar `air.fma.f32`
+calls; the candidate emits four `air.dot.v4f32` calls and three FP32 adds.
+This changes the within-lane reduction order, so compiler lowering alone
+carries no correctness or speed standing. A strict full dylib and standalone
+parity executable are ready from signed `6e181e68d2`; fresh-session numeric
+parity, deterministic digest, sampled semantics, and matched timing determine
+whether the vector intrinsic is useful.
+
+PERF-A105 adds a single C++20 direct-QMV benchmark for all nine prebuilt Q5
+arms. It constructs deterministic Q5/G64 weights and BF16 inputs, synchronizes
+each launch, and reports latency, effective streamed bandwidth, and a complete
+BF16 output digest. Strict final executables for
+A094/A095/A100/A101/A103/A104/A106/A107/A108 are ready in `/private/tmp`; the
+harness source hash is `6f7e336e...d6da3`.
+After restart, parity precedes randomized and reversed gate/up, down,
+attention-output, and value-projection matrices. Equal digests are required
+through A103; A104 receives separate numeric and behavior gates because its
+FP32 reduction grouping changes.
+
+PERF-A106 isolates the activation-load side on the A094 weight path. Four
+aligned 64-bit reads replace sixteen scalar BF16 reads per lane and K block;
+AIR keeps four vector BF16-to-FP32 conversions while the sequential input sum
+and every FP32 FMA retain their order. The candidate engine, strict full
+dylib, parity executable, and PERF-A105 binary are prebuilt from signed
+`83c2731a3d`. Fresh-session parity, exact control digest equality, and matched
+matrix timing determine whether it combines with the selected weight-load arm.
+
+PERF-A107 tests the wider aligned form independently. AIR replaces A106's four
+64-bit reads with two aligned 128-bit `<2 x i64>` reads while retaining its
+four vector conversions and the original arithmetic order. The candidate is
+prebuilt from signed `414198a15c`; a sixteen-byte-aligned base is required and
+the 32-byte lane/1,024-byte block offsets preserve it. Live parity gates that
+alignment premise before exact digest and A094/A106/A107 matrix timing.
+
+PERF-A108 isolates quantization-parameter sharing. Four adjacent lanes address
+the same group-64 scale/bias pair; AIR keeps a leader-only load branch and one
+vector SIMD shuffle, reducing dynamic BF16 parameter loads/conversions
+fourfold from 32+32 to 8+8 per SIMD/output row. Arithmetic order after the
+broadcast is unchanged. The strict candidate matrix is prebuilt from signed
+`b1eeaf9f11`; parity and matched A094/A108 timing determine whether explicit
+broadcast improves on the hardware's duplicate-address handling.
+
+The fresh-boot comparison is prebuilt from source-identical signed revisions
+in four detached clean worktrees. PERF-A094 control and PERF-A095/A100/A101
+each have a strict full native dylib plus standalone Metal parity executable
+in `/private/tmp`. Their dylib SHA-256 values are respectively
+`b01d2712...fb242`, `3638e361...dd27`, `88c28fc0...ae85f`, and
+`7ff5004e...a347`. Run all parity executables before the randomized matched
+timing matrix; the current session has executed none of them.
+
+PERF-A099 pins the remaining committed-history alignment before any source
+implementation. Published MTPLX prefill pairs post-norm target hidden row
+`H[i]` with token `T[i+1]`. Each decode cycle retains the provisional MTP
+cache entry for the current pending token, rolls the later speculative entries
+back to `cycle_base + 1`, then appends only accepted target tokens paired with
+the committed target-hidden prefix. The sampled correction or full-acceptance
+bonus stays pending and enters history in the following cycle. Decode-only
+history and prompt history are therefore separable experiments. A full
+131,072-token prompt history adds one 4-KV-head, 256-head-dimension BF16 MTP
+cache, exactly **512 MiB** at capacity, plus a one-layer causal history pass.
+Run the already-committed post-norm seed arm first; add decode-only history
+only if acceptance remains insufficient, then qualify prompt history as a
+separate TTFT/capacity candidate.
+
+PERF-A102 prebuilds that decode-only history arm in a detached clean worktree
+at signed `711214b27c`. The opt-in
+`SGLANG_MLX_NATIVE_MTP_DECODE_HISTORY=1` path begins each sampled MTP cycle at
+the target's absolute sequence offset, retains the cache entry produced for
+the current pending token, rolls the provisional tail back to that boundary,
+and appends accepted draft tokens with the verifier's corresponding post-norm
+target-hidden prefix. An offset mismatch clears the decode-only history and
+resynchronizes it, covering target-only reasoning-cap fallbacks. Prompt MTP
+history, position-origin experiments, greedy MTP, DFlash, and DSpark remain
+unchanged. Strict C++20/O3 compilation and `git diff --check` pass; the dylib
+SHA-256 is `b4f3b222...a5d`. Fresh-session acceptance and throughput remain
+the admission evidence.
+
+A current Hugging Face inventory found no smaller distinct uniform-five-bit
+MLX language layout to download. The additional published uniform candidates
+use the same affine five-bit/group-64 text quantization and either carry the
+BF16 vision tower or duplicate the existing text layout. The published OptiQ
+candidate averages 5.50 BPW and is larger. Keep the already-pinned 18.51 GB
+uniform text-only target for the literal Q5 control and the already-pinned
+4.951-bpw mixed target for the bandwidth arm.
+
+Two bounded fallbacks confirm that the current-session fault reaches the full
+model path. The committed pre-PERF-A094 native library with every Q5 custom
+dispatch disabled produced no output before a **120-second** cutoff. A pure
+stock-MLX `mlx_lm.generate_step` load of PERF-A096 produced no output before a
+**180-second** cutoff. Both complete process trees exited with status 124;
+port 30000 and Qwen, benchmark, MLX, and compiler process searches are clear.
+The system still reports **1,207,315 wired pages** and memory pressure remains
+at **39% free capacity** after 30 seconds. End GPU submissions for this
+session. Resume after a full machine restart, then verify ordinary MLX
+arithmetic, PERF-A095
+parity, the PERF-A094 matched control, and PERF-A096 in that order.
 
 The unchanged Q5_K_M artifact is closed on this loader because mixed merged
 weights contain Q8_0 shards unsupported by the native Metal merge path. The

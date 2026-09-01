@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-09-01 09:04 PDT.
+**Reconciled through:** 2026-09-01 13:45 PDT.
 
 ## Selected production choices
 
@@ -53,6 +53,18 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Target attribution | Exact per-shape M/N/K plus overlap-aware exposure | M3 primary GEMMs occupy 12.360 ms on the terminal stream; aggregate residency alone overcounts alternate-stream overlap |
 | Selective target NVFP4 | Launcher-default production checkpoint | User accepted the all-four-metric record; default relaunch and behavior/client gates passed |
 | MiaAI-Lab vLLM recipe | Matched `199000+16` reproduction remains an information gate | Same checkpoint/GPU uses MTP-3, TurboQuant 4-bit KV, and patched full-graph K+1 verify; published ~160 TPS lacks raw workload evidence |
+
+## Active Apple Q5 choices
+
+| Decision | Selected choice | Durable evidence |
+|---|---|---|
+| Literal Q5 control | Pinned text-only affine-five-bit/group-64 target at revision `2568951b...c2f05` | Exact shard hashes and the native 1,847-tensor inventory pass; sampled direct baseline is **16.322505765 tok/s** |
+| Q5 bandwidth arm | Pinned mixed 4.951-bpw target at revision `596b8067...f0` | Exact required-language inventory passes; reachable quantized-linear bytes fall **9.863831687%** versus uniform Q5; runtime qualification awaits a fresh Metal session |
+| Batch-one target kernel | PERF-A094 guarded Q5 QMV remains the measured candidate | Representative parity passes and the first complete sample reaches **17.823163930 tok/s**; repeated matched, exact-131K, and Codex gates remain due |
+| MTP contract order | Measure the signed post-norm seed correction before adding committed history | Native seed differs from the upstream/published post-norm contract; namespace loading and the seed arm compile strictly behind default-preserving switches |
+| MTP history staging | Decode-only accepted-prefix history before prompt-seeded history | Exact source trace proves the `cycle_base + 1` rollback/accepted-prefix pairing; prompt history adds a 512 MiB exact-capacity cache and a one-layer causal prefill pass |
+| Additional Q5 downloads | Keep the pinned uniform and mixed artifacts | Current published uniform alternatives repeat affine-five-bit/group-64 text layout or add BF16 vision; the OptiQ candidate reports a larger 5.50-BPW allocation |
+| Metal recovery boundary | Full machine restart before another runtime result | Native custom kernels and stock MLX full-model paths both hit bounded timeouts after the cross-stream shared-event incident; process and port cleanup completed |
 
 ## NVIDIA stock checkpoint alternative
 
@@ -245,6 +257,8 @@ has not.
 | `lukaskremla/Qwen3.8-27B-5bit-MLX-TextOnly` revision `2568951b...c2f05` | Retained immutable native-Q5 candidate | The 18,514,909,284-byte Hub inventory is affine five-bit/group-64, contains 498 U32 packed plus 1,349 BF16 tensors and no vision tensors, and derives from the official Qwen base. The compiled engine loads it directly. Sampled direct `128 / 32 / 128` reaches **16.322505765 tok/s**, **2.248x** the GGUF Q5 1K-FP8 mean. Served exact-131K and behavior qualification remain active; the unchanged Q4-tuned DFlash composition is closed at **11.506669050 tok/s** pending a five-bit verifier kernel. |
 | Affine-Q5 M=8 K-split verifier | Retained behind the existing native small-batch/M8 controls | Exact MLX five-bit packing is decoded eight values from five bytes inside the shared SG16/B32 tile. Representative parity passes at maximum error **0.107422**. The direct DFlash composition improves **11.506669050 -> 13.721235888 tok/s** while M=8 falls from roughly **363--368 to 228--229 ms**; full-Q4 digest and width remain exact. Target-only Q5 stays selected pending a better proposal/cycle. |
 | `lukaskremla/Qwen3.8-27B-MTP-5bit-MLX` revision `1faa5a80...3d85` | Retained immutable draft artifact and execution-cost probe; sampled production rejected | The 292,018,299-byte sidecar hashes to `f63dd5c2...e6e`. Deterministic blocks three/eight reach **17.919995235 / 31.380317186 tok/s** at widths **3 / 8**, preserving the target digest. Exact dense-q sampling peaks at only **6.380162135 tok/s**, width **2.285714286** across calibrated arms. Preserve exact p/q semantics and keep target-only Q5 selected. |
+| Affine-Q5 batch-one direct QMV | Retained opt-in pending repeated production qualification | Four SIMD groups each reuse one 16-value activation fragment across four output rows and decode MLX's eight-values/five-bytes affine packing directly. Representative parity passes with maximum error **0.03125**. The selected K-specialized path reaches **17.823163930 tok/s** in one complete sampled `128 / 32 / 128` screen, **+9.194%** over the original native-Q5 target baseline and **2.176836070 tok/s** below the floor. Keep `SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV` disabled until a matched repeated window, exact 131K serving, and Codex gates pass. |
+| Concurrent affine-Q5 gate/up MLX streams | Rejected and removed | Building the two dependent projections under separate persistent streams retained about 14 GB and waited indefinitely on an unsignaled Metal event during its first full-model run. The exact benchmark process was terminated, all temporary stream code was removed, and sequential `Engine::mlp` ownership is restored. Reopen only with explicit cross-stream event/lifetime ownership and an isolated minimal proof. |
 | Q6_K batch-one two-row activation reuse | Retained at the common native Metal GGUF matmul owner | Matched QKV/head medians improve **0.748917 -> 0.448125 ms** and **12.009166 -> 3.324625 ms**. Five served samples average **7.0522 tok/s**, **+22.732%** over the committed baseline. Optimized 16-row, generic 17-row, and untouched batch-eight actual-file parity pass. `SGLANG_MPS_Q6_K_BATCH1_ROWS2=0` retains the matched generic control. |
 | Q5_K batch-one 32-row cohort | Retained at the common native Metal GGUF matmul owner for output sizes at least 5,120 | Four lanes cooperate on each row and each consume eight adjacent weights, doubling each 128-thread group's output cohort. Reversed-order served comparisons improve `128+32` mean **7.1342 -> 7.1646 tok/s** (**+0.426%**) and `128+128` median **7.456 -> 7.500 tok/s** (**+0.590%**). The 5,120-row floor is the smallest measured winning shape; the measured 1,024-row attention K/V shapes retain the prior eight-lane mapping. Direct candidate, tails, alignment fallback, and served reasoning parity pass. `SGLANG_MPS_Q5_K_BATCH1_ROWS32=0` retains the matched control. |
 | Q6_K exact-batch-four 16-row activation reuse | Retained at the common native Metal GGUF matmul owner | Eight lanes vector-decode one row and reuse it across four verifier activations; four SIMD groups produce sixteen rows. Matched head/QKV medians improve **29.166000 -> 6.121375 ms** and **1.442333 -> 0.588500 ms**. Same-GGUF NEXTN serving improves **3.3384 -> 3.7028 tok/s** while its matched control has slightly higher acceptance. Candidate/tail and batch-three/eight fallback parity pass. `SGLANG_MPS_Q6_K_BATCH4_ROWS16=0` retains the generic control. |

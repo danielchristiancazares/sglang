@@ -990,6 +990,40 @@ code changes, or process state matter.
   The matched head therefore remains a deterministic execution-cost probe;
   target-only Q5 and its batch-one weight traversal own production work.
 
+### Direct affine-Q5 QMV moves target-only decode to 17.8 tok/s
+
+- A guarded native Metal kernel decodes MLX affine-five-bit packs directly,
+  reuses each 16-value activation fragment across four output rows per SIMD
+  group, and performs FP32 accumulation. Three representative shapes pass
+  parity at maximum absolute error at most **0.03125**; an unsupported K=256
+  shape fails closed.
+- The selected four-SIMD/four-row/two-pack geometry, fixed scalar FMAs,
+  packed four-byte loads, and compile-time K reach **17.823163930 tok/s** in a
+  complete sampled `128 / 32 warm / 128 timed` screen. This is **+9.194%**
+  over the original **16.322505765 tok/s** affine-Q5 target result and leaves
+  **2.176836070 tok/s** to the requested floor.
+- Wider per-thread packing, additional result rows, a 16-lane cohort, and
+  FP16 local accumulation all regress. A first gate/up multi-stream probe
+  stalls on an unsignaled custom-Metal event and is removed. The QMV remains
+  opt-in while repeated matched, exact-131K serving, and Codex gates stay
+  active.
+
+### An aggregate-4.951-bpw mixed checkpoint opens a smaller Q5-class lane
+
+- Pinned `maglun/Qwen3.8-27B-MLX-Mixed-4.95bpw` at revision
+  `596b8067f7cf429007bb668874ffee7e917c8340` and downloaded its four language
+  shards while leaving the independently stored vision shard out of the
+  language-only runtime snapshot. Every language-shard SHA-256 matches the
+  published release manifest.
+- The language payload is **16,645,209,088 tensor bytes**, **9.999%** below
+  the uniform-five-bit checkpoint. It assigns Q4/G64 to embeddings, LM head,
+  MLP gate/up, and attention Q/K, and Q5/G64 to MLP down, mixer projections,
+  and attention V/O, for **4.9510 aggregate BPW**.
+- The native engine's complete required-key and packed-shape audit passes:
+  1,655 language tensors, 162 Q4 plus 240 Q5 affine matrices, zero missing or
+  extra language tensors, and zero bit-width inference errors. A fresh Metal
+  session is the remaining boundary before direct throughput measurement.
+
 ### 03:07–06:18 — DSpark-v2 crosses 150 tok/s and becomes the Windows default
 
 - The trained Qwen3.8-27B DSpark-v2 draft was integrated with online-FP8

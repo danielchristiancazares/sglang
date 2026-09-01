@@ -105,6 +105,13 @@ bool native_dflash_tape_commit_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_q5_batch_one_qmv_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 int native_target_only_prefill_chunk_size() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE");
@@ -965,6 +972,122 @@ constexpr const char* kAffineSmallBatchQmmSource = R"(
         }
 )";
 
+constexpr const char* kAffineQ5BatchOneQmvSource = R"(
+        constexpr ushort ValuesPerPack = 8;
+        constexpr ushort PacksPerThread = 2;
+        constexpr ushort ValuesPerThread = ValuesPerPack * PacksPerThread;
+        constexpr ushort BlockSize = ValuesPerThread * 32;
+        constexpr ushort ScaleStep = 64 / ValuesPerThread;
+        constexpr ushort SimdGroups = 4;
+        constexpr ushort ResultsPerSimdgroup = 4;
+        constexpr uint K = KConst;
+        constexpr uint WeightRowBytes = K * 5 / 8;
+        constexpr uint GroupsPerRow = K / 64;
+
+        const ushort lane = thread_index_in_simdgroup;
+        const ushort simd_group = simdgroup_index_in_threadgroup;
+        const uint output_start =
+            threadgroup_position_in_grid.y *
+                (SimdGroups * ResultsPerSimdgroup) +
+            simd_group * ResultsPerSimdgroup;
+
+        const device uchar* weight_ptr =
+            reinterpret_cast<const device uchar*>(w) +
+            output_start * WeightRowBytes + lane * PacksPerThread * 5;
+        const device bfloat* scale_ptr =
+            scales + output_start * GroupsPerRow + lane / ScaleStep;
+        const device bfloat* bias_ptr =
+            biases + output_start * GroupsPerRow + lane / ScaleStep;
+        const device bfloat* input_ptr = x + lane * ValuesPerThread;
+
+        float input_values[ValuesPerThread];
+        float results[ResultsPerSimdgroup] = {0.0f};
+
+        for (uint k = 0; k < K; k += BlockSize) {
+          float input_sum = 0.0f;
+#pragma unroll
+          for (ushort index = 0; index < ValuesPerThread; ++index) {
+            const float value = static_cast<float>(input_ptr[index]);
+            input_values[index] = value;
+            input_sum += value;
+          }
+
+#pragma unroll
+          for (ushort row = 0; row < ResultsPerSimdgroup; ++row) {
+            const device uchar* packed =
+                weight_ptr + row * WeightRowBytes;
+            const float scale =
+                static_cast<float>(scale_ptr[row * GroupsPerRow]);
+            const float bias =
+                static_cast<float>(bias_ptr[row * GroupsPerRow]);
+            float quantized_dot = 0.0f;
+
+#pragma unroll
+            for (ushort pack = 0; pack < PacksPerThread; ++pack) {
+              const device uchar* bytes = packed + pack * 5;
+              const packed_uchar4 first_four =
+                  *reinterpret_cast<const device packed_uchar4*>(bytes);
+              const uint byte0 = first_four[0];
+              const uint byte1 = first_four[1];
+              const uint byte2 = first_four[2];
+              const uint byte3 = first_four[3];
+              const uint byte4 = bytes[4];
+              const ushort input_index = pack * ValuesPerPack;
+              quantized_dot = fma(
+                  input_values[input_index],
+                  static_cast<float>(byte0 & 0x1fu),
+                  quantized_dot);
+              quantized_dot = fma(
+                  input_values[input_index + 1],
+                  static_cast<float>(
+                      (byte0 >> 5) | ((byte1 & 0x03u) << 3)),
+                  quantized_dot);
+              quantized_dot = fma(
+                  input_values[input_index + 2],
+                  static_cast<float>((byte1 >> 2) & 0x1fu),
+                  quantized_dot);
+              quantized_dot = fma(
+                  input_values[input_index + 3],
+                  static_cast<float>(
+                      (byte1 >> 7) | ((byte2 & 0x0fu) << 1)),
+                  quantized_dot);
+              quantized_dot = fma(
+                  input_values[input_index + 4],
+                  static_cast<float>(
+                      (byte2 >> 4) | ((byte3 & 0x01u) << 4)),
+                  quantized_dot);
+              quantized_dot = fma(
+                  input_values[input_index + 5],
+                  static_cast<float>((byte3 >> 1) & 0x1fu),
+                  quantized_dot);
+              quantized_dot = fma(
+                  input_values[input_index + 6],
+                  static_cast<float>(
+                      (byte3 >> 6) | ((byte4 & 0x07u) << 2)),
+                  quantized_dot);
+              quantized_dot = fma(
+                  input_values[input_index + 7],
+                  static_cast<float>(byte4 >> 3),
+                  quantized_dot);
+            }
+            results[row] += scale * quantized_dot + bias * input_sum;
+          }
+
+          weight_ptr += BlockSize * 5 / 8;
+          scale_ptr += BlockSize / 64;
+          bias_ptr += BlockSize / 64;
+          input_ptr += BlockSize;
+        }
+
+#pragma unroll
+        for (ushort row = 0; row < ResultsPerSimdgroup; ++row) {
+          const float result = simd_sum(results[row]);
+          if (lane == 0) {
+            y[output_start + row] = static_cast<bfloat>(result);
+          }
+        }
+)";
+
 constexpr const char* kAffineM8KsplitQmmSource = R"(
         constexpr ushort Rows = 8;
         constexpr ushort OutputTile = 32;
@@ -1198,6 +1321,16 @@ const mx::fast::CustomKernelFunction& affine_m8_ksplit_qmm_metal() {
       {"w", "scales", "biases", "x", "N_size"},
       {"y"},
       kAffineM8KsplitQmmSource,
+      kAffineSmallBatchQmmHeader);
+  return kernel;
+}
+
+const mx::fast::CustomKernelFunction& affine_q5_batch_one_qmv_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_affine_q5_batch_one_qmv",
+      {"w", "scales", "biases", "x"},
+      {"y"},
+      kAffineQ5BatchOneQmvSource,
       kAffineSmallBatchQmmHeader);
   return kernel;
 }
@@ -1562,6 +1695,29 @@ array QLinear::operator()(const array& x) const {
           bits);
     }
   }
+  if (native_q5_batch_one_qmv_enabled() && x.ndim() == 3 &&
+      x.shape()[0] == 1 && x.shape()[1] == 1 &&
+      x.dtype() == mx::bfloat16 && w.ndim() == 2 &&
+      scales.ndim() == 2 && biases.ndim() == 2 &&
+      scales.dtype() == mx::bfloat16 && biases.dtype() == mx::bfloat16 &&
+      group_size == 64 && bits == 5) {
+    const int input_features = static_cast<int>(x.shape()[2]);
+    const int output_features = static_cast<int>(w.shape()[0]);
+    if (input_features > 0 && output_features > 0 &&
+        input_features % 512 == 0 && output_features % 16 == 0 &&
+        w.shape()[1] * 32 == input_features * 5 &&
+        scales.shape() == mx::Shape{output_features, input_features / 64} &&
+        biases.shape() == scales.shape()) {
+      if (native_qmm_trace_enabled()) {
+        std::fprintf(
+            stderr,
+            "qwen38_qmv q5 rows=1 K=%d N=%d geometry=4x4x2-fixed\n",
+            input_features,
+            output_features);
+      }
+      return affine_q5_qmv_batch_one(*this, x);
+    }
+  }
   return quantized_matmul(
       x, w, scales, biases, /*transpose=*/true, group_size, bits, "affine");
 }
@@ -1638,6 +1794,48 @@ array affine_qmm_m8_ksplit(const QLinear& linear, const array& x) {
           {"KConst", mx::fast::TemplateArg{input_features}},
           {"Bits", mx::fast::TemplateArg{linear.bits}},
       },
+      std::nullopt,
+      false,
+      {});
+  return outputs[0];
+}
+
+array affine_q5_qmv_batch_one(const QLinear& linear, const array& x) {
+  constexpr int kSimdGroups = 4;
+  constexpr int kResultsPerSimdgroup = 4;
+  constexpr int kPacksPerThread = 2;
+  constexpr int kOutputTile = kSimdGroups * kResultsPerSimdgroup;
+  constexpr int kBlockSize = kPacksPerThread * 8 * 32;
+  if (!linear.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
+      x.shape()[1] != 1 || x.dtype() != mx::bfloat16 ||
+      linear.w.ndim() != 2 || linear.w.dtype() != mx::uint32 ||
+      linear.scales.ndim() != 2 || linear.biases.ndim() != 2 ||
+      linear.scales.dtype() != mx::bfloat16 ||
+      linear.biases.dtype() != mx::bfloat16 || linear.group_size != 64 ||
+      linear.bits != 5) {
+    throw std::runtime_error("invalid batch-one affine Q5 QMV inputs");
+  }
+
+  const int input_features = static_cast<int>(x.shape()[2]);
+  const int output_features = static_cast<int>(linear.w.shape()[0]);
+  if (input_features <= 0 || output_features <= 0 ||
+      input_features % kBlockSize != 0 ||
+      output_features % kOutputTile != 0 ||
+      linear.w.shape()[1] * 32 != input_features * linear.bits ||
+      linear.scales.shape() !=
+          mx::Shape{output_features, input_features / linear.group_size} ||
+      linear.biases.shape() != linear.scales.shape()) {
+    throw std::runtime_error("unsupported batch-one affine Q5 QMV shape");
+  }
+
+  constexpr int kThreads = kSimdGroups * 32;
+  auto outputs = affine_q5_batch_one_qmv_metal()(
+      {linear.w, linear.scales, linear.biases, x},
+      {{1, 1, output_features}},
+      {x.dtype()},
+      {kThreads, output_features / kOutputTile, 1},
+      {kThreads, 1, 1},
+      {{"KConst", mx::fast::TemplateArg{input_features}}},
       std::nullopt,
       false,
       {});
