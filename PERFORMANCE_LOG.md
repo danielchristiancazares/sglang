@@ -782,6 +782,7 @@ tree throughput can be ranked for production.
 | PERF-A065 | Qualify SG16/B32 through sampled serving and a Codex `xhigh` tool turn with real 131K pools. | Native DFlash server, OpenAI streaming endpoint, Responses API, and Codex client | Behavior qualified; acceptance optimization active | Exact `6237+128` completes at **15.328 tok/s**, **109.106 prompt tok/s**, and exact 6,365 total tokens. Codex thread `01a05c69-215f-7fb0-a7f8-1425c9b2ae5a` executes one command, returns the exact final marker, and exits zero. |
 | PERF-A066 | Load the official 81-tensor BF16 DFlash2 checkpoint directly. | Shared native QLinear execution and exact DFlash checkpoint loader | Compatibility retained in signed `6cf95442cc`; BF16 performance choice rejected | Dense BF16 loads and completes exact direct decoding. It reaches **9.044043 tok/s** versus adjacent affine-W4 **30.992508**, with width **2.114754** versus **6.684211** and about **42 ms** versus **26--32 ms** draft work. |
 | PERF-A067 | Replace learned selector sampling with the official worker's greedy LM-head proposal rule. | Native DFlash proposal and exact rejection/residual sampler | Rejected and removed | Five direct samples misleadingly average **37.518731 tok/s** and width **7.9375**. The representative real `6237+128` request reaches only **9.512 tok/s**, **37.944%** below the learned selector. |
+| PERF-A068 | Integrate the official Qwen3.8 DSpark v2 draft into the native MLX C++ lane. | Immutable draft artifact, native full-attention backbone, rank-256 Markov proposal, target verifier, and accepted-state commit | Artifact pinned; native runtime active | Revision `b9a5dbdf03bc999c6c73c426b19c2d9041cea393` is present as a distinct immutable 62-tensor BF16 artifact. Its five-layer full-attention and exact Markov/checkpoint contracts are inventoried; affine-W4 conversion and native execution follow. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -3582,3 +3583,31 @@ tree throughput can be ranked for production.
   acceptance and cannot admit proposal-policy changes. Removed the switch and
   generic one-token-support scaffolding with `apply_patch`; the source
   worktree returned exactly to signed HEAD. PERF-FA097 records the result.
+
+### 2026-09-01 03:27 PDT - PERF-A068 pinned DSpark v2 artifact
+
+- Downloaded the official `RadixArk/Qwen3.8-27B-DSpark` revision
+  `b9a5dbdf03bc999c6c73c426b19c2d9041cea393` into the distinct immutable
+  directory
+  `/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DSpark-BF16`.
+  The exact command used `hf download --revision ... --local-dir ...
+  --max-workers 4`; the repository target and every prior draft artifact were
+  untouched.
+- `model.safetensors` is **3,714,723,322 bytes** with SHA-256
+  `2aff025f45823b40ebe726b9dfa40302f3512bd9a11c3a7347de32a567acd9a7`.
+  `config.json` has SHA-256
+  `dd65fb1b01c2adea69512ff2990a79d58eb7fe2c7ea97375aa66f657a29a5bfd`.
+- The safetensors header contains exactly 62 BF16 tensors: a 25,600-to-5,120
+  context projection, five full-attention Qwen3 draft layers, final and input
+  norms, rank-256 `markov_w1`/`markov_w2` tables over the 248,320-token
+  vocabulary, and the 5,376-input confidence projection. Configuration fixes
+  gamma at seven, target verification width at eight, target captures at
+  layers 5/19/33/47/61, full YaRN RoPE through 262,144 positions, and static
+  verification remains available without consulting the confidence head.
+- Rebuilt the ignored repository native dylib from signed source after the
+  removed greedy experiment. The strict warning-as-error build passed with
+  only the established macOS 26.0 / MLX 26.2 linker warning. Port 30000 and
+  matching server/compiler processes were clear before acquisition; the
+  volume had 161 GiB available.
+- Next: create a provenance-bearing affine-W4 derivative, then implement the
+  native DSpark backbone/Markov proposal at the shared target-verifier owner.

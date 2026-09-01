@@ -18695,3 +18695,40 @@ mean 13.929045  17.125658 446.051        39.730
   signed HEAD. PERF-FA097 records why synthetic direct acceptance can no
   longer admit proposal-policy candidates. The real 6.2K sampled request is
   now the first acceptance screen.
+
+### 2026-09-01 03:27 PDT - pinned official DSpark v2 checkpoint
+
+- Began from clean signed HEAD
+  `470273753bf1637753f8b4f2a91b03a3acd2fde9`, 47 commits ahead of
+  `origin/main`; its EDDSA signature verified as good. Port 30000 and matching
+  SGLang/compiler processes were absent, and the checkpoint volume had 161
+  GiB available.
+- Rebuilt
+  `python/sglang/srt/hardware_backend/mlx/native/libqwen38_engine.dylib` from
+  the committed C++ sources, removing the ignored binary residue from the
+  temporary greedy-proposal screen. The strict `-Wall -Wextra -Werror` build
+  passed with the established macOS 26.0 / MLX 26.2 linker warning.
+- A pinned dry run resolved six repository files and one 3.7-GB payload. The
+  exact acquisition command was:
+
+  ```bash
+  .venv/bin/hf download RadixArk/Qwen3.8-27B-DSpark \
+    --revision b9a5dbdf03bc999c6c73c426b19c2d9041cea393 \
+    --local-dir /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DSpark-BF16 \
+    --max-workers 4 --format agent
+  ```
+
+- The immutable local payload is 3,714,723,322 bytes with SHA-256
+  `2aff025f45823b40ebe726b9dfa40302f3512bd9a11c3a7347de32a567acd9a7`.
+  Its config SHA-256 is
+  `dd65fb1b01c2adea69512ff2990a79d58eb7fe2c7ea97375aa66f657a29a5bfd`.
+  These identities match the artifact's included README.
+- Direct safetensors-header inspection established the exact 62-tensor BF16
+  contract: `fc`, five ordinary full-attention/MLP layers, norms, two
+  248,320-by-256 Markov matrices, and the confidence projection/bias. The
+  checkpoint uses gamma seven, full-attention YaRN RoPE, rank-256 vanilla
+  Markov correction, and static verification can omit confidence evaluation.
+- The artifact stays immutable. The next implementation unit is a checked C++
+  affine-W4 converter and derived checkpoint at a distinct path, followed by
+  native DSpark loading and execution through the existing exact target
+  verifier and recurrent tape-commit path.
