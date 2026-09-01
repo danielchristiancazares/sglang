@@ -47,7 +47,7 @@ bool CheckParity(int rows, int input_features, int output_features, int bits) {
   mx::array actual = mx::astype(
       sglang::mlx_qwen38::affine_qmm_small_batch(linear, input), mx::float32);
   const bool check_m8 = rows == 8 && bits == 4 && input_features % 512 == 0 &&
-                        output_features % 16 == 0;
+                        output_features % 32 == 0;
   mx::array m8 =
       check_m8
           ? mx::astype(sglang::mlx_qwen38::affine_qmm_m8_ksplit(linear, input),
@@ -81,6 +81,39 @@ bool CheckParity(int rows, int input_features, int output_features, int bits) {
          maximum_absolute_error <= error_limit &&
          std::isfinite(m8_maximum_absolute_error) &&
          m8_maximum_absolute_error <= error_limit;
+}
+
+bool CheckDenseLinearParity() {
+  constexpr int kRows = 8;
+  constexpr int kInputFeatures = 128;
+  constexpr int kOutputFeatures = 96;
+  const auto input_values = MakeValues(
+      static_cast<std::size_t>(kRows) * kInputFeatures, 0.017f, 0.25f);
+  const auto weight_values =
+      MakeValues(static_cast<std::size_t>(kOutputFeatures) * kInputFeatures,
+                 0.013f, 0.125f);
+  mx::array input = mx::astype(
+      mx::array(input_values.data(), {1, kRows, kInputFeatures}, mx::float32),
+      mx::bfloat16);
+  mx::array weight =
+      mx::astype(mx::array(weight_values.data(),
+                           {kOutputFeatures, kInputFeatures}, mx::float32),
+                 mx::bfloat16);
+  sglang::mlx_qwen38::QLinear linear;
+  linear.w = weight;
+  linear.valid = true;
+
+  mx::array expected = mx::matmul(input, mx::transpose(weight, {1, 0}));
+  mx::array actual = linear(input);
+  mx::eval(expected, actual);
+  if (expected.dtype() != actual.dtype() ||
+      expected.shape() != actual.shape()) {
+    return false;
+  }
+  const auto *expected_data = expected.data<uint16_t>();
+  const auto *actual_data = actual.data<uint16_t>();
+  return std::equal(expected_data, expected_data + expected.size(),
+                    actual_data);
 }
 
 bool RejectsInvalidShape() {
@@ -159,7 +192,8 @@ int main() {
   }
   if (!CheckParity(8, 512, 256, 4) || !CheckParity(8, 5120, 64, 4) ||
       !CheckParity(8, 512, 6144, 4) || !CheckParity(6, 64, 6144, 4) ||
-      !RejectsInvalidShape() || !RejectsUnsupportedM8Shape(256, 256) ||
+      !CheckDenseLinearParity() || !RejectsInvalidShape() ||
+      !RejectsUnsupportedM8Shape(256, 256) ||
       !RejectsUnsupportedM8Shape(512, 16)) {
     return 1;
   }
