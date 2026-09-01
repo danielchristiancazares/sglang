@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-03:03 PDT.
+03:10 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -188,6 +188,13 @@ The existing `Engine::load_mtp` entry autodetects its tensor contract. Native
 target-layer capture, five-layer block drafting, selector sampling, exact p/q
 rejection, and accepted-prefix recurrent-state replay are implemented behind
 the existing opt-in draft path.
+
+Signed commit `6cf95442cc` also loads the official 81-tensor BF16 checkpoint
+directly through the shared native linear owner. It passes dense bit parity
+and complete direct decoding. BF16 is a compatibility lane: its matched
+sample reaches **9.044043 tok/s**, 61 refills, and mean width **2.114754**,
+versus adjacent affine-W4 **30.992508 tok/s**, 19 refills, and width
+**6.684211**. The derived affine artifact remains the performance selection.
 
 The native prefill owner divides DFlash target/capture work into internal
 2,048-token units while preserving one external SGLang prefill call. This

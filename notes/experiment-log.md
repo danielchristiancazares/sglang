@@ -18599,3 +18599,50 @@ mean 13.929045  17.125658 446.051        39.730
   and production-reachable; proposal acceptance or roughly 55--60 ms of
   further live-cycle reduction is required for this observed trajectory to
   reach 20.
+
+### 2026-09-01 03:10 PDT - official dense BF16 DFlash2 support and screen
+
+- Began from clean signed HEAD
+  `07d605330c408fe73968804377158befdc942009`, 44 commits ahead of
+  `origin/main`. Port 30000 and matching direct/server processes were absent;
+  the preceding controlled shutdown had restored 94% free memory and normal
+  thermal/performance state.
+- Traced the official CUDA implementation and checkpoint contract. The exact
+  immutable BF16 artifact is 3.6 GiB and contains 81 tensors, while the
+  selected affine-W4 derivative is 1.2 GiB and contains 175. The native
+  loader previously required only the latter contract.
+- Extended the shared `QLinear::operator()` owner to validate and execute BF16
+  `[output,input]` matrices through MLX matmul. `Engine::load_dflash2`
+  distinguishes the exact 81-dense and 175-affine tensor counts, preserves
+  every affine validation, and requires every dense matrix at its known exact
+  shape and BF16 dtype. Unsupported linear dtypes and feature mismatches fail
+  closed. Added permanent bit-exact dense-QLinear parity alongside the affine
+  M8 suite, and corrected that suite's M8 eligibility predicate to the
+  retained N-divisible-by-32 contract.
+- Strict candidate library and test binaries were built with
+  `-Wall -Wextra -Werror` and external MLX includes classified through
+  `-isystem`. The first command used `-I` for the external headers and stopped
+  on three unused-parameter and one deprecated-copy warnings inside MLX; the
+  corrected command passed with only the established macOS 26.0 / MLX 26.2
+  linker warning. The standalone affine/dense parity suite passed, including
+  maximum M8 error **0.0625**. The focused native suite passed **8 tests** with
+  16 existing warnings; test `clang-format` and `git diff --check` passed.
+- Ran the exact PERF-A062 direct shape through one candidate dylib, changing
+  only the final draft checkpoint directory. The no-trace affine-W4 control
+  completed at **30.992507513 tok/s**, 19 refills, mean emitted width
+  **6.684210526**, digest `46bd4bb035b72c2b`, and last token 20.
+- The official BF16 checkpoint first completed a traced run at **9.005225854
+  tok/s**. Steady cycles generally spent **41.5--42.1 ms** drafting and
+  **185--187 ms** verifying; the run used 61 refills, mean width
+  **2.114754098**, digest `408f99f917ffffcc`, and last token 96968. A no-trace
+  repeat reproduced the refill/width/digest result at **9.044043325 tok/s**.
+  Relative to the adjacent affine control, BF16 loses **21.948464188 tok/s /
+  70.818614%**. The exact rejection sampler preserves target semantics across
+  the changed proposal distribution, while its speed is decisively below the
+  selected path.
+- Retained the official dense-checkpoint compatibility surface as signed
+  commit `6cf95442ccde5a2df2696553ad33ad217bff60da`
+  (`feat(mps): load native dense DFlash2 drafts`). Its EDDSA signature
+  verifies as good. PERF-FA096 records BF16 as a rejected production draft;
+  affine-W4 remains selected. The next candidate is the proposal-selection
+  policy, including the official worker's greedy head path.

@@ -2619,3 +2619,36 @@ option, or serving dispatch was added.
   32-KiB threadgroup and a device-specific matched server window favors SG8.
 - Related commit or revert: the SG8/B32 constants were replaced during the
   same experiment; no repository commit contains the candidate.
+
+## PERF-FA096 - Dense BF16 DFlash2 as the production draft
+
+- Hypothesis: loading the official BF16 DFlash2 matrices directly would
+  recover proposal accuracy lost during affine-W4 conversion and could reduce
+  draft cost through optimized dense MLX products.
+- Scope: the exact immutable 81-tensor
+  `incoai/Qwen3.8-27B-DFlash2` checkpoint with the unchanged full-Q4 target,
+  SG16/B32 target verifier, stochastic selector, and exact p/q rejection.
+- Attempted change: extended the native linear owner and DFlash loader to
+  accept BF16 `[output,input]` matrices directly, then compared the BF16
+  checkpoint against affine-W4 through one candidate dylib and identical
+  `128 / 32 warm / 128 timed` sampling settings.
+- Benchmark evidence: the adjacent affine-W4 control reached **30.992508
+  tok/s**, 19 refills, mean emitted width **6.684211**, and digest
+  `46bd4bb035b72c2b`. Dense BF16 repeated at **9.005226** traced and
+  **9.044043 tok/s** untraced, 61 refills, mean width **2.114754**, digest
+  `408f99f917ffffcc`, and last token 96968. Its steady draft stage also rose
+  from about **26--32 ms** affine to **41.5--42.1 ms** dense.
+- Correctness evidence: the exact 81-tensor artifact loaded and completed both
+  runs. Dense-QLinear bit parity, strict warning-as-error library/test builds,
+  the standalone affine/dense suite, and the focused native suite passed.
+- Failure mode: this BF16 proposal distribution takes a much lower-acceptance
+  fixed-seed path and reads three times as much draft weight. The untraced
+  result is **21.948464 tok/s / 70.818614%** below the adjacent affine control.
+- Why not to retry unchanged: affine-W4 dominates both accepted width and
+  draft execution cost on this device and workload.
+- Reopen only if: proposal policy changes, another workload demonstrates a
+  repeatable BF16 acceptance advantage, or a dense kernel removes the measured
+  bandwidth cost while a matched production window clears the selected path.
+- Related commit or revert: signed `6cf95442cc` retains dense loading as
+  official-checkpoint compatibility; production continues to select the
+  affine-W4 artifact.
