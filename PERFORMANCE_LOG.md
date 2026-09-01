@@ -4,7 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
-| M1 Max native full-Q4 plus affine-W4 DFlash2, sampled direct `128 / 32 warm / 128 timed` | SG8 K-split three-sample mean **11.242437 tok/s**, mean emitted width **2.909091** | SG16 **17.635927 / 17.647986 / 17.645350 / 17.654349 / 17.674892 tok/s**, mean **17.651701**, mean emitted width **4.3** | **+6.409264 / +57.010%**; **2.348299 tok/s** remains to the served floor; steady cycle is about **241--244 ms** | add `SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1` to the signed PERF-A059 command; SG16 is in `1e21aece56` | 2026-09-01 02:39 PDT |
+| M1 Max native full-Q4 plus affine-W4 DFlash2, sampled direct `128 / 32 warm / 128 timed` | SG16/B16 mean **17.651701 tok/s**, mean emitted width **4.3** | SG16/B32 **31.347246 / 31.354397 / 31.268351 / 31.330814 / 31.335863 tok/s**, mean **31.327334**, mean emitted width **6.684211** | **+13.675633 / +77.475%**; direct throughput clears 20 by **11.327334 tok/s**; steady cycle is about **214--217 ms** | add `SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1` to the signed PERF-A059 command; SG16/B32 is in `3bae8a5e67` | 2026-09-01 02:54 PDT |
 | M1 Max full-Q4 plus affine-W4 DFlash2, Codex 0.151.0 xhigh tool turn, real 131K pools | SG8 exact turn: reported decode intervals **10.54--17.20 tok/s**, live verify about **251--253 ms** | SG16 exact turn: reported decode intervals up to **20.85 tok/s**, live verify about **236--239 ms**; exact `6237+128` control **15.336 tok/s** | one exact tool and final marker, exit zero; behavior passes and **4.664 tok/s** remains to the sustained floor | exact server, sampled control, and bounded Codex commands recorded under PERF-A063 | 2026-09-01 02:46 PDT |
 | M1 Max full-Q4 DFlash2 steady verification cycle | stock MLX affine path: draft **41.288--41.686 ms**, verify **352.531--356.089 ms**; partial restore/re-forward **83--191 ms** | selected affine QMM: draft **34.211--37.378 ms**, verify **305.130--305.604 ms**; accepted-prefix replay about **2--6 ms** | draft and verify each improve about **15%** at the measured bounds; recurrent partial commit becomes a low-single-digit-ms stage | `SGLANG_MLX_NATIVE_TRACE_SPEC=1` matched direct full-Q4 screens | 2026-09-01 02:03 PDT |
 | M1 Max native early-out27 v2 with recurrent QKV restored from Q4, sampled served `6237+128`, real 131K pools | selected Q2 checkpoint **20.1556 tok/s** mean with reproducible malformed extra tool call | two independent QKV windows **20.0222 / 20.0292 tok/s** mean; every sample above 20 | **-0.1334 / -0.662%** from selected mean; one clean xhigh tool turn, one post-window turn recovered after a malformed extra call | `SGLANG_MLX_NATIVE_LINEAR_ATTN_OVERRIDE_PATH=<immutable-q4> SGLANG_MLX_NATIVE_LINEAR_ATTN_OVERRIDE_SCOPE=qkv ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 ...`; then the pinned xhigh Codex shell gate | 2026-09-01 00:26 PDT |
@@ -776,6 +776,7 @@ tree throughput can be ranked for production.
 | PERF-A061 | Qualify the M8 K-split path through a real Codex `xhigh` tool turn with real 131K pools. | Native DFlash server, Responses API, reasoning parser, tool parser, and Codex client | Behavior qualified; served-throughput work active | Thread `01a05c45-6b01-7a21-8a69-065170fd3402` executed exactly one requested command and returned exact `QWEN38_DFLASH2_READY`, exit zero. First prefill reached **95.05 tok/s** and reported generation intervals reached **17.20 tok/s**; live verify remains about **251--253 ms**. |
 | PERF-A062 | Increase the exact M=8 affine-W4 K split from eight to sixteen SIMD groups. | Native Metal quantized-matmul owner for every reachable target and DFlash verification projection | Retained in signed `1e21aece56`; real-client behavior passed | Five no-trace samples average **17.651701 tok/s** versus the SG8 three-sample mean **11.242437**, a **57.010%** gain. Verify falls to **210.6--212.1 ms**. All five samples reproduce width 4.3, digest `3e40b8569af9555f`, and last token 735. |
 | PERF-A063 | Qualify SG16 through sampled serving and a Codex `xhigh` tool turn with real 131K pools. | Native DFlash server, OpenAI streaming endpoint, Responses API, and Codex client | Behavior qualified; sustained-throughput work active | Exact `6237+128` reaches **15.336 tok/s** and exact token counts. Codex thread `01a05c5a-28a6-79f0-a526-efa19d961645` executes one command and returns exact final marker; one interval reaches **20.85 tok/s**. Live verify is **236--239 ms**. |
+| PERF-A064 | Double the SG16 M8 affine-W4 output tile and reuse threadgroup storage across disjoint phases. | Native Metal quantized-matmul owner for every reachable target and DFlash verification projection | Retained in signed `3bae8a5e67`; real-client gate next | Five no-trace samples average **31.327334 tok/s**, **77.475%** above SG16/B16. Verify falls to **185.4--186.7 ms**. All five samples reproduce width 6.684211, digest `46bd4bb035b72c2b`, and last token 20. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -3465,3 +3466,39 @@ tree throughput can be ranked for production.
   memory is 94% free, and macOS thermal/performance status is normal. SG16
   passes behavior and improves fixed verifier cost. The exact sampled control
   leaves **4.664 tok/s** to the sustained served floor.
+
+### 2026-09-01 02:54 PDT - PERF-A064 SG16/B32 verifier
+
+- Doubled the M8 affine-W4 output tile from 16 to 32 columns while retaining
+  sixteen 32-thread K partitions. Each SIMD group dequantizes a private 32x32
+  BF16 tile and accumulates four FP32 8x8 outputs. The weight-staging and
+  cross-group-reduction phases are separated by a threadgroup barrier and
+  reuse one 32 KiB allocation, keeping the wider tile inside the measured
+  Apple threadgroup-memory limit.
+- Dispatch and direct-helper contracts now require N divisible by 32 in
+  addition to the selected K-divisible-by-512 condition. Every reachable
+  Qwen3.8 target and DFlash projection satisfies both. A valid affine
+  `K=512,N=16` case proves the new N contract fails closed.
+- Exact checkpoint gate/up `K=5120,N=17408` improves from SG16/B16
+  **0.975192 ms** to **0.829204 ms**. Down `K=17408,N=5120` improves from
+  **0.972296** to **0.855483 ms**. Maximum real-tensor errors from stock MLX
+  remain **0.03125** and **0.125**, respectively.
+- The traced whole-model screen measured steady draft **26.0--26.4 ms** and
+  verify **185.4--186.7 ms**, versus SG16/B16's **27.4--27.9 /
+  210.6--212.1 ms**. One 191.16 ms verify and several 30.1--30.3 ms draft
+  outliers occurred.
+- Five process-isolated no-trace samples measured **31.347246490,
+  31.354396960, 31.268350560, 31.330813634, and 31.335863464 tok/s**, mean
+  **31.327334222**. Every sample reproduced 19 refills, mean emitted width
+  **6.684210526**, digest `46bd4bb035b72c2b`, and last token 20. The gain over
+  the SG16/B16 five-sample mean is **13.675633384 tok/s / 77.474876%**. A
+  separate traced sample reached 30.500698761 tok/s and was excluded from the
+  no-trace window.
+- Permanent M8 parity still passes K/N `512/256`, `5120/64`, and `512/6144`,
+  with maximum absolute BF16 error **0.0625**. Valid K=256 and N=16 contracts
+  fail closed. Strict library/test builds, the standalone parity executable,
+  focused native engine suite (**8 passed**, 16 existing warnings), test
+  formatting, and `git diff --check` pass.
+- Decision: retain as signed commit
+  `3bae8a5e67acf6b71f5f1b86498a5f3ee82146e6`. Its EDDSA signature verifies as
+  good. The real sampled serving and Codex gates follow.

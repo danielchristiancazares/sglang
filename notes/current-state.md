@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-02:46 PDT.
+02:54 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -196,17 +196,19 @@ shape that previously exhausted Metal residency. Two real 131K-configured
 Codex 0.151.0 `xhigh` turns have each issued exactly one requested shell tool
 and returned the exact final marker.
 
-Generation remains the active gap. Signed commit `1e21aece56`
-(`perf(mps): widen DFlash verifier K split`) expands the opt-in M=8 affine-W4
-kernel from eight to sixteen independent K partitions. Five process-isolated
-no-trace `128 / 32 warm / 128 timed` samples measure **17.635927 / 17.647986 /
-17.645350 / 17.654349 / 17.674892 tok/s**, mean **17.651701**, versus the
-three-sample SG8 mean **11.242437 tok/s**. Every SG16 sample reproduces mean
-emitted width **4.3**, digest `3e40b8569af9555f`, and last token 735. Steady
-short-harness cycles now spend about **27.4--27.9 ms** drafting and
-**210.6--212.1 ms** verifying. The shape owner requires K divisible by 512,
-which covers each reachable Qwen3.8 target and DFlash projection and fails
-closed elsewhere.
+Generation remains the active gap. Signed commit `3bae8a5e67`
+(`perf(mps): widen DFlash verifier output tiles`) expands the opt-in M=8
+affine-W4 kernel to 32 output columns while retaining sixteen independent K
+partitions. The dequantized-weight staging and FP32-partial phases have
+disjoint lifetimes and share one 32 KiB threadgroup allocation. Five
+process-isolated no-trace `128 / 32 warm / 128 timed` samples measure
+**31.347246 / 31.354397 / 31.268351 / 31.330814 / 31.335863 tok/s**, mean
+**31.327334**, versus the preceding SG16/B16 mean **17.651701 tok/s**. Every
+sample reproduces mean emitted width **6.684211**, digest
+`46bd4bb035b72c2b`, and last token 20. Steady short-harness cycles now spend
+about **26.0--26.4 ms** drafting and **185.4--186.7 ms** verifying. The shape
+owner requires K divisible by 512 and N divisible by 32, covering every
+reachable projection and failing closed elsewhere.
 
 SG16 also passes the real server and Codex behavior gates. The exact sampled
 `6237+128` control reaches **15.336 generation tok/s**, **109.087 prompt
@@ -214,9 +216,9 @@ tok/s**, **57.174631 s TTFT**, and exact `6365` total tokens. Live 6.2K-history
 verification falls from SG8's roughly **251--253 ms** to **236--239 ms**. The
 pinned Codex `xhigh` turn issues one exact command, observes exact stdout,
 returns exact `QWEN38_DFLASH2_READY`, and exits zero with 294 reasoning tokens;
-one live interval reaches **20.85 tok/s**. Sustained generation remains the
-active gap, with **4.664 tok/s** left from the exact sampled control to the
-hard real served floor. Further verifier-kernel and acceptance work follows.
+one live interval reaches **20.85 tok/s**. The new SG16/B32 real-server speed,
+tool, and 131K-pool gate follows immediately. Sustained real serving at or
+above 20 tok/s remains the admission requirement.
 
 ## Native backend roadmap handoff
 
