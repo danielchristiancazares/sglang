@@ -21159,3 +21159,43 @@ mean 13.929045  17.125658 446.051        39.730
   native-kernel work. Next implement exact five-bit unpacking in the common
   M=8 K-split verifier, validate synthetic and checkpoint parity, then measure
   direct fixed cycles and the exact natural 131K serving contract.
+
+### 2026-09-01 11:49 PDT - Native affine-Q5 M=8 verification improves 19.246%
+
+- Generalized the existing SG16/B32 M=8 K-split owner over affine bits four
+  and five. Each Q5 group contains 64 values in 40 bytes. The Metal kernel
+  reads the exact MLX eight-value/five-byte order, reconstructs the eight
+  unsigned five-bit codes, applies the existing BF16 affine scale/bias, and
+  stages the same 32x32 tile. The four-bit branch retains aligned 32-bit
+  loads. Dispatch and shape validation admit bits four/five only and preserve
+  K multiple 512, N multiple 32, group 64, U32 weights, and BF16 parameters.
+- Strict warning-as-error library and test compilation passed with only the
+  established macOS 26.0/MLX 26.2 linker warning. New Q5 M=8 parity against
+  MLX `quantized_matmul` passed:
+
+  | K | N | Maximum absolute error |
+  |---:|---:|---:|
+  | 512 | 256 | 0.03125 |
+  | 5,120 | 64 | 0.0625 |
+  | 17,408 | 32 | 0.107422 |
+
+  K=256 fails closed with the exact unsupported-shape diagnostic. The entire
+  existing 2/4-bit small-batch/M8/dense suite plus the three user-owned
+  batch-one QMV shapes passed unchanged.
+- Repeated the exact PERF-A091 affine-Q5 plus DFlash command with the candidate
+  dylib. It completed in **9.328605750 s / 13.721235888 tok/s**, 41 refills,
+  mean width **3.170731707**, digest `142b1268bcf49768`, and last token 271.
+  Steady M=8 verify fell from roughly **363--368 ms** to **228--229 ms**;
+  M=2 remains about 114 ms and draft remains about 31--34 ms. This is
+  **+2.214566838 tok/s / +19.245942%** over the adjacent generic-Q5 verifier.
+- The changed split reduction order remains within the established BF16
+  tolerance and changes the sampled target trajectory. Exact p/q rejection
+  completed. A full-Q4 regression preserved digest `79bf856f14024a3e`, last
+  token 20, 32 refills, and mean width 3.84375. The candidate measured
+  **22.286223210 tok/s** versus an adjacent original-kernel
+  **20.581517098 tok/s** sample.
+- Decision: retain affine-Q5 support in the opt-in native M=8 verifier. It is a
+  material speculative-cycle win and preserves the four-bit path. The direct
+  DFlash composition remains below the **16.322505765 tok/s** Q5 target-only
+  result, so the next branch evaluates a Q5-matched MTP proposal and the
+  memory-bandwidth-bound target cycle.

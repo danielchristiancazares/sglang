@@ -971,9 +971,11 @@ code changes, or process state matter.
   reaches **16.322505765 tok/s** on the first complete sampled direct control,
   more than twice the selected GGUF-Q5 small-pool rate.
 - The selected Q4 DFlash policy regresses on this target because five-bit M=8
-  verification reaches generic MLX QMM. A native five-bit K-split verifier is
-  the next measured implementation branch before exact-131K serving and Codex
-  qualification.
+  verification reaches generic MLX QMM. The retained affine-Q5 K-split kernel
+  then cuts M=8 to about 228--229 ms and raises direct DFlash throughput
+  **19.246%** to **13.721235888 tok/s** with representative parity and the
+  full-Q4 regression gate intact. Target-only remains the active route before
+  exact-131K serving and Codex qualification.
 
 ### 03:07–06:18 — DSpark-v2 crosses 150 tok/s and becomes the Windows default
 
