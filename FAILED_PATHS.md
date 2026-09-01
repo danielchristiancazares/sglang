@@ -3397,3 +3397,84 @@ option, or serving dispatch was added.
   split-K economics.
 - Related commit or revert: the Q5 small-batch branch and its temporary tests
   were removed before PERF-A093.
+
+## PERF-FA122 - Alternate affine-Q5 batch-one QMV geometries
+
+- Hypothesis: increasing output-row reuse, pack depth, SIMD-group count, or a
+  narrower K cohort can improve the direct affine-Q5 decode kernel.
+- Scope: native affine-Q5/G64 target-only sampled `128 / 32 warm / 128 timed`
+  screens with seed 42 and exact BF16/FP32 arithmetic.
+- Attempted change: swept SIMD-groups/results/packs geometries `2/4/2`,
+  `2/8/2`, `2/4/1`, `2/4/4`, `4/4/2`, and `8/4/2`, then a 16-K-lane/two-row
+  cohort.
+- Benchmark evidence: the corresponding full-model results were
+  **17.466385085 / 16.016573901 / 16.956398080 / 16.837489631 /
+  17.505461879 / 17.422819885 tok/s**. The 16-lane cohort passed parity and
+  reached only **14.839742878 tok/s**. The selected four-SIMD/four-row/two-pack
+  form later reached **17.823163930 tok/s** after fixed FMAs, packed loads,
+  K specialization, and command-buffer controls.
+- Correctness evidence: representative parity remained within the selected
+  **0.25** BF16 acceptance bound. The one-pack form admitted K=256 and thus
+  intentionally failed the selected-geometry fail-closed test.
+- Failure mode: additional result rows and weight packs raise register
+  pressure; narrower K cohorts reduce input reuse; fewer output rows underuse
+  each activation fragment.
+- Why not to retry unchanged: every alternate geometry trails the selected
+  result by at least **0.350211221 tok/s**, and the 16-lane form trails it by
+  **2.983421052 tok/s**.
+- Reopen only if: shader attribution or occupancy counters identify a distinct
+  bottleneck and a geometry changes both register pressure and weight-load
+  coalescing.
+- Related commit or revert: alternate source strings were removed before
+  PERF-A094; only the selected four/four/two source remains.
+
+## PERF-FA123 - FP16 local accumulation in affine-Q5 QMV
+
+- Hypothesis: half-precision local dot products can reduce register bandwidth
+  while a final FP32 accumulation preserves sufficient output accuracy.
+- Scope: selected four-SIMD/four-row/two-pack Q5 kernel and the pinned
+  affine-Q5 target.
+- Attempted change: accumulated each unpacked weight/input product in FP16,
+  converted each group dot to FP32, and retained FP32 cross-group/reduction
+  arithmetic. The first explicit half-`fma` form failed Metal overload
+  resolution; a half multiply/add form compiled.
+- Benchmark evidence: the compiled form reached **16.743742934 tok/s**,
+  **1.079420996 tok/s** below the selected FP32-local result.
+- Correctness evidence: the representative synthetic maximum errors remained
+  within the test bound, while the full-model sampled digest changed.
+- Failure mode: conversions and half arithmetic cost exceed any register
+  saving, and reduced precision changes the target sampling trajectory.
+- Why not to retry unchanged: it is both slower and semantically less stable
+  than fixed explicit FP32 FMAs.
+- Reopen only if: a native packed-dot instruction can replace the scalar
+  conversion sequence while preserving the selected BF16 output trajectory.
+- Related commit or revert: the FP16-local branch was removed before
+  PERF-A094.
+
+## PERF-FA124 - Concurrent MLX streams for affine-Q5 gate/up projections
+
+- Hypothesis: submitting independent gate and up affine-Q5 products on two
+  persistent Metal streams can overlap their weight traversal.
+- Scope: batch-one affine-Q5 `Engine::mlp`, two `mx::StreamContext` scopes,
+  and the selected target-only full-model benchmark.
+- Attempted change: created persistent gate/up GPU streams, built one
+  projection on each stream, and consumed both through the ordinary SwiGLU
+  and down projection.
+- Benchmark evidence: the first full-model candidate retained about **14 GB**,
+  consumed **0.0% CPU**, and made no progress for more than one minute. Stack
+  inspection placed later custom-Metal probes in
+  `IOSurfaceSharedEvent::waitUntilSignaledValue`; a stock MLX arithmetic probe
+  completed in **0.388 seconds**.
+- Correctness evidence: no candidate output completed. The exact benchmark PID
+  was terminated with status 143. Temporary stream code was removed and the
+  restored sequential source passes strict warning-as-error compilation.
+- Failure mode: graph construction across independent MLX streams lacks an
+  explicit event/dependency lifetime joining gate/up production to their
+  default-stream consumer, leaving a custom-Metal event unsignaled.
+- Why not to retry unchanged: the first execution stalls and contaminates
+  subsequent custom-kernel validation until the Metal session recovers.
+- Reopen only if: a minimal isolated C++ proof establishes explicit
+  cross-stream event ownership, completion, and asynchronous array lifetime
+  before any full-model launch.
+- Related commit or revert: all parallel-stream source was removed before
+  PERF-A094; sequential `Engine::mlp` remains authoritative.
