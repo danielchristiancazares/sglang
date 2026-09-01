@@ -22485,3 +22485,63 @@ mean 13.929045  17.125658 446.051        39.730
   **0.758018668 tok/s / 3.939400%**. Exact 131K serving, sampled behavior, and
   Codex `xhigh` remain pending until another direct candidate clears 20 with
   margin. Port 30000 remains free and every benchmark process exited.
+
+### 2026-09-01 16:52 PDT - Post-A111 Q4 search closes; scalar completion screen pauses for indexing
+
+- Continued from signed `22408c50c49dd10a84d73740617991a6bf9eba02`
+  (`perf(mlx): tile stock-exact Q4 decode`), whose EDDSA signature verifies
+  good. `main` remained 83 commits ahead of `origin/main`; its index was
+  empty. Daniel's existing engine/header/small-batch-test working-copy bytes
+  remained user-owned and untouched. Port 30000 had no listener, no model or
+  benchmark process was resident, memory pressure was 95% free with zero
+  throttled pages, and thermal/performance status was normal before GPU work.
+- Created detached worktree
+  `/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4` at exact
+  `22408c50c4`. The earlier persistent A111 worktree supplied the `8x4`,
+  `4x8`, `2x8`, and vector-load artifacts. Every native build used installed
+  MLX 0.32.2 and strict C++20/O3 warnings-as-errors; the known macOS 26.0 /
+  MLX 26.2 link warning was the only diagnostic.
+- Exact geometry results were: `8x4` control/candidate means
+  **19.229939742 / 19.230535491 tok/s**; `4x8` candidate/selected
+  **18.840786855 / 19.240688283**; and `2x8` candidate/selected
+  **18.851060160 / 19.217529511**. Every output retained digest
+  `d0193f6d413b68c1`, last token 11406.
+- A bit-exact `packed_ushort4` load improves isolated gate/up
+  **0.464261542 -> 0.452577875 ms**. Five full-model samples per arm give
+  control **19.165739804, 19.191885911, 19.222388916, 19.267016344,
+  19.263570142** (mean **19.222120223**) and candidate **19.275122379,
+  19.192896470, 19.225967554, 19.269577384, 19.197378716** (mean
+  **19.232188501**). The **+0.052379%** movement is neutral.
+- Four packs per lane is faster in the isolated paired gate/up mean
+  (**0.463281000 -> 0.454654105 ms**) and reports one `0.000488281` BF16
+  mismatch at `5120x17408`. Its full target screen reaches
+  **18.928908455 tok/s**, digest `92ae190a68ee376b`, last token 8. A helper-
+  local `ushort` remains bit-exact and regresses paired gate/up
+  **0.454020313 -> 0.464569500 ms**. Forced K-loop full unrolling remains
+  bit-exact and regresses gate/up **0.468931459 -> 1.799243958 ms**.
+  PERF-FA131 closes all six forms; A111 stays selected.
+- Traced the target-only scalar boundary through `Engine::decode`,
+  `emit_scheduled`, the C API, and `NativeQwen38Engine.decode`. The existing
+  pipeline schedules the following token before waiting for the token queued
+  by the prior decode. Installed MLX `array::item<T>()` directly invokes
+  `array::eval()`, making the immediately preceding free `eval(pending_tok_)`
+  redundant. Removing only that call preserves digest and state ownership.
+- Two preliminary reversed pairs measure control **19.215922794,
+  19.175608863** and candidate **19.243294045, 19.195519166**. Four clean
+  interleaved pairs then measure control **19.255402485, 19.194185243,
+  19.212658979, 19.196827843** (mean **19.214768638**) and candidate
+  **19.221646578, 19.203767781, 19.254456659, 19.263026091** (mean
+  **19.235724277**). Every clean output is canonical.
+- A fifth candidate reached **16.599721750 tok/s** as a new
+  `mdworker_shared` cohort appeared. Its replacement reached
+  **10.995856101** while `mds_stores`, `fileproviderd`, and `CGPDFService`
+  were active at substantial CPU/storage load. Both samples are externally
+  contended and excluded. The verified server/model process tree was empty;
+  memory remained 95% free, pages throttled remained zero, AC power and
+  `powermode 2` were active, and `pmset -g therm` remained normal. System
+  services were left untouched.
+- Handoff: allow indexing to settle, replace the contaminated A113 sample,
+  then run an independent reversed five-pair window. The selected direct
+  result remains **19.241981332 tok/s** and the gap remains
+  **0.758018668 / 3.939400%**. Exact 131K serving and Codex `xhigh` remain
+  pending.

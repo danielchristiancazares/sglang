@@ -850,6 +850,8 @@ tree throughput can be ranked for production.
 | PERF-A109 | Combine each dense BF16 recurrent b/a projection pair at load and issue one 96-row matmul. | Mixed-Q5 native loader and `Engine::gated_delta` | Runtime-correct and rejected as neutral | Two independent balanced five-versus-five windows aggregate to control **18.993383731** and fusion **18.993221731 tok/s**. All 20 runs reproduce digest `d0193f6d413b68c1`; the **-0.000162000 tok/s** aggregate movement closes the unchanged fusion. See PERF-FA128. |
 | PERF-A110 | Attribute the selected mixed-target decode to concrete Metal shaders. | Selected A100 target under Metal System Trace plus GPU shader counters | Retained diagnostic | A 128-token sampled trace maps **48,156 / 48,831** target-process PCs with zero ambiguity. Stock affine-Q4 QMV owns **43.546%**, custom Q5 QMV owns **48.613%**, and all QMV owns **92.159%**, funding a stock-compatible Q4 kernel. |
 | PERF-A111 | Double the stock affine-Q4/G64 batch-one output cohort while preserving MLX's helper and FP32 expression structure. | Mixed target's 162 Q4 linears, explicit native Q4 switch, and selected A100 Q5 path | Qualified and retained | K/N `512/64`, `5120/128`, and `5120/17408` are bit-exact against MLX. Two balanced five-versus-five windows improve **19.103271206 -> 19.230598293** and **19.124600969 -> 19.253364371 tok/s**; aggregate gain is **+0.128045244 / +0.669905%** with canonical digest `d0193f6d413b68c1`. |
+| PERF-A112 | Screen the remaining Q4 output cohorts, load widths, lane work, and compile-time unrolling around A111. | Exact affine-Q4/G64 batch-one Metal kernel and mixed target | Rejected | Exact `8x4`, `4x8`, and `2x8` cohorts are flat or materially slower. A 128-bit weight load moves a five-sample full-model mean only **19.222120223 -> 19.232188501 tok/s**. Four packs per lane changes BF16 output and the seeded digest; forced full unrolling regresses gate/up to **1.799243958 ms**. See PERF-FA131. |
+| PERF-A113 | Remove the explicit scalar `eval()` immediately before `array::item()`. | Native target-only two-token decode pipeline and MLX 0.32.2 scalar completion | Clean qualification incomplete | MLX `array::item()` calls `array::eval()` itself, so output and pipeline ownership remain unchanged. Four clean interleaved pairs measure **19.214768638 -> 19.235724277 tok/s** (**+0.109065%**); a fresh Spotlight/FileProvider indexing wave contaminated the remaining samples and paused promotion. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -5321,3 +5323,56 @@ tree throughput can be ranked for production.
   The direct gap is now **0.758018668 tok/s / 3.939400%**; exact 131K serving
   and Codex `xhigh` qualification remain pending until the direct floor is
   cleared with margin.
+
+### 2026-09-01 16:45 PDT - PERF-A112 remaining Q4 geometry and load screens
+
+- Scope: signed A111 plus A100, pinned mixed revision `596b8067...8340`,
+  native sampling seed 42, and the exact `128 / 32 warm / 128 timed` direct
+  contract. Every completed qualified output used the canonical digest
+  `d0193f6d413b68c1` and last token 11406.
+- Exact geometry screens:
+  - eight SIMD groups by four rows is flat across reversed full-model pairs:
+    control **19.229939742** and candidate **19.230535491 tok/s**;
+  - four SIMD groups by eight rows reaches **18.840786855** beside selected
+    **19.240688283 tok/s**;
+  - two SIMD groups by eight rows reaches **18.851060160** beside selected
+    **19.217529511 tok/s**.
+- Replacing four scalar `ushort` reads with one `packed_ushort4` remains
+  bit-exact at all three parity shapes. Gate/up falls from **0.464261542** to
+  **0.452577875 ms**, while the balanced full-model means are control
+  **19.222120223** and candidate **19.232188501 tok/s**, a
+  **+0.010068277 / +0.052379%** neutral movement.
+- Four packs per lane reaches paired gate/up means **0.463281000 ->
+  0.454654105 ms**. It introduces one `0.000488281` BF16 mismatch at
+  `5120x17408`; the full model falls to **18.928908455 tok/s**, digest
+  `92ae190a68ee376b`, and last token 8.
+- Keeping the selected helper while materializing each `ushort` local is
+  bit-exact and regresses paired gate/up means **0.454020313 ->
+  0.464569500 ms**. Forcing full unrolling remains bit-exact and regresses the
+  same projection from **0.468931459** to **1.799243958 ms**.
+- Decision: retain A111 unchanged. PERF-FA131 closes these source forms.
+
+### 2026-09-01 16:52 PDT - PERF-A113 duplicate scalar evaluation screen
+
+- Production reachability: `Engine::emit_scheduled()` is the target-only
+  scalar return path for prefill and every steady-state decode. The selected
+  engine schedules one following token before emitting the token queued by
+  the prior call. Installed MLX 0.32.2 `array::item<T>()` calls `eval()` before
+  reading data, so the preceding free `eval(pending_tok_)` performs the same
+  completion twice at the host API layer.
+- Removing only the explicit free `eval()` preserves the two-token pipeline,
+  state/history ownership, canonical digest, and last token. Two preliminary
+  reversed pairs measure control **19.195765829** and candidate
+  **19.219406606 tok/s**. The first four clean interleaved qualification pairs
+  measure control **19.214768638** and candidate **19.235724277 tok/s**, a
+  **+0.020955640 / +0.109065%** movement.
+- A fifth candidate fell to **16.599721750 tok/s**, followed by a replacement
+  at **10.995856101**. Immediate diagnostics found newly spawned
+  `mdworker_shared` cohorts plus `mds_stores`, `fileproviderd`, and
+  `CGPDFService` using substantial CPU and storage bandwidth. Memory remained
+  95% free, pages throttled remained zero, AC/high-power policy remained
+  selected, and `pmset -g therm` reported no thermal or performance warning.
+- Decision: exclude the two externally contended samples and keep A113 in
+  qualification. Resume only after the background indexing wave returns to
+  the ordinary idle state; require a complete five-pair window and an
+  independent reversed window before promotion.
