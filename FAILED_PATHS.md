@@ -2966,3 +2966,35 @@ option, or serving dispatch was added.
   beats SG16/B32.
 - Related commit or revert: the 64-column source was removed; the signed
   SG16/B32 kernel remains exact and selected.
+
+## PERF-FA107 - DFlash2 selector temperatures outside the retained 1.15 arm
+
+- Hypothesis: rescaling the learned DFlash selector's unary-plus-transition
+  logits can increase target overlap enough to improve sampled serving.
+- Scope: full-Q4 target, affine-W4 DFlash2, seven-token learned proposal,
+  exact p/q rejection, selected SG16/B32 verifier, and the representative
+  real-131K-pool `6237+128` request.
+- Attempted change: screened selector temperatures
+  **0.7/0.85/0.95/1.05/1.15/1.3** while leaving request temperature, target
+  probabilities, and exact verifier unchanged.
+- Benchmark evidence: direct `128 / 32 warm / 128 timed` rates for
+  0.7/0.85/0.95/1.05/1.15/1.3 were respectively
+  **14.838952659 / 11.185534971 / 37.171244579 / 10.998405302 /
+  26.936073462 / 9.563179041 tok/s**, versus identity
+  **31.291292321**. The apparent 0.95 direct winner regressed the real request
+  to **13.739 tok/s**. The retained 1.15 arm averaged **15.8866 tok/s** across
+  five real requests versus the adjacent identity mean **15.4424**.
+- Correctness evidence: the retained implementation forwards each selected
+  token's exact rescaled q into the common rejection sampler. All real
+  requests completed exact 6,365 tokens with `finish_reason=length` and a
+  stable coherent digest within each setting. Invalid zero fails closed.
+- Failure mode: repeated-token direct trajectories do not rank proposal
+  calibration reliably for natural reasoning. Every screened arm apart from
+  1.15 either lost directly or, for 0.95, failed the representative served
+  gate.
+- Why not to retry unchanged: the full sweep already isolates the selector
+  scale, and 0.95's synthetic lead reverses on the admission workload.
+- Reopen only if: a new target/draft pairing, selector checkpoint, request
+  distribution, or adaptive calibration signal changes proposal overlap.
+- Related commit or revert: PERF-A076 retains only the checked opt-in scale;
+  identity remains default and 1.15 is the measured selected arm.

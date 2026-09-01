@@ -105,6 +105,25 @@ bool native_dflash_tape_commit_enabled() {
       std::string_view(value) != "false";
 }
 
+float native_dflash_selector_temperature() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE");
+  if (value == nullptr || *value == '\0') {
+    return 1.0f;
+  }
+  float temperature = 0.0f;
+  const std::string_view text(value);
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), temperature);
+  if (error != std::errc() || end != text.data() + text.size() ||
+      !std::isfinite(temperature) || temperature <= 0.0f) {
+    throw std::runtime_error(
+        "SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE must be a positive "
+        "finite number");
+  }
+  return temperature;
+}
+
 int native_dspark_verify_draft_tokens() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_DSPARK_VERIFY_DRAFT_TOKENS");
@@ -2400,6 +2419,13 @@ void Engine::load_dflash2(
     throw std::runtime_error(
         "Qwen3.8-27B DFlash2 requires target shape 64x5120x248320");
   }
+  dflash_selector_temperature_ = native_dflash_selector_temperature();
+  if (native_spec_trace_enabled()) {
+    std::fprintf(
+        stderr,
+        "qwen38_dflash selector_temperature=%.6f\n",
+        dflash_selector_temperature_);
+  }
 
   const auto dense = [this, &weights](
                          const std::string& name,
@@ -3191,6 +3217,10 @@ std::tuple<array, array, array> Engine::dflash_select(
         -1);
     array scores = astype(unary_row, mx::float32) +
         astype(edges, mx::float32);
+    if (dflash_selector_temperature_ != 1.0f) {
+      scores = scores /
+          array(dflash_selector_temperature_, mx::float32);
+    }
     array probs = mx::softmax(scores, -1, true);
     array selected = mx::random::categorical(mx::log(probs), -1);
     predecessor = squeeze(

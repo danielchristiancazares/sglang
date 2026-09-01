@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-05:33 PDT.
+06:04 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -227,6 +227,18 @@ issues one exact command, observes exact stdout, returns exact
 cycle win is production-reachable; this prompt's sampled proposal acceptance
 leaves **4.672 tok/s** to the sustained admission requirement. Proposal
 precision/selection and further verifier work are the next active branch.
+
+The learned selector now has a checked opt-in temperature at its native score
+owner. Identity remains the default and preserves the prior operation graph.
+Temperature **1.15** raises five consecutive exact real-131K-pool samples from
+the adjacent identity mean **15.4424** to **15.8866 tok/s**, a **2.876%**
+gain; mean emitted verifier width rises **3.878788 -> 4.031250**. Every sample
+completes exact 6,365 tokens with a stable coherent digest within its setting,
+and exact rescaled q continues into rejection sampling. Temperature 0.95,
+which appeared strongest on the repeated-token direct screen, reaches only
+**13.739 tok/s** on the natural request and is closed. The selected opt-in
+retains **4.1134 tok/s** to the requested floor. DFlash verifier-width
+economics are the next active branch.
 
 The official worker's greedy LM-head proposal rule is closed for sampled
 production. It reached a misleading five-sample direct mean of **37.518731
