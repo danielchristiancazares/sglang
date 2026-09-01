@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-03:17 PDT.
+03:58 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -234,6 +234,23 @@ tok/s** and width **7.9375** on the repeated-token harness, then only **9.512
 tok/s** on the exact natural `6237+128` request, **37.944%** below the learned
 selector. The temporary switch was removed. Proposal-policy candidates now
 require the real 6.2K request as their admission screen.
+
+DSpark v2 also runs end to end through signed commit `21cd561dfc`. The native
+lane accepts the exact official 62-tensor BF16 checkpoint and the distinct
+136-tensor affine-W4 derivative, executes all five full-attention YaRN draft
+layers plus sequential rank-256 Markov correction, and shares the exact target
+verifier/accepted-state commit owner with DFlash2. The affine artifact reaches
+**10.050625 tok/s** in the first direct sampled screen and **11.242 tok/s** on
+the exact real-131K-pool sampled `6237+128` request. Full reasoning, exact token
+counts, health, and the language-only model surface pass.
+
+Two DSpark proposal-fidelity candidates are closed. Independently applying
+target top-k/top-p filtering to each draft row fell to **6.997461 tok/s** and
+width **1.6** direct. Retaining only Markov W2 in BF16 fell to **7.044992
+tok/s** and width **1.65** direct; its representative served request reached
+**11.294 tok/s**, a **0.462551%** different-trajectory movement, while adding
+**87.148 MiB**. Both experimental source changes were removed. The selected
+affine checkpoint, DFlash2 path, and production runtime remain intact.
 
 ## Native backend roadmap handoff
 

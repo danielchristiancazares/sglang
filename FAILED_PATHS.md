@@ -2684,3 +2684,72 @@ option, or serving dispatch was added.
   or a representative prompt corpus shows a matched learned-selector loss.
 - Related commit or revert: the experimental switch was removed with
   `apply_patch`; no repository commit contains the candidate.
+
+## PERF-FA098 - Independently top-k/top-p-filtered DSpark proposals
+
+- Hypothesis: filtering each DSpark proposal row through the target's top-k 20
+  and top-p 0.95 rule would remove proposal mass that the verifier's target
+  distribution can never accept and raise overlap.
+- Scope: native affine-W4 DSpark, the selected full-Q4 target and SG16/B32
+  verifier, seed 42, exact dense-q rejection, and the direct
+  `128 / 1 warm / 32 timed` sampled screen.
+- Attempted change: added an opt-in C++ switch that replaced each full-vocab
+  DSpark softmax with the existing target-side `sampling_probabilities`
+  mechanism, then sampled and verified against that exact filtered q.
+- Benchmark evidence: the unchanged full-softmax baseline reached **10.050625
+  tok/s**, 14 refills, and mean emitted width **2.428571**. The aligned-filter
+  candidate fell to **6.997461 tok/s**, 20 refills, and mean width **1.6**.
+  Steady draft cost also rose from generally **36.55--40.07 ms** to
+  **38.71--42.40 ms**.
+- Correctness evidence: exact p/q rejection completed all 32 timed tokens;
+  the candidate produced digest `b149ae20f95e9c7b` and last token 8420. The
+  strict warning-as-error candidate library built successfully.
+- Failure mode: the draft and target rank different top-20 supports.
+  Independently truncating q removes lower-ranked draft tokens that overlap
+  target support, reduces accepted width, and adds seven vocabulary
+  partition/sort operations per refill.
+- Why not to retry unchanged: both acceptance and fixed draft execution cost
+  regress decisively on the first exact screen.
+- Reopen only if: a shared target-informed support is available before draft
+  sampling or measured proposal/target support overlap changes materially.
+- Related commit or revert: the experimental switch was removed with
+  `apply_patch`; no repository commit contains the candidate.
+
+## PERF-FA099 - BF16 DSpark Markov output projection
+
+- Hypothesis: retaining `markov_head.markov_w2` in BF16, matching the upstream
+  CUDA lane's precision preference, would improve proposal/target overlap
+  enough to offset its larger matrix and dense product.
+- Scope: native DSpark with the selected full-Q4 target, five-layer affine-W4
+  draft backbone, exact dense-q rejection, seed 42, SG16/B32 verifier, direct
+  `128 / 1 warm / 32 timed`, and real-131K-pool sampled `6237+128` serving.
+- Attempted change: taught the standalone C++ converter to retain only Markov
+  W2 in source BF16 and the native linear loader to accept the resulting exact
+  134-tensor hybrid contract. The distinct derived checkpoint carried full
+  source provenance and SHA-256
+  `73b829d7845a72ac34794e9dd74bd96eae2189a5bcd7b45c2099a2b45638674f`.
+- Benchmark evidence: direct throughput fell from **10.050624654 to
+  7.044992356 tok/s** (**-29.904930%**), refills rose from 14 to 20, and mean
+  emitted width fell from **2.428571429 to 1.65**. The representative request
+  reached **11.294 tok/s** versus the all-affine **11.242 tok/s**, a
+  **+0.052 / +0.462551%** movement on a different sampled trajectory. The
+  hybrid artifact was **87.148 MiB** larger.
+- Correctness evidence: converter reload/provenance verification, strict
+  warning-as-error native build, direct exact p/q execution, focused native
+  pytest (**8 passed**), real exact 6,365-token completion, language-only
+  `/model_info`, and post-request health all passed. Served output/reasoning
+  SHA-256 was
+  `47690f3aaf04561fa6abe2cd3205724c59204b43a4f3eb4a8e1c525d584da3b1`.
+- Failure mode: this isolated precision change moves proposal sampling onto a
+  sharply lower-acceptance direct trajectory, adds residency, and produces
+  only a sub-percent served movement that is inseparable from trajectory
+  variation. It remains **8.706 tok/s** below the required floor.
+- Why not to retry unchanged: direct acceptance evidence is adverse and the
+  representative result provides no material, repeatable margin.
+- Reopen only if: fixed-context teacher-forced overlap analysis demonstrates
+  a consistent BF16 Markov-W2 advantage across representative prompts, or a
+  fused dense projection removes its residency/execution cost and a matched
+  repeated served window clears the selected path.
+- Related commit or revert: converter and loader changes were removed with
+  `apply_patch`; the 1,227,639,900-byte derived artifact was deleted and is
+  reproducible from the immutable source using the experiment record.
