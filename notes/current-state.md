@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-02:28 PDT.
+02:39 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -196,21 +196,26 @@ shape that previously exhausted Metal residency. Two real 131K-configured
 Codex 0.151.0 `xhigh` turns have each issued exactly one requested shell tool
 and returned the exact final marker.
 
-Generation remains the active gap. Signed commit `b853514b5c`
-(`perf(mps): split DFlash verify QMM across K`) adds an opt-in M=8 affine-W4
-kernel that assigns one eighth of K to each SIMD group. Two current direct
-`128 / 32 warm / 128 timed` samples measure **11.241518 / 11.243767 tok/s**,
-mean **11.242643**, versus an adjacent **9.304876 tok/s** control. The
-M8-backed real Codex turn prefetched its first 6,228 tokens at **95.05 prompt
-tok/s**, sustained reported generation intervals of **10.54--17.20 tok/s**
-after the initial interval, and prefetched the 6,594-token tool continuation at
-**80.48 prompt tok/s**. It completed one exact tool call and exact final
-marker with exit zero. At this 6.2K history, live cycles spend about
-**30.7--35.9 ms** drafting and **251.2--253.5 ms** verifying; the same kernel
-measures **28.5--33.5 / 225.5--226.7 ms** in the short direct harness.
-Further verification scheduling, quantized-product geometry, and acceptance
-work follow. The hard admission gate remains real served generation at or
-above **20 tok/s** with exact tools and 131K capacity.
+Generation remains the active gap. Signed commit `1e21aece56`
+(`perf(mps): widen DFlash verifier K split`) expands the opt-in M=8 affine-W4
+kernel from eight to sixteen independent K partitions. Five process-isolated
+no-trace `128 / 32 warm / 128 timed` samples measure **17.635927 / 17.647986 /
+17.645350 / 17.654349 / 17.674892 tok/s**, mean **17.651701**, versus the
+three-sample SG8 mean **11.242437 tok/s**. Every SG16 sample reproduces mean
+emitted width **4.3**, digest `3e40b8569af9555f`, and last token 735. Steady
+short-harness cycles now spend about **27.4--27.9 ms** drafting and
+**210.6--212.1 ms** verifying. The shape owner requires K divisible by 512,
+which covers each reachable Qwen3.8 target and DFlash projection and fails
+closed elsewhere.
+
+The preceding SG8-backed real Codex turn prefetched its first 6,228 tokens at
+**95.05 prompt tok/s**, sustained reported generation intervals of
+**10.54--17.20 tok/s** after the initial interval, and prefetched the
+6,594-token tool continuation at **80.48 prompt tok/s**. It completed one
+exact tool call and exact final marker with exit zero. The SG16 real-server
+speed, tool, and 131K-pool gate follows immediately. The hard admission gate
+remains real served generation at or above **20 tok/s** with exact tools and
+131K capacity.
 
 ## Native backend roadmap handoff
 
