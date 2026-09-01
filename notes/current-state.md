@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-08:22 PDT.
+08:44 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -169,16 +169,32 @@ experiment-log entries.
 
 ## Active Apple handoff
 
-The requested Q5 lane now has an immutable local target. Bartowski's
-`Qwen3.8-27B-Q5_K_M.gguf` is pinned at revision
+The requested Q5 lane now serves through a provenance-pinned derived artifact.
+Bartowski's immutable `Qwen3.8-27B-Q5_K_S.gguf` source is pinned at revision
 `f0eec4a4bb4975114a030d048952d83c0a53c034`, occupies exactly
-20,752,787,040 bytes, and verifies as SHA-256
-`e731e180460b906f373294a4e2de10541e80ee676af7f8c949a84dbb6ed3caa8`.
-Actual-file native-MPS batch-one parity passes for the checkpoint's Q4_0,
-Q5_K, and Q6_K tensor families. A served Q5 baseline, real 131K pool, 20 tok/s
-admission window, and Codex `xhigh` work gate remain due. The affine-Q4 lane
-below is retained optimization substrate and comparison evidence; it does not
-by itself satisfy the Q5 target.
+19,680,945,760 bytes, and verifies as SHA-256
+`b52fbc242bde75a8e8f1dd2ec9ef9da4a1ce074d2513d3087a4f15003c11e569`.
+Pinned llama.cpp build 10547 copied all source tensors and converted only the
+833.59 MiB Q5_K `token_embd.weight` to F16. The distinct
+`Qwen3.8-27B-Q5_K_S-TokenF16.gguf` artifact is exactly 21,349,656,160 bytes
+with SHA-256
+`c05a777870159b0779a441e2f58b543a0660af466d833d5b550a8aab9c17fcfb`.
+
+Actual-file native-MPS parity passes for Q4_0, Q5_K, and Q6_K. The derived
+checkpoint loads as `Qwen3_5ForCausalLM`, occupies 21.37 GB at runtime, warms
+the native Metal path, and exposes the language-only `qwen3.8-27b-q5` serving
+surface. Its first sampled exact `128+32` baseline preserves reasoning and
+reaches **5.746 generation tok/s**, **5.8 prompt tok/s**, **22.070851 s TTFT**,
+and **27.466190 s** end to end. This leaves a **14.254 tok/s / 3.481x** decode
+gap. The real 131K pool, sustained 20 tok/s admission window, and Codex
+`xhigh` work gate remain due.
+
+The unchanged Q5_K_M artifact is closed on this loader because mixed merged
+weights contain Q8_0 shards unsupported by the native Metal merge path. The
+unchanged Q5_K_S artifact loads its 20.00 GB weights and then reaches the
+unsupported Q5_K embedding boundary. The derived artifact owns the active Q5
+route. The affine-Q4 lane below remains optimization substrate and comparison
+evidence.
 
 The native M1 Max Qwen3.8 lane now clears the requested 20 tok/s served floor
 in two independent real-131K five-sample windows when recurrent QKV
