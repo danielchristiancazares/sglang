@@ -2061,6 +2061,13 @@ QLinear Engine::load_qlinear(
     const std::string& prefix) {
   QLinear q;
   q.w = require(weights, prefix + ".weight");
+  if (q.w.dtype() == mx::bfloat16) {
+    if (q.w.ndim() != 2) {
+      throw std::runtime_error("invalid dense tensor for " + prefix);
+    }
+    q.valid = true;
+    return q;
+  }
   q.scales = require(weights, prefix + ".scales");
   q.biases = require(weights, prefix + ".biases");
   q.group_size = cfg_.quant_group_size;
