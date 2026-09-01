@@ -4226,22 +4226,41 @@ void Engine::load_mtp(const std::string& mtp_dir) {
     load_dflash2(weights);
     return;
   }
-  mtp_fc_ = load_qlinear(weights, "fc");
-  mtp_pre_emb_ = require(weights, "pre_fc_norm_embedding.weight");
-  mtp_pre_hid_ = require(weights, "pre_fc_norm_hidden.weight");
-  mtp_norm_ = require(weights, "norm.weight");
+  std::string mtp_prefix;
+  if (!weights.contains("fc.weight")) {
+    if (!weights.contains("mtp.fc.weight")) {
+      throw std::runtime_error("MTP checkpoint is missing fc.weight");
+    }
+    mtp_prefix = "mtp.";
+  }
+  mtp_fc_ = load_qlinear(weights, mtp_prefix + "fc");
+  mtp_pre_emb_ =
+      require(weights, mtp_prefix + "pre_fc_norm_embedding.weight");
+  mtp_pre_hid_ = require(weights, mtp_prefix + "pre_fc_norm_hidden.weight");
+  mtp_norm_ = require(weights, mtp_prefix + "norm.weight");
   mtp_layer_.is_linear = false;
-  mtp_layer_.input_norm = require(weights, "layers.0.input_layernorm.weight");
-  mtp_layer_.post_norm = require(weights, "layers.0.post_attention_layernorm.weight");
-  mtp_layer_.gate_proj = load_qlinear(weights, "layers.0.mlp.gate_proj");
-  mtp_layer_.up_proj = load_qlinear(weights, "layers.0.mlp.up_proj");
-  mtp_layer_.down_proj = load_qlinear(weights, "layers.0.mlp.down_proj");
-  mtp_layer_.attn.q_proj = load_qlinear(weights, "layers.0.self_attn.q_proj");
-  mtp_layer_.attn.k_proj = load_qlinear(weights, "layers.0.self_attn.k_proj");
-  mtp_layer_.attn.v_proj = load_qlinear(weights, "layers.0.self_attn.v_proj");
-  mtp_layer_.attn.o_proj = load_qlinear(weights, "layers.0.self_attn.o_proj");
-  mtp_layer_.attn.q_norm = require(weights, "layers.0.self_attn.q_norm.weight");
-  mtp_layer_.attn.k_norm = require(weights, "layers.0.self_attn.k_norm.weight");
+  mtp_layer_.input_norm =
+      require(weights, mtp_prefix + "layers.0.input_layernorm.weight");
+  mtp_layer_.post_norm = require(
+      weights, mtp_prefix + "layers.0.post_attention_layernorm.weight");
+  mtp_layer_.gate_proj =
+      load_qlinear(weights, mtp_prefix + "layers.0.mlp.gate_proj");
+  mtp_layer_.up_proj =
+      load_qlinear(weights, mtp_prefix + "layers.0.mlp.up_proj");
+  mtp_layer_.down_proj =
+      load_qlinear(weights, mtp_prefix + "layers.0.mlp.down_proj");
+  mtp_layer_.attn.q_proj =
+      load_qlinear(weights, mtp_prefix + "layers.0.self_attn.q_proj");
+  mtp_layer_.attn.k_proj =
+      load_qlinear(weights, mtp_prefix + "layers.0.self_attn.k_proj");
+  mtp_layer_.attn.v_proj =
+      load_qlinear(weights, mtp_prefix + "layers.0.self_attn.v_proj");
+  mtp_layer_.attn.o_proj =
+      load_qlinear(weights, mtp_prefix + "layers.0.self_attn.o_proj");
+  mtp_layer_.attn.q_norm =
+      require(weights, mtp_prefix + "layers.0.self_attn.q_norm.weight");
+  mtp_layer_.attn.k_norm =
+      require(weights, mtp_prefix + "layers.0.self_attn.k_norm.weight");
   mtp_block_ = native_mtp_block_size();
   dflash_valid_ = false;
   dspark_valid_ = false;
