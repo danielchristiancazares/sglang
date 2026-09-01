@@ -1885,6 +1885,95 @@ kernel void q5_K_batch_1_vec4(
     }
 }
 
+// Double the batch-one Q5_K row cohort for compact target projections. Four
+// lanes decode eight adjacent weights each, allowing one threadgroup to cover
+// 32 output rows while retaining the established vector-four arithmetic.
+kernel void q5_K_batch_1_vec8_rows32(
+        device const block_q5_K * weights,
+        device const float * input,
+        device float * output,
+        constant Q4Args & args,
+        uint group [[threadgroup_position_in_grid]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr ushort lanes_per_row = 4;
+    constexpr ushort rows_per_simdgroup = 8;
+    constexpr ushort rows_per_threadgroup = 32;
+    const ushort row_in_simdgroup = lane / lanes_per_row;
+    const ushort thread_x = lane & (lanes_per_row - 1);
+    const uint row = group * rows_per_threadgroup
+        + simd_id * rows_per_simdgroup + row_in_simdgroup;
+    const bool valid_row = row < args.output_size;
+    device const block_q5_K * row_weights = valid_row
+        ? weights + row * args.blocks_per_row : weights;
+    float sum = 0.0f;
+    if (valid_row) {
+        const uint lane_base = thread_x * 8;
+        for (uint block_index = 0;
+             block_index < args.blocks_per_row;
+             ++block_index) {
+            device const block_q5_K * block = row_weights + block_index;
+            const float block_scale = float(block->d);
+            const float block_min = float(block->dmin);
+            const uchar4 packed_high0 =
+                *reinterpret_cast<device const uchar4 *>(
+                    block->qh + lane_base);
+            const uchar4 packed_high1 =
+                *reinterpret_cast<device const uchar4 *>(
+                    block->qh + lane_base + 4);
+#pragma unroll(4)
+            for (ushort group_index = 0; group_index < 4; ++group_index) {
+                const uchar4 packed_low0 =
+                    *reinterpret_cast<device const uchar4 *>(
+                        block->qs + group_index * 32 + lane_base);
+                const uchar4 packed_low1 =
+                    *reinterpret_cast<device const uchar4 *>(
+                        block->qs + group_index * 32 + lane_base + 4);
+#pragma unroll(2)
+                for (ushort nibble_half = 0;
+                     nibble_half < 2;
+                     ++nibble_half) {
+                    const ushort scale_index =
+                        group_index * 2 + nibble_half;
+                    const uchar2 scale_min =
+                        q5_k_scale_min(block->scales, scale_index);
+                    const uchar4 low0 = nibble_half == 0
+                        ? packed_low0 & uchar4(0x0f) : packed_low0 >> 4;
+                    const uchar4 low1 = nibble_half == 0
+                        ? packed_low1 & uchar4(0x0f) : packed_low1 >> 4;
+                    const uchar4 high0 =
+                        (packed_high0 >> scale_index) & uchar4(1);
+                    const uchar4 high1 =
+                        (packed_high1 >> scale_index) & uchar4(1);
+                    const float4 weight0 =
+                        block_scale * float(scale_min[0])
+                            * float4(uint4(low0) + uint4(high0) * 16)
+                        - block_min * float(scale_min[1]);
+                    const float4 weight1 =
+                        block_scale * float(scale_min[0])
+                            * float4(uint4(low1) + uint4(high1) * 16)
+                        - block_min * float(scale_min[1]);
+                    const uint column = block_index * 256
+                        + group_index * 64 + nibble_half * 32 + lane_base;
+                    sum += dot(
+                        weight0,
+                        *reinterpret_cast<device const float4 *>(
+                            input + column));
+                    sum += dot(
+                        weight1,
+                        *reinterpret_cast<device const float4 *>(
+                            input + column + 4));
+                }
+            }
+        }
+    }
+    sum += simd_shuffle_down(sum, 2);
+    sum += simd_shuffle_down(sum, 1);
+    if (thread_x == 0 && valid_row) {
+        output[row] = sum;
+    }
+}
+
 kernel void q5_K_batch_8_vec4(
         device const block_q5_K * weights,
         device const float * input,
@@ -3923,6 +4012,7 @@ struct Pipelines {
     id<MTLComputePipelineState> q4_K_batch8 = nil;
     id<MTLComputePipelineState> q5_K_batch1 = nil;
     id<MTLComputePipelineState> q5_K_batch1_vec4 = nil;
+    id<MTLComputePipelineState> q5_K_batch1_vec8_rows32 = nil;
     id<MTLComputePipelineState> q5_K_batch4 = nil;
     id<MTLComputePipelineState> q5_K_batch8 = nil;
     id<MTLComputePipelineState> q5_K_batch8_vec4 = nil;
@@ -4029,6 +4119,8 @@ Pipelines & pipelines() {
         value.q4_K_batch8 = compile(@"q4_K_batch_8");
         value.q5_K_batch1 = compile(@"q5_K_batch_1");
         value.q5_K_batch1_vec4 = compile(@"q5_K_batch_1_vec4");
+        value.q5_K_batch1_vec8_rows32 =
+            compile(@"q5_K_batch_1_vec8_rows32");
         value.q5_K_batch4 = compile(@"q5_K_batch_4");
         value.q5_K_batch8 = compile(@"q5_K_batch_8");
         value.q5_K_batch8_vec4 = compile(@"q5_K_batch_8_vec4");
@@ -4371,6 +4463,10 @@ torch::Tensor quant_matmul(
         const char * value = std::getenv("SGLANG_MPS_Q6_K_BATCH1_ROWS2");
         return value == nullptr || std::string(value) != "0";
     }();
+    static const bool q5_k_batch1_rows32_enabled = [] {
+        const char * value = std::getenv("SGLANG_MPS_Q5_K_BATCH1_ROWS32");
+        return value == nullptr || std::string(value) != "0";
+    }();
     static const bool iq2_large_batch_enabled = [] {
         const char * value = std::getenv("SGLANG_MPS_IQ2_LARGE_BATCH");
         return value == nullptr || std::string(value) != "0";
@@ -4389,6 +4485,13 @@ torch::Tensor quant_matmul(
         p.q6_K_batch1_rows2 != nil &&
         p.q6_K_batch1_rows2.threadExecutionWidth == 32 &&
         p.q6_K_batch1_rows2.maxTotalThreadsPerThreadgroup >= 64;
+    // The 1,024-row attention K/V projections favor the established
+    // eight-lane mapping; wider target projections amortize four-lane rows.
+    const bool use_q5_k_batch1_rows32 = q5_k_batch1_rows32_enabled &&
+        use_q5_vec4_batch1 && output_size >= 5120 &&
+        p.q5_K_batch1_vec8_rows32 != nil &&
+        p.q5_K_batch1_vec8_rows32.threadExecutionWidth == 32 &&
+        p.q5_K_batch1_vec8_rows32.maxTotalThreadsPerThreadgroup >= 128;
     const bool use_iq2_large_batch = iq2_large_batch_enabled &&
         weight_type == 16 && batch_size > 8 &&
         p.iq2_xxs_large_batch != nil &&
@@ -4424,8 +4527,10 @@ torch::Tensor quant_matmul(
     } else if (weight_type == 13) {
         pipeline = use_q5_vec24 ? p.q5_K_batch24_vec4
             : (batch_tile == 1
-                ? (use_q5_vec4_batch1
-                    ? p.q5_K_batch1_vec4 : p.q5_K_batch1)
+                ? (use_q5_k_batch1_rows32
+                    ? p.q5_K_batch1_vec8_rows32
+                    : (use_q5_vec4_batch1
+                        ? p.q5_K_batch1_vec4 : p.q5_K_batch1))
                 : (batch_tile == 4 ? p.q5_K_batch4
                     : (batch_size == 8 ? p.q5_K_batch8_vec4
                                        : p.q5_K_batch8)));
@@ -4468,10 +4573,12 @@ torch::Tensor quant_matmul(
             ((weight_type == 16 || weight_type == 29) && batch_size == 1);
         const NSUInteger output_groups = use_iq2_large_batch
             ? (output_size + 63) / 64
-            : (use_q5_vec4_batch1
-                ? (output_size + 15) / 16
-                : (use_four_row_batch1
-                    ? (output_size + 7) / 8 : (output_size + 3) / 4));
+            : (use_q5_k_batch1_rows32
+                ? (output_size + 31) / 32
+                : (use_q5_vec4_batch1
+                    ? (output_size + 15) / 16
+                    : (use_four_row_batch1
+                        ? (output_size + 7) / 8 : (output_size + 3) / 4)));
         const NSUInteger batch_groups = use_iq2_large_batch
             ? (batch_size + 31) / 32
             : ((use_q5_vec4_batch1 || use_four_row_batch1)

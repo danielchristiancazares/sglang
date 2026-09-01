@@ -3173,3 +3173,29 @@ option, or serving dispatch was added.
   owner. The derived F16-embedding artifact already supplies the active path.
 - Related commit or revert: PERF-A082 converts only the source token embedding
   to F16 and retains all other source tensor encodings.
+
+## PERF-FA114 - Q5_K four-lane row mapping on 1,024-row projections
+
+- Hypothesis: doubling the Q5_K batch-one output cohort to 32 rows will also
+  improve the compact full-attention K/V projections.
+- Scope: native Metal Q5_K batch-one matvec, representative
+  `blk.3.attn_k.weight` shape `(1024,5120)`, aligned compact storage, eight
+  warmups, and 25 synchronized timed iterations.
+- Attempted change: selected the four-lane-per-row, eight-weight-per-lane,
+  32-row-per-threadgroup mapping across every aligned Q5_K batch-one shape.
+- Benchmark evidence: the established eight-lane mapping measured
+  **0.327208 ms / 10.329 GiB/s**; the wider-row candidate measured
+  **0.337792 ms / 10.006 GiB/s**, a **3.23%** latency regression. Wider
+  5,120--17,408-row target projections supplied positive served evidence under
+  the thresholded route.
+- Correctness evidence: actual-file prefixes, odd row tails, long-K compact
+  views, alignment fallback, and synthetic packed extrema all passed.
+- Failure mode: the compact 1,024-row grid supplies too little output work to
+  amortize the reduced lanes per row and wider threadgroup cohort.
+- Why not to retry unchanged: the production checkpoint has a stable 1,024-row
+  K/V family and the established kernel is already faster on its exact shape.
+- Reopen only if: GPU family, Metal compiler, row geometry, lane mapping, or a
+  fused downstream consumer changes the compact-shape economics.
+- Related commit or revert: PERF-A084 retains the four-lane mapping only for
+  output sizes at least 5,120, the smallest measured winning shape, and
+  preserves the prior 1,024-row owner.
