@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-02:39 PDT.
+02:46 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -208,14 +208,15 @@ short-harness cycles now spend about **27.4--27.9 ms** drafting and
 which covers each reachable Qwen3.8 target and DFlash projection and fails
 closed elsewhere.
 
-The preceding SG8-backed real Codex turn prefetched its first 6,228 tokens at
-**95.05 prompt tok/s**, sustained reported generation intervals of
-**10.54--17.20 tok/s** after the initial interval, and prefetched the
-6,594-token tool continuation at **80.48 prompt tok/s**. It completed one
-exact tool call and exact final marker with exit zero. The SG16 real-server
-speed, tool, and 131K-pool gate follows immediately. The hard admission gate
-remains real served generation at or above **20 tok/s** with exact tools and
-131K capacity.
+SG16 also passes the real server and Codex behavior gates. The exact sampled
+`6237+128` control reaches **15.336 generation tok/s**, **109.087 prompt
+tok/s**, **57.174631 s TTFT**, and exact `6365` total tokens. Live 6.2K-history
+verification falls from SG8's roughly **251--253 ms** to **236--239 ms**. The
+pinned Codex `xhigh` turn issues one exact command, observes exact stdout,
+returns exact `QWEN38_DFLASH2_READY`, and exits zero with 294 reasoning tokens;
+one live interval reaches **20.85 tok/s**. Sustained generation remains the
+active gap, with **4.664 tok/s** left from the exact sampled control to the
+hard real served floor. Further verifier-kernel and acceptance work follows.
 
 ## Native backend roadmap handoff
 

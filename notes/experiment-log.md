@@ -18419,3 +18419,52 @@ mean 13.929045  17.125658 446.051        39.730
   as good. `main` is now 39 commits ahead of `origin/main`; only recovery and
   performance records remain modified. The next gate is the clean real
   131K-configured server and Codex xhigh turn with SG16 active.
+
+### 2026-09-01 02:46 PDT - SG16 preserves Codex and reaches a 20.85 tok/s interval
+
+- Began from clean signed HEAD
+  `3118322021f67f4a23f3baf87dc2f91b772f1fbd`, 40 commits ahead of
+  `origin/main`. Port 30000 and matching SGLang/Metal compiler processes were
+  absent, memory was 94% free, and macOS reported no thermal or performance
+  warning. Launched the exact PERF-A061 server command with the newly
+  committed SG16 source behind the same
+  `SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1` switch. Resolved arguments again
+  confirmed real 131,072 context/total-token pools, one request, five slots,
+  8,192-token outer prefill, native sampling seed 42, both Qwen parsers,
+  incremental output, language-only mode, and radix disabled.
+- `/health`, `/v1/models`, and `/model_info` passed. The model list reported
+  `qwen3.8-27b` and maximum length 131,072; image and audio understanding
+  remained disabled.
+- Exact sampled command was:
+
+  ```bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b --input-tokens 6237 --output-tokens 128 \
+    --temperature 1.0 --top-p 0.95 --top-k 20 \
+    --presence-penalty 1.5 --skip-warmup --timeout 600
+  ```
+
+  It completed exact 6,365 total tokens with `finish_reason=length`, **15.336
+  generation tok/s**, **109.087 observed prompt tok/s**, **57.174631 s TTFT**,
+  and **65.455554 s** end to end. Output/reasoning SHA-256 was
+  `87938038e62e3f8911acfac664f6d17336c159abdf3fa716efbc5d8db01766fb`.
+  Live cycles generally measured **29.5--31.8 ms** draft and **236.5--237.6
+  ms** verify during this request, versus SG8's roughly **30.7--35.9 /
+  251.2--253.5 ms** in the preceding Codex gate.
+- Repeated the exact bounded Codex command from PERF-A061. Thread
+  `01a05c5a-28a6-79f0-a526-efa19d961645` executed exactly one tool,
+  `/bin/zsh -c '/usr/bin/printf QWEN38_DFLASH2_TOOL=passed'`, observed exact
+  stdout and exit zero, then returned exact `QWEN38_DFLASH2_READY`. Codex
+  exited zero with 12,820 input, 347 output, and 294 reasoning-output tokens.
+  The 6,228-token first prompt prefetched at **81.49 tok/s** and the
+  6,592-token tool continuation at **82.45 tok/s**. Reported generation
+  intervals after initial startup were **16.31, 12.22, 13.33, 20.85, 13.30,
+  and 13.54 tok/s**. Natural accepted counts again ranged from zero through
+  seven. Codex cycles generally used **29.6--31.7 ms** draft and
+  **236.1--238.9 ms** verify.
+- Post-turn `/health` passed. The foreground server PID 10045 and its children
+  exited through `Ctrl+C`. Port 30000 is free, no matching SGLang/Metal
+  compiler work remains, memory returned to 94% free, and macOS
+  thermal/performance status is normal. The SG16 behavior gate passes and its
+  live verifier is about 5.7% faster than SG8. The exact sampled sustained
+  result remains **4.664 tok/s** below the required floor.
