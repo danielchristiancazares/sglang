@@ -59,6 +59,9 @@ enum class NativeRuntimeOperation : uint32_t {
   kStreamGetFlags = 18,
   kValidateLinearRejectionSampling = 19,
   kLaunchLinearRejectionSampling = 20,
+  kValidateLinearVerifyRng = 21,
+  kLaunchSeededLinearVerifyRng = 22,
+  kLaunchStatefulLinearVerifyRng = 23,
 };
 
 struct NativeRuntimeError final {

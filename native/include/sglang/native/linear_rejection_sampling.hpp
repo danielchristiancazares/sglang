@@ -84,6 +84,13 @@ struct LinearRejectionSamplingBuffers final {
     const CudaExecutionContext& context,
     const LinearRejectionSamplingBuffers& buffers) noexcept;
 
+// Preserves every sampler output and the existing device_status value when
+// device_status is nonzero on entry. Captured producer-consumer graphs use
+// this form so an upstream device failure cannot be overwritten or consumed.
+[[nodiscard]] NativeRuntimeError launch_linear_rejection_sampling_if_ready(
+    const CudaExecutionContext& context,
+    const LinearRejectionSamplingBuffers& buffers) noexcept;
+
 static_assert(sizeof(LinearRejectionSamplingShape) == 24);
 static_assert(alignof(LinearRejectionSamplingShape) == 8);
 static_assert(std::is_standard_layout_v<LinearRejectionSamplingShape>);

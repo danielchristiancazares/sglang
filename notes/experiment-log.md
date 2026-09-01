@@ -9547,8 +9547,8 @@ mean 13.929045  17.125658 446.051        39.730
 
 ### 2026-08-30 16:52 PDT - Codex Code Mode custom-tool adapter reaches host qualification
 
-- Began from clean tracked source on `main` at `50b0a1e110`; the untracked
-  `benchmark/native/` C++ benchmark work remained user-owned and untouched.
+- Began from clean tracked source on `main` at `50b0a1e110`; Daniel's parallel
+  `benchmark/native/` C++ benchmark work remained untouched.
   The live four-slot server observed during diagnosis had already exited;
   port 30000 was free and the RTX 5090 had returned to ordinary display
   residency. The completed Tombstead Qwen TUI remained open with no active
@@ -9588,6 +9588,121 @@ mean 13.929045  17.125658 446.051        39.730
   Existing FastAPI ORJSON deprecation warnings and the pre-existing mocked
   reasoning-flush traceback remained unchanged. The next gate is one controlled
   five-slot full-model launch and a real sequential Codex Code Mode command.
+
+### 2026-08-30 17:05 PDT - benchmark clients gain portable C++23 host implementation
+
+- Began on `main` at `50b0a1e1104640b45dbda2a6e210af05d9a0e8fe` with a
+  clean tracked worktree. Reviewed all nine benchmark-named Python files under
+  `scripts/`, their call sites, production/operator paths, focused tests, and
+  this benchmark contract. The active serving contract is the stream client,
+  acceptance probe, and retained target-width profiler; the other files are
+  Apple MLX, upstream sweep, or Torch/Triton/FlashInfer operator
+  microbenchmarks with distinct migration economics.
+- The initial listener was the qualified four-slot server at PID `31188` with
+  resolved 200K pools and production arguments. It was using 28-30 GiB at
+  90-97% GPU utilization, so source work and inspection stayed host-only.
+  Daniel shut it down; PID `31188` and port 30000 cleared, compiler workers
+  were absent, and the GPU returned to ordinary display residency before the
+  first integrated build.
+- Added only C++ source under `benchmark/native`: two thin executable entry
+  points, six shared implementation units, seven public headers, and four
+  standalone host test programs. `config.hpp` enforces Daniel's selected C++23
+  floor. The implementation has no Python, PyTorch, ATen, Triton, FlashInfer,
+  or CUDA dependency and opens no CUDA context.
+- The shared native client provides strict CLI parsing; bounded JSON with
+  Unicode-surrogate handling; strict UTF-8 scalar counting; streaming and
+  one-shot SHA-256; portable Winsock/POSIX HTTP/1.1; chunked,
+  Content-Length, and close-delimited framing; incremental SSE; live-server
+  prompt calibration; SGLang/llama cache control; OpenAI stream telemetry; and
+  raw-token speculative acceptance validation.
+- Preserved the executable workload contract: exact prompt/filler bytes, both
+  calibration binary searches, template flags, optional request-field
+  omission, cache/warmup/cache/measurement ordering, reasoning-before-content
+  concatenation, Unicode character counts, three digests, 38-field stream
+  schema, 11-field acceptance schema, exact usage, length finish, and the
+  historical TTFT/E2E/decode formulas. The event timestamp is sampled after
+  JSON parsing and fragment accounting, matching Python's `perf_counter`
+  boundary.
+- Closed three defects in the native acceptance route: exact calibration is
+  required before cache activity, warmup and measurement must return exact
+  prompt/completion counts with length finish, and speculative fields must be
+  complete and algebraically consistent. Counter checks include
+  correct/proposed drafts, rate, emitted length, verification count, histogram
+  cycle sum, and histogram weighted accepted-draft sum.
+- The source review also found retained-script defects and boundaries:
+  - `bench_target_verify_width.py` shares the historical below-target and
+    result-validation gaps;
+  - `bench_native_chain_metadata.py` overwrites a shared mask between arms and
+    omits mask parity;
+  - `scripts/playground/bench_speculative.py` omits current serving namespace
+    fields, reaches deterministic `AttributeError` paths, imports a deprecated
+    shim, and advertises server arguments it does not forward;
+  - three microbenchmarks print medians while omitting the individual samples
+    required by the measurement contract;
+  - projection quantization has timing evidence without a numerical output
+    gate; and
+  - `bench_batched_qmv.py` measures Apple MLX affine Q4, so a CUDA transcription
+    would define a different NVFP4/Marlin experiment.
+- Adversarial native review found and repaired:
+  - socket-receive timestamps that preceded Python's post-parse timing
+    boundary;
+  - Windows asynchronous connect monitoring that needed `FD_CONNECT` event
+    handling as well as writable/exception readiness;
+  - a POSIX `select()` descriptor bound;
+  - macOS early-close test sends that needed `SO_NOSIGPIPE`;
+  - absent end-to-end stream-runner coverage; and
+  - a 64 KiB stack receive buffer reported by MSVC analysis, now heap-backed.
+- Strict GCC C++23 gates used `-Wall -Wextra -Wpedantic -Werror`:
+  - `json.cpp sha256.cpp json_sha256_test.cpp`: **PASS**;
+  - `arguments.cpp arguments_test.cpp`: **8/8**;
+  - `http_client.cpp sse_parser.cpp http_sse_test.cpp -lws2_32`: **10/10**;
+  - the complete six-source support layer plus
+    `openai_benchmark_test.cpp -lws2_32`: **11/11**.
+- Strict Clang C++23 warning-as-error builds passed the HTTP/SSE **10/10** and
+  full orchestration **11/11** suites. `clang++ --analyze -std=c++23` was clean
+  for `http_client.cpp` and `openai_benchmark.cpp`.
+- Strict MSVC used `/std:c++latest /Zc:__cplusplus /W4 /WX /permissive-` with
+  the VS 18 Build Tools and Windows SDK `10.0.28000.0`. The source guard
+  accepted that mode as C++23; HTTP/SSE passed **10/10** and full orchestration
+  passed **11/11**. `/analyze /analyze:external- /external:W0` passed for the
+  transport and core after the receive buffer repair. The first analyzer
+  attempt exposed an SDK `ws2tcpip.h` warning when SDK headers were ordinary
+  includes; marking toolchain/SDK include roots external isolated project
+  diagnostics correctly.
+- Both optimized C++23 executables linked warning-clean. Their `--help` output
+  preserves every legacy option/default, and invalid warmup/probability cases
+  emit diagnostics with failure status. The existing Python stream regression
+  file passed **4 tests, 4 subtests** through focused Pytest; its 14 unchanged
+  Torch JIT deprecation warnings remain baseline noise.
+- `clang-format --dry-run --Werror` passes all 19 native benchmark source and
+  header files after repository-style formatting. Per-file
+  `git diff --no-index --check` found zero whitespace errors in the untracked
+  C++ surface, and the complete tracked `git diff --check` passes.
+- A separate five-slot Code Mode qualification later owned listener PID
+  `38612` and about 30 GiB of GPU residency. This task left its process tree
+  and requests untouched, observed its later cleanup, and resumed final MSVC
+  work only after port 30000 and GPU residency cleared.
+- The parallel Responses work was then committed as
+  `d802d75bcc6f0c1a86f59fd29de4e917edb16249` (`fix: support Codex Code Mode
+  custom tools`), advancing local `main` one commit beyond `origin/main`.
+  This benchmark work remains an uncommitted C++23/docs change set on top of
+  that commit and leaves the committed Responses implementation untouched.
+- Reconciled `AGENTS.md`, root `BENCHMARK.md`, `notes/benchmark-contract.md`,
+  `notes/current-state.md`, and `notes/decisions.md`. Corrected the contract's
+  prompt provenance: the benchmark clients use their inline prompt/filler
+  units; `qwen38_local_prompt.json` belongs to the separate OpenCode-shaped
+  workload.
+- Cleanup removed 51 exact compiler/test artifacts created by this task from
+  `C:\Users\Daniel\AppData\Local\Temp` plus every new root object. The four
+  older ignored native objects remain byte- and timestamp-untouched. The
+  repository has no generated executable, object, analyzer plist, build
+  directory, or new Python file from this task.
+- The native clients are source- and host-qualified candidates. The checked-in
+  Python commands remain the production scoreboard authority. The next gate
+  is matched live Python/native/Python qualification on Windows and Apple,
+  preserving exact calibrated counts, request/cache sequence, usage, finish,
+  hashes, acceptance fields, output schema, and adjacent timing. This task did
+  not relaunch a model or claim a performance number.
 - The controlled foreground launch began at **16:53:31 PDT** with:
 
   ```powershell
@@ -9647,6 +9762,127 @@ mean 13.929045  17.125658 446.051        39.730
   All six PIDs exited, port 30000 retained only ownerless `TIME_WAIT`, compiler
   workers were absent, and the RTX 5090 returned to **939 MiB used / 31,249 MiB
   free**, 0% utilization, and 29 C.
+
+### 2026-08-30 17:31 PDT - native benchmark live gate receives an exact paired runbook
+
+- Resumed from `main` at
+  `d802d75bcc6f0c1a86f59fd29de4e917edb16249`, one commit ahead of
+  `origin/main`. The six benchmark/recovery documents and 19 native C++23
+  files remained Daniel's uncommitted handoff. The branch, complete status,
+  relevant diff, and `git diff --check` matched the 17:11 PDT handoff; the
+  ledger contained no heading later than 17:05 PDT.
+- Created the isolated qualification directory
+  `C:\Users\Daniel\AppData\Local\Temp\sglang-native-bench-57fc2b36842444498959a498e46cd42d`.
+  Dot-sourced
+  `scripts\windows\initialize_cuda_build_env.ps1 -MaxJobs 2`, then built both
+  executables from the documented six-source set with
+  `/std:c++latest /O2 /EHsc /W4 /WX /permissive- /Zc:__cplusplus`, an isolated
+  `/Fo` directory, and `ws2_32.lib`. The exact entry points and outputs were:
+
+  ```text
+  benchmark\native\bench_openai_stream.cpp
+    -> sglang_bench_openai_stream.exe
+    -> SHA-256 7309DD6596F8DE62FE6F04F5E262A432FABC75941BBCC10D057D403D7F258722
+  benchmark\native\bench_spec_acceptance.cpp
+    -> sglang_bench_spec_acceptance.exe
+    -> SHA-256 B6E1246AE22DD8D7770B1B9248EDE3B9A6CB3352D295D11AEBC0E0E179E27CB8
+  ```
+
+  Both warning-as-error builds and help surfaces passed. Fresh isolated MSVC
+  host suites passed `json_sha256_test: PASS`, arguments **8/8**, HTTP/SSE
+  **10/10**, and full benchmark orchestration **11/11**. Invalid
+  `--warmup-runs -1` and `--top-p 1.5` probes produced their exact fail-closed
+  diagnostics; an interactive PowerShell check recorded each executable's
+  source-defined `$LASTEXITCODE` as 2. The unified command wrapper classified
+  those nonzero calls as status 1. Every generated object, test binary, and
+  client binary remains confined to the recorded temporary directory for the
+  live gate; its pending invocations use the recorded absolute paths. Daniel's
+  four older ignored root objects remain untouched.
+- Adversarial runbook review found two promotion defects before server use.
+  The native stream preserves the Python client's 128-token CLI default while
+  the qualified stream controls request 512 tokens, so a bare native command
+  could silently create a mismatched adjacent workload. The acceptance route
+  uses ordinary unseeded production sampling in both clients, so exact equality
+  of per-request output digests, latencies, speculative counters, and
+  histograms is outside its statistical contract.
+- Reconciled `benchmark-contract.md`, `current-state.md`, `decisions.md`, and
+  root instructions. The runbook now supplies complete native commands for
+  greedy `6213+512`, sampled `6213+512`, exact-capacity `199000+16`, and
+  sampled acceptance, alongside fully resolved Python authority commands. It
+  requires paired request metadata and schemas, deterministic stream artifact
+  parity, independent stochastic evidence, externally recomputed acceptance-
+  counter/histogram algebra for all 11-field results, and adjacent windows with
+  stable client-neutral distributions. The native acceptance companion owns
+  its stricter calibration, warmup, measured-count, and length-finish gates;
+  semantic behavior stays with the separate sampled stream/reasoning/tool
+  promotion gates.
+- Read-only launch preflight found port 30000 free, SGLang/Python server and
+  compiler/JIT process counts at zero, and every required launcher executable,
+  checkpoint, manifest, and editable SGLang import present. `sglang.exe
+  --help` exited zero and the import resolved to this checkout. Three active
+  Codex node/worker pairs were ordinary `--yolo` sessions; the `-p qwen38`
+  process count was zero. The RTX 5090 reported **1,683 MiB used / 30,505 MiB
+  free**, 0% utilization, 29 C, 43.89 W, 300 MHz SM, and 405 MHz memory, with
+  ordinary desktop WDDM clients only. The task is parked immediately before
+  the argument-free four-slot production launch, awaiting Daniel's approval.
+- A later fresh status surfaced concurrent user-owned edits in
+  `.github/workflows/rerun-test.yml`, `python/pyproject.toml`, grammar
+  initialization, Qwen3 Coder tool-schema conversion, sampling-parameter
+  normalization, and seven focused runtime/test paths. They were preserved
+  byte-for-byte and audited read-only. The workflow change confines checkout
+  credentials; the dependency declaration pins `compressed-tensors==0.18.0`,
+  matching the installed environment; and the runtime edits reject NUL-bearing
+  grammars, convert parameters beneath JSON-schema combinators, and bound stop
+  input counts/regex bytes. The stream and acceptance workloads send no
+  grammar, tool, stop, or stop-regex fields, so their client-comparison path is
+  unchanged. The new schema helper has one scoped concurrent defect: mixed
+  direct `properties` plus combinator properties retain only the direct set.
+  Its explicit duplicate-property rule is first-branch-wins. Both findings
+  remain with the concurrent owner and outside this benchmark change set.
+
+### 2026-08-30 17:37 PDT - concurrent five-slot server occupies the benchmark launch boundary
+
+- A fresh pre-approval check superseded the earlier free-port snapshot. Port
+  30000 now belongs to listener PID `28924`, and the RTX 5090 reports **28,035
+  MiB used / 4,153 MiB free**, 5% utilization, 30 C, 60.96 W, 1,162 MHz SM,
+  and 7,001 MHz memory. The native-benchmark task did not initiate this launch
+  and sent no endpoint or benchmark traffic.
+- Read-only ancestry and command-line inspection established the complete
+  concurrent tree:
+
+  ```text
+  Codex 11848
+    -> PowerShell 34812
+      -> sglang.exe 36164
+        -> Python wrapper 32264
+          -> listener/tokenizer 28924
+            -> scheduler/CUDA worker 7608
+            -> detokenizer 21004
+  ```
+
+  PowerShell `34812` launched exactly:
+
+  ```powershell
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -MaxMambaCacheSize 5
+  ```
+
+  The resolved `sglang serve` command selects the qualified checkpoint and
+  language/reasoning/tool surface, `max_mamba_cache_size=5`,
+  `max_running_requests=1`, `max_total_tokens=200000`,
+  `context_length=200000`, chunk 7680, and the qualified linear speculative
+  path. This is the Codex client lane rather than the argument-free four-slot
+  production benchmark baseline.
+- Every PID and process remains user-owned and untouched. The benchmark task
+  is paused without a server request or shutdown action. Daniel's approval and
+  disposition of the active five-slot owner are required before the distinct
+  four-slot production launch can begin.
+- The concurrent owner then completed its work and shut down the five-slot
+  tree. By 17:38 PDT, PIDs `36164`, `32264`, `28924`, `7608`, and `21004` were
+  absent; port 30000 retained only an ownerless `TIME_WAIT` record; compiler
+  workers were absent; and the RTX 5090 reported **1,126 MiB used / 31,062 MiB
+  free**, 8% transient display utilization, 31 C, and 65.62 W. The distinct
+  argument-free four-slot launch is now physically clear and still awaits
+  Daniel's explicit approval.
 
 ### 2026-08-30 17:33 PDT - selected upstream hardening backports reach host qualification
 
@@ -9748,3 +9984,454 @@ mean 13.929045  17.125658 446.051        39.730
   30000 retained only ownerless `TIME_WAIT`, compiler workers were absent, and
   the RTX 5090 returned to **1,126 MiB used / 31,062 MiB free**, 24% transient
   display utilization, and 31 C.
+
+### 2026-08-30 17:55 PDT - Windows live parity qualifies native benchmark clients
+
+- Daniel explicitly approved the argument-free four-slot production launch.
+  Final preflight was `main` at
+  `d802d75bcc6f0c1a86f59fd29de4e917edb16249`, one commit ahead of
+  `origin/main`, with the benchmark documents/native C++23 tranche and the
+  separately owned upstream-hardening work visible. `git diff --check` passed;
+  port 30000, server/compiler workers, and the Qwen-profile process count were
+  clear. The RTX 5090 was at **1,126 MiB used / 31,062 MiB free**, 6% transient
+  display utilization, 30 C, 66.46 W, 1,477 MHz SM, and 7,001 MHz memory.
+- The retained isolated MSVC clients used the already qualified hashes:
+
+  ```text
+  7309DD6596F8DE62FE6F04F5E262A432FABC75941BBCC10D057D403D7F258722  sglang_bench_openai_stream.exe
+  B6E1246AE22DD8D7770B1B9248EDE3B9A6CB3352D295D11AEBC0E0E179E27CB8  sglang_bench_spec_acceptance.exe
+  ```
+
+  Their fresh MSVC host results remained `PASS`, **8/8**, **10/10**, and
+  **11/11** before launch.
+- The foreground server command was exactly:
+
+  ```powershell
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1
+  ```
+
+  Startup began at **17:39:59 PDT** with random seed `566007647`. Resolved
+  arguments included `max_mamba_cache_size=4`, `max_running_requests=1`,
+  `max_total_tokens=200000`, `context_length=200000`, chunk 7680, language-only
+  mode, Qwen3 reasoning/Qwen3 Coder tools, and the qualified linear rejection
+  path with every adaptive/tree/SWOR control inactive. Target verify, draft
+  decode, and draft extend graph capture completed in **30.51**, **1.26**, and
+  **1.01 s**. The established Torch-compile partial fallback logged a Triton
+  loop-carried FP32/FP64 type mismatch during target capture; capture completed
+  normally. The server became ready at **17:41:24 PDT** with 3.54 GiB launch
+  headroom.
+- `/health`, `/v1/models`, and `/model_info` passed sequentially. The served
+  ID was `qwen3.8-27b`, maximum length was 200,000, and image/audio
+  understanding were false. The verified owned tree was PowerShell `26388` ->
+  `sglang.exe 40304` -> Python wrapper `35652` -> listener/tokenizer `26020`,
+  with scheduler `40216` and detokenizer `20560`.
+- During the resident window, the separate upstream-hardening owner committed
+  its already audited work as
+  `efac2c9a2145796704d70ffc9e9d9ed08ce31062` (`fix: backport upstream request
+  hardening`), advancing `main` to two commits ahead of `origin/main`. The
+  server retained its imported launch snapshot. Stream/acceptance requests use
+  none of the changed grammar, tool-schema, stop, or dependency-resolution
+  branches, and every client sample used the same resident process.
+- Every paired invocation supplied the explicit values recorded in
+  `benchmark-contract.md`. The executed forms were:
+
+  ```text
+  Python stream:
+    .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --base-url http://127.0.0.1:30000 --model qwen3.8-27b --backend sglang --input-tokens <6213|199000> --output-tokens <512|16> --warmup-output-tokens 16 --warmup-runs 1 --timeout 600 --temperature <0|1.0> [--top-p 0.95 --top-k 20 --presence-penalty 1.5]
+  Native stream:
+    C:\Users\Daniel\AppData\Local\Temp\sglang-native-bench-57fc2b36842444498959a498e46cd42d\sglang_bench_openai_stream.exe --base-url http://127.0.0.1:30000 --model qwen3.8-27b --backend sglang --input-tokens <6213|199000> --output-tokens <512|16> --warmup-output-tokens 16 --warmup-runs 1 --timeout 600 --temperature <0|1.0> [--top-p 0.95 --top-k 20 --presence-penalty 1.5]
+  Python acceptance:
+    .\.venv\Scripts\python.exe .\scripts\windows\bench_spec_acceptance.py --base-url http://127.0.0.1:30000 --model qwen3.8-27b --input-tokens 6213 --output-tokens 512 --warmup-output-tokens 16 --timeout 600 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5
+  Native acceptance:
+    C:\Users\Daniel\AppData\Local\Temp\sglang-native-bench-57fc2b36842444498959a498e46cd42d\sglang_bench_spec_acceptance.exe --base-url http://127.0.0.1:30000 --model qwen3.8-27b --input-tokens 6213 --output-tokens 512 --warmup-output-tokens 16 --timeout 600 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5
+  ```
+
+  Each stream window ran Python, native, Python. Acceptance used the same
+  order. Every client performed exact calibration, its configured warmup, and
+  explicit cache control; server traffic remained sequential with zero queued
+  benchmark requests.
+- All nine stream results contained the same 38 fields and compatible JSON
+  types:
+
+  ```text
+  backend, base_url, calibrated_prompt_tokens, completion_tokens,
+  content_chars, content_fragment_count, content_sha256, decode_tps, e2e_s,
+  enable_thinking, finish_reason, first_output_delta_chars,
+  max_output_delta_chars, min_p, model, nonempty_delta_count,
+  observed_prompt_tps, output_chars, output_sha256, output_tps_e2e,
+  presence_penalty, prompt_tokens, reasoning_chars,
+  reasoning_fragment_count, reasoning_sha256, repetition_penalty,
+  requested_completion_tokens, requested_prompt_tokens, seed, temperature,
+  timestamp, top_k, top_p, total_tokens, trailing_after_last_delta_s, ttft_s,
+  warmup, warmup_runs
+  ```
+
+  Native decimal rendering exposed the exact binary double for `0.95`; the
+  decoded JSON number and request value matched Python.
+- Deterministic greedy `6213+512`, temperature zero:
+
+  | Client | UTC timestamp | Prompt tok/s | Decode tok/s | TTFT s | E2E s | Output E2E tok/s | Tail s |
+  |---|---|---:|---:|---:|---:|---:|---:|
+  | Python before | 00:42:48.150900 | 11631.993 | 138.992 | 0.534130 | 4.210606 | 121.598 | 0.000249 |
+  | Native | 00:42:58.358524 | 11936.716 | 139.809 | 0.520495 | 4.175476 | 122.621 | 0.000134 |
+  | Python after | 00:43:08.719199 | 12326.611 | 139.926 | 0.504031 | 4.155960 | 123.197 | 0.000198 |
+
+  Every result reported exact `6213+512=6725`, `finish_reason=length`, thinking
+  enabled, 2,393 output characters, 2,107 reasoning characters, 286 content
+  characters, 57 reasoning fragments, eight content fragments, 65 nonempty
+  deltas, first delta two characters, and maximum delta 111 characters. All
+  three hashes matched exactly:
+
+  ```text
+  output     a47523df1ad1517da26fb84e7e71246215f079d46dd37b1d244d22d23a438b75
+  reasoning  0efeded57522e0451dde5b63e8d2f59201e54f24aad5513de160c671191a925d
+  content    89fd0ae9dd3328a242b275fc5c2072480dac5cd72006e6dd4efd4cd439e47a66
+  ```
+
+  Against the two-Python mean, native differed by **-0.355% prompt**, **+0.251%
+  decode**, **+0.273% TTFT**, **-0.187% E2E**, and **+0.183% output-E2E**.
+- Sampled `6213+512`, temperature 1.0, top-p 0.95, top-k 20, presence 1.5:
+
+  | Client | UTC timestamp | Prompt tok/s | Decode tok/s | TTFT s | E2E s | Output E2E tok/s | Tail s | Output chars | Reasoning fragments | Max delta | Output/reasoning SHA-256 |
+  |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+  | Python before | 00:43:34.411809 | 12752.241 | 118.510 | 0.487208 | 4.799082 | 106.687 | 0.000197 | 2570 | 64 | 131 | `ceedf6955cca60cfb4f6009dadbf565ce89f3efb4f9a163729e577abc2def791` |
+  | Native | 00:43:44.796317 | 12969.343 | 131.753 | 0.479053 | 4.357526 | 117.498 | 0.000118 | 2437 | 68 | 91 | `c2ef343c5e2f9ff2239857192cc7840225d9498453576469753cb637c874ea94` |
+  | Python after | 00:43:55.686286 | 12809.166 | 127.890 | 0.485043 | 4.480659 | 114.269 | 0.000202 | 2505 | 66 | 111 | `70678cb08948b73a49f8f92d90b92381f01dcb05c00309ac6c68fc0e7ff05066` |
+
+  Every result reported exact `6213+512=6725`, `finish_reason=length`, thinking
+  enabled, first delta two characters, reasoning-only output, and the empty
+  content hash
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+  The distinct output/reasoning digests and fragment shapes are ordinary
+  unseeded samples. Native TTFT was 1.455% below the two-Python mean; its
+  decode/E2E differences track the independently sampled output and acceptance.
+- Sampled acceptance produced the same 11 fields and compatible JSON types:
+
+  | Client | Latency s | Prompt/completion | Accept length | Accept rate | Correct/proposed | Verify cycles | Histogram | Output SHA-256 |
+  |---|---:|---|---:|---:|---:|---:|---|---|
+  | Python before | 4.688993600 | 6213/512 | 1.848375451 | 0.422382671 | 234/554 | 277 | `[130,60,87]` | `c924669d63b72501aa524bf6802e1f389e6fc2d4186504de1b7309c71b0c99a3` |
+  | Native | 4.606507900 | 6213/512 | 1.896296296 | 0.446296296 | 241/540 | 270 | `[113,73,84]` | `969cecf6aaa621d2fbf96bf52949fa2b29ac79e6bc0bb5b28de9304cc2238d2a` |
+  | Python after | 4.584598800 | 6213/512 | 1.917602996 | 0.456928839 | 244/534 | 267 | `[105,80,82]` | `10e3ec41f3d58b0e27f77762b3bc78956b411f536edd2745b443b7c89c166594` |
+
+  Thinking was enabled throughout. For every sample, `correct/proposed` equaled
+  the reported rate, `512/verify` equaled accepted length, histogram sum equaled
+  verify cycles, and the index-weighted histogram equaled correct drafts.
+  Native latency, accepted length, and acceptance rate all fell inside the
+  adjacent Python endpoints; versus their mean they differed by **-0.653%**,
+  **+0.707%**, and **+1.510%**.
+- Exact capacity `199000+16`, temperature zero:
+
+  | Client | UTC timestamp | Prompt tok/s | Decode tok/s | TTFT s | E2E s | Output E2E tok/s | Tail s |
+  |---|---|---:|---:|---:|---:|---:|---:|
+  | Python before | 00:47:17.068032 | 3145.208 | 107.922 | 63.270853 | 63.409842 | 0.252 | 0.000234 |
+  | Native | 00:49:48.379500 | 3146.939 | 112.593 | 63.236045 | 63.369268 | 0.252 | 0.000168 |
+  | Python after | 00:52:19.801882 | 3092.176 | 117.379 | 64.355971 | 64.483762 | 0.248 | 0.000420 |
+
+  Every request reported exact `199000+16=199016`, `finish_reason=length`,
+  thinking enabled, 89 output/reasoning characters, zero content characters,
+  three reasoning fragments/nonempty deltas, first delta three characters, and
+  maximum delta 63 characters. Output and reasoning hashes were exact
+  `9a0e20749e2930a697fefdd3bdd7863a067abe4d9860e6d1e7d9b80a62668b37`;
+  content retained the empty SHA-256. Against the two-Python mean, native
+  differed by **+0.906% prompt**, **-0.051% decode**, **-0.905% TTFT**, and
+  **-0.903% E2E**.
+- Server logs showed sequential cache flush/warmup/flush/measurement activity,
+  positive pending-token counts across each 7,680-token capacity chunk, zero
+  queued benchmark requests, and healthy completion. A final sequential cache
+  flush and `/health` passed. After flush the GPU reported **28,797 MiB used /
+  3,391 MiB free**, 1% utilization, 41 C, and 58.95 W. Desktop WDDM clients
+  included the established shell/Edge/Steam set; Devin appeared by the final
+  snapshot, so the later Python capacity drift remains recorded as ordinary
+  desktop-resident evidence rather than attributed to the client.
+- Ctrl+C was sent through foreground PowerShell `26388` at **17:54:45 PDT**.
+  The scheduler received `KeyboardInterrupt` inside its idle sanity check,
+  Uvicorn completed application shutdown, and the detokenizer exited during
+  tree cleanup. All six known PIDs were absent afterward, port 30000 was free,
+  and compiler workers were absent. The RTX 5090 returned to **1,884 MiB used /
+  30,304 MiB free**, 19% transient display utilization, 32 C, and 57.76 W.
+- Cleanup verified the isolated path beneath `AppData\Local\Temp`, removed
+  exactly 18 rebuildable client/test `.exe` and `.obj` files, confirmed the
+  directory empty, and removed it. The 19 native source files remain. Daniel's
+  four older ignored root objects retain their 2026-08-21 16:14 timestamps and
+  original sizes. Final state is `main` at `efac2c9a21`, two commits ahead of
+  `origin/main`, with only the benchmark documents and 19 native C++23 files
+  uncommitted; `git diff --check` passes.
+- **Conclusion:** the native C++23 stream and acceptance clients pass the
+  native-Windows source, host, protocol, schema, exactness, capacity, timing-
+  boundary, and adjacent-client gates. Apple Clang/M1 Max live parity remains
+  pending. The Python clients therefore remain the cross-platform scoreboard
+  authority, and the native clients are Windows-qualified candidates.
+
+### 2026-08-30 18:04 PDT - Windows native-client handoff closes cleanly
+
+- Re-ran the focused Python stream regression against settled HEAD
+  `efac2c9a21`: **4 passed, 4 subtests passed** with the established 14 Torch
+  JIT deprecation warnings. `clang-format --dry-run --Werror` passed all 19
+  native C++23 files. The native tree contains zero Python files and final
+  `git diff --check` passes.
+- An independent read-only audit recomputed every displayed client percentage,
+  all acceptance rate/length/histogram identities, 38-/11-field schema counts,
+  character/fragment sums, digest shapes, UTC/PDT chronology, concurrent commit
+  timing, process cleanup, and artifact inventory. It found zero defect in the
+  raw ledger or compact reconciliation.
+- Final state remains `main` at `efac2c9a21`, two commits ahead of
+  `origin/main`, with precisely the six benchmark/recovery documents and 19
+  native files uncommitted. Port 30000 and all server/compiler processes are
+  clear. At 18:04 PDT the RTX 5090 reported **1,738 MiB used / 30,450 MiB
+  free**, 24% transient display utilization, 31 C, and 66.57 W. The next
+  benchmark-client gate is matched Apple Clang/M1 Max live parity.
+
+### 2026-08-30 19:55 PDT - native verify RNG and cumulative AOT spine qualify
+
+- Continued the explicit Python-free native-backend roadmap on `main` at
+  `efac2c9a2145796704d70ffc9e9d9ed08ce31062`, two commits ahead of
+  `origin/main`. The six modified benchmark/recovery documents and 19
+  untracked native benchmark-client files were Daniel's pre-existing work and
+  remained intact. The tracked `native/` tree had no diff at task start.
+  Daniel fixed the terminal requirement: the finished serving pipeline may
+  execute no Python script or code. This milestone therefore added no
+  framework adapter or Python binding.
+- Selected one vertical native slice rather than another disconnected leaf:
+  an independent AOT target family plus graph-safe verify RNG captured directly
+  ahead of the existing native linear rejection sampler. Added:
+  - `native/CMakeLists.txt`;
+  - `native/include/sglang/native/linear_verify_rng.hpp`;
+  - `native/src/linear_verify_rng.cpp` and `.cu`;
+  - `native/src/native_probe.cpp`; and
+  - native host and live-CUDA RNG/composition tests.
+  Extended the stable runtime-operation vocabulary with validate, seeded-launch,
+  and stateful-launch IDs.
+- The request-seeded operator reproduces the active verify-side contract:
+  four MurmurHash32 blocks `(seed_low, seed_high, seq_len_low32, column)`,
+  16-byte finalization, FP64 division by `UINT32_MAX`, FP32 conversion, and a
+  clamp to `1 - 2^-24`. Columns `[0, slots)` become acceptance coins and
+  column `slots` becomes the final residual/bonus coin.
+- The ordinary stateful operator freezes a 32-byte `SGLRNGV1` record with
+  descriptor `0x3156474e524c4753`, seed, subsequence, and counter. Philox4x32-10
+  maps `(counter_lo, counter_hi, subsequence_lo, subsequence_hi)` to its counter
+  words and `(seed_lo, seed_hi)` to its key. Each launch reserves exactly
+  `ceil((slots + 1) / 4)` counter blocks and converts the upper 24 result bits
+  to half-open FP32 uniforms. Descriptor mismatch and counter exhaustion write
+  namespaced status `0x00010001`/`0x00010002` while preserving state and both
+  coin outputs.
+- Adversarial composition review found an important device-only failure seam:
+  an RNG failure followed by the ordinary sampler would otherwise overwrite
+  the originating status and consume stale coins. Added
+  `launch_linear_rejection_sampling_if_ready`. Its uniform entry fence returns
+  every thread before proposal validation when incoming `device_status` is
+  nonzero. The ordinary sampler entry retains its established behavior and
+  overwrites sentinel status as before.
+- The independent CMake project requires Windows x64, MSVC, C++20/CUDA C++20,
+  CUDA `>=13.3,<13.4`, and SM120. It builds cumulative tensor, CUDA-resource,
+  and kernel static libraries, an aggregate target, the linked native probe,
+  the existing host/CUDA suites, a CUDA compile probe, and three separately
+  invocable memcheck targets. It performs no framework discovery, network
+  download, dynamic registration, or build-time test execution. CUDA tests are
+  labelled `cuda;sm120`, `RUN_SERIAL`, and share one resource lock.
+- The final clean configuration and build used the resolved commands below;
+  all build directories were isolated below `AppData\Local\Temp`:
+
+  ```text
+  cmake.exe -S C:\Users\Daniel\sglang\native -B C:\Users\Daniel\AppData\Local\Temp\sglang-native-final-75c480c143404fcb95a187496e07f919 -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_CXX_COMPILER=cl.exe "-DCMAKE_CUDA_COMPILER=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin\nvcc.exe"
+  cmake.exe --build <build> --parallel 2
+  ctest.exe --test-dir <build> -L host --output-on-failure
+  ctest.exe --test-dir <build> -L cuda --output-on-failure
+  cmake.exe --build <build> --target sglang_native_cuda_runtime_memcheck --parallel 1
+  cmake.exe --build <build> --target sglang_native_linear_rejection_memcheck --parallel 1
+  cmake.exe --build <build> --target sglang_native_linear_verify_rng_memcheck --parallel 1
+  ```
+
+  CMake 4.3.3 selected Ninja, MSVC 19.51.36248.0 from VS 2026 BuildTools
+  18.7.1, CUDA compiler 13.3.33, and the CUDA 13.3.33 headers/toolkit. The
+  linked probe reports compile-time CUDART headers `13030` and the installed
+  runtime-reported version `13040` separately.
+- Final contract evidence:
+  - clean warning-as-error configure/build, including the `sm_120` CUDA compile
+    probe;
+  - host CTest **6/6**: ABI default, ABI `/Zp1`, resource contract, rejection
+    contract, RNG contract, and linked probe;
+  - serialized live CUDA CTest **3/3**: resource **5/5** with its two-GPU body
+    skipped, rejection **5/5**, and RNG/composition **4/4**;
+  - RNG CUDA coverage includes metadata/alias failures, invalid descriptor,
+    counter exhaustion, exact seeded parity at 2/3/64 slots, published Philox
+    known vectors, disjoint counter ranges, reset, and production-shape graph
+    composition at batch one, slots three, vocabulary 248,320;
+  - the composite captured output initialization -> stateful RNG -> gated
+    rejection. Three replays retained the same coin/output addresses and used
+    counters 0/1/2; reset reproduced the complete first accepted-token result;
+    overflow retained the prior coins, preserved the max counter and RNG status,
+    and left outputs at initialized `0/-1/0`;
+  - Compute Sanitizer memcheck reported **0 errors** independently for resource,
+    rejection, and RNG/composition executables;
+  - MSVC `/analyze /WX` passed for `linear_verify_rng.cpp` and the linked probe;
+  - `dumpbin /dependents` showed only Windows/MSVC runtime imports for the probe
+    and RNG test. Both contain embedded SM120 fatbins. Source and generated
+    build-graph scans found no Python, Torch, ATen, c10, TVM, DLPack, Triton,
+    FlashInfer, or pybind dependency;
+  - default `clang-format --dry-run --Werror` passed all six new C++/CUDA files;
+    the five narrow edits to existing native files retain their established
+    local style; and `git diff --check` passed.
+- Development corrections were contained and fully rerun:
+  - the first direct host compile omitted the CUDA include directory and failed
+    before producing a binary; the qualified command includes it;
+  - the first CUDA compile used a host-only `std::numeric_limits::max()` call in
+    device code and retained one unused test accessor; a literal device constant
+    and removal of the accessor restored strict compilation;
+  - the first CMake test build duplicated `NOMINMAX` from an existing test and
+    the warning-as-error gate stopped it; target-wide macro injection was
+    removed;
+  - Compute Sanitizer lives under CUDA's `compute-sanitizer` directory rather
+    than `bin`; the discovery hints and per-executable targets now resolve it;
+  - MSVC analysis flagged one constant runtime comparison in the probe; it is a
+    compile-time assertion now; and
+  - a direct recursive-cleanup invocation was rejected by the command harness
+    before process creation. The already-resolved exact temp target was removed
+    through the owning PowerShell session.
+- Final linked-artifact SHA-256 values from a fresh source build were:
+
+  ```text
+  sglang_native_probe.exe                  4673D5FE0318AD185CB6363A01BEFC5EAC571C9A1D1C1CF7BD5AC6544A427080
+  sglang_native_linear_verify_rng_test.exe 2B7C914C39A9C98C6037EC35EAECFAE0B15C2673F5BBD21B84A75B75B62EE4D0
+  sglang_native_kernels.lib                AB662460053B42DA823E9DB1BA55B57E3FD1208D65415077A3982E81EA19ECCE
+  ```
+
+  Principal final source hashes were `AED8A3E3...1F39F` for the CMake project,
+  `C046F8FB...9AF` for the RNG header, `32626466...F7A` for the host source,
+  `0E0C4404...023C` for the CUDA source, and `58595096...30A1` for the CUDA
+  suite.
+- GPU/process discipline was preserved. Initial preflight found port 30000
+  free, zero server/compiler workers, and the RTX 5090 at 1,784 MiB used /
+  30,404 MiB free, 19% transient display utilization, and 29 C. No server or
+  production endpoint was started. After qualification and cleanup port 30000
+  remains free, compiler workers are absent, and the GPU reports 2,147 MiB used
+  / 30,041 MiB free, 9% display utilization, and 29 C. The four ignored root
+  object files retain their original 2026-08-21 16:14 timestamps and sizes.
+- Removed exactly four verified task-owned `%TEMP%\sglang-native-*` build
+  directories after recording evidence. They held only rebuildable CMake state,
+  objects, libraries, executables, and analyzer output. Repository source and
+  every pre-existing user-owned path remain.
+- The capsule remains dormant and changes no production request behavior. The
+  next coherent Python-removal slice is the qualified fixed-top-k-one chain
+  metadata builder: move its CUDA algorithm behind the native ABI/AOT target,
+  preserve the capacity-tail and asynchronous lifetime contracts, then wire
+  its proposal-token/retrieve-index outputs directly into this RNG/sampler
+  composite. Target-p construction, ReplaySSM commit, model execution, loading,
+  scheduling, tokenization, parsing, and HTTP remain subsequent native cuts.
+
+### 2026-08-31 19:31 PDT - semantic process-reap and idle tree-check backports qualify
+
+- Daniel selected upstream commits `78d36f5f62d514f2fe4712bb21c547db66063955`
+  (`kill_process_tree` waits for reap by default) and
+  `6afb5e17712e2e90b60ba8456ca893e529316869` (gate the idle tree-cache
+  sanity check) for semantic backport. The adaptation started on `main` at
+  `efac2c9a2145796704d70ffc9e9d9ed08ce31062`; `upstream/main` resolved to
+  `9a85473a8959d603c6cb3de2416d6360902d0d1c`. Existing native, benchmark,
+  `AGENTS.md`, and recovery-document changes remained Daniel-owned. The five
+  selected source files were clean at task start, and this backport is confined
+  to those control surfaces plus two focused unit suites.
+- The process-lifecycle adaptation preserves the local Windows behavior while
+  adding deterministic resource release:
+  - `kill_process_tree` now defaults to a 60-second reap bound, includes
+    recursive child discovery in the parent-disappearance guard, and reserves
+    `wait_timeout=None` for blocking-sensitive callers;
+  - `Runtime.shutdown()` explicitly selects `wait_timeout=None` because its
+    shared route includes `__del__`;
+  - graceful tokenizer shutdown retains the scheduler `ShutdownReq`, the
+    15-second userspace drain, subprocess-watchdog stop, Windows signal
+    fallback, and parent watchdog, then kills and reaps descendants with
+    `include_parent=False, wait_timeout=60` before `sys.exit(0)`; and
+  - the existing guarded Windows `SIGQUIT` fallback and the local
+    `_wait_for_reap_or_raise` resource checks remain authoritative.
+- The idle-check adaptation adds the lazy
+  `SGLANG_ENABLE_TREE_CACHE_SANITY_CHECK` setting. An explicit setting has
+  priority; an unset value follows `SGLANG_IS_IN_CI`, producing production
+  default-off and CI default-on behavior. The gate lives at the entrance to
+  `_check_tree_cache()`, so idle pool accounting, request-pool checks, leak
+  reporting, metrics, and sleep decisions retain their existing schedule.
+  Explicit opt-in continues to run both hybrid-SWA and local hybrid-SSM/Mamba
+  tree checks.
+- Focused host qualification passed:
+  - `test_process_lifecycle.py`: **4 passed**;
+  - `test_invariant_checker.py`: **4 passed, 2 subtests passed**; and
+  - the combined run: **8 passed, 2 subtests passed**.
+
+  The lifecycle suite covers the default 60-second wait forwarding, parent
+  disappearance during recursive enumeration, the nonblocking runtime/GC
+  route, and tokenizer ordering through child reap then exit. The invariant
+  suite covers production default-off, CI default-on, CI opt-out, and explicit
+  production opt-in across both SWA and Mamba. All seven selected source/test
+  files passed `py_compile`. Initial probes for the checked-in Ruff executable,
+  `python -m ruff`, Black, and pre-commit found those tools unavailable in the
+  virtual environment. Pinned `uvx` runs then passed Ruff `0.15.1` with the
+  repository's configured `F401,F821,UP037` selection, Black `26.1.0`, and
+  isort `7.0.0`. Both staged and unstaged whitespace checks passed.
+- One argument-free production launch began at approximately **19:18:49 PDT**
+  with both `SGLANG_IS_IN_CI` and
+  `SGLANG_ENABLE_TREE_CACHE_SANITY_CHECK` unset:
+
+  ```text
+  pwsh -NoProfile -File scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1
+  ```
+
+  The resolved owned chain was outer PowerShell `31024`, launcher PowerShell
+  `29612`, `sglang.exe` `37740`, Python wrapper `28796`, tokenizer/listener
+  `39620`, scheduler/GPU owner `33724`, and detokenizer `24396`. The resolved
+  server retained the selected attention-NVFP4 checkpoint, served name
+  `qwen3.8-27b`, language-only parsers, four FP32 Mamba slots,
+  `max_running_requests=1`, exact `max_total_tokens=context_length=200000`,
+  page size 64, 7,680-token chunks, ReplaySSM linear speculation, two steps,
+  three draft tokens, top-k-one target/draft chains, and `sleep_on_idle=False`.
+  `/health`, `/v1/models`, `/model_info`, and `/server_info` passed; model info
+  reported image and audio understanding disabled.
+- All three intended CUDA graph phases completed. `/server_info` reported
+  target verify at **35.517822 s / 0.343 GiB**, draft decode at
+  **1.332036 s / 0.088 GiB**, and draft extend at
+  **0.926088 s / 0.053 GiB**.
+- The standard sequential commands exercised greedy, sampled, acceptance, and
+  capacity paths:
+
+  ```text
+  .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512
+  .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5
+  .\.venv\Scripts\python.exe .\scripts\windows\bench_spec_acceptance.py
+  .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600
+  ```
+
+  | Gate | Result |
+  |---|---|
+  | Greedy exact `6213+512` | **143.503 decode tok/s**, **0.585643 s TTFT**, exact established output/reasoning/content digests, `finish_reason=length` |
+  | Sampled exact `6213+512` | **130.658 decode tok/s**, coherent reasoning, exact usage, `finish_reason=length` |
+  | Native speculative counters | accepted length **1.9320754717**, rate **0.4641509434**, correct/proposed **246/530**, **265** verify cycles, histogram `[103,78,84]` |
+  | Exact `199000+16` | **3190.815 prompt tok/s**, **121.616 generation tok/s**, **62.366506 s TTFT**, **62.489846 s E2E**, exact established digest `9a0e2074...68b37`, `finish_reason=length` |
+
+  The arithmetic probe retained coherent `reasoning_content` and final answer
+  `703` for `37 * 19`. The tool probe emitted exactly one parsed
+  `multiply({"a":37,"b":19})` call with `finish_reason=tool_calls`. The
+  standalone OpenCode2 gate used its process-scoped local model alias with
+  snapshots disabled, exited zero, and displayed exact `READY`. Sequential
+  cache flushes and health checks passed; the capacity flush left **4,462 MiB**
+  free.
+- Fifteen-second scheduler CPU deltas were **19.72 CPU-s** before traffic,
+  **17.54 CPU-s** after the 6,213-token cache, and **19.22 CPU-s** after the
+  199,000-token cache. The active receive loop still occupies approximately
+  one core with `sleep_on_idle=False`; its idle cost stayed flat as the retained
+  tree grew to 199K, establishing that production skipped the deep Mamba tree
+  reconstruction while the remaining idle checks continued.
+- Cleanup preserved exact process ownership. The first console-interrupt helper
+  attempt raised `Object of type 'System.Int32' cannot be converted to type
+  'System.UInt32'` during reflection, before the signal call, so the full
+  process chain remained available for reverification. A corrected temporary
+  helper accepted an `int`, cast to `uint` inside the C# P/Invoke boundary,
+  attached through verified launcher PID `29612`, issued one
+  `CTRL_C_EVENT`, and returned zero. The temporary helper was then removed.
+  Every one of the seven owned PIDs was absent at the first cleanup check, port
+  30000 was free, and compiler/CUDA workers were absent. The unrelated detached
+  repository `git fsmonitor--daemon` PID `17296` remained intact. The RTX 5090
+  returned to display residency at **835 MiB used / 31,353 MiB free**, 0%
+  utilization, 31 C, and 73.83 W.
+- **Conclusion:** both requested upstream changes are semantically present
+  without importing adjacent refactors. Ordinary teardown now returns after
+  bounded resource release, GC cleanup remains explicitly nonblocking, and
+  production idle loops skip the cache-size-dependent tree walk while CI and
+  explicit diagnostics retain it. Unit, style, behavior, tools, OpenCode2,
+  exact-capacity, graph-capture, and clean-shutdown gates pass.

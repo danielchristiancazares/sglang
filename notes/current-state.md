@@ -1,7 +1,37 @@
 # Current state
 
-**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-30
-16:59 PDT.
+**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-31
+19:31 PDT.
+
+**Live runtime at reconciliation:** the four-slot production server used for
+the semantic backport gate is fully stopped. Port 30000 is free, compiler and
+CUDA workers are absent, and the RTX 5090 has returned to ordinary desktop
+residency at 835 MiB used / 31,353 MiB free. Every verified launch descendant
+was reaped; the unrelated repository `git fsmonitor--daemon` remains intact.
+
+## Selected semantic upstream backports
+
+Upstream `78d36f5f62` and `6afb5e1771` are adapted to the local control
+surfaces. `kill_process_tree` now waits up to 60 seconds for ordinary teardown;
+the runtime/GC route explicitly opts into fire-and-forget cleanup, and graceful
+tokenizer shutdown reaps its descendants before exiting. The parent-discovery
+race is covered by the existing `psutil.NoSuchProcess` guard.
+
+The expensive idle tree-cache reconstruction is controlled by
+`SGLANG_ENABLE_TREE_CACHE_SANITY_CHECK`. Its unset value follows
+`SGLANG_IS_IN_CI`, so production defaults off and CI defaults on; an explicit
+environment value has priority. Pool accounting and request-pool leak checks
+remain active on the idle path. Focused host coverage passes **8 tests and 2
+subtests**, including the local hybrid-SSM/Mamba branch.
+
+One default production relaunch captured target verify, draft decode, and
+draft extend graphs, preserved sampled reasoning, exact arithmetic, one parsed
+tool call, and standalone OpenCode2, then passed exact `199000+16` at
+**3190.815 prompt tok/s**, **121.616 generation tok/s**, **62.366506 s TTFT**,
+and **62.489846 s E2E**. Fifteen-second idle scheduler CPU stayed flat from an
+empty cache through 199K retained tokens, consistent with the gated deep tree
+walk. Full source, command, process, and cleanup evidence is in the latest
+experiment-log entry.
 
 **Qualified production source line:** commit
 `03ba3d2e27` (`perf: promote native Windows decode path`). The default
@@ -16,9 +46,10 @@ Roadmap milestone 1, the native tensor-view ABI, is complete in the current
 worktree. The dormant C++/CUDA slice fixes ABI 1.0 as 184-byte metadata and
 192-byte const/mutable views with rank at most eight, closed dtype/device
 vocabularies, checked bit-span validation, conservative mutable non-overlap,
-typed witnesses, and allocation-free structured diagnostics. It has no
-framework adapter, Python binding, CMake target, server route, or launcher
-change. Its first standalone CUDA consumer is described below.
+typed witnesses, and allocation-free structured diagnostics. It now has an
+independent framework-free CMake/Ninja AOT target family and linked capability
+probe. It has no framework adapter, Python binding, server route, or launcher
+change. Its standalone CUDA consumers are described below.
 
 The final contract audit corrected `ValidationOutcome::match` so its error
 branch passes the copied `TensorValidationError` value category promised by
@@ -54,8 +85,9 @@ graph, drops every external slice/view/lease, proves arena and stream cleanup
 remain busy, replays the executable three times at the same pointer, and
 observes every output as `3.0`. The two-device mismatch branch is present and
 fails closed when two GPUs exist; this single-GPU host skips that branch.
-This substrate now backs one standalone operator but remains dormant with no
-build-system target, SRT adapter, launcher route, or production CUDA graph.
+This substrate now backs two standalone operators and a captured composite,
+but remains dormant with no SRT adapter, launcher route, or production CUDA
+graph.
 
 Roadmap item 2 now has its first bounded kernel port:
 `launch_linear_rejection_sampling`. The framework-free C++/CUDA operator
@@ -82,13 +114,135 @@ suite (2/2), resource CUDA suite (5/5 with the two-GPU body skipped), the ABI
 CUDA compile probe, dependency/raw-view/integration scans, and Mintlify
 validation pass.
 
+Roadmap item 2 now also has a graph-safe verify RNG producer. Request-seeded
+mode reproduces the established four-block MurmurHash32 mapping, FP64 division,
+FP32 conversion, and half-open clamp. Stateful mode freezes a 32-byte
+`SGLRNGV1` record and Philox4x32-10 mapping over `(counter, subsequence, seed)`;
+each replay reserves exactly `ceil((num_slots + 1) / 4)` counter blocks. Invalid
+descriptors and counter exhaustion preserve state and coin outputs while
+publishing namespaced device status.
+
+The sampler now exposes a composition-only ready-status launch. A nonzero
+upstream status returns before proposal validation or output writes, preserving
+the originating device failure. The production-shape native graph captures
+result initialization, stateful RNG, and gated rejection at batch one, three
+verify slots, and vocabulary 248,320. Three successive replays use stable
+addresses and disjoint counter blocks; reset reproduces the complete first
+result; an overflow replay preserves coins, publishes the RNG status, and
+leaves initialized sampler output unpublished.
+
+`native/CMakeLists.txt` builds cumulative tensor, CUDA-resource, and kernel
+static libraries, an aggregate native target, a linked capability probe, and
+the existing/new host and CUDA tests without framework discovery or downloads.
+The clean MSVC 19.51/CUDA 13.3.33/Ninja build passes six host-labelled tests and
+three serialized CUDA tests. Three separate Compute Sanitizer memcheck targets
+report zero errors; MSVC static analysis passes for the new host source and
+probe. The linked probe contains SM120 fatbins and imports only Windows/MSVC
+runtime libraries. It reports tensor ABI 1.0, RNG descriptor
+`0x3156474e524c4753`, CUDA headers 13.3, and runtime-reported 13.4.
+
 No SRT, Python, kernel registry, launcher, endpoint, or production graph uses
-the new operator. The later live Codex server retains that boundary.
+the native capsule. The later live Codex server retains that boundary.
 Full behavior, capacity, production-relaunch, and OpenCode2 gates remain
 mandatory before any adapter is promoted. Four ignored root object files
-created before this task at 16:10-16:14 remain user-owned and untouched; every
-artifact created for this milestone was removed with its isolated session
-build directory.
+created before this task at 16:10-16:14 remain Daniel's and untouched; every
+artifact created for this milestone was removed with its isolated build
+directories.
+
+## Native benchmark client handoff
+
+The benchmark-script review covers all nine `bench*` Python files beneath
+`scripts/`. The production contract centers on
+`bench_openai_stream.py`, `bench_spec_acceptance.py`, and the retained
+`bench_target_verify_width.py` profiler. The first two now have portable,
+framework-free, CPU-only C++23 candidates under `benchmark/native`. Their
+shared layer owns strict CLI parsing, JSON and UTF-8, SHA-256, plain local
+HTTP/1.1, SSE framing, server-owned prompt calibration, cache control,
+streaming telemetry, exact result validation, and speculative-counter
+validation. CUDA stays with the serving process.
+
+The native stream path preserves the exact prompt/filler bytes, SGLang and
+llama tokenization protocols, request-field omission rules, reasoning-before-
+content ordering, Unicode scalar counts, complete/per-channel digests,
+warmup/flush sequence, and historical throughput formulas. Its event clock is
+sampled after JSON decoding and fragment accounting, matching the Python
+client boundary. The native acceptance path closes the existing script's
+exactness gaps by requiring exact calibration before cache activity, exact
+warmup and measurement counts, length finish, complete speculative metrics,
+and internally consistent counters and histograms.
+
+The source enforces C++23. GCC C++23 warning-as-error builds pass the JSON/SHA,
+argument, HTTP/SSE loopback, and full orchestration suites; their results are
+`PASS`, **8/8**, **10/10**, and **11/11**. MSVC `/std:c++latest /W4 /WX`
+also links and passes the full **11/11** suite, establishing the current
+toolchain's C++23 mode. MSVC and Clang static analysis pass for the transport
+and benchmark core; the analyzer-led 64 KiB receive-buffer finding moved that
+storage to the heap. The transport includes Windows `FD_CONNECT` event
+handling, POSIX `FD_SETSIZE` guards, bounded framing, and macOS `SIGPIPE`
+coverage in the early-close test path.
+
+The Windows live gate passes. Adjacent Python/native/Python windows preserved
+the exact 38-field stream schema, request metadata, cache sequence, usage, and
+length finish for greedy and sampled `6213+512` plus exact `199000+16`.
+Deterministic windows matched every combined/per-channel hash,
+fragment/character count, and delta count. The sampled acceptance triplet
+preserved the 11-field schema and exact `6213/512`; every externally recomputed
+rate, accepted-length, cycle-sum, and weighted-histogram invariant passed. The
+native results stayed within or favorably adjacent to their Python timing and
+acceptance windows.
+
+| Windows client gate | Python before | Native | Python after |
+|---|---:|---:|---:|
+| Greedy `6213+512` decode tok/s | 138.992 | **139.809** | 139.926 |
+| Greedy E2E s | 4.210606 | **4.175476** | 4.155960 |
+| Sampled `6213+512` decode tok/s | 118.510 | **131.753** | 127.890 |
+| Sampled acceptance length | 1.848375 | **1.896296** | 1.917603 |
+| Exact `199000+16` prompt tok/s | 3145.208 | **3146.939** | 3092.176 |
+| Exact `199000+16` TTFT s | 63.270853 | **63.236045** | 64.355971 |
+
+Apple Clang/M1 Max live parity remains pending, so the qualified Python
+commands remain the cross-platform scoreboard authority. Direct compiler
+commands, complete paired invocations, and the full parity gate are in
+`benchmark-contract.md`.
+
+Daniel stopped the earlier four-slot server before the first integrated
+GCC/MSVC gates. A separate five-slot Code Mode qualification later acquired
+port 30000; this task left that process tree untouched, waited for its owner to
+clean up, then completed the distinct four-slot native-client gate after
+Daniel's explicit approval.
+
+The remaining review findings define later work:
+
+- `bench_target_verify_width.py` shares the acceptance client's historical
+  below-target/result-validation gaps and gains the native request layer after
+  gzip trace ownership is selected;
+- `bench_native_fused_sigmoid_mul.py` and
+  `bench_native_chain_metadata.py` are the first CUDA microbenchmark ports;
+  the latter's Python comparison currently overwrites one shared tree mask and
+  omits mask parity;
+- sparse sampling should split into the retained native sparse top-p and
+  framework-free rejection operators;
+- projection quantization needs explicit FlashInfer/CUTLASS AOT tactics and a
+  manifest-backed trace baseline;
+- `scripts/playground/bench_speculative.py` currently carries stale serving
+  namespace fields and a deprecated import, so its default text sweep requires
+  an upstream product decision before a native orchestration rewrite;
+- `scripts/bench_batched_qmv.py` remains an Apple MLX/Metal affine-Q4 tool;
+  a Windows CUDA counterpart would measure a distinct NVFP4/Marlin workload.
+
+Immediately before the live-launch approval boundary, a concurrent user-owned
+change set appeared in grammar initialization, Qwen3 Coder schema conversion,
+sampling-parameter limits, their focused tests, CI checkout credentials, and
+the `compressed-tensors` dependency declaration. The benchmark stream and
+acceptance requests omit grammars, tools, stop strings, and stop regexes, and
+the installed dependency is already the newly pinned 0.18.0, so their paired
+client paths remain stable. Adversarial follow-up repaired the concurrent
+schema helper so direct and combinator-defined properties merge with direct
+declarations taking precedence; its mixed-schema regression passes. The
+four-slot launch pinned `d802d75bcc` plus those visible edits; their owner
+committed the same audited branch as `efac2c9a21` during the resident window.
+Every paired client request used the unchanged stream/acceptance paths in one
+stable server process.
 
 ## Qualified production configuration
 

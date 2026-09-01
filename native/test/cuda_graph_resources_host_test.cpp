@@ -107,7 +107,7 @@ struct MoveProbe final {
       "owner_metadata_conflict",
       "cuda_runtime_failure",
       "tensor_validation_failure"};
-  constexpr std::array<std::string_view, 21> operation_names{
+  constexpr std::array<std::string_view, 24> operation_names{
       "none",
       "get_device",
       "stream_create",
@@ -128,7 +128,10 @@ struct MoveProbe final {
       "event_destroy",
       "stream_get_flags",
       "validate_linear_rejection_sampling",
-      "launch_linear_rejection_sampling"};
+      "launch_linear_rejection_sampling",
+      "validate_linear_verify_rng",
+      "launch_seeded_linear_verify_rng",
+      "launch_stateful_linear_verify_rng"};
 
   for (uint32_t index = 0; index < code_names.size(); ++index) {
     CHECK(native_runtime_code_name(

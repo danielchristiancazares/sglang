@@ -196,6 +196,13 @@ Reproduce the streaming and capacity rows against the launch above with:
   --temperature 0 --skip-warmup --timeout 7200
 ```
 
+The portable C++23 stream-client candidate is under `benchmark/native` and
+uses the same server-owned tokenization, prompt bytes, request fields, SSE
+metrics, and digest schema. Its native-Windows live parity window passes. The
+Python command remains the Apple scoreboard authority through a matched live
+parity window on the M1 Max. Build and promotion details are in
+`notes/benchmark-contract.md`.
+
 The independent five-request window used wall times
 `27.842287, 27.856282, 27.867904, 27.868737, 27.860470 s`; its best
 request-observed generation was **9.194647 tok/s**. The preceding candidate
@@ -299,6 +306,16 @@ available through explicit launcher overrides for controls.
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600
 ```
+
+The portable CPU-only C++23 candidate is
+`benchmark/native/bench_openai_stream.cpp`; its shared native support also
+drives `bench_spec_acceptance.cpp`. Strict GCC and MSVC host suites pass. The
+native-Windows adjacent live window passes greedy and sampled `6213+512`,
+sampled acceptance, and exact-capacity `199000+16`, preserving workload,
+schema, deterministic hashes, acceptance algebra, and timing boundaries. The
+Python command remains the cross-platform record authority until the Apple
+window passes. See `notes/benchmark-contract.md` for build commands and the
+promotion gate.
 
 Run it against one deliberate native-Windows RTX 5090 server with the real
 200K pools, ordinary inference, and every fixed-acceptance simulation disabled.
