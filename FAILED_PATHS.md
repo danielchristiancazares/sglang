@@ -3646,3 +3646,36 @@ option, or serving dispatch was added.
   output. PERF-A111 demonstrates that exact boundary.
 - Related commit or revert: the hand-inlined source was replaced in the
   detached candidate worktree before promotion; no revert is required.
+
+## PERF-FA131 - Remaining affine-Q4 output, load, lane-work, and unroll forms
+
+- Hypothesis: more output rows, fewer threadgroups, wider weight transactions,
+  more packs per lane, or compile-time unrolling can compound A111's Q4 gain.
+- Scope: mixed 4.951-bpw target, its 162 Q4 linears, selected A100+A111,
+  bit-exact synthetic parity, gate/up `100 / 1000` microbenchmarks, and exact
+  `128 / 32 warm / 128 timed` full-model screens.
+- Attempted change: evaluated exact `8x4`, `4x8`, and `2x8` output cohorts;
+  one `packed_ushort4` load; four packs per lane; a helper-local `ushort`; and
+  forced full unrolling of the K-specialized outer loop.
+- Benchmark evidence: `8x4` is flat at control/candidate **19.229939742 /
+  19.230535491 tok/s**. `4x8` and `2x8` fall to **18.840786855** and
+  **18.851060160**. The vector load moves five-sample means only
+  **19.222120223 -> 19.232188501**. Four packs per lane reaches
+  **18.928908455** full-model tok/s. The local word regresses paired gate/up
+  **0.454020313 -> 0.464569500 ms**, and full unrolling regresses one gate/up
+  run **0.468931459 -> 1.799243958 ms**.
+- Correctness evidence: every geometry, vector-load, local-word, and unroll
+  form is bit-exact at the focused parity shapes. Four packs per lane has one
+  `0.000488281` BF16 mismatch at `5120x17408` and changes the target digest to
+  `92ae190a68ee376b`, last token 8.
+- Failure mode: larger row cohorts lose occupancy; fewer threadgroups lose
+  useful parallelism; the vector transaction yields no full-model margin;
+  larger lane work changes FP32 grouping; explicit full unrolling sharply
+  increases generated-kernel cost.
+- Why not to retry unchanged: the complete cohort family and direct load/
+  unroll variants are measured on the exact production shapes and target.
+- Reopen only if: a compiler/GPU change or new shader counters prove a
+  different occupancy/register regime, or a load-sharing mechanism reduces
+  streamed bytes while retaining A111's FP32 reduction order.
+- Related commit or revert: all candidates remain isolated outside `main`;
+  signed A111 in `22408c50c4` remains selected.
