@@ -20436,3 +20436,188 @@ mean 13.929045  17.125658 446.051        39.730
   profile the remaining Q5_K/Q6_K layer mix on this faster path, then measure
   the real 131,072-token pool and bundled NEXTN economics under the retained
   sequential-request contract.
+
+### 2026-09-01 09:45 PDT - Q5_K 32-row Metal cohort adds a measured served win
+
+- Continued from signed commit
+  `370c8b86324e8265f94bf51fb707ebea368486cf` (`perf(mps): reuse Q6_K
+  activations across rows`), 65 commits ahead of `origin/main`; its EDDSA
+  signature verified good. The modified `qwen38_engine.cpp`,
+  `qwen38_engine.h`, and `test_qwen38_affine_small_batch_qmm.cpp` paths remain
+  pre-existing user-owned work and stayed untouched. Port 30000, matching
+  server/compiler/benchmark processes, memory pressure, and reported thermal
+  state were checked before each launch. The configured single agent slot
+  continues to make the skill-required analysis-only subagent batch
+  unavailable while this root is active.
+- Recovered the exact derived-checkpoint tensor inventory with the pinned
+  llama.cpp tool:
+
+  ```bash
+  /private/tmp/llama.cpp-q5/build-q5/bin/llama-quantize --dry-run \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenF16.gguf \
+    COPY
+  ```
+
+  The file contains 866 tensors and 45 metadata entries: 456 F32, one F16,
+  eight Q4_0, 24 Q8_0, 320 Q5_K, and 57 Q6_K tensors. The architecture has 65
+  blocks, 262,144 declared context, 5,120 hidden width, 17,408 FFN width, and a
+  full-attention interval of four. `output.weight` is Q6_K shape
+  `(248320,5120)`. Recurrent blocks use Q5_K gate/FFN projections and Q6_K
+  QKV; full-attention blocks use Q6_K Q plus Q5_K K/V/output/FFN. The NEXTN
+  block 64 is Q4_0. Standalone Q8_0 projections fall outside the native packed
+  weight set and load as F16; mixed native Q5/Q6 tensors stay packed.
+- A diagnostic launch added
+  `SGLANG_MPS_PROFILE_LAYERS=1`, `SGLANG_MPS_PROFILE_STAGES=1`,
+  `SGLANG_MPS_PROFILE_BATCH_SIZE=1`, and
+  `SGLANG_MPS_PROFILE_STAGE_LAYER=0` to the ordinary conservative Q5 command.
+  Root PID 21322 and its complete tree were cleaned afterward. Synchronization
+  and first-use page residency dominate the early records: layer zero measured
+  0.538 ms input residual norm, 43.292 ms GDN input projection, 0.489 ms pack,
+  19.417 ms GDN core/convolution, 0.429 ms gated norm/reorder, 5.746 ms output
+  projection, 69.565 ms total linear attention, 0.392 ms post-attention norm,
+  14.104 ms MLP, and 84.787 ms total. Later warmed recurrent layers settled
+  around 3.0--3.8 ms and full-attention layers around 4.3--6.0 ms under the
+  per-layer synchronization. These are hotspot-attribution timings rather than
+  production throughput measurements.
+- The next speculative branch is currently constrained by multi-batch packed
+  matmul cost. Existing eight-warmup/25-timed controls measured Q6_K
+  `output.weight` at **29.148833 ms / 33.452 GiB/s** for batch four and
+  **30.715125 ms / 31.869 GiB/s** for batch eight. Q5_K
+  `blk.0.ffn_gate.weight` measured **2.945291 ms / 19.490 GiB/s** at batch four
+  and **2.442792 ms / 23.637 GiB/s** at batch eight. The retained historical
+  NEXTN screen reached **4.872 tok/s** with mean accepted width **2.80/4** and
+  draft acceptance **0.60**. Batch-four Q5/Q6 work therefore owns the next
+  NEXTN prerequisite.
+- Implemented `q5_K_batch_1_vec8_rows32` in the common native Metal GGUF
+  matmul owner. Four lanes cooperate on one output row, each lane decodes two
+  adjacent `float4` fragments, eight rows occupy each SIMD group, and four
+  SIMD groups cover 32 output rows per threadgroup. The checked selector
+  requires Q5_K, batch one, established weight/input vector alignment, at least
+  5,120 output rows, the smallest measured winning shape, 32-wide execution,
+  and capacity for 128 threads. The
+  1,024-row K/V projections stay on `q5_K_batch_1_vec4`, where the new mapping
+  had measured a regression. `SGLANG_MPS_Q5_K_BATCH1_ROWS32=0` is the
+  process-scoped matched control. No Python source changed.
+- Before adding the production size threshold, the dedicated Q5 boundary suite
+  directly exercised the candidate on actual-file prefixes at input widths 256
+  and 768 and rows `1,7,8,9,15,16,17,31,32`; every case passed. A long-K
+  compact view at K=5120 passed with maximum absolute/relative error
+  **7.15256e-07 / 3.69632e-07**. Unaligned weight/input origins selected the
+  established fallback and passed. Synthetic packed scale/high/low extrema
+  passed at **0.00146484 / 3.02919e-07**. After the final threshold, the same
+  suite passed again, including long-K at **5.96046e-07 / 3.08027e-07** and
+  the same extrema bound. The derived-artifact three-family smoke at 17 rows,
+  batch one passed Q4_0/Q5_K/Q6_K at maximum absolute/relative errors
+  `4.76837e-07/2.05552e-07`, `9.53674e-07/4.60024e-07`, and
+  `4.76837e-07/2.95486e-07`.
+- Initial matched microbench medians with eight warmups and 25 synchronized
+  iterations were:
+
+  | Tensor / shape | Disabled control | Candidate | Result |
+  |---|---:|---:|---:|
+  | `blk.0.ffn_gate.weight` `(17408,5120)` | 0.648083 ms / 88.186 GiB/s | 0.625667 ms / 91.345 GiB/s | -3.46% latency |
+  | `blk.0.ffn_down.weight` `(5120,17408)` | 0.670209 ms / 85.275 GiB/s | 0.664542 ms / 86.002 GiB/s | -0.85% latency |
+  | `blk.0.attn_gate.weight` `(6144,5120)` | 0.549750 ms / 36.714 GiB/s | 0.388458 ms / 51.958 GiB/s | -29.34% latency |
+  | `blk.3.attn_k.weight` `(1024,5120)` | 0.327208 ms / 10.329 GiB/s | 0.337792 ms / 10.006 GiB/s | +3.23% latency; excluded |
+
+  A cache-resident 16-warmup attention-gate pair converged to candidate/control
+  **0.392834/0.383917 ms**. A later independent eight-warmup pair measured
+  control/candidate attention gate **0.554417/0.546000 ms** and FFN gate
+  **0.619875/0.632416 ms**. These crossings confirm that synchronized
+  microbench cache state is less representative than the 21.37 GB full-model
+  traversal; serving determines promotion.
+- Every served arm used the same conservative command, changing only the
+  control environment when specified:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=0 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenF16.gguf \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-Q5_K_S.gguf \
+    --served-model-name qwen3.8-27b-q5 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 1024 --max-total-tokens 1024 \
+    --max-running-requests 1 --chunked-prefill-size 256 \
+    --max-prefill-tokens 512 --disable-radix-cache \
+    --disable-overlap-schedule --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Candidate root 21640 loaded in 84.09 s; disabled-control root 21785 loaded in
+  86.71 s; the independent candidate root 21884 loaded in 86.43 s. Every
+  process reported 21.37 GB model residency, 10.62 GB available after load,
+  one 0.29 GB Mamba slot, 0.06 GB BF16 KV, and 10.50 GB available after cache
+  allocation. The control launch inserted
+  `SGLANG_MPS_Q5_K_BATCH1_ROWS32=0` after the two shared environment settings.
+- Five candidate `128+32` samples and the following matched disabled control
+  used the established ordinary sampler. Raw generation/prompt/TTFT/E2E were:
+
+  | Arm | Sample | Gen tok/s | Prompt tok/s | TTFT s | E2E s | Reasoning SHA-256 |
+  |---|---:|---:|---:|---:|---:|---|
+  | candidate | 1 | 6.993 | 5.786 | 22.120818 | 26.554005 | `2fd793aa...20f17` |
+  | candidate | 2 | 7.214 | 5.819 | 21.998563 | 26.295831 | `2fd793aa...20f17` |
+  | candidate | 3 | 7.206 | 5.820 | 21.994362 | 26.296606 | `8302855a...f17f4` |
+  | candidate | 4 | 7.218 | 5.808 | 22.039649 | 26.334344 | `70977c61...05c05` |
+  | candidate | 5 | 7.192 | 5.812 | 22.022324 | 26.332560 | `2fd793aa...20f17` |
+  | control | 1 | 6.956 | 5.825 | 21.975590 | 26.432185 | `2fd793aa...20f17` |
+  | control | 2 | 7.187 | 5.823 | 21.982454 | 26.295694 | `2fd793aa...20f17` |
+  | control | 3 | 7.141 | 5.826 | 21.971529 | 26.312818 | `b56fe5dc...646cc` |
+  | control | 4 | 7.216 | 5.821 | 21.990047 | 26.285891 | `2fd793aa...20f17` |
+  | control | 5 | 7.171 | 5.824 | 21.978656 | 26.301456 | `2fd793aa...20f17` |
+
+  Candidate/control generation means are **7.1646/7.1342 tok/s** and
+  warmed-four means are **7.2075/7.17875**, gains of **0.426%/0.400%**.
+  Candidate prompt, TTFT, and E2E means are **5.809 tok/s**, **22.035143 s**,
+  and **26.362669 s**. Every request completed exact `128+32=160` tokens,
+  `finish_reason=length`, 32 nonempty deltas, and reasoning-only output.
+- To increase decode timing resolution, the existing control server then ran
+  five `128+128` samples and a fresh candidate server ran the reverse arm:
+
+  | Arm | Sample | Gen tok/s | Prompt tok/s | TTFT s | E2E s | Reasoning SHA-256 |
+  |---|---:|---:|---:|---:|---:|---|
+  | control | 1 | 7.277 | 5.828 | 21.963461 | 39.416833 | `3d3b40a1...5b941` |
+  | control | 2 | 7.474 | 5.827 | 21.966388 | 38.957755 | `6361ba0b...597e` |
+  | control | 3 | 7.460 | 5.816 | 22.007994 | 39.032282 | `6d4e6b69...d02e4` |
+  | control | 4 | 7.456 | 5.826 | 21.971277 | 39.003557 | `210cf937...c5be` |
+  | control | 5 | 6.677 | 5.819 | 21.996872 | 41.018161 | `307574cf...0015` |
+  | candidate | 1 | 7.261 | 5.784 | 22.131553 | 39.622324 | `b6943b27...2a87` |
+  | candidate | 2 | 7.521 | 5.822 | 21.984383 | 38.870703 | `3176f70f...a7a9` |
+  | candidate | 3 | 7.491 | 5.833 | 21.945644 | 38.898453 | `2ece713b...559a` |
+  | candidate | 4 | 7.514 | 5.827 | 21.965656 | 38.866520 | `60a1e606...b6d` |
+  | candidate | 5 | 7.500 | 5.824 | 21.976929 | 38.911134 | `d70ca688...22a` |
+
+  Control sample five coincided with `launchd` at 39.4% CPU, FileProvider at
+  11.9%, active Spotlight workers, and server-log decode intervals of
+  6.58--6.59 tok/s versus the preceding 7.53--7.60 range. It is retained and
+  labeled externally contended. Candidate/control medians are
+  **7.500/7.456 tok/s**, a **0.590%** gain. First-four means are
+  **7.44675/7.41675**, a **0.404%** gain; matched positions two through four
+  improve **0.607%**. Candidate mean/warmed-four are
+  **7.4574/7.5065 tok/s**. All ten requests completed exact 256-token length
+  responses with 128 streamed reasoning fragments.
+- A final attempted all-family smoke at 2,049 rows triggered the declared
+  packed-weight size guard on the first, smaller Q4_0 tensor before reaching
+  Q5_K. This is a harness-shape failure and supplies no candidate result. The
+  focused Q5 suite, ordinary derived-artifact smoke, two complete Metal builds,
+  and fifteen candidate served requests supply the retained correctness gate.
+- Before every shutdown, listener/root ancestry, child PIDs, memory, and
+  thermal status were resolved. Root 21640 owned 21644/21645/21646; root 21785
+  owned 21793/21794/21795; root 21884 owned 21889/21890/21891. Foreground
+  `Ctrl+C` completed each shutdown. All recorded PIDs, matching workloads,
+  compiler workers, and port 30000 were clear after the final cleanup;
+  `pmset -g therm` reported normal state and memory pressure reported 93% free
+  with zero throttled pages.
+- Final source review narrowed the exploratory 2,048-row selector to 5,120,
+  the smallest measured winning shape and an exact Qwen target projection
+  boundary. A fresh final-source build and 25-iteration
+  `blk.0.attn_gate.weight` run exercised the selected 6,144-row route at
+  **0.449916 ms / 44.861 GiB/s** median. The prior 1,024-row owner remains
+  unchanged.
+- Decision: retain the size-gated 32-row Q5_K batch-one kernel. The two matched
+  served comparisons ran in opposite arm order and agree on a small positive
+  decode result. The selected `128+32` mean is now **7.1646 tok/s**, a combined
+  **24.688%** gain over the original **5.746 tok/s** Q5 baseline, with a
+  **12.8354 tok/s / 2.7915x** remaining floor gap. Next: commit this atomic
+  win, then target batch-four Q5/Q6 matrix cost for NEXTN or qualify real 131K
+  target-only capacity before another speculative launch.

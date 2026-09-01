@@ -4,7 +4,8 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
-| M1 Max Qwen3.8-27B Q5_K_S-derived target, sampled served `128+32`, 1K pool | generic Q6_K batch-one path: **5.746 tok/s**, **5.8 prompt tok/s**, **22.070851 s TTFT**, **27.466190 s E2E** | Q6_K two-row reuse: five-run **7.052 tok/s** mean, warmed-four **7.144**; five-run **5.713 prompt tok/s**, **22.431710 s TTFT**, **26.830541 s E2E** | **+1.306 / +22.732%** generation; exact 160 tokens and reasoning preserved; **12.948 tok/s / 2.836x** remains to the floor | `bench_openai_stream.py --model qwen3.8-27b-q5 --input-tokens 128 --output-tokens 32 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup --timeout 600` | 2026-09-01 09:04 PDT |
+| M1 Max Qwen3.8-27B Q5_K_S-derived target, sampled served `128+32`, 1K pool | generic Q6_K batch-one path: **5.746 tok/s**, **5.8 prompt tok/s**, **22.070851 s TTFT**, **27.466190 s E2E** | Q6_K two-row plus Q5_K 32-row reuse: five-run **7.1646 tok/s** mean, warmed-four **7.2075**; five-run **5.809 prompt tok/s**, **22.035143 s TTFT**, **26.362669 s E2E** | **+1.4186 / +24.688%** generation from the original baseline; Q5_K change adds **+0.426%** against its matched disabled mean; exact 160 tokens and reasoning preserved; **12.8354 tok/s / 2.7915x** remains to the floor | `bench_openai_stream.py --model qwen3.8-27b-q5 --input-tokens 128 --output-tokens 32 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup --timeout 600` | 2026-09-01 09:45 PDT |
+| M1 Max Q5_K batch-one 32-row cohort, sampled served `128+128`, 1K pool | matched `SGLANG_MPS_Q5_K_BATCH1_ROWS32=0`: **7.456 tok/s median**, **7.41675** first-four mean | default candidate: **7.500 tok/s median**, **7.44675** first-four mean, **7.5065** warmed-four mean | **+0.044 / +0.590%** median and **+0.404%** first-four mean; every request exact at 256 tokens; one control tail sample is retained as externally contended | same sampled command with `--output-tokens 128` | 2026-09-01 09:45 PDT |
 | M1 Max full-Q4 target-only long-history GPU shader attribution, sampled `6237 / 1 warm / 128 timed` | prior Metal System Trace exposed command-buffer cadence without Shader Timeline labels | **88.470%** affine-W4 `qmv_fast`; **3.904%** two-pass SDPA; **2.358%** recurrent state update; **1.405%** full-attention q/k norm plus RoPE | 47,676 of 48,343 sampled shader PCs map to the target process; the remaining throughput branch is the stock-compatible matrix-tiled QMV/dependency owner | `xctrace record --template 'Metal System Trace' --instrument 'Metal GPU Counters' ...` plus exported shader-PC attribution | 2026-09-01 07:41 PDT |
 | M1 Max native full-Q4 target-only prefill, sampled served `6237+128`, real 131K pools | one-shot native prefill: Metal OOM before generation | internal 2,048-token prefill: **19.300 tok/s**, **109.988 prompt tok/s**, **56.706198 s TTFT**, **63.286374 s E2E** | exact 6,365-token request now completes with coherent reasoning; direct long-history decode is **19.586705 tok/s** and short decode remains above 20 with an exact digest; **0.700 tok/s** remains to the served floor | exact target-only server/client contract plus `SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048` | 2026-09-01 07:09 PDT |
 | M1 Max full-Q4 affine-W4 batch-one QMV, direct `128 / 32 warm / 128 timed` | stock MLX **20.339874670 tok/s** | one-SIMD-per-output **10.456143330 tok/s**; quant-parameter subgroup broadcast **7.773375044 tok/s** | **-48.593% / -61.783%**; both native forms removed after exact standalone parity and full-model screens | candidate dylib plus `SGLANG_MLX_NATIVE_BATCH_ONE_QMV=1` under the target-only direct contract | 2026-09-01 07:28 PDT |
@@ -812,6 +813,7 @@ tree throughput can be ranked for production.
 | PERF-A081 | Attribute full-Q4 long-history decode at the shader-PC owner before another kernel change. | Metal GPU Counters Shader Timeline and native target process | Complete; matrix-tiled QMV branch active | 47,676 mapped samples place **88.470%** in MLX `affine_qmv_fast`, **3.904%** in two-pass SDPA, and **2.358%** in the recurrent update. Installed MLX 0.32.2 matches current official QMV source; upstream HEAD adds no QMV optimization after that tag. |
 | PERF-A082 | Establish a runnable provenance-pinned Q5 checkpoint and served baseline. | Bartowski Q5_K_M/Q5_K_S source artifacts, pinned llama.cpp COPY conversion, native Metal GGUF execution, and sampled OpenAI serving | Derived Q5_K_S base retained; throughput optimization active | Converting only the unsupported 833.59 MiB Q5_K token embedding to F16 yields a 21,349,656,160-byte artifact with SHA-256 `c05a7778...fcfb`. It loads at 21.37 GB, warms, and completes exact sampled `128+32` at **5.746 tok/s** with reasoning preserved. Unchanged Q5_K_M and Q5_K_S fail at distinct current native boundaries; see PERF-FA112/113. |
 | PERF-A083 | Reuse one activation fragment across two Q6_K output rows during batch-one decode. | Native Metal GGUF Q6_K matrix-vector kernel and guarded common quantized-matmul dispatch | Retained; first Q5 kernel win | Matched QKV/head medians improve **0.748917 -> 0.448125 ms** and **12.009166 -> 3.324625 ms**. Five sampled served requests average **7.052 tok/s**, **22.732%** above the 5.746 baseline; warmed-four average **7.144**. Actual-file optimized, odd-row fallback, and batch-eight parity pass. |
+| PERF-A084 | Double the batch-one Q5_K output-row cohort while each lane decodes eight adjacent weights. | Native Metal GGUF Q5_K matrix-vector kernel and guarded common quantized-matmul dispatch | Retained; second Q5 kernel win | Reversed-order matched served windows improve `128+32` mean **7.1342 -> 7.1646 tok/s** and `128+128` median **7.456 -> 7.500 tok/s**. The 1,024-row K/V projections retain the prior mapping; direct candidate, tail, alignment, fallback, and full-model behavior gates pass. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -4297,3 +4299,71 @@ tree throughput can be ranked for production.
   normal thermal/performance status. The active Q5 gap is now
   **12.9478 tok/s / 2.8360x**; remaining Q5_K projections, model execution
   overhead, 131K capacity, and speculative economics own the next iterations.
+
+### 2026-09-01 09:45 PDT - PERF-A084 Q5_K batch-one 32-row cohorts
+
+- Change: added a Q5_K batch-one Metal matvec in which four lanes cooperate on
+  each output row, each lane decodes two adjacent `float4` fragments, and four
+  SIMD groups cover 32 rows per 128-thread group. The shared native quantized
+  matmul owner selects it for aligned batch-one Q5_K projections with at least
+  5,120 output rows, the smallest measured winning shape. The 1,024-row
+  attention K/V shapes retain the
+  prior eight-lane path. `SGLANG_MPS_Q5_K_BATCH1_ROWS32=0` selects the matched
+  control for the wider shapes.
+- The initial eight-warmup/25-timed microbench screen measured control to
+  candidate medians of **0.648083 -> 0.625667 ms** on
+  `blk.0.ffn_gate.weight`, **0.670209 -> 0.664542 ms** on the FFN down
+  projection, and **0.549750 -> 0.388458 ms** on
+  `blk.0.attn_gate.weight`. The 1,024-row attention-K shape moved
+  **0.327208 -> 0.337792 ms**, establishing that compact shape's exclusion.
+  A later independent cache-resident pair measured attention gate
+  **0.554417 -> 0.546000 ms** and FFN gate
+  **0.619875 -> 0.632416 ms**. Whole-model serving therefore owns the
+  promotion decision; the direct synchronized microbench varies with cache
+  residency on this 21.37 GB model.
+- The first reversed-control served comparison used five cache-flushed sampled
+  `128+32` requests per arm. Candidate generation samples were
+  **6.993 / 7.214 / 7.206 / 7.218 / 7.192 tok/s**, mean **7.1646** and
+  warmed-four mean **7.2075**. Disabled-control samples were
+  **6.956 / 7.187 / 7.141 / 7.216 / 7.171 tok/s**, mean **7.1342** and
+  warmed-four mean **7.17875**. The candidate gains
+  **0.0304 tok/s / 0.426%** by all-sample mean and **0.400%** by warmed mean.
+  Candidate prompt/TTFT/E2E samples were
+  `5.786/22.120818/26.554005`, `5.819/21.998563/26.295831`,
+  `5.820/21.994362/26.296606`, `5.808/22.039649/26.334344`, and
+  `5.812/22.022324/26.332560`; their means are **5.809 tok/s**,
+  **22.035143 s**, and **26.362669 s**. Every arm returned exact 160-token
+  length completions with all output carried as reasoning.
+- A higher-resolution reversed-order comparison used five sampled `128+128`
+  requests per arm. Disabled-control decode samples were
+  **7.277 / 7.474 / 7.460 / 7.456 / 6.677 tok/s**; the fifth coincided with
+  39.4% `launchd`, 11.9% FileProvider, active Spotlight workers, and server-log
+  decode intervals of 6.58--6.59 tok/s. It remains in the all-sample mean
+  **7.2688**, while the median is **7.456** and first-four mean is
+  **7.41675**. Candidate samples were
+  **7.261 / 7.521 / 7.491 / 7.514 / 7.500 tok/s**, mean **7.4574**,
+  median **7.500**, first-four mean **7.44675**, and warmed-four mean
+  **7.5065**. Candidate versus control improves the median by
+  **0.044 tok/s / 0.590%**, first-four mean by **0.404%**, and matched
+  positions two through four by **0.607%**. All ten requests completed exact
+  256-token length responses with 128 streamed reasoning fragments.
+- Direct candidate execution before the production size threshold passed
+  actual-file Q5_K rows `1,7,8,9,15,16,17,31,32`, long-K compact views,
+  unaligned fallback, and synthetic packed extrema. The long-K maximum
+  absolute/relative error was **7.15256e-07 / 3.69632e-07**; synthetic
+  extrema remained **0.00146484 / 3.02919e-07**. The final checked source
+  rebuilt during two complete server launches. The post-threshold boundary
+  suite and derived-artifact Q4_0/Q5_K/Q6_K smoke both pass; final Q5_K
+  representative error is **9.53674e-07 / 4.60024e-07**. A 2,049-row
+  all-family smoke request reached a smaller Q4_0 tensor first and triggered
+  its packed-shape guard, so it contributes only a recorded harness-boundary
+  failure.
+- Decision: retain the narrow default-on Q5_K path. Two matched serving
+  windows in opposite launch order agree on a small decode gain, and the
+  wider 128-output window supplies the promotion signal. The original generic
+  baseline to current `128+32` mean improves **5.746 -> 7.1646 tok/s**
+  (**+24.688%**) after PERF-A083/A084. The active gap is
+  **12.8354 tok/s / 2.7915x**. Root/listener trees
+  21640/21644--21646, 21785/21793--21795, and 21884/21889--21891 were each
+  resolved before foreground shutdown; every PID, matching workload, and port
+  30000 was clear afterward, with normal reported thermal state.

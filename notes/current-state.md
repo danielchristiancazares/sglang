@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-09:04 PDT.
+09:45 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -189,13 +189,24 @@ fragment across two output rows. Matched QKV and vocabulary-head medians fall
 **0.748917 -> 0.448125 ms** and **12.009166 -> 3.324625 ms**. Optimized,
 odd-row fallback, and batch-eight actual-file parity all pass.
 
+The second retained Q5 optimization doubles the Q5_K batch-one cohort to 32
+rows for aligned projections with at least 5,120 outputs, the smallest measured
+winning shape. Four lanes cooperate
+on each row and each lane consumes two adjacent `float4` fragments. The
+1,024-row attention K/V shapes retain the prior mapping. Reversed-order matched
+serving moves the `128+32` five-run mean **7.1342 -> 7.1646 tok/s**
+(**+0.426%**) and the higher-resolution `128+128` median
+**7.456 -> 7.500 tok/s** (**+0.590%**). Direct candidate, tail, alignment,
+fallback, and complete served-behavior gates pass;
+`SGLANG_MPS_Q5_K_BATCH1_ROWS32=0` selects the matched control.
+
 Five ordinary sampled exact `128+32` requests reach
-**6.685 / 7.176 / 7.134 / 7.135 / 7.131 generation tok/s**, mean **7.0522**
-and warmed-four mean **7.1440**, versus the committed generic-kernel baseline
+**6.993 / 7.214 / 7.206 / 7.218 / 7.192 generation tok/s**, mean **7.1646**
+and warmed-four mean **7.2075**, versus the original generic-kernel baseline
 of **5.746 tok/s**. Every request preserves 32 reasoning tokens and exact
-length. The five-run prompt/TTFT/E2E means are **5.7126 tok/s**,
-**22.431710 s**, and **26.830541 s**. This leaves a
-**12.9478 tok/s / 2.8360x** decode gap. The real 131K pool, sustained 20 tok/s
+length. The five-run prompt/TTFT/E2E means are **5.809 tok/s**,
+**22.035143 s**, and **26.362669 s**. This leaves a
+**12.8354 tok/s / 2.7915x** decode gap. The real 131K pool, sustained 20 tok/s
 admission window, and Codex `xhigh` work gate remain due.
 
 The unchanged Q5_K_M artifact is closed on this loader because mixed merged
