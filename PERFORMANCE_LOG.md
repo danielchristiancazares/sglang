@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native early-out27 v2 with every recurrent projection restored from Q4, sampled served `6237+128`, real 131K pools | selected Q2 checkpoint **20.1556 tok/s** mean with reproducible malformed extra tool call | first Q4-recurrent sample **19.913 tok/s** with a clean xhigh tool turn | **-0.2426 / -1.204%** from selected mean; **0.087 tok/s** below floor; one `/bin/pwd`, correct result, exact final marker, exit 0 | `SGLANG_MLX_NATIVE_LINEAR_ATTN_OVERRIDE_PATH=<immutable-q4> ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 ...`; then the pinned xhigh Codex shell gate | 2026-08-31 23:58 PDT |
 | M1 Max native early-out27 v2, request-local sampled served `6237+128`, real 131K pools | signed `883da94` restart **20.1356 tok/s** mean | request-boundary reseed **20.1556 tok/s** mean | **+0.0200 / +0.099%**; five samples **20.155/20.148/20.157/20.152/20.166**, every sample clears 20 and shares one digest | `MLX_SDPA_BLOCKS=64 SGLANG_MLX_NATIVE_SAMPLING=1 ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup`, five sequential samples | 2026-08-31 17:43 PDT |
 | M1 Max native early-out27 v2, first sampled served `6237+128` window, real 131K pools | selected 128-partial sampled screen **19.941 tok/s** | opt-in 64-partial first window **20.1722 tok/s** mean | **+0.2312 / +1.159%**; all five samples clear 20; the first xhigh shell round trip passed and later order-replay exposed process-global RNG drift | same production-sampled command, five sequential samples | 2026-08-31 16:46 PDT |
 | M1 Max native early-out27 v2, Codex 0.151.0 xhigh shell-tool turn, real 131K pools | first sampled turn: one `/bin/pwd`, final marker, exit 0 in about 81.8 s | fixed-seed request replay reaches the valid `/bin/pwd` and then emits a malformed `write_stdin` handle | speed and prompt-snapshot reuse pass; broader structured-output qualification remains active | hash-pinned isolated `CODEX_HOME`, strict config, ephemeral 120-second command recorded in the experiment log | 2026-08-31 17:43 PDT |
@@ -764,6 +765,8 @@ tree throughput can be ranked for production.
 | PERF-A048 | Concatenate full-attention q/k/v affine rows at load and issue fewer quantized products. | Native Qwen3.8 full-attention projection owner | Rejected and removed | Full q/k/v fusion screened at **20.721377944 tok/s** with digest `12bb3edf3d51feac`; q plus fused k/v screened at **20.672271140 tok/s** with digest `af06cc7ce5e094be`. Both diverge from exact control digest `8ea2430e3fa3d56e` because production row geometry changes MLX accumulation. See PERF-FA084. |
 | PERF-A054 | Sample the full supported distribution and reuse exact prompt-boundary native state for Codex continuations. | Native Qwen3.8 sampler, reasoning bound, and recurrent/KV snapshots | Retained in signed `883da94`; behavior qualification active | The independent committed restart averages **20.1356 tok/s** with every sample above 20. A first xhigh tool turn passed; later request-order replay exposed process-global RNG ownership and low-bit structured-output instability. |
 | PERF-A055 | Reinitialize the configured native sampling stream at each unrelated full request reset. | Native Qwen3.8 engine request boundary | Validated reproducibility fix; retained in this change | Five `6237+128` samples average **20.1556 tok/s**, all exceed 20, and all share SHA-256 `91dbc7056abfdc989aaee9e1d0f1fa3abc410637aabe144ac2ab0ea9bd97df3e`. Strict-prefix and prompt-snapshot continuations retain their ongoing stream. |
+| PERF-A056 | Restore only the precision-critical recurrent projections from immutable Q4 weights. | Native Qwen3.8 checkpoint loader and gated-delta projections | Active narrowing | Restoring all `qkv/z/a/b/out` projections yields a clean xhigh tool turn and one real sample at **19.913 tok/s**, only **0.087 tok/s** below the floor. Output-only restoration retains **20.1208 tok/s** mean and fails xhigh. Direct `qkvz` reaches **21.056891733 tok/s**; its server behavior gate is next. |
+| PERF-A057 | Integrate the Qwen3.8-specific DFlash2 draft into the native MLX C++ lane. | Native draft checkpoint loader, block proposal/selector, target verify, and accepted-state commit | Active architecture trace | Upstream supplies a 2B BF16 draft and 1.14 GiB Q4 GGUF with published xhigh acceptance lengths **4.10--5.46**. SGLang's PyTorch/CUDA v2 worker is the semantic oracle; the native engine currently bypasses it. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -3193,3 +3196,28 @@ tree throughput can be ranked for production.
   suite passes **8 tests** with 16 existing warnings, and `git diff --check`
   passes. This change is selected as a request-semantics/reproducibility win;
   xhigh structured-output qualification continues independently.
+
+### 2026-08-31 23:58 PDT - PERF-A056 recurrent precision boundary and PERF-A057 DFlash2 track
+
+- The selected early-out27-v2 checkpoint plus every recurrent output
+  projection from immutable Q4 retained five-sample served throughput at
+  **20.111, 20.134, 20.115, 20.127, and 20.117 tok/s**, mean **20.1208**,
+  while the exact xhigh shell gate decoded until the 120-second timeout without
+  emitting a usable tool call.
+- Restoring every quantized recurrent-attention projection from Q4 screened at
+  **20.107157009 tok/s** in the direct sampled long-history harness. Its first
+  real `6237+128` server sample reached **19.913 tok/s**, completed exact
+  6,365 tokens, and fell **0.087 tok/s** below the hard floor. The pinned
+  Codex xhigh gate passed cleanly with one `/bin/pwd`, the expected working
+  directory, final `QWEN38_TOOL_READY`, and exit zero. This establishes a
+  narrow precision/performance boundary suitable for projection-family
+  bisection.
+- A `qkvz`-only Q4 restore reached **21.056891733 tok/s** in the direct short
+  harness. The loader remains opt-in and fails closed on missing or surplus
+  projection tensors. Real-server speed and behavior qualification remain
+  active.
+- A current upstream artifact check found the Qwen3.8-specific DFlash2 draft,
+  including a 1.14 GiB Q4 checkpoint. The existing SGLang v2 worker and model
+  card define a concrete native MLX integration target. Exact lossless
+  sampling verification, recurrent accepted-path state commit, 131K
+  residency, and the established xhigh shell gate govern admission.
