@@ -17937,3 +17937,70 @@ mean 13.929045  17.125658 446.051        39.730
   completed `1 / 1 warm / 1 timed` at **19.984112630 tok/s**, digest
   `c8bbed67024e3c09`; an invalid scope failed closed with the exact accepted
   vocabulary in its diagnostic. `git diff --check` passed.
+
+### 2026-09-01 00:43 PDT - native DFlash2 W4 artifact is reproducible and verified
+
+- Began from signed HEAD `0205c6f3c17fea72234ebf4031029ce2a2930dc8`
+  (`feat(mps): add recurrent precision overlays`) on `main`, 32 commits ahead
+  of `origin/main`. The worktree was clean except for the new standalone C++
+  converter. Port 30000 was free; SGLang, clang, and Metal compiler process
+  searches were clear. System memory was 93% free, pages throttled were zero,
+  and macOS thermal/performance status was normal.
+- The immutable source is
+  `/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-BF16/model.safetensors`,
+  3.6 GiB. Exact pre-conversion command
+  `openssl dgst -sha256 SOURCE/model.safetensors` reported
+  `67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c`,
+  matching the upstream LFS object recorded during acquisition.
+- Added `benchmark/mac/convert_dflash2_mlx.cpp`. It requires the exact
+  81-tensor Qwen3.8 DFlash2 surface, finds exactly 47 eligible 2-D linear
+  weights, quantizes them through MLX affine W4/group-size-64, retains 34 BF16
+  tensors, stamps source/format provenance into safetensors metadata, reloads
+  the output at exactly 175 tensors, and renames only after verification.
+  Source and destination paths must be distinct `.safetensors` files and an
+  existing destination or partial file fails closed.
+- Exact strict build command was
+  `clang++ -std=c++20 -O3 -Wall -Wextra -Werror -isystem
+  .venv/lib/python3.11/site-packages/mlx/include
+  benchmark/mac/convert_dflash2_mlx.cpp
+  -L.venv/lib/python3.11/site-packages/mlx/lib
+  -Wl,-rpath,.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o
+  /private/tmp/convert_dflash2_mlx`. It passed with the established external
+  warning that the target is macOS 26.0 and `libmlx.dylib` was built for 26.2.
+  `/private/tmp/convert_dflash2_mlx --self-test` passed the 81 -> 175 tensor
+  contract, all 47 quantizations, and the bounded dequantization check. A
+  destination lacking the `.safetensors` suffix and a pre-existing final
+  artifact each produced the intended fail-closed diagnostic before loading
+  or writing weights.
+- The first full conversion revealed that `save_safetensors` appends its
+  extension when the temporary name ends in `.part`. It wrote the complete
+  1.2 GiB derived file as `model.safetensors.part.safetensors`, then the
+  verification open of `model.safetensors.part` failed. The source stayed
+  untouched. The exact derived partial was removed, and the converter now
+  chooses an explicit `.part.safetensors` name that MLX preserves.
+- The successful exact artifact command was
+  `/private/tmp/convert_dflash2_mlx
+  /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-BF16/model.safetensors
+  /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-MLX-AffineQ4/model.safetensors`.
+  It quantized exactly 47 matrices, reload-verified 175 tensors, and atomically
+  installed the final file. Only `config.json` and `model.safetensors` remain
+  in that distinct artifact directory. The final model is 1.2 GiB with
+  SHA-256
+  `33bf2ddd0d46c27d6f383b6822ab897eb87261d34ca9c6eeb6a0f232026f723c`;
+  the copied upstream config SHA-256 is
+  `873e3556509b0da06e29654ba00d4944888d4b5e8a33afde25f7eb27d321e980`.
+- Strengthened saved-artifact verification to check every tensor name, shape,
+  and dtype plus all four SGLang provenance fields. Rebuilt the strict C++
+  binary and repeated a complete conversion to
+  `/private/tmp/dflash2-verify.safetensors`. The strengthened verifier passed,
+  and SHA-256 was again
+  `33bf2ddd0d46c27d6f383b6822ab897eb87261d34ca9c6eeb6a0f232026f723c`,
+  proving byte-identical reproducibility. The temporary 1.2 GiB duplicate was
+  removed after comparison; the validated checkpoint artifact remains in its
+  recorded directory.
+- `clang-format --dry-run --Werror benchmark/mac/convert_dflash2_mlx.cpp` and
+  `git diff --check` passed. This slice establishes native draft artifact
+  residency only. Next handoff: autodetect this tensor contract through the
+  existing C++ `Engine::load_mtp` seam, preserving the current Python ABI,
+  then implement hidden capture, block drafting, exact p/q verification, and
+  compact recurrent accepted-path commit.
