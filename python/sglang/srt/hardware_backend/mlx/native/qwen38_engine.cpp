@@ -1234,6 +1234,16 @@ array QLinear::operator()(const array& x) const {
   if (!valid) {
     throw std::runtime_error("QLinear used before load");
   }
+  if (w.dtype() == mx::bfloat16) {
+    if (x.ndim() == 0 || x.dtype() != mx::bfloat16 || w.ndim() != 2 ||
+        x.shape().back() != w.shape()[1]) {
+      throw std::runtime_error("invalid dense QLinear inputs");
+    }
+    return matmul(x, transpose(w, {1, 0}));
+  }
+  if (w.dtype() != mx::uint32) {
+    throw std::runtime_error("unsupported QLinear weight dtype");
+  }
   if (native_small_batch_qmm_enabled() && x.ndim() == 3 &&
       x.shape()[0] == 1 && x.shape()[1] >= 6 && x.shape()[1] <= 8) {
     const int input_features = static_cast<int>(x.shape()[2]);
@@ -2199,7 +2209,8 @@ int Engine::mtp_draft(int32_t bonus, int32_t* drafts, int n_draft) {
 
 void Engine::load_dflash2(
     const std::unordered_map<std::string, array>& weights) {
-  constexpr size_t kTensorCount = 175;
+  constexpr size_t kDenseTensorCount = 81;
+  constexpr size_t kAffineTensorCount = 175;
   constexpr int kHiddenSize = 5120;
   constexpr int kIntermediateSize = 17408;
   constexpr int kDraftLayers = 5;
@@ -2208,10 +2219,11 @@ void Engine::load_dflash2(
   constexpr int kHeadDim = 128;
   constexpr int kSelectorRank = 256;
   constexpr int kDynamicWidth = 1280;
-  if (weights.size() != kTensorCount) {
+  const bool affine = weights.size() == kAffineTensorCount;
+  if (!affine && weights.size() != kDenseTensorCount) {
     throw std::runtime_error(
         "DFlash2 checkpoint contains " + std::to_string(weights.size()) +
-        " tensors; expected " + std::to_string(kTensorCount));
+        " tensors; expected 81 dense or 175 affine tensors");
   }
   if (cfg_.hidden_size != kHiddenSize || cfg_.num_hidden_layers != 64 ||
       cfg_.vocab_size != 248320) {
@@ -2228,10 +2240,17 @@ void Engine::load_dflash2(
     }
     return value;
   };
-  const auto linear = [this, &weights](
+  const auto linear = [this, &weights, &dense, affine](
                           const std::string& prefix,
                           int output_features,
                           int input_features) -> QLinear {
+    if (!affine) {
+      QLinear value;
+      value.w = dense(
+          prefix + ".weight", {output_features, input_features});
+      value.valid = true;
+      return value;
+    }
     QLinear value = load_qlinear(weights, prefix);
     if (value.bits != 4 || value.group_size != 64 ||
         value.w.dtype() != mx::uint32 ||
