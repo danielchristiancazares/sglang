@@ -67,6 +67,115 @@ bool native_state_trace_enabled() {
       std::string_view(value) != "false";
 }
 
+enum class LinearAttnOverrideScope {
+  kOutProjection,
+  kQkvProjection,
+  kZProjection,
+  kQkvAndZProjections,
+  kAllProjections,
+};
+
+LinearAttnOverrideScope linear_attn_override_scope() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_LINEAR_ATTN_OVERRIDE_SCOPE");
+  if (value == nullptr || *value == '\0' || std::string_view(value) == "all") {
+    return LinearAttnOverrideScope::kAllProjections;
+  }
+  if (std::string_view(value) == "qkv") {
+    return LinearAttnOverrideScope::kQkvProjection;
+  }
+  if (std::string_view(value) == "z") {
+    return LinearAttnOverrideScope::kZProjection;
+  }
+  if (std::string_view(value) == "qkvz") {
+    return LinearAttnOverrideScope::kQkvAndZProjections;
+  }
+  throw std::runtime_error(
+      "SGLANG_MLX_NATIVE_LINEAR_ATTN_OVERRIDE_SCOPE must be all, qkv, z, or qkvz");
+}
+
+size_t linear_attn_projection_count(LinearAttnOverrideScope scope) {
+  switch (scope) {
+    case LinearAttnOverrideScope::kOutProjection:
+    case LinearAttnOverrideScope::kQkvProjection:
+    case LinearAttnOverrideScope::kZProjection:
+      return 1;
+    case LinearAttnOverrideScope::kQkvAndZProjections:
+      return 2;
+    case LinearAttnOverrideScope::kAllProjections:
+      return 5;
+  }
+  throw std::runtime_error("invalid linear-attention override scope");
+}
+
+bool is_linear_attn_override_tensor(
+    std::string_view key, LinearAttnOverrideScope scope) {
+  const bool is_quant_tensor = key.ends_with(".weight") ||
+      key.ends_with(".scales") || key.ends_with(".biases");
+  const bool is_out_projection =
+      key.find(".linear_attn.out_proj.") != std::string_view::npos;
+  const bool is_qkv_projection =
+      key.find(".linear_attn.in_proj_qkv.") != std::string_view::npos;
+  const bool is_z_projection =
+      key.find(".linear_attn.in_proj_z.") != std::string_view::npos;
+  if (!is_quant_tensor) {
+    return false;
+  }
+  switch (scope) {
+    case LinearAttnOverrideScope::kOutProjection:
+      return is_out_projection;
+    case LinearAttnOverrideScope::kQkvProjection:
+      return is_qkv_projection;
+    case LinearAttnOverrideScope::kZProjection:
+      return is_z_projection;
+    case LinearAttnOverrideScope::kQkvAndZProjections:
+      return is_qkv_projection || is_z_projection;
+    case LinearAttnOverrideScope::kAllProjections:
+      return is_out_projection || is_qkv_projection || is_z_projection ||
+          key.find(".linear_attn.in_proj_a.") != std::string_view::npos ||
+          key.find(".linear_attn.in_proj_b.") != std::string_view::npos;
+  }
+  throw std::runtime_error("invalid linear-attention override scope");
+}
+
+size_t apply_linear_attn_override(
+    std::unordered_map<std::string, array>& weights,
+    const std::string& model_dir,
+    LinearAttnOverrideScope scope) {
+  DIR* dir = opendir(model_dir.c_str());
+  if (dir == nullptr) {
+    throw std::runtime_error(
+        "cannot open linear-attention override dir " + model_dir);
+  }
+  std::vector<std::string> shards;
+  while (dirent* ent = readdir(dir)) {
+    std::string name = ent->d_name;
+    if (name.size() >= 12 &&
+        name.substr(name.size() - 12) == ".safetensors") {
+      shards.push_back(model_dir + "/" + name);
+    }
+  }
+  closedir(dir);
+
+  size_t replaced = 0;
+  for (const std::string& shard : shards) {
+    auto loaded = mx::load_safetensors(shard);
+    for (auto& kv : loaded.first) {
+      if (!is_linear_attn_override_tensor(kv.first, scope)) {
+        continue;
+      }
+      auto target = weights.find(kv.first);
+      if (target == weights.end()) {
+        throw std::runtime_error(
+            "linear-attention override has unknown weight " + kv.first);
+      }
+      target->second = std::move(kv.second);
+      ++replaced;
+    }
+  }
+  return replaced;
+}
+
 std::uint64_t native_sampling_seed() {
   const char* const value = std::getenv("SGLANG_MLX_NATIVE_SAMPLING_SEED");
   if (value == nullptr || *value == '\0') {
@@ -979,6 +1088,38 @@ void Engine::load_weights(const std::string& model_dir) {
           kv.second = kv.second + array(1.0f);
         }
       }
+    }
+  }
+
+  const char* const out_proj_override =
+      std::getenv("SGLANG_MLX_NATIVE_LINEAR_OUT_PROJ_OVERRIDE_PATH");
+  const char* const linear_attn_override =
+      std::getenv("SGLANG_MLX_NATIVE_LINEAR_ATTN_OVERRIDE_PATH");
+  const bool has_out_proj_override =
+      out_proj_override != nullptr && *out_proj_override != '\0';
+  const bool has_linear_attn_override =
+      linear_attn_override != nullptr && *linear_attn_override != '\0';
+  if (has_out_proj_override && has_linear_attn_override) {
+    throw std::runtime_error(
+        "linear-attention override paths are mutually exclusive");
+  }
+  if (has_out_proj_override || has_linear_attn_override) {
+    const LinearAttnOverrideScope scope = has_linear_attn_override
+        ? linear_attn_override_scope()
+        : LinearAttnOverrideScope::kOutProjection;
+    const char* const override_path =
+        has_linear_attn_override ? linear_attn_override : out_proj_override;
+    const size_t replaced =
+        apply_linear_attn_override(weights, override_path, scope);
+    const size_t linear_layers = static_cast<size_t>(
+        cfg_.num_hidden_layers -
+        cfg_.num_hidden_layers / cfg_.full_attention_interval);
+    const size_t projections_per_layer = linear_attn_projection_count(scope);
+    const size_t expected = linear_layers * projections_per_layer * 3;
+    if (replaced != expected) {
+      throw std::runtime_error(
+          "linear-attention override replaced " + std::to_string(replaced) +
+          " tensors; expected " + std::to_string(expected));
     }
   }
 

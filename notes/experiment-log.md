@@ -17867,3 +17867,72 @@ mean 13.929045  17.125658 446.051        39.730
   track, with the existing worker and checkpoint as semantic authorities and
   exact accepted-path recurrent-state commit as a mandatory qualification
   gate.
+
+### 2026-09-01 00:26 PDT - QKV precision sustains the floor across independent restarts
+
+- Launched the selected 131K native server with the 23:58 command and immutable
+  Q4 override, setting
+  `SGLANG_MLX_NATIVE_LINEAR_ATTN_OVERRIDE_SCOPE=qkvz`. Root/listener PID was
+  `7317`. Resolved arguments retained real `context_length=131072`,
+  `max_total_tokens=131072`, one running request, five Mamba slots, 8,192-token
+  chunks, native graph and sampling, seed 42, a 256-token reasoning cap, radix
+  disabled, both Qwen parsers, and language-only serving. Health, model list,
+  and model info passed; image/audio understanding remained disabled.
+- Its exact sampled `6237+128` request measured **19.948 tok/s** generation,
+  **107.113 tok/s** prompt, **58.228452 s** TTFT, and **64.595021 s** end to
+  end. It completed exact total 6,365 with `finish_reason=length` and
+  output/reasoning SHA-256
+  `f47e7654e7ddeff2351871f49a9c8d4c8d6874429cde610415e43168e834c1e1`.
+- Exact xhigh thread `01a05bc7-fb09-7fe1-9b35-c0c6ee8a92e5` passed cleanly:
+  one `/bin/zsh -c /bin/pwd`, the expected `/Users/dcazares/sglang` result,
+  final exact `QWEN38_TOOL_READY`, and exit zero. Usage was **12,778 input /
+  443 output / 404 reasoning-output tokens**. The foreground server stopped
+  through `Ctrl+C`; PID `7317` and its worker tree exited.
+- Process-isolated short bisection then measured QKV-only at
+  **21.132843842 tok/s**, digest `48389b64da3a7dc0`, last token `12`, and
+  Z-only at **21.201714342 tok/s**, digest `f2a4f39450264bb9`, last token `18`.
+- Launched QKV-only restoration with the same exact server contract and
+  `SGLANG_MLX_NATIVE_LINEAR_ATTN_OVERRIDE_SCOPE=qkv`. Root/listener PID was
+  `7411`. The first sampled `6237+128` request measured **20.025 tok/s**
+  generation, **107.372 tok/s** prompt, **58.088039 s** TTFT, and
+  **64.430095 s** end to end. Exact xhigh thread
+  `01a05bcc-0402-7ea2-864b-39d2154e383a` issued one valid `/bin/pwd`, observed
+  the correct working directory, returned a final marker with an explanatory
+  sentence, and exited zero; usage was **12,791 / 385 / 307** input/output/
+  reasoning-output tokens.
+- The complete first QKV production window measured generation **20.025,
+  20.024, 20.023, 20.023, and 20.016 tok/s**, mean **20.0222**; prompt
+  **107.372, 106.937, 107.238, 107.161, and 106.920 tok/s**, mean
+  **107.1256**; TTFT **58.088039, 58.323856, 58.160426, 58.202354, and
+  58.333324 s**, mean **58.221600 s**; and end-to-end **64.430095,
+  64.666138, 64.503194, 64.545019, and 64.678111 s**, mean **64.564511 s**.
+  Every request completed exact total 6,365 with `finish_reason=length` and
+  SHA-256 `bb24a3c6d50a845e074c0f0b86b5f859ba40eb902da651d24360b4498b1fcedc`.
+  The foreground PID `7411` tree stopped through `Ctrl+C`.
+- A fully independent QKV restart used root/listener PID `7493`. Its five
+  samples measured generation **20.029, 20.024, 20.029, 20.034, and 20.030
+  tok/s**, mean **20.0292**; prompt **107.409, 107.042, 107.161, 106.899,
+  and 106.957 tok/s**, mean **107.0936**; TTFT **58.067871, 58.266786,
+  58.202394, 58.344749, and 58.313124 s**, mean **58.238985 s**; and
+  end-to-end **64.408728, 64.609295, 64.543125, 64.684086, and 64.653623 s**,
+  mean **64.579771 s**. Every request completed exact total 6,365 with the
+  same QKV digest. All ten samples across both independent windows exceeded
+  the hard 20 tok/s floor.
+- Post-window xhigh thread `01a05bd8-a2d8-7eb0-888e-f3da62f6d0f5` issued the
+  requested `/bin/pwd` and observed the correct directory, then sampled a
+  malformed extra `write_stdin` with string session id `"a59478"`. Codex's
+  router reported the schema conversion error; the model recovered, returned
+  final `QWEN38_TOOL_READY`, and completed with usage **19,487 / 486 / 390**.
+  The QKV arm therefore owns the first two independent served windows above
+  20 and real xhigh completion, while strict exactly-one-tool reliability
+  remains active.
+- The verified foreground PID `7493` server stopped through `Ctrl+C`. The
+  00:26 cleanup found port 30000, matching SGLang/benchmark/compiler processes,
+  and clients absent. Memory was 93% free and thermal/performance status was
+  normal.
+- Rebuilt the exact source through the checked-in native `build.sh`; the known
+  macOS 26.0 / MLX 26.2 linker warning remained. The focused native engine
+  suite passed **8 tests** with 16 existing warnings. A QKV positive-load smoke
+  completed `1 / 1 warm / 1 timed` at **19.984112630 tok/s**, digest
+  `c8bbed67024e3c09`; an invalid scope failed closed with the exact accepted
+  vocabulary in its diagnostic. `git diff --check` passed.
