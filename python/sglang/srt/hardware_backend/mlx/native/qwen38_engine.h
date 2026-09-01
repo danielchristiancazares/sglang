@@ -317,6 +317,7 @@ class Engine {
   QLinear dflash_selector_hidden_;
   mlx::core::array dflash_predecessor_{0};
   mlx::core::array dflash_successor_{0};
+  float dflash_selector_temperature_ = 1.0f;
   std::vector<DFlashLayer> dflash_layers_;
   bool dspark_valid_ = false;
   int dspark_context_offset_ = 0;

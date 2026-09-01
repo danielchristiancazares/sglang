@@ -19617,3 +19617,171 @@ mean 13.929045  17.125658 446.051        39.730
   thermal/performance status is normal. Retain the target-state score solely
   as trace telemetry. Shared target decode cost is the next optimization
   surface.
+
+### 2026-09-01 06:04 PDT - DFlash2 selector calibration improves natural sampled serving 2.876%
+
+- Began from signed `81b7bdf8f4a5097425f1b62817a3e2f391e73bff`
+  (`perf(mps): trace DSpark target-state scores`), 56 commits ahead of
+  `origin/main`, with a clean worktree. Port 30000 and matching
+  server/direct/compiler processes were clear. Memory was 93% free with zero
+  throttled pages, and macOS reported normal thermal/performance status.
+- Current reference inspection established the selector's governing rule:
+  the learned top-16 lattice adds unary target-head scores to the trained
+  predecessor/successor transition score, temperature-scales that total,
+  samples a candidate, and retains its exact q. The common native rejection
+  verifier consumes that q, so selector calibration preserves the target
+  distribution while changing proposal overlap and seeded trajectories.
+- Added checked opt-in
+  `SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE` at `Engine::load_dflash2`.
+  An absent value selects **1.0** and avoids inserting a division into the
+  established graph. A present value must parse completely as positive finite
+  FP32. `Engine::dflash_select` divides each learned unary-plus-transition
+  score row immediately before FP32 softmax, samples from the resulting q,
+  and forwards that same q to the shared exact verifier. Trace output reports
+  the resolved selector temperature once at load.
+- A fresh pre-change identity baseline used the exact standard DFlash launch
+  and exact client below. It reached **15.422 tok/s**, **109.136 prompt
+  tok/s**, **57.148658 s TTFT**, and **65.383477 s** end to end, with exact
+  6,365 tokens, `finish_reason=length`, and SHA-256
+  `51bb9afea1e151fccdd1a6b2fd39ef1be4c9062e7d6065b247cb1a7993161d66`.
+  Foreground root PID 14544 exited through `Ctrl+C` before candidate work.
+- The strict `-Wall -Wextra -Werror` candidate library was
+  `/private/tmp/libqwen38_dflash_selector_temperature.dylib`; compilation
+  passed with only the established macOS 26.0 / MLX 26.2 linker warning. The
+  repository dylib was rebuilt from the same source.
+- Direct `128 / 32 warm / 128 timed` screening used:
+
+  ```bash
+  env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_NATIVE_SMALL_BATCH_QMM=1 \
+    SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1 \
+    SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT=1 \
+    SGLANG_MLX_NATIVE_TRACE_SPEC=1 \
+    SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE=T \
+    /private/tmp/bench_qwen38_native \
+    /private/tmp/libqwen38_dflash_selector_temperature.dylib \
+    /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    128 32 128 \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-MLX-AffineQ4
+  ```
+
+  Identity reached **31.291292321 tok/s**, 19 refills, width
+  **6.684210526**, digest `46bd4bb035b72c2b`, last token 20. Temperatures
+  0.7/0.85/1.15/1.3/0.95/1.05 reached respectively
+  **14.838952659 / 11.185534971 / 26.936073462 / 9.563179041 /
+  37.171244579 / 10.998405302 tok/s**. Their refill counts were
+  **40/53/22/62/16/54**, mean widths
+  **3.25/2.396226415/6.090909091/2.064516129/8.0/2.388888889**, and
+  digests `fd70fc48ec36aea2` / `48b4eef577242704` /
+  `6de63586df62ab2b` / `d238d8d611c7f6e2` / `fb5928d99f340e1d` /
+  `832ee4f19892d32e`. Distinct exact sampled trajectories make this screen a
+  candidate filter; the natural request owns admission.
+- Every served arm used the exact foreground command below, changing only
+  `SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE` or omitting it for identity:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER -u MLX_METAL_FAST_SYNCH \
+    MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    PYTHONPATH=/Users/dcazares/sglang/python \
+    SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 \
+    SGLANG_MLX_CLEAR_CACHE_STEPS=0 SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_MTP_DIR=/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-MLX-AffineQ4 \
+    SGLANG_MLX_NATIVE_SMALL_BATCH_QMM=1 \
+    SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1 \
+    SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT=1 \
+    SGLANG_MLX_NATIVE_TRACE_SPEC=1 \
+    SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE=T \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    --served-model-name qwen3.8-27b --language-model-only \
+    --context-length 131072 --max-total-tokens 131072 \
+    --max-running-requests 1 --max-mamba-cache-size 5 \
+    --chunked-prefill-size 8192 --max-prefill-tokens 8192 \
+    --disable-radix-cache --mlx-enable-sampling --sampling-defaults model \
+    --random-seed 42 --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --stream-interval 4 --scheduler-recv-interval 4 \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments included `context_length=131072`,
+  `max_total_tokens=131072`, `max_running_requests=1`, and
+  `max_mamba_cache_size=5`; `/health`, `/v1/models`, and `/model_info` passed,
+  and image/audio understanding remained disabled. Every request used:
+
+  ```bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b --input-tokens 6237 --output-tokens 128 \
+    --temperature 1.0 --top-p 0.95 --top-k 20 \
+    --presence-penalty 1.5 --skip-warmup --timeout 600
+  ```
+
+- Temperature 0.95, the direct-screen leader, reached only **13.739 tok/s**,
+  **109.654 prompt tok/s**, **56.879050 s TTFT**, and **66.122635 s** end to
+  end. It completed exact 6,365 tokens with digest
+  `9aa4bace3e4b3656fb2eb1753820f6101b2bdee1021af59755dbc5ccc4ecea56`.
+  Foreground root PID 14609 exited cleanly through `Ctrl+C`.
+- Temperature 1.15 then ran under foreground root PID 14623. Five consecutive
+  exact samples were:
+
+  | Sample | Generation tok/s | Prompt tok/s | TTFT s | E2E s |
+  |---:|---:|---:|---:|---:|
+  | 1 | 15.870 | 109.659 | 56.876574 | 64.879328 |
+  | 2 | 15.884 | 109.449 | 56.985511 | 64.980751 |
+  | 3 | 15.890 | 109.426 | 56.997174 | 64.989477 |
+  | 4 | 15.896 | 109.128 | 57.153021 | 65.142501 |
+  | 5 | 15.893 | 109.125 | 57.154820 | 65.145626 |
+
+  Generation mean is **15.8866 tok/s**. Every sample completed exact 6,365
+  tokens with `finish_reason=length`, coherent reasoning, and shared SHA-256
+  `3bc2d4a6534c3938d24d5cb2ea2f512a6a868ec80159f5310b3e962b6ecb3606`.
+  Each trace used 32 refills whose emitted widths sum to 129, mean
+  **4.031250**; the client returned 128 tokens at its requested limit.
+  PID 14623 exited cleanly through `Ctrl+C`.
+- A fresh adjacent identity-temperature control ran under foreground root PID
+  14643 from the same candidate source. Trace confirmed
+  `selector_temperature=1.000000`. Five consecutive exact samples were:
+
+  | Sample | Generation tok/s | Prompt tok/s | TTFT s | E2E s |
+  |---:|---:|---:|---:|---:|
+  | 1 | 15.434 | 109.756 | 56.826112 | 65.054964 |
+  | 2 | 15.449 | 109.441 | 56.989549 | 65.210192 |
+  | 3 | 15.443 | 109.201 | 57.114856 | 65.338401 |
+  | 4 | 15.443 | 109.234 | 57.097656 | 65.321266 |
+  | 5 | 15.443 | 109.198 | 57.116197 | 65.339923 |
+
+  Generation mean is **15.4424 tok/s**. Every sample completed exact 6,365
+  tokens with `finish_reason=length` and shared SHA-256
+  `51bb9afea1e151fccdd1a6b2fd39ef1be4c9062e7d6065b247cb1a7993161d66`.
+  Each trace used 33 refills whose emitted widths sum to 128, mean
+  **3.878787879**. Candidate delta is **+0.4442 tok/s / +2.876%**. Health
+  passed after the window; PID 14643 exited cleanly through `Ctrl+C`.
+- A direct load with selector temperature zero failed closed before execution
+  with `SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE must be a positive
+  finite number`. Focused native pytest passed **8 tests** with 16 existing
+  warnings. A repository build invocation using `build.sh`'s stale
+  `.venv-mps` default failed at MLX header discovery; rerunning with exact
+  `MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx`
+  built the repository dylib successfully. The final explicit
+  `-Wall -Wextra -Werror` library
+  `/private/tmp/libqwen38_dflash_selector_temperature_final.dylib` also built
+  successfully with only the established macOS 26.0 / MLX 26.2 linker
+  warning. A whole-file `clang-format --dry-run --Werror` remains red on the
+  native source's established repository-wide formatting baseline, beginning
+  at line 3 and thousands of unchanged locations; the candidate follows the
+  surrounding local style and `git diff --check` passes. Final port 30000 and
+  matching server/direct/compiler processes were clear, memory returned to
+  92% free with zero throttled pages, and thermal/performance status was
+  normal.
+- Retain temperature 1.15 as an opt-in proposal calibration. Identity stays
+  the default because one independent candidate window remains due before any
+  promotion, and the candidate mean remains **4.1134 tok/s** below the
+  requested floor. PERF-FA107 closes the other screened temperatures under
+  the current target/draft pairing. DFlash verification-width economics are
+  the next measured branch.

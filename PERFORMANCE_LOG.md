@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max DFlash2 selector calibration, sampled served `6237+128`, real 131K pools | adjacent selector temperature 1.0: **15.434 / 15.449 / 15.443 / 15.443 / 15.443 tok/s**, mean **15.4424** | selector temperature 1.15: **15.870 / 15.884 / 15.890 / 15.896 / 15.893 tok/s**, mean **15.8866** | **+0.4442 / +2.876%**; exact 6,365 tokens in every sample, stable coherent digest within each setting, mean emitted width **3.878788 -> 4.031250**; retained opt-in with **4.1134 tok/s** to the floor | exact PERF-A065 contract plus `SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE=1.15` | 2026-09-01 06:04 PDT |
 | M1 Max DSpark target-state score, sampled served `6237+128`, real 131K pools | ratio-1.75 baseline **13.580 tok/s** | temporary score-0.525 bypass **13.652 tok/s** | one-sample **+0.072 / +0.530%** versus its no-bypass trace, while trailing selected cooldown-16 by **2.9876 tok/s**; real score/accepted-width Pearson **0.141** closes the scheduler and retains trace-only telemetry | PERF-A075 exact PERF-A073 contract with trace-only target score; temporary threshold source removed | 2026-09-01 05:33 PDT |
 | M1 Max native DSpark low-budget probe cooldown, sampled served `6237+128`, real 131K pools | confidence-budget ratio 1.75 mean **13.6058 tok/s** | 16 target-only refills after each M=2 choice: first five **17.028 / 17.080 / 17.036 / 17.102 / 14.952 tok/s**, mean **16.6396**; recovery **17.011** | all-sample **+3.0338 / +22.298%**; five normal samples within the six-request window mean **17.0514**; one transiently contended sample retained; exact tokens and one shared reasoning/output SHA-256 | PERF-A074 exact PERF-A073 contract plus `SGLANG_MLX_NATIVE_DSPARK_BYPASS_REFILLS=16` | 2026-09-01 05:10 PDT |
 | M1 Max native DSpark trained-confidence M=2/M=8 budget, sampled served `6237+128`, real 131K pools | adjacent fixed-M=8 control **11.313 tok/s** | ratio **1.75**: **13.595 / 13.609 / 13.603 / 13.607 / 13.615 tok/s**, mean **13.6058** | **+2.2928 / +20.267%**; every sample completed exact 6,365 tokens with one shared reasoning/output SHA-256; retained opt-in while DFlash2 holds **15.328** and target-only holds above **20** | exact PERF-A068 server/client contract plus `SGLANG_MLX_NATIVE_DSPARK_CONFIDENCE_COST_RATIO=1.75` | 2026-09-01 04:43 PDT |
@@ -797,6 +798,7 @@ tree throughput can be ranked for production.
 | PERF-A073 | Budget each DSpark target verification from the trained current-block survival probabilities and measured M=2/M=8 cycle-cost ratio. | Native DSpark confidence head, shared exact verifier, dense-q prefix slicing, and opt-in scheduler | Retained opt-in at ratio **1.75**; fixed M=8 remains the default | Five real-131K-pool sampled `6237+128` requests average **13.6058 tok/s**, **+20.267%** over the adjacent **11.313 tok/s** control, with exact token counts and one shared reasoning/output SHA-256. Ratio 1.4 regresses to **10.916 tok/s** because live full/short cycle cost is about 1.77. See PERF-FA101. |
 | PERF-A074 | Skip a bounded number of DSpark draft/verify probes after the confidence scheduler selects the low-value M=2 tier. | Native DSpark refill scheduler, exact target-only target/draft-context advance, and trace telemetry | Retained opt-in at **16** bypass refills; default remains disabled | The first five real samples average **16.6396 tok/s**, including a retained transiently contended **14.952** sample; five normal samples within six requests average **17.0514**. Every request completes exact 6,365 tokens with shared SHA-256 `1d1398eb...`. The selected setting remains **3.3604 tok/s** below the floor. See PERF-FA102/103. |
 | PERF-A075 | Evaluate the trained DSpark confidence projection on the current normalized target hidden state before drafting. | Trace-only native target-state/Markov feature projection at the DSpark refill owner | Telemetry retained; threshold scheduler rejected and removed | Direct score-0.525 screens reached **33.222 / 32.788 tok/s**, yet the real request reached only **13.652 tok/s**. On the no-policy real trace, M=2/M=8 score ranges overlap and score versus accepted width has Pearson **0.141**. Faster-target DFlash mixing and a 64-column verifier tile also fail their gates. See PERF-FA104/105/106. |
+| PERF-A076 | Calibrate the learned DFlash2 selector distribution while forwarding exact proposal q to rejection sampling. | Native DFlash selector score owner and shared exact p/q verifier | Retained opt-in at temperature **1.15**; identity remains default | Five consecutive real-131K-pool sampled `6237+128` requests average **15.8866 tok/s**, **+2.876%** over the adjacent identity-temperature mean **15.4424**. Every sample completes exact 6,365 tokens; candidate mean emitted width rises **3.878788 -> 4.031250**. Temperature 0.95 regresses the real request to **13.739 tok/s**; see PERF-FA107. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -3955,3 +3957,41 @@ tree throughput can be ranked for production.
   The natural-prompt evidence closes it as a scheduler, target mixing closes
   the faster-target DFlash route, and the next branch returns to shared target
   decode cost.
+
+### 2026-09-01 06:04 PDT - PERF-A076 DFlash2 selector calibration
+
+- Added checked opt-in
+  `SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE`. The native DFlash loader
+  accepts a positive finite FP32 value, defaults to exact identity, and
+  reports the selected value under speculative tracing. `dflash_select`
+  scales the learned unary-plus-transition scores immediately before its
+  FP32 softmax; the sampled token's exact q continues through the shared
+  rejection verifier.
+- Direct `128 / 32 warm / 128 timed` screening at temperatures
+  1.0/0.7/0.85/1.15/1.3/0.95/1.05 reached respectively
+  **31.291292321 / 14.838952659 / 11.185534971 / 26.936073462 /
+  9.563179041 / 37.171244579 / 10.998405302 tok/s** on distinct seeded
+  trajectories. This repeated-token screen ranked 0.95 first, so the exact
+  natural request remained the admission owner.
+- The real temperature-0.95 request reached **13.739 tok/s**, **109.654
+  prompt tok/s**, **56.879050 s TTFT**, and **66.122635 s** end to end,
+  closing that direct-screen winner. Temperature 1.15 then produced five
+  consecutive exact results of **15.870 / 15.884 / 15.890 / 15.896 / 15.893
+  tok/s**, mean **15.8866**. The adjacent identity control produced
+  **15.434 / 15.449 / 15.443 / 15.443 / 15.443 tok/s**, mean **15.4424**.
+  The candidate gains **0.4442 tok/s / 2.876%**.
+- Every candidate sample completed exact 6,365 tokens with
+  `finish_reason=length` and shared coherent reasoning/output SHA-256
+  `3bc2d4a6534c3938d24d5cb2ea2f512a6a868ec80159f5310b3e962b6ecb3606`.
+  Every control sample completed the same count and finish reason with shared
+  SHA-256
+  `51bb9afea1e151fccdd1a6b2fd39ef1be4c9062e7d6065b247cb1a7993161d66`.
+  Candidate traces used 32 refills to emit 129 verifier outputs, mean
+  **4.031250**; controls used 33 refills to emit 128, mean **3.878787879**.
+- A zero selector temperature fails closed with the exact positive-finite
+  diagnostic. The strict warning-as-error library and repository dylib builds
+  pass, focused native pytest passes **8 tests** with 16 existing warnings,
+  health/language-only metadata pass, and every foreground server exits
+  cleanly. Identity remains the default while the 1.15 setting stays opt-in;
+  its selected real mean retains a **4.1134 tok/s** floor gap. The next branch
+  measures DFlash verification-width economics at the natural request.
