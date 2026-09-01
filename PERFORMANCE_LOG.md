@@ -3243,3 +3243,29 @@ tree throughput can be ranked for production.
   router error, and recovered to final `QWEN38_TOOL_READY`. Throughput is now
   qualified above the floor across restarts; structured-output reliability
   remains active.
+
+### 2026-09-01 00:43 PDT - PERF-A058 native DFlash2 draft artifact
+
+- Added a standalone C++20 MLX converter for the exact
+  `incoai/Qwen3.8-27B-DFlash2` BF16 checkpoint. It validates the 81-tensor
+  source contract, converts all 47 eligible two-dimensional linear weights
+  to affine W4/G64, preserves the selector codebooks, normalization weights,
+  and convolution bases in BF16, and saves through an atomic temporary file.
+- The converter's in-memory self-test validates the exact 81 -> 175 tensor
+  expansion and bounds round-trip affine dequantization error. A strict
+  `-Wall -Wextra -Werror` C++ build passed, with only the established external
+  macOS 26.0 / MLX 26.2 link warning; `clang-format --dry-run --Werror` and
+  `git diff --check` passed.
+- The immutable 3.6 GiB source has SHA-256
+  `67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c`.
+  Full conversion produced the distinct 1.2 GiB artifact
+  `Qwen3.8-27B-DFlash2-MLX-AffineQ4/model.safetensors`. A second complete
+  conversion verified all 175 names, shapes, dtypes, and provenance fields
+  and reproduced the file byte-for-byte, with SHA-256
+  `33bf2ddd0d46c27d6f383b6822ab897eb87261d34ca9c6eeb6a0f232026f723c`.
+  Its copied upstream config has SHA-256
+  `873e3556509b0da06e29654ba00d4944888d4b5e8a33afde25f7eb27d321e980`.
+- This is a validated draft-residency prerequisite. Throughput qualification
+  follows runtime integration. Native target hidden capture, DFlash block
+  execution, exact p/q verification, and accepted-path recurrent-state commit
+  remain the active integration gates.

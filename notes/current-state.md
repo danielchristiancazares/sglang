@@ -1,7 +1,7 @@
 # Current state
 
-**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-31
-13:21 PDT.
+**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
+00:43 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -166,6 +166,28 @@ control rather than the current production selection. Full commands, resolved
 arguments, individual samples, process ancestry, behavior/client results, and
 the one explicitly retained stochastic Codex narration retry are in the latest
 experiment-log entries.
+
+## Active Apple handoff
+
+The native M1 Max Qwen3.8 lane now clears the requested 20 tok/s served floor
+in two independent real-131K five-sample windows when recurrent QKV
+projections are restored from the immutable Q4 checkpoint. The windows average
+**20.0222** and **20.0292 tok/s**, and every individual sample exceeds 20.
+One pinned Codex 0.151.0 `xhigh` turn completed the requested shell tool
+cleanly. A second completed the work after sampling a malformed extra
+`write_stdin` call, so strict structured-output reliability remains active.
+
+DFlash2 is an active native integration track. The exact
+`incoai/Qwen3.8-27B-DFlash2` BF16 source is preserved separately. A standalone
+C++20 MLX converter has produced and reload-verified a distinct 175-tensor,
+1.2 GiB affine-W4/G64 draft artifact at
+`/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-MLX-AffineQ4`.
+Its model SHA-256 is
+`33bf2ddd0d46c27d6f383b6822ab897eb87261d34ca9c6eeb6a0f232026f723c`.
+The next implementation seam is the existing native C++ `load_mtp` entry:
+autodetect the DFlash tensor contract there, then add target-layer capture,
+block drafting, exact rejection sampling, and compact accepted-path recurrent
+commit while preserving the Codex harness.
 
 ## Native backend roadmap handoff
 
