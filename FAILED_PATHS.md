@@ -2563,3 +2563,31 @@ option, or serving dispatch was added.
 - Reopen only if: an adaptive policy predicts high-confidence short blocks
   from current logits and a real-client A/B window clears 20 with margin.
 - Related commit or revert: the fixed block-four source change was removed.
+
+## PERF-FA094 - Four-way M8 K split
+
+- Hypothesis: halving the M8 affine kernel from eight to four K partitions
+  would reduce threadgroup storage, final reduction work, and scheduling cost.
+- Scope: the opt-in full-Q4 target plus affine-W4 DFlash2 M=8 verification
+  path, with identical 32x16 BF16 weight tiles and FP32 accumulation.
+- Attempted change: assigned one quarter of K to each of four SIMD groups and
+  reduced the threadgroup from 256 to 128 threads.
+- Benchmark evidence: gate/up `K=5120,N=17408` regressed from the SG8
+  **0.978217 ms** sample to **1.027962 ms**. Down `K=17408,N=5120` improved
+  from **1.026783** to **1.016329 ms**. The reachable whole-model verifier
+  regressed from about **225.5--226.7 ms** to **233.3--234.5 ms**. One sampled
+  direct run reached **11.592581 tok/s** through a changed mean emitted width
+  of **3.097561**.
+- Correctness evidence: checkpoint microbenchmarks stayed within the existing
+  BF16 parity bound and the direct decode completed.
+- Failure mode: the dominant gate/up family loses more execution time than
+  the down projection saves. The one sampled throughput increase came from a
+  changed stochastic acceptance trajectory while fixed cycle cost regressed.
+  The sixteen-way candidate improves execution cost and throughput by a much
+  larger margin.
+- Why not to retry unchanged: it is dominated by the retained SG16 geometry
+  on both verifier time and sampled direct throughput.
+- Reopen only if: a future device has materially different occupancy limits
+  and matched fixed-cycle measurements favor four groups.
+- Related commit or revert: the SG4 constants were replaced during the same
+  experiment; no repository commit contains the candidate.

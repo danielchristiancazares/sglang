@@ -18351,3 +18351,72 @@ mean 13.929045  17.125658 446.051        39.730
   compiler work remains, memory returned to 94% free, and macOS
   thermal/performance status is normal. The behavior gate passes with the M8
   kernel enabled; the real served 20 tok/s generation gate remains open.
+
+### 2026-09-01 02:39 PDT - sixteen K partitions cut DFlash verification to 211 ms
+
+- Began from clean signed HEAD
+  `58e9f7e320d0d5863f9bcb7d8a209ab7d16110ad`, 38 commits ahead of
+  `origin/main`. Port 30000 and matching SGLang/Metal compiler processes were
+  absent before each GPU screen.
+- Screened four K partitions first. Exact draft gate/up
+  `K=5120,N=17408` measured **1.027962 ms**, versus the retained SG8 sample
+  **0.978217 ms**. Exact down `K=17408,N=5120` measured **1.016329 ms**,
+  versus **1.026783 ms**. The whole-model verifier regressed to
+  **233.3--234.5 ms** from **225.5--226.7 ms**. A sampled direct run reached
+  **11.592580611 tok/s**, 41 refills, mean emitted width **3.097560976**,
+  digest `35c1d1ad9377a0bb`, and last token 220. The changed acceptance did not
+  qualify the slower fixed execution schedule. PERF-FA094 records the
+  dominated candidate.
+- Increased the same kernel to sixteen SIMD groups and 512 threads. Each group
+  retains one private 32x16 BF16 dequantization tile and two FP32 8x8
+  accumulators, owns one sixteenth of K, and participates in the same final
+  reduction. Tightened both `QLinear::operator()` dispatch and the public
+  helper to K divisible by 512 so every partition owns an integral sequence of
+  32-element K tiles. All reachable target/DFlash projection widths on this
+  lane satisfy the condition; other shapes retain the existing fallback or
+  fail closed at the direct helper contract.
+- Exact SG16 checkpoint microbenchmarks measured gate/up **0.975192 ms** and
+  down **0.972296 ms**, with maximum absolute errors **0.03125** and **0.125**
+  in those real tensors. One traced whole-model screen measured steady draft
+  generally **27.4--27.9 ms**, verify **210.6--212.1 ms**, sample about
+  **0.6--0.8 ms**, and ordinary commit **2.0--4.5 ms**. One 31.56 ms draft
+  and one 216.35 ms verify outlier occurred.
+- A fresh adjacent SG8 control measured **11.242024298 tok/s**, 44 refills,
+  mean emitted width **2.909090909**, digest `13442dfecdbbbcda`, and last token
+  4973. Combined with the prior two isolated controls, SG8 averages
+  **11.242436703 tok/s**.
+- Five process-isolated SG16 no-trace samples, all using exact command shape
+
+  ```bash
+  env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_NATIVE_SMALL_BATCH_QMM=1 \
+    SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1 \
+    SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT=1 \
+    /private/tmp/bench_qwen38_native CANDIDATE_DYLIB \
+    /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    128 32 128 \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-MLX-AffineQ4
+  ```
+
+  measured **17.635926855, 17.647986134, 17.645350442, 17.654348952, and
+  17.674891803 tok/s**, mean **17.651700837**. Every sample reproduced 30
+  refills, mean emitted width **4.3**, digest `3e40b8569af9555f`, and last token
+  735. The gain over the three-sample SG8 mean is **6.409264134 tok/s /
+  57.009564%**. A separate traced sample reached 17.386491172 tok/s and was
+  excluded from the no-trace window.
+- Updated the permanent C++ parity test from K=256 to K=512 small/wide cases
+  and added valid-affine K=256 fail-closed coverage. M8 parity passed K/N
+  `512/256`, `5120/64`, and `512/6144`; maximum observed error was 0.0625 in
+  the permanent cases. The strict `-Wall -Wextra -Werror` library and test
+  builds passed with only the established macOS 26.0 / MLX 26.2 linker
+  warning. The focused native suite passed **8 tests** with 16 existing
+  warnings, test formatting passed, and `git diff --check` passed.
+- Committed the kernel geometry, narrow dispatch contract, and parity coverage
+  as signed commit `1e21aece563191fc2413c769aaeea644a7e49b68`
+  (`perf(mps): widen DFlash verifier K split`). Its EDDSA signature verifies
+  as good. `main` is now 39 commits ahead of `origin/main`; only recovery and
+  performance records remain modified. The next gate is the clean real
+  131K-configured server and Codex xhigh turn with SG16 active.
