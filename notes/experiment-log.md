@@ -18863,3 +18863,155 @@ mean 13.929045  17.125658 446.051        39.730
   BF16 Markov-output projection and draft-side sampling-distribution alignment,
   before the representative `6237+128` served admission and exact 131K
   capacity gates.
+
+### 2026-09-01 03:48 PDT - first representative DSpark sampled baseline
+
+- Committed the native DSpark runtime, common exact verifier, YaRN parity
+  coverage, and recovery evidence as signed
+  `21cd561dfc206c3a0cb471e79dc81089633e1db0`
+  (`feat(mps): run native DSpark drafts`). Its EDDSA signature verifies as
+  good. The worktree was clean and `main` was 50 commits ahead of
+  `origin/main` before launch.
+- Preflight found port 30000 and matching server/direct/compiler processes
+  clear, 94% free memory, zero throttled pages, and normal thermal state. The
+  exact PERF-A065 server command was reused with only
+  `SGLANG_MLX_MTP_DIR=/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DSpark-MLX-AffineQ4`.
+  Trace remained enabled. Resolved arguments retained `context_length=131072`,
+  `max_total_tokens=131072`, one running request, five auxiliary slots,
+  8,192-token outer prefill, seed 42, native sampling, both Qwen parsers,
+  incremental output, language-only mode, and disabled radix/graphs.
+  `/health`, `/v1/models`, and `/model_info` passed; the model list reported
+  131,072 and model info reported image/audio understanding false.
+- Exact client command was:
+
+  ```bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b --input-tokens 6237 --output-tokens 128 \
+    --temperature 1.0 --top-p 0.95 --top-k 20 \
+    --presence-penalty 1.5 --skip-warmup --timeout 600
+  ```
+
+  It completed exact 6,365 total tokens with `finish_reason=length`, **11.242
+  generation tok/s**, **109.106 observed prompt tok/s**, **57.164421 s TTFT**,
+  and **68.461186 s** end to end. Output was entirely preserved reasoning;
+  its SHA-256 was
+  `555ba1da1dc6fc0f7969f2a67261a05b33c41136d8fdbfa607e8653a05a88fe2`.
+- At 6.2K history, steady cycles generally used **41.77--45.45 ms** draft,
+  **211.97--213.05 ms** verify, **0.58--0.77 ms** sampling, and
+  **1.89--4.43 ms** ordinary commit. Acceptance exercised every value from
+  zero through seven. The selected DFlash sample is **15.328 tok/s**; this
+  first DSpark baseline is **4.086 tok/s / 26.657%** lower and remains
+  **8.758 tok/s** below the required floor.
+- Post-request `/health` passed. Foreground root PID 12001 and its verified
+  children exited through `Ctrl+C`. Port 30000 and matching processes are
+  clear; memory returned to 94% free with zero throttled pages and no thermal
+  warning.
+- Next: improve DSpark proposal fidelity and draft cost in isolated direct
+  candidates, then rerun this representative admission screen. The exact
+  131K capacity and Codex xhigh behavior gates remain required for promotion.
+
+### 2026-09-01 03:50 PDT - aligned DSpark top-k/top-p proposal is rejected
+
+- Added a temporary native
+  `SGLANG_MLX_NATIVE_DSPARK_ALIGNED_SAMPLING=1` switch at the DSpark proposal
+  distribution owner. For each sequential Markov-corrected row, it reused the
+  target's exact top-k 20/top-p 0.95 filtering function, sampled from that q,
+  and passed the same dense q to exact rejection/residual sampling. Target
+  sampling, checkpoint, verifier, commit, seed, and direct workload stayed
+  fixed.
+- The strict warning-as-error candidate dylib built successfully with the
+  established linker warning. Exact `128 / 1 warm / 32 timed` execution
+  reached only **6.997461070 tok/s**, 20 refills, mean emitted width **1.6**,
+  digest `b149ae20f95e9c7b`, and last token 8420. The unchanged full-softmax
+  baseline was **10.050624654 tok/s**, 14 refills, and width **2.428571429**.
+  Steady candidate draft stages were **38.71--42.40 ms**, roughly 2 ms above
+  baseline from the seven added vocabulary partition/sort operations.
+- The draft and target top-20 sets differ enough that independent truncation
+  removes lower-ranked q mass which still overlaps p. The candidate regresses
+  both acceptance and fixed execution cost. Removed its helper and branch
+  through `apply_patch`; native source again matches signed `21cd561dfc`.
+  PERF-FA098 records the closed route.
+- Next: preserve the CUDA DSpark lane's BF16 Markov output projection inside
+  the otherwise affine-W4 artifact, then compare matched execution and
+  representative acceptance.
+
+### 2026-09-01 03:58 PDT - BF16 DSpark Markov output projection is rejected
+
+- Began from signed `21cd561dfc206c3a0cb471e79dc81089633e1db0` with only
+  the already-recorded PERF-A068/PERF-A069 ledger delta present. Port 30000
+  and matching server/direct/compiler processes were clear; system memory was
+  93% free with zero throttled pages and normal thermal/performance status.
+- Extended the standalone C++ converter with a checked
+  `--markov-w2-bf16` mode and the native DSpark loader with an exact
+  134-tensor hybrid contract. Every eligible draft matrix except
+  `markov_head.markov_w2` remained affine W4/G64. The immutable 62-tensor BF16
+  source and selected 136-tensor all-affine artifact were never modified.
+- The strict warning-as-error converter build and `--self-test` passed. The
+  converter quantized exactly 36 matrices, reloaded and verified the saved
+  artifact, and atomically published
+  `/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DSpark-MLX-AffineQ4-MarkovBF16/model.safetensors`.
+  It contained 134 tensors, measured **1,227,639,900 bytes**, and had SHA-256
+  `73b829d7845a72ac34794e9dd74bd96eae2189a5bcd7b45c2099a2b45638674f`.
+  This is **91,381,574 bytes / 87.148 MiB** above the selected all-affine
+  artifact.
+- The strict warning-as-error candidate native dylib built with only the known
+  macOS 26.0 / MLX 26.2 linker warning. Exact fixed-seed direct command was:
+
+  ```bash
+  env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_NATIVE_SMALL_BATCH_QMM=1 \
+    SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1 \
+    SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT=1 \
+    SGLANG_MLX_NATIVE_TRACE_SPEC=1 \
+    /private/tmp/bench_qwen38_native \
+    /private/tmp/libqwen38_dspark_markov_bf16_candidate.dylib \
+    /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    128 1 32 \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DSpark-MLX-AffineQ4-MarkovBF16
+  ```
+
+  It reached **7.044992356 tok/s**, 20 refills, mean width **1.65**, digest
+  `a9eed7de4b198270`, and last token 9. The all-affine baseline was
+  **10.050624654 tok/s**, 14 refills, and width **2.428571429**: a
+  **3.005632298 tok/s / 29.904930%** regression. Steady draft stages were
+  roughly **37.07--40.68 ms**, verify **186.03--186.70 ms**, sampling
+  **0.64--0.72 ms**, and ordinary commit **2.03--4.39 ms**.
+- The first repository `native/build.sh` invocation exposed its stale default
+  `.venv-mps` MLX path and failed on missing MLX headers. The explicit
+  `MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx`
+  rebuild passed with the known linker warning. Focused native pytest passed
+  **8 tests** with 16 existing warnings.
+- Launched the exact PERF-A068 server contract with only
+  `SGLANG_MLX_MTP_DIR` changed to the hybrid artifact. Resolved arguments
+  retained real 131,072 context/token pools, one request, five auxiliary
+  slots, 8,192-token chunks, seed 42, both Qwen parsers, incremental output,
+  language-only mode, and disabled radix/graphs. `/health`, `/v1/models`, and
+  `/model_info` passed; model length was 131,072 and image/audio understanding
+  remained false.
+- Exact sampled `6237+128` completed all 6,365 tokens with
+  `finish_reason=length`, **11.294 generation tok/s**, **109.107 observed
+  prompt tok/s**, **57.164173 s TTFT**, and **68.409090 s** end to end.
+  Reasoning/output SHA-256 was
+  `47690f3aaf04561fa6abe2cd3205724c59204b43a4f3eb4a8e1c525d584da3b1`.
+  Live steady draft stages were about **42.38--45.93 ms** and target verify
+  **212.05--212.92 ms**; acceptance exercised zero through seven. Relative to
+  the all-affine **11.242 tok/s** baseline, this is **+0.052 tok/s /
+  +0.462551%** on a different sampled trajectory, still **8.706 tok/s** below
+  the required floor.
+- Post-request health passed. Foreground server PID 12105 and verified
+  children 12108--12110 exited through `Ctrl+C`. Port 30000 and matching
+  processes are clear; memory returned to 93% free with zero throttled pages
+  and normal thermal/performance status.
+- Rejected PERF-A070. Removed the converter/loader changes through
+  `apply_patch`, rebuilt the repository dylib from signed all-affine source,
+  and verified both source files exactly match HEAD. Deleted the distinct
+  1,227,639,900-byte derived hybrid artifact and its empty directory; it is
+  reproducible from the immutable source and this recorded contract. The
+  immutable BF16 and selected all-affine checkpoints remain intact. PERF-FA099
+  records the closed route.
+- Next: reduce the DSpark verifier cycle or use its trained confidence signal
+  to avoid verifying low-value tail positions, with exact p/q behavior and the
+  real sampled request as the first admission screen.
