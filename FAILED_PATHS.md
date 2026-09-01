@@ -2591,3 +2591,31 @@ option, or serving dispatch was added.
   and matched fixed-cycle measurements favor four groups.
 - Related commit or revert: the SG4 constants were replaced during the same
   experiment; no repository commit contains the candidate.
+
+## PERF-FA095 - Eight-way K split with 32-column output tiles
+
+- Hypothesis: doubling the M8 affine output tile would reduce threadgroup
+  count and amortize dequantization/launch cost enough to beat SG16/B16.
+- Scope: full-Q4 target plus affine-W4 DFlash2 M=8 verification, using eight K
+  partitions and one private 32x32 BF16 weight tile per SIMD group.
+- Attempted change: used 256-thread groups, 32 output columns, four FP32 8x8
+  accumulators per SIMD group, and the existing FP32 cross-group reduction.
+- Benchmark evidence: gate/up measured **0.993133 ms** and down
+  **0.957713 ms**, versus SG16/B16 **0.975192** and **0.972296 ms**. The full
+  verifier improved to generally **203.5--205.8 ms**, yet one direct sampled
+  run reached only **11.680308 tok/s**, 46 refills, and mean emitted width
+  **2.913043**.
+- Correctness evidence: real checkpoint tensor comparisons remained within
+  the existing BF16 parity bound and full direct decode completed with digest
+  `d3c38ed2009d8f81` and last token 735.
+- Failure mode: returning from sixteen to eight K partitions changes BF16
+  reduction grouping and the fixed-seed sampled trajectory. Its small fixed
+  execution win does not offset the observed acceptance loss. SG16/B32 then
+  lowers the verifier further to **185.4--186.7 ms** and raises the repeated
+  sampled mean to **31.327334 tok/s**.
+- Why not to retry unchanged: the retained SG16/B32 geometry dominates this
+  candidate in both fixed verifier cost and sampled throughput.
+- Reopen only if: another device cannot admit the SG16/B32 512-thread,
+  32-KiB threadgroup and a device-specific matched server window favors SG8.
+- Related commit or revert: the SG8/B32 constants were replaced during the
+  same experiment; no repository commit contains the candidate.

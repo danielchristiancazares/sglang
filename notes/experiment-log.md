@@ -18469,3 +18469,59 @@ mean 13.929045  17.125658 446.051        39.730
   thermal/performance status is normal. The SG16 behavior gate passes and its
   live verifier is about 5.7% faster than SG8. The exact sampled sustained
   result remains **4.664 tok/s** below the required floor.
+
+### 2026-09-01 02:54 PDT - SG16/B32 reaches 31.327 direct tok/s
+
+- Began from clean signed HEAD
+  `139bd848ea0d308dd7ee46113893268a127502b3`, 41 commits ahead of
+  `origin/main`. Port 30000 and matching SGLang/benchmark/compiler processes
+  were absent before every GPU screen.
+- Screened a 32-column output tile with eight K partitions first. Exact
+  gate/up `K=5120,N=17408` measured **0.993133 ms** and down
+  `K=17408,N=5120` measured **0.957713 ms**. The full verifier improved to
+  generally **203.5--205.8 ms**, but a direct sampled run produced only
+  **11.680308496 tok/s**, 46 refills, mean emitted width **2.913043478**,
+  digest `d3c38ed2009d8f81`, and last token 735. PERF-FA095 records this
+  dominated reduction grouping.
+- Combined the 32-column tile with the retained sixteen K partitions. A naive
+  layout would require 32 KiB of BF16 weight staging plus 16 KiB of FP32
+  partials. Their lifetimes are disjoint: all groups finish reading staged
+  weights before any group writes its final partials. Added the owning
+  threadgroup barrier and reused one 32-KiB allocation for both phases. The
+  kernel now uses 512 threads, each group stages a private 32x32 tile, and
+  four FP32 8x8 accumulators cover the output tile.
+- Narrowed dispatch and direct-helper N alignment from 16 to 32. All reachable
+  target and draft projection widths remain eligible. Extended permanent
+  fail-closed coverage with a valid affine `K=512,N=16` case alongside the
+  existing K=256 case.
+- Exact SG16/B32 checkpoint microbenchmarks measured gate/up **0.829204 ms**
+  and down **0.855483 ms**, with maximum absolute differences from stock MLX
+  **0.03125** and **0.125**. The preceding SG16/B16 values were **0.975192**
+  and **0.972296 ms**.
+- One traced whole-model screen measured steady draft generally
+  **25.996--26.433 ms**, verify **184.839--186.674 ms**, sample about
+  **0.6--0.8 ms**, and ordinary commit **2.0--4.4 ms**. One 191.162 ms verify,
+  several 30.1--30.3 ms draft, and one 81.067 ms full-acceptance state commit
+  were observed. The traced run reached **30.500698761 tok/s** and was excluded
+  from the no-trace window.
+- Five exact process-isolated no-trace commands used the PERF-A062 direct
+  command with candidate dylib
+  `/private/tmp/libsglang_qwen38_m8_bn32_sg16.dylib`. They measured
+  **31.347246490, 31.354396960, 31.268350560, 31.330813634, and
+  31.335863464 tok/s**, mean **31.327334222**. All five reproduced 19 refills,
+  mean emitted width **6.684210526**, digest `46bd4bb035b72c2b`, and last token
+  20. The gain over SG16/B16's five-sample **17.651700837 tok/s** mean is
+  **13.675633384 tok/s / 77.474876%**.
+- Permanent parity passed M8 K/N `512/256`, `5120/64`, and `512/6144`, with
+  maximum absolute error **0.0625**. The valid K=256 and N=16 unsupported
+  cases failed closed. Strict `-Wall -Wextra -Werror` library/test builds, the
+  standalone parity executable, the focused native engine suite (**8 passed**,
+  16 existing warnings), test formatting, and `git diff --check` passed. The
+  established macOS 26.0 / MLX 26.2 linker warning remained.
+- Committed the wider tile, shared-lifetime threadgroup storage, narrower
+  dispatch contract, and parity coverage as signed commit
+  `3bae8a5e67acf6b71f5f1b86498a5f3ee82146e6`
+  (`perf(mps): widen DFlash verifier output tiles`). Its EDDSA signature
+  verifies as good. `main` is now 42 commits ahead of `origin/main`; only the
+  performance/recovery records remain modified. The next gate is the exact
+  real 131K-pool sampled server and Codex xhigh turn.
