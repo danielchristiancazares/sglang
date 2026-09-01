@@ -2784,3 +2784,36 @@ option, or serving dispatch was added.
 - Related commit or revert: the checked bounded verifier is retained as
   opt-in profiling and adaptive-scheduling infrastructure; default remains
   seven drafts.
+
+## PERF-FA101 - Underpriced DSpark full-width cost ratio
+
+- Hypothesis: a **1.4** full-to-short cycle-cost ratio, selected by the best
+  short direct screen, would assign M=8 often enough to maximize natural-prompt
+  DSpark throughput.
+- Scope: affine-W4 DSpark, selected full-Q4 target, trained current-block
+  confidence, exact dense-q rejection, seed 42, real 131,072 context/token
+  pools, and the exact sampled `6237+128` representative request.
+- Attempted change: enabled the native M=2/M=8 confidence budget with
+  `SGLANG_MLX_NATIVE_DSPARK_CONFIDENCE_COST_RATIO=1.4`; all server arguments,
+  checkpoint paths, sampling controls, and request fields matched the adjacent
+  fixed-M=8 control.
+- Benchmark evidence: the fixed-M=8 control reached **11.313 tok/s**,
+  **109.114 prompt tok/s**, **57.160628 s TTFT**, and **68.386711 s** end to
+  end. Ratio 1.4 reached **10.916 tok/s**, **109.712 prompt tok/s**,
+  **56.848776 s TTFT**, and **68.483064 s** end to end. Live warmed cycles
+  measured about **146 ms** for M=2 and **259 ms** for M=8, a ratio near
+  **1.77**.
+- Correctness evidence: the candidate completed exact 6,365 tokens with
+  `finish_reason=length`, coherent reasoning, and recorded SHA-256 prefix
+  `095e73b6`. Server health and language-only metadata passed, followed by
+  clean verified shutdown.
+- Failure mode: the short direct trajectory underestimates the natural-history
+  full-width cost. Ratio 1.4 selects M=8 for blocks whose expected survival
+  does not repay the measured 1.77x complete-cycle cost.
+- Why not to retry unchanged: the exact representative admission screen
+  regresses the adjacent control by **0.397 tok/s / 3.509%**.
+- Reopen only if: target kernels or history shape move the measured M=8/M=2
+  complete-cycle ratio near 1.4, with a fresh adjacent real-prompt control.
+- Related commit or revert: the generic budget mechanism is retained; the
+  selected opt-in ratio is **1.75**, which averages **13.6058 tok/s** across
+  five consecutive representative samples.

@@ -124,6 +124,25 @@ int native_dspark_verify_draft_tokens() {
   return count;
 }
 
+float native_dspark_confidence_cost_ratio() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_DSPARK_CONFIDENCE_COST_RATIO");
+  if (value == nullptr || *value == '\0') {
+    return 0.0f;
+  }
+  float ratio = 0.0f;
+  const std::string_view text(value);
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), ratio);
+  if (error != std::errc() || end != text.data() + text.size() ||
+      !std::isfinite(ratio) || ratio <= 0.0f) {
+    throw std::runtime_error(
+        "SGLANG_MLX_NATIVE_DSPARK_CONFIDENCE_COST_RATIO must be a positive "
+        "finite number");
+  }
+  return ratio;
+}
+
 enum class LinearAttnOverrideScope {
   kOutProjection,
   kQkvProjection,
@@ -1060,6 +1079,36 @@ const mx::fast::CustomKernelFunction& affine_m8_ksplit_qmm_metal() {
 }
 
 } // namespace
+
+int dspark_select_verify_draft_tokens(
+    const float* confidence,
+    int count,
+    float full_to_short_cost_ratio) {
+  constexpr int kDraftTokens = 7;
+  if (confidence == nullptr || count != kDraftTokens ||
+      !std::isfinite(full_to_short_cost_ratio) ||
+      full_to_short_cost_ratio <= 0.0f) {
+    throw std::runtime_error("invalid DSpark confidence budget inputs");
+  }
+  double survival = 1.0;
+  double short_expected_width = 1.0;
+  double full_expected_width = 1.0;
+  for (int index = 0; index < count; ++index) {
+    const float value = confidence[index];
+    if (!std::isfinite(value) || value < 0.0f || value > 1.0f) {
+      throw std::runtime_error("invalid DSpark confidence budget inputs");
+    }
+    survival *= static_cast<double>(value);
+    full_expected_width += survival;
+    if (index == 0) {
+      short_expected_width += survival;
+    }
+  }
+  return full_expected_width >
+          short_expected_width * full_to_short_cost_ratio
+      ? kDraftTokens
+      : 1;
+}
 
 std::pair<array, array> causal_conv_decode_silu(
     const array& state,
@@ -2431,6 +2480,7 @@ void Engine::load_dspark(
   constexpr int kHiddenSize = 5120;
   constexpr int kIntermediateSize = 17408;
   constexpr int kDraftLayers = 5;
+  constexpr int kDraftTokens = 7;
   constexpr int kDraftHeads = 32;
   constexpr int kDraftKvHeads = 8;
   constexpr int kHeadDim = 128;
@@ -2491,6 +2541,16 @@ void Engine::load_dspark(
       "confidence_head.proj.weight", {1, kHiddenSize + kMarkovRank});
   dspark_confidence_bias_ = dense("confidence_head.proj.bias", {1});
   dspark_verify_draft_tokens_ = native_dspark_verify_draft_tokens();
+  dspark_confidence_cost_ratio_ = native_dspark_confidence_cost_ratio();
+  if (dspark_confidence_cost_ratio_ > 0.0f &&
+      dspark_verify_draft_tokens_ != kDraftTokens) {
+    throw std::runtime_error(
+        "DSpark confidence budgeting requires seven proposal tokens");
+  }
+  if (dspark_confidence_cost_ratio_ > 0.0f && !sampling_enabled_) {
+    throw std::runtime_error(
+        "DSpark confidence budgeting requires native sampling");
+  }
 
   dspark_layers_.clear();
   dspark_layers_.resize(kDraftLayers);
@@ -3195,6 +3255,7 @@ void Engine::verify_speculative_block(
     const array& confidence,
     bool dense_proposal,
     bool greedy,
+    float confidence_cost_ratio,
     const char* trace_tag) {
   constexpr int kMaxDraftTokens = 7;
   const bool trace = native_spec_trace_enabled();
@@ -3205,10 +3266,16 @@ void Engine::verify_speculative_block(
       draft_tokens.dtype() != mx::int32) {
     throw std::runtime_error("invalid speculative draft token block");
   }
-  const int draft_token_count = static_cast<int>(draft_tokens.shape()[1]);
+  const int proposal_token_count = static_cast<int>(draft_tokens.shape()[1]);
   const bool has_confidence = confidence.ndim() != 0;
+  if (!std::isfinite(confidence_cost_ratio) || confidence_cost_ratio < 0.0f ||
+      (confidence_cost_ratio > 0.0f &&
+       (!has_confidence || proposal_token_count != kMaxDraftTokens ||
+        !dense_proposal || greedy))) {
+    throw std::runtime_error("invalid speculative confidence budget");
+  }
   if (has_confidence &&
-      (confidence.shape() != mx::Shape{1, draft_token_count} ||
+      (confidence.shape() != mx::Shape{1, proposal_token_count} ||
        confidence.dtype() != mx::float32)) {
     throw std::runtime_error("invalid speculative confidence block");
   }
@@ -3220,7 +3287,7 @@ void Engine::verify_speculative_block(
     }
   } else if (dense_proposal) {
     if (proposal_probs.shape() !=
-            mx::Shape{1, draft_token_count, cfg_.vocab_size} ||
+            mx::Shape{1, proposal_token_count, cfg_.vocab_size} ||
         proposal_probs.dtype() != mx::float32) {
       throw std::runtime_error("invalid dense speculative proposal");
     }
@@ -3232,7 +3299,7 @@ void Engine::verify_speculative_block(
   } else {
     if (proposal_indices.shape() != proposal_probs.shape() ||
         proposal_indices.ndim() != 3 || proposal_indices.shape()[0] != 1 ||
-        proposal_indices.shape()[1] != draft_token_count ||
+        proposal_indices.shape()[1] != proposal_token_count ||
         proposal_indices.dtype() != mx::int32 ||
         proposal_probs.dtype() != mx::float32) {
       throw std::runtime_error("invalid sparse speculative proposal");
@@ -3247,12 +3314,45 @@ void Engine::verify_speculative_block(
   if (trace && has_confidence) {
     const float* const values = confidence.data<float>();
     std::fprintf(stderr, "qwen38_%s confidence=", trace_tag);
-    for (int index = 0; index < draft_token_count; ++index) {
+    for (int index = 0; index < proposal_token_count; ++index) {
       std::fprintf(stderr, "%s%.6f", index == 0 ? "" : ",", values[index]);
     }
     std::fprintf(stderr, "\n");
   }
-  const int32_t* const drafted = draft_tokens.data<int32_t>();
+  int draft_token_count = proposal_token_count;
+  if (confidence_cost_ratio > 0.0f) {
+    draft_token_count = dspark_select_verify_draft_tokens(
+        confidence.data<float>(), proposal_token_count, confidence_cost_ratio);
+    if (trace) {
+      std::fprintf(
+          stderr,
+          "qwen38_%s confidence_budget drafts=%d cost_ratio=%.6f\n",
+          trace_tag,
+          draft_token_count,
+          confidence_cost_ratio);
+    }
+  }
+  array verified_draft_tokens = draft_tokens;
+  array verified_proposal_indices = proposal_indices;
+  array verified_proposal_probs = proposal_probs;
+  if (draft_token_count < proposal_token_count) {
+    verified_draft_tokens = slice(
+        draft_tokens, {0, 0}, {1, draft_token_count});
+    if (dense_proposal) {
+      verified_proposal_probs = slice(
+          proposal_probs,
+          {0, 0, 0},
+          {1, draft_token_count, cfg_.vocab_size});
+    } else if (!greedy) {
+      const int support = static_cast<int>(proposal_probs.shape()[2]);
+      verified_proposal_indices = slice(
+          proposal_indices, {0, 0, 0}, {1, draft_token_count, support});
+      verified_proposal_probs = slice(
+          proposal_probs, {0, 0, 0}, {1, draft_token_count, support});
+    }
+    eval(verified_draft_tokens);
+  }
+  const int32_t* const drafted = verified_draft_tokens.data<int32_t>();
   int32_t input[kMaxDraftTokens + 1];
   input[0] = token;
   for (int index = 0; index < draft_token_count; ++index) {
@@ -3273,7 +3373,7 @@ void Engine::verify_speculative_block(
     array target_rows = slice(
         target_tokens, {0, 0}, {1, draft_token_count});
     array accepted_flags = astype(
-        mx::equal(target_rows, draft_tokens), mx::int32);
+        mx::equal(target_rows, verified_draft_tokens), mx::int32);
     array accepted_array = sum(mx::cumprod(accepted_flags, -1), -1);
     eval(target_tokens, accepted_array);
     verify_done = std::chrono::steady_clock::now();
@@ -3287,7 +3387,7 @@ void Engine::verify_speculative_block(
         {1});
   } else {
     array target_probs = sampling_probabilities(target_logits);
-    array proposal_column = expand_dims(draft_tokens, -1);
+    array proposal_column = expand_dims(verified_draft_tokens, -1);
     array target_rows = slice(
         target_probs,
         {0, 0, 0},
@@ -3297,11 +3397,11 @@ void Engine::verify_speculative_block(
     array q = dense_proposal
         ? squeeze(
               mx::take_along_axis(
-                  proposal_probs, proposal_column, -1),
+                  verified_proposal_probs, proposal_column, -1),
               -1)
         : sum(
-              proposal_probs *
-                  mx::equal(proposal_indices, proposal_column),
+              verified_proposal_probs *
+                  mx::equal(verified_proposal_indices, proposal_column),
               -1);
     array accepted_flags = astype(
         mx::less(
@@ -3333,22 +3433,23 @@ void Engine::verify_speculative_block(
       if (dense_proposal) {
         array proposal_row = reshape(
             slice(
-                proposal_probs,
+                verified_proposal_probs,
                 {0, accepted, 0},
                 {1, accepted + 1, cfg_.vocab_size}),
             {1, cfg_.vocab_size});
         residual = target_row - proposal_row;
       } else {
-        const int support = static_cast<int>(proposal_probs.shape()[2]);
+        const int support =
+            static_cast<int>(verified_proposal_probs.shape()[2]);
         array indices = reshape(
             slice(
-                proposal_indices,
+                verified_proposal_indices,
                 {0, accepted, 0},
                 {1, accepted + 1, support}),
             {1, support});
         array proposal_values = reshape(
             slice(
-                proposal_probs,
+                verified_proposal_probs,
                 {0, accepted, 0},
                 {1, accepted + 1, support}),
             {1, support});
@@ -3456,6 +3557,7 @@ void Engine::dflash_spec_refill(int32_t token) {
       array(0),
       /*dense_proposal=*/false,
       /*greedy=*/false,
+      /*confidence_cost_ratio=*/0.0f,
       "dflash");
 }
 
@@ -3481,12 +3583,13 @@ void Engine::dspark_spec_refill(int32_t token) {
   }
 
   const bool sampled = sampling_enabled_;
+  const bool confidence_budget = dspark_confidence_cost_ratio_ > 0.0f;
   array draft_hidden = dspark_forward(token);
   auto [draft_tokens, draft_probs] =
       dspark_propose(draft_hidden, token, sampled);
   // Keep the seven-position proposal fixed while profiling target verifier
   // prefixes, so acceptance and target geometry are the only changed inputs.
-  if (draft_token_count < kMaxDraftTokens) {
+  if (!confidence_budget && draft_token_count < kMaxDraftTokens) {
     draft_tokens = slice(
         draft_tokens, {0, 0}, {1, draft_token_count});
     if (sampled) {
@@ -3501,14 +3604,19 @@ void Engine::dspark_spec_refill(int32_t token) {
         {1, draft_token_count, cfg_.hidden_size});
   }
   array confidence(0);
-  if (native_spec_trace_enabled()) {
+  if (native_spec_trace_enabled() || confidence_budget) {
+    const int confidence_token_count =
+        static_cast<int>(draft_tokens.shape()[1]);
     array anchor(&token, {1, 1}, mx::int32);
     array previous = anchor;
-    if (draft_token_count > 1) {
+    if (confidence_token_count > 1) {
       previous = concatenate(
           {
               anchor,
-              slice(draft_tokens, {0, 0}, {1, draft_token_count - 1}),
+              slice(
+                  draft_tokens,
+                  {0, 0},
+                  {1, confidence_token_count - 1}),
           },
           1);
     }
@@ -3527,6 +3635,7 @@ void Engine::dspark_spec_refill(int32_t token) {
       confidence,
       /*dense_proposal=*/sampled,
       /*greedy=*/!sampled,
+      dspark_confidence_cost_ratio_,
       "dspark");
 }
 

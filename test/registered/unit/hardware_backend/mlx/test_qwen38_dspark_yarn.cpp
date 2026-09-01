@@ -138,6 +138,31 @@ bool RejectsInvalidConfidenceShape() {
   return false;
 }
 
+bool CheckConfidenceBudget() {
+  constexpr float kCostRatio = 1.694f;
+  const float high_confidence[] = {
+      1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+  const float low_confidence[] = {
+      0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+  return sglang::mlx_qwen38::dspark_select_verify_draft_tokens(
+             high_confidence, 7, kCostRatio) == 7 &&
+         sglang::mlx_qwen38::dspark_select_verify_draft_tokens(
+             low_confidence, 7, kCostRatio) == 1;
+}
+
+bool RejectsInvalidConfidenceBudget() {
+  const float invalid_confidence[] = {
+      1.01f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+  try {
+    (void)sglang::mlx_qwen38::dspark_select_verify_draft_tokens(
+        invalid_confidence, 7, 1.694f);
+  } catch (const std::runtime_error &error) {
+    return std::string_view(error.what()) ==
+           "invalid DSpark confidence budget inputs";
+  }
+  return false;
+}
+
 } // namespace
 
 int main() {
@@ -147,7 +172,8 @@ int main() {
     const bool context_limit_matches = CheckOffset(131071, 3e-3f);
     if (!origin_matches || !yarn_range_matches || !context_limit_matches ||
         !RejectsInvalidWidth() || !CheckConfidence() ||
-        !RejectsInvalidConfidenceShape()) {
+        !RejectsInvalidConfidenceShape() || !CheckConfidenceBudget() ||
+        !RejectsInvalidConfidenceBudget()) {
       return 1;
     }
   } catch (const std::exception &error) {

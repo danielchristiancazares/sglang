@@ -19148,3 +19148,162 @@ mean 13.929045  17.125658 446.051        39.730
 - `git diff --check` passed. The repository has no root `.clang-format`; a
   whole-file Homebrew clang-format 23.1 dry run reports the existing native
   engine style throughout, so no broad mechanical restyling was applied.
+
+### 2026-09-01 04:43 PDT - trained-confidence DSpark cost budget
+
+- Began from signed `e55f76f4c11cc4c6f34a9fc3dbab4892b9c05245` on
+  `main`, 53 commits ahead of `origin/main`, with exactly the native engine
+  source/header and standalone DSpark test modified for this candidate. The
+  HEAD EDDSA signature verified as good. Port 30000 and matching
+  server/direct/compiler processes were clear; memory was 93% free with zero
+  throttled pages and macOS reported normal thermal/performance status.
+- Added an opt-in
+  `SGLANG_MLX_NATIVE_DSPARK_CONFIDENCE_COST_RATIO=<positive finite float>`
+  at the native DSpark loader. It requires native sampling and the complete
+  seven-position proposal. An absent value disables the scheduler; malformed,
+  nonfinite, nonpositive, fixed-width-combined, and non-sampled configurations
+  fail closed.
+- Added a pure checked C++ selector matching the upstream batch-one planning
+  semantics. It calculates M=2 expected emitted width as `1+c0` and M=8 as
+  `1+c0+c0*c1+...+c0*...*c6`, then chooses M=8 exactly when its expected width
+  exceeds the M=2 width multiplied by the configured complete-cycle ratio.
+  The common verifier owns the chosen token and dense-q prefix, preserving
+  exact p/q rejection, residual sampling, accepted-prefix recurrent/full-
+  attention commit, and output limits. DFlash supplies ratio zero and its
+  path remains unchanged.
+- Two implementation failures were found before measurement. The first
+  adaptive direct load compared the seven proposal tokens against the five
+  DSpark layers and failed at the intended contract; a distinct
+  `kDraftTokens=7` fixed the loader invariant. The next run emitted its first
+  confidence-budget decision and exited 139 when host token access reached a
+  lazy sliced prefix. Evaluating the selected token prefix at the shared
+  slice/data boundary fixed the asynchronous lifetime. The exact rerun then
+  completed.
+- The final strict candidate library command was:
+
+  ```bash
+  clang++ -std=c++20 -O3 -fPIC -shared -Wall -Wextra -Werror \
+    -isystem .venv/lib/python3.11/site-packages/mlx/include \
+    -Ipython/sglang/srt/hardware_backend/mlx/native \
+    -L.venv/lib/python3.11/site-packages/mlx/lib \
+    -Wl,-rpath,.venv/lib/python3.11/site-packages/mlx/lib -lmlx \
+    -o /private/tmp/libqwen38_dspark_confidence_budget_candidate.dylib \
+    python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp \
+    python/sglang/srt/hardware_backend/mlx/native/qwen38_c_api.cpp
+  ```
+
+  It passed with only the established macOS 26.0 / MLX 26.2 linker warning.
+  The standalone test was rebuilt warning-as-error against that dylib and
+  passed YaRN offsets 0/9,000/131,071 with maximum errors
+  `5.96046e-08 / 0.000168275 / 0.0015974`, confidence parity, high/low budget
+  selection, invalid confidence rejection, and final marker
+  `qwen38 DSpark YaRN/confidence parity passed`. Focused command
+  `env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx
+  .venv/bin/python -m pytest
+  test/registered/unit/hardware_backend/mlx/test_native_qwen38_engine.py -q`
+  passed **8 tests** with 16 existing warnings.
+- Default path regressions used the exact PERF-A068 direct environments.
+  Default DSpark completed at **10.043170988 tok/s**, 14 refills, width
+  **2.428571429**, digest `5a38c7070d7badeb`, and last token 16. DFlash at
+  its selected `128 / 32 warm / 128 timed` shape completed at
+  **31.279682028 tok/s**, 19 refills, width **6.684210526**, digest
+  `46bd4bb035b72c2b`, and last token 20.
+- The adaptive direct `128 / 1 warm / 32 timed` screens produced:
+
+  | Ratio | Tok/s | Refills | Mean width | Digest | Last token |
+  |---:|---:|---:|---:|---|---:|
+  | 1.694 | 11.231309029 | 20 | 1.6 | `ae3d5f2beda21155` | 18 |
+  | 1.4 | 13.400887301 | 13 | 2.538461538 | `1e07a49e643a0a88` | 22 |
+  | 1.3 | 12.945884584 | 13 | 2.538461538 | `1e07a49e643a0a88` | 22 |
+  | 1.5 | 11.398039610 | 17 | 1.941176471 | `e4adfe06bbf063fb` | 17 |
+
+  Ratio 1.4 won this short screen. Its trace mostly chose M=8; the ratio-1.694
+  trace mostly chose M=2, and both M=8 choices in that short trajectory
+  accepted zero drafts. Natural history remained the governing admission
+  screen.
+- Rebuilt the repository dylib with
+  `env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx
+  python/sglang/srt/hardware_backend/mlx/native/build.sh`. The selected
+  foreground launch was exactly:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER -u MLX_METAL_FAST_SYNCH \
+    MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    PYTHONPATH=/Users/dcazares/sglang/python \
+    SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 \
+    SGLANG_MLX_CLEAR_CACHE_STEPS=0 SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_MTP_DIR=/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DSpark-MLX-AffineQ4 \
+    SGLANG_MLX_NATIVE_SMALL_BATCH_QMM=1 \
+    SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1 \
+    SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT=1 \
+    SGLANG_MLX_NATIVE_TRACE_SPEC=1 \
+    SGLANG_MLX_NATIVE_DSPARK_CONFIDENCE_COST_RATIO=1.75 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    --served-model-name qwen3.8-27b --language-model-only \
+    --context-length 131072 --max-total-tokens 131072 \
+    --max-running-requests 1 --max-mamba-cache-size 5 \
+    --chunked-prefill-size 8192 --max-prefill-tokens 8192 \
+    --disable-radix-cache --mlx-enable-sampling --sampling-defaults model \
+    --random-seed 42 --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --stream-interval 4 --scheduler-recv-interval 4 \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments preserved real 131,072 context/token pools, one running
+  request, five auxiliary cache slots, 8,192-token prefill chunks, seed 42,
+  both Qwen parsers, incremental output, language-only mode, and disabled radix
+  cache/graphs. `/health`, `/v1/models`, and `/model_info` passed; the model
+  reported maximum length 131,072 and image/audio understanding disabled.
+- Each real sample ran this exact command, sequentially and without warmup:
+
+  ```bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b --input-tokens 6237 --output-tokens 128 \
+    --temperature 1.0 --top-p 0.95 --top-k 20 \
+    --presence-penalty 1.5 --skip-warmup --timeout 600
+  ```
+
+- A fresh fixed-M=8 control, with the confidence-ratio variable explicitly
+  unset and otherwise identical arguments, completed exact 6,365 tokens at
+  **11.313 generation tok/s**, **109.114 prompt tok/s**, **57.160628 s TTFT**,
+  and **68.386711 s** end to end. It reproduced reasoning/output SHA-256
+  `555ba1da1dc6fc0f7969f2a67261a05b33c41136d8fdbfa607e8653a05a88fe2`.
+- A fresh ratio-1.4 launch completed exact 6,365 tokens at **10.916 generation
+  tok/s**, **109.712 prompt tok/s**, **56.848776 s TTFT**, and **68.483064 s**
+  end to end, with recorded reasoning/output SHA-256 prefix `095e73b6`. Live
+  warmed M=2 cycles took mostly **146 ms** and M=8 cycles about **259 ms**,
+  yielding a complete-cycle ratio near **1.77**. PERF-FA101 closes 1.4 for the
+  natural workload.
+- Ratio 1.75 then completed five consecutive exact 6,365-token requests:
+
+  | Sample | Generation tok/s | Prompt tok/s | TTFT (s) | E2E (s) |
+  |---:|---:|---:|---:|---:|
+  | 1 | 13.595 | 109.706 | 56.851961 | 66.193580 |
+  | 2 | 13.609 | 109.486 | 56.966250 | 66.298033 |
+  | 3 | 13.603 | 109.927 | 56.737835 | 66.074309 |
+  | 4 | 13.607 | 109.930 | 56.735866 | 66.069194 |
+  | 5 | 13.615 | 109.932 | 56.735048 | 66.062970 |
+
+  Mean generation throughput was **13.6058 tok/s**, **+2.2928 tok/s /
+  +20.267%** over the adjacent control. Every sample had
+  `finish_reason=length`, preserved coherent reasoning, and reproduced
+  reasoning/output SHA-256
+  `7af3ef829ce6717a226bb3d06ad62dfa18bcf44b15684ac9cc1c614b3b7349bd`.
+  Warmed traces measured M=2 at roughly **144--147 ms** and M=8 at
+  **257--261 ms**, with both tiers selected. Post-window health passed.
+- Retain PERF-A073 as an opt-in DSpark win with ratio 1.75; fixed M=8 stays the
+  default. The five-sample mean remains **1.7222 tok/s** below selected
+  DFlash2 and **6.3942 tok/s** below the requested floor. The next cost
+  candidate is a bounded one-cycle target-only bypass for predicted low-value
+  DSpark blocks, with an immediate forced draft probe to prevent stale lock-in.
+- Foreground selected server root PID 12641 and its verified children exited
+  through `Ctrl+C`; the prior control and ratio-1.4 foreground trees were
+  stopped the same way between launches. Final port 30000 and matching
+  server/direct/compiler processes are clear. Memory returned to 93% free
+  with zero throttled pages and macOS reports normal thermal/performance
+  status. `git diff --check` passes.

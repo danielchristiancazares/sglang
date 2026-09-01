@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-04:18 PDT.
+04:43 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -260,6 +260,17 @@ DSpark remain at seven. The complete fixed-width direct sweep reaches
 while M=8 uses the selected SG16/B32 kernel. M=2 and M=8 are the useful
 measured tiers for the next confidence scheduler; every fixed short-width
 policy is closed below the required floor.
+
+The native trained-confidence scheduler now chooses between those M=2 and M=8
+tiers from cumulative expected survival and a measured complete-cycle cost
+ratio. At the selected opt-in ratio **1.75**, five consecutive real-131K-pool
+sampled `6237+128` requests reach **13.595 / 13.609 / 13.603 / 13.607 /
+13.615 tok/s**, mean **13.6058**, versus the adjacent fixed-M=8 control at
+**11.313 tok/s**. Every sample completed exact 6,365 tokens with one shared
+reasoning/output digest. Fixed M=8 remains the DSpark default; the adaptive
+lane is **1.7222 tok/s** behind selected DFlash2 and **6.3942 tok/s** behind
+the requested floor. A bounded target-only bypass for predicted low-value
+draft cycles is the next cost candidate.
 
 Two DSpark proposal-fidelity candidates are closed. Independently applying
 target top-k/top-p filtering to each draft row fell to **6.997461 tok/s** and
