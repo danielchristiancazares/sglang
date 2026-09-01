@@ -270,6 +270,7 @@ class Engine {
       bool dense_proposal,
       bool greedy,
       float confidence_cost_ratio,
+      float sparse_mean_q_threshold,
       const char* trace_tag);
 
   void load_weights(const std::string& model_dir);
@@ -318,6 +319,7 @@ class Engine {
   mlx::core::array dflash_predecessor_{0};
   mlx::core::array dflash_successor_{0};
   float dflash_selector_temperature_ = 1.0f;
+  float dflash_mean_q_threshold_ = 0.0f;
   std::vector<DFlashLayer> dflash_layers_;
   bool dspark_valid_ = false;
   int dspark_context_offset_ = 0;
