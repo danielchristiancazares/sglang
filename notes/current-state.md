@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-06:04 PDT.
+06:18 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -239,6 +239,14 @@ which appeared strongest on the repeated-token direct screen, reaches only
 **13.739 tok/s** on the natural request and is closed. The selected opt-in
 retains **4.1134 tok/s** to the requested floor. DFlash verifier-width
 economics are the next active branch.
+
+Native M=8 gate/up fusion is also closed under the current kernel geometry. A
+single workgroup that computes both products and exact BF16 SwiGLU serializes
+the output grids and adds roughly **3.3 ms** to verification. A launch-only
+two-plane grid preserves both products bit-exactly and changes five-sample
+direct mean only **26.943319961 -> 26.964966176 tok/s** (**+0.08034%**), with
+two adjacent pairs flat or slower. Separate SG16/B32 products remain selected;
+a future reopening needs shared arithmetic or a fused down-projection boundary.
 
 The official worker's greedy LM-head proposal rule is closed for sampled
 production. It reached a misleading five-sample direct mean of **37.518731

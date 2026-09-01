@@ -2998,3 +2998,36 @@ option, or serving dispatch was added.
   distribution, or adaptive calibration signal changes proposal overlap.
 - Related commit or revert: PERF-A076 retains only the checked opt-in scale;
   identity remains default and 1.15 is the measured selected arm.
+
+## PERF-FA108 - M=8 gate/up paired dispatch and sequential fused SwiGLU
+
+- Hypothesis: consuming the original gate/up tensors in one native M=8
+  dispatch can remove 64 projection submissions and intermediate elementwise
+  work from each DFlash verification.
+- Scope: full-Q4 target MLPs, eight-row SG16/B32 affine-W4 products, exact
+  BF16 SiLU/multiply boundaries, affine-W4 DFlash2, selector temperature 1.15,
+  and direct `128 / 32 warm / 128 timed` decoding.
+- Attempted change: first ran gate and up sequentially inside one workgroup and
+  emitted SwiGLU directly. Then retained independent workgroups on two z-grid
+  planes in one Metal submission, emitted separate gate/up arrays, and left
+  MLX SiLU/multiply unchanged.
+- Benchmark evidence: the sequential fused form changed traced throughput
+  **26.801071247 -> 26.413620964 tok/s** and steady verify about
+  **186.2--187.3 -> 189.4--190.5 ms**. Five adjacent paired-grid controls and
+  candidates averaged **26.943319961 / 26.964966176 tok/s**, only
+  **+0.08034%**; two pairs were flat/slower.
+- Correctness evidence: standalone K/N `512/256` products were bit-exact for
+  both paired outputs, and the sequential SwiGLU result was bit-exact against
+  separate selected products plus BF16 MLX SiLU/multiply. Every full-model arm
+  reproduced 22 refills, width **6.090909091**, digest `6de63586df62ab2b`,
+  and last token 220. Strict builds and tests passed.
+- Failure mode: sequential fusion halves grid concurrency and adds about 3.3
+  ms. Paired submission preserves concurrency, while Metal submission savings
+  are only noise-scale beside two roughly one-millisecond products per layer.
+- Why not to retry unchanged: both the execution-merging and launch-only
+  limits were measured, with one regressing and one lacking a material margin.
+- Reopen only if: a kernel can share weight or input work across gate/up while
+  retaining grid-level concurrency, or it fuses the following down projection
+  without changing BF16 boundaries.
+- Related commit or revert: every candidate source/test change was removed;
+  the selected separate SG16/B32 products remain unchanged.

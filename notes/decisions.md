@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-09-01 06:04 PDT.
+**Reconciled through:** 2026-09-01 06:18 PDT.
 
 ## Selected production choices
 
@@ -250,6 +250,7 @@ has not.
 | DSpark target-state score | Retained as trace-only telemetry; pre-draft threshold scheduler rejected | Threshold 0.525 reaches **33.222 / 32.788 tok/s** directly and only **13.652 tok/s** on the representative real request. On a no-policy natural trace, M=2/M=8 score ranges overlap and score versus accepted width has Pearson **0.141**. The threshold control and scheduling branch were removed |
 | DFlash2 with the QKV-restored target | Rejected unchanged | QKV-only and complete recurrent Q4 overrides reach **10.130 / 7.841 tok/s** directly, with accepted widths **2.653 / 1.984** versus full-Q4 DFlash2's **31.318 tok/s** and width **6.684**. A target-matched draft is required |
 | Two-phase 64-column M8 affine tile | Rejected and removed | Exact DFlash2 width and digest remain unchanged, while direct throughput falls **31.318 -> 8.961 tok/s** from register/occupancy pressure and reduced grid parallelism. SG16/B32 remains selected |
+| M=8 gate/up fused or paired dispatch | Rejected and removed | Sequential exact SwiGLU fusion adds about **3.3 ms** to verification. A bit-exact two-plane launch changes five-sample direct mean only **26.943319961 -> 26.964966176 tok/s** (**+0.08034%**) with two flat/slower pairs; separate SG16/B32 products remain selected |
 | Independently top-k/top-p-filtered DSpark q | Rejected | Direct throughput fell **10.050625 -> 6.997461 tok/s** and width **2.428571 -> 1.6** because independently filtered draft and target supports differ |
 | BF16 DSpark Markov W2 inside affine-W4 draft | Rejected | Direct throughput fell **10.050625 -> 7.044992 tok/s** and width **2.428571 -> 1.65**. The real request moved **11.242 -> 11.294 tok/s** on a different trajectory while artifact size rose **87.148 MiB** |
 | M1 Max split-history BF16 decode | Retained; signed `5f966ecb0d` | The bounded native Metal split/reduce path changes exact 131K attention decode from 148.078959 ms online and 65.117542 ms unsplit tiled to 4.338625 ms, preserves short-sequence cost, and passes long-context parity plus asynchronous lifetime coverage. `SGLANG_MPS_TILED_DECODE=0` and `SGLANG_MPS_SPLIT_DECODE=0` retain matched controls |
