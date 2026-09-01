@@ -17703,3 +17703,167 @@ mean 13.929045  17.125658 446.051        39.730
   fix. Then pursue structured-output quality with a model/grammar mechanism
   whose actual Codex behavior passes cleanly while the sampled throughput
   window remains at or above 20 tok/s.
+
+### 2026-08-31 23:45 PDT - recurrent Q4 output anchors retain speed and fail xhigh behavior
+
+- Resumed at signed `6f2f7006ac` on `main`, 30 commits ahead of
+  `origin/main`. The previous goal turn was progress: it signed request-local
+  sampling ownership and left one later user-owned experiment in
+  `qwen38_engine.cpp`. That uncommitted experiment adds an opt-in loader for
+  all 48 recurrent `linear_attn.out_proj` quantized tensor triplets. No
+  listener, SGLang model process, benchmark, client, or repository compiler
+  was active. Memory was 95% free, pages throttled/swapouts were zero, and
+  thermal/performance status was normal.
+- Rebuilt the retained C++20 harness with exact command
+  `clang++ -std=c++20 -O3 -Wall -Wextra -Werror
+  -I.venv/lib/python3.11/site-packages/mlx/include
+  -Ipython/sglang/srt/hardware_backend/mlx/native
+  benchmark/mac/bench_qwen38_native.cpp
+  -L.venv/lib/python3.11/site-packages/mlx/lib
+  -Wl,-rpath,.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o
+  /private/tmp/bench_qwen38_native`. It passed with the established macOS
+  26.0/MLX 26.2 link warning. The already-built experimental dylib was
+  `6f2bc7c76f9120582b4d1dfa77c0d68b19fda7347afc6d0de3682d15fbf063db`.
+- Exact process-isolated `128 / 32 warm / 256 timed` direct screens under
+  `MLX_MAX_MB_PER_BUFFER=128`, with native sampling and the SDPA override
+  unset, produced:
+  - early-out27 v2 control: **21.300353804 tok/s**, digest
+    `8ea2430e3fa3d56e`, last token `198`;
+  - early-out27 v2 plus every Q2-GDN-v1 recurrent output projection:
+    **21.326957165 tok/s**, digest `c750442967853f33`, last token `22`;
+  - Q2-GDN-v1 control: **21.278459290 tok/s**, digest
+    `bf148cb37b18f3a8`, last token `258`;
+  - Q2-GDN-v1 plus the early-out27-v2 recurrent output set:
+    **21.124193476 tok/s**, digest `9f7a2e4d071c9c25`, last token `271`;
+  - early-out27 v2 plus all recurrent output projections from immutable Q4
+    base revision `3e6447f082e89cc7f0bc6e5441afd38dfce760ff`:
+    **21.239017494 tok/s**, digest `c750442967853f33`, last token `22`.
+  The first override command put `env -u` after an assignment and failed
+  before model load with `env: -u: No such file or directory`; the corrected
+  commands placed every unset option first.
+- Promoted the strongest quality-directed screen to one real server. The
+  exact launch was the signed PERF-A054 131K command with one added process
+  variable:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER -u MLX_METAL_FAST_SYNCH \
+    MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    PYTHONPATH=/Users/dcazares/sglang/python \
+    SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 \
+    SGLANG_MLX_CLEAR_CACHE_STEPS=0 SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_NATIVE_LINEAR_OUT_PROJ_OVERRIDE_PATH=/Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2 \
+    --served-model-name qwen3.8-27b-iq2 --language-model-only \
+    --context-length 131072 --max-total-tokens 131072 \
+    --max-running-requests 1 --max-mamba-cache-size 5 \
+    --chunked-prefill-size 8192 --max-prefill-tokens 8192 \
+    --disable-radix-cache --mlx-enable-sampling --sampling-defaults model \
+    --random-seed 42 --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --stream-interval 4 --scheduler-recv-interval 4 \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments retained real 131,072 context/token pools, one request,
+  five Mamba slots, 8,192-token chunks, both parsers, seed 42, native
+  sampling, radix disabled, graph capture disabled, and language-only mode.
+  `/health`, `/v1/models`, and `/model_info` passed; image/audio understanding
+  remained false. Root/listener PID was `6841`, with scheduler `6845` and
+  detokenizer `6846`.
+- Five sequential production-sampled exact `6237+128` requests measured
+  **20.111, 20.134, 20.115, 20.127, and 20.117 tok/s**, mean
+  **20.1208 tok/s**. Prompt results were **107.033, 107.129, 106.985,
+  107.083, and 106.806 tok/s**, mean **107.0072**. TTFTs were
+  **58.271647, 58.219616, 58.297789, 58.244710, and 58.395571 s**, mean
+  **58.285867 s**. End-to-end times were **64.586637, 64.527458,
+  64.611389, 64.554780, and 64.708632 s**, mean **64.597779 s**. Every
+  sample cleared 20, completed exact total 6,365 with
+  `finish_reason=length`, and retained output/reasoning SHA-256
+  `cdba2f619b4c442bc79e5bca45a1d53bf6559d34b9cc575fc5e6f7a1530ab945`.
+- The pinned client bundle retained expected hashes `9d7842...0940`,
+  `862339...2ec7`, and `5d5935...b9d096`. Exact bounded client command was
+  `env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home
+  SGLANG_API_KEY=local /opt/homebrew/bin/timeout --signal=INT
+  --kill-after=10s 120s /opt/homebrew/bin/codex exec --strict-config
+  --ephemeral --ignore-rules -C /Users/dcazares/sglang -c
+  model_context_window=131072 -c model_auto_compact_token_limit=117964 -c
+  'model_reasoning_effort="xhigh"' --color never --json 'Use exec_command
+  exactly once. Set cmd to /bin/pwd. After it succeeds, reply exactly
+  QWEN38_TOOL_READY.' </dev/null`.
+- Thread `01a05bb4-576b-7a21-8cf0-2a84c94b6451` reached GNU timeout exit
+  **124** without a Codex tool or final event. The server prefetched 6,214
+  tokens in about 59 seconds, then decoded continuously around **20.14-20.28
+  tok/s** until cancellation. The response arrived only after the tokenizer
+  state had been deleted. Restoring all recurrent output projections to Q4
+  therefore preserves the hard speed floor and still fails the authoritative
+  xhigh actual-work gate; it is a precision-sensitivity result rather than a
+  promotable lane.
+- Post-abort `/health` passed. The verified foreground server stopped with
+  `Ctrl+C`; PIDs `6841`, `6845`, and `6846` exited. Port 30000, matching
+  server/benchmark/compiler/client processes were absent afterward. Memory
+  returned to 92% free, pages throttled and swapouts were zero, and
+  thermal/performance status was normal. The opt-in override source remains
+  user-owned and uncommitted. Next screen: restore every recurrent-attention
+  projection from Q4 so the model keeps only the previously raw-tool-safe Q2
+  gate/up family, then require both the 20 tok/s server window and the same
+  xhigh client gate.
+
+### 2026-08-31 23:58 PDT - full recurrent Q4 restores xhigh behavior within 0.087 tok/s of the floor
+
+- Extended the existing opt-in precision diagnostic so a separate
+  `SGLANG_MLX_NATIVE_LINEAR_ATTN_OVERRIDE_PATH` can restore the quantized
+  `qkv`, `z`, `qkvz`, or complete `qkv/z/a/b/out` projection family from an
+  immutable MLX checkpoint. The legacy output-only path remains accepted,
+  both paths are mutually exclusive, unknown/missing tensor sets fail closed,
+  and the default execution path remains unchanged. An initial broad tensor
+  predicate admitted 816 tensors instead of the expected 720 because it also
+  matched convolution and normalization weights; the final predicate names
+  only the five quantized projection families and rejected that incomplete
+  load before model construction.
+- Rebuilt the native dylib through the checked-in `build.sh`. The established
+  macOS 26.0 / MLX 26.2 linker warning remained. A process-isolated direct
+  short screen with every recurrent-attention projection restored from Q4
+  reached **21.012879838 tok/s**, digest `d64f3cd3d56f2e80`, last token `17`.
+  The selected sampled `6237 / 32 warm / 256 timed` screen reached
+  **20.107157009 tok/s**, digest `0e1ec7f61c16af25`, last token `27096`.
+- Launched one real 131K server with the exact preceding command, replacing
+  the output-only variable by
+  `SGLANG_MLX_NATIVE_LINEAR_ATTN_OVERRIDE_PATH=/Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff`
+  and leaving the scope at its `all` default. Root/listener PID was `6965`.
+  Health, model list, and model info passed with image/audio understanding
+  disabled and the intended 131,072 context/token pools.
+- One exact production-sampled `6237+128` request measured **19.913 tok/s**
+  generation, **107.405 tok/s** prompt, **58.069698 s** TTFT, and
+  **64.447314 s** end to end. It completed exact total 6,365 with
+  `finish_reason=length` and output/reasoning SHA-256
+  `cd1b0737c18162d80be0db90a6d5bff8ac5ce59a3df8b17079b5af37dc8f3818`.
+  The candidate is **0.087 tok/s** below the hard client floor in this first
+  server sample.
+- The exact hash-pinned Codex 0.151.0 xhigh shell gate then passed cleanly.
+  Thread `01a05bbc-cd1d-7ed1-b797-397ae78d8a72` emitted one
+  `/bin/zsh -c /bin/pwd` tool call, observed `/Users/dcazares/sglang`, returned
+  final `QWEN38_TOOL_READY`, and exited zero. Usage was **12,778 input / 368
+  output / 329 reasoning-output tokens**. No extra or malformed tool call was
+  emitted. This is the strongest current quality result: restoring all Q4
+  recurrent-attention projections recovers the authoritative actual-work
+  behavior while retaining essentially all of the selective-Q2 speed.
+- The verified foreground server stopped through `Ctrl+C`; root PID `6965`
+  and its scheduler/detokenizer tree exited. A subsequent preflight found port
+  30000 and matching SGLang/benchmark/compiler processes absent, memory 94%
+  free, and normal thermal/performance status.
+- Narrowed the next screen to only recurrent `qkv` and `z` projections via
+  `SGLANG_MLX_NATIVE_LINEAR_ATTN_OVERRIDE_SCOPE=qkvz`. Its exact direct
+  `128 / 32 warm / 256 timed` result was **21.056891733 tok/s**, digest
+  `2405d9bdb90c50cb`, last token `57`. The real-server speed and xhigh behavior
+  gates remain the next controlled measurement.
+- A fresh upstream check also established that Qwen3.8-27B now has a dedicated
+  `incoai/Qwen3.8-27B-DFlash2` checkpoint and a 1.14 GiB Q4 GGUF draft. This
+  checkout contains SGLang's PyTorch/CUDA DFlash-v2 worker; the custom native
+  MLX engine bypasses it. DFlash2 is therefore a concrete native-integration
+  track, with the existing worker and checkpoint as semantic authorities and
+  exact accepted-path recurrent-state commit as a mandatory qualification
+  gate.

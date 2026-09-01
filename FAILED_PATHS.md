@@ -2483,3 +2483,33 @@ option, or serving dispatch was added.
   supplied schema or model quality removes the fabricated handle.
 - Related commit or revert: the one-call transition was removed before
   commit; the native tool stream retains its original multi-call behavior.
+
+## PERF-FA091 - Restore only recurrent output projections from Q4
+
+- Hypothesis: higher-precision recurrent output anchors would repair the
+  selective-Q2 checkpoint's structured-tool trajectory while preserving the
+  established sampled throughput floor.
+- Scope: all 48 `linear_attn.out_proj` quantized tensor triplets, loaded from
+  immutable `mlx-community/Qwen3.8-27B-4bit` revision
+  `3e6447f082e89cc7f0bc6e5441afd38dfce760ff` into early-out27 v2; native
+  sampled real-131K serving and the pinned Codex xhigh shell gate.
+- Attempted change: added an opt-in checkpoint overlay and ran one complete
+  five-sample `6237+128` production window before the exact client gate.
+- Benchmark evidence: decode measured **20.111, 20.134, 20.115, 20.127, and
+  20.117 tok/s**, mean **20.1208**, with every request above 20. Prompt
+  throughput averaged **107.0072 tok/s** and every request completed exact
+  6,365 tokens with `finish_reason=length`.
+- Correctness evidence: thread `01a05bb4-576b-7a21-8cf0-2a84c94b6451`
+  prefetched 6,214 tokens and decoded continuously until GNU timeout exit
+  **124**, without a Codex tool or final event.
+- Failure mode: recurrent output precision alone preserves speed and changes
+  the model trajectory, yet it leaves the authoritative xhigh tool turn
+  unusable.
+- Why not to retry unchanged: the candidate has a full five-sample throughput
+  window and an exact named-client failure under the selected request-local
+  seed.
+- Reopen only if: another precision family, native grammar mechanism, or
+  materially different checkpoint changes the structured-output distribution.
+- Related commit or revert: the generic precision-overlay diagnostic remains
+  opt-in while `qkv`, `z`, and complete recurrent families are narrowed; the
+  output-only candidate is closed.
