@@ -19785,3 +19785,55 @@ mean 13.929045  17.125658 446.051        39.730
   requested floor. PERF-FA107 closes the other screened temperatures under
   the current target/draft pairing. DFlash verification-width economics are
   the next measured branch.
+
+### 2026-09-01 06:18 PDT - native M=8 gate/up fusion is execution-neutral or slower
+
+- Began from signed `095b4ba664479dbb1e44053a248040df4f9a209a`, 57
+  commits ahead of `origin/main`, with a clean worktree. Port 30000 and
+  matching server/direct/compiler processes were clear; memory was 92% free
+  with zero throttled pages and thermal/performance status normal.
+- The exact fresh traced baseline used selector temperature 1.15 and the
+  PERF-A076 direct contract. It reached **26.801071247 tok/s**, 22 timed
+  refills, mean width **6.090909091**, digest `6de63586df62ab2b`, and last token
+  220. Steady draft was generally **25.7--26.1 ms**, verify
+  **186.215--187.345 ms**, sample about **0.6--0.8 ms**, and commit about
+  **2.0--4.5 ms**.
+- Implemented the PERF-FA081 reopening boundary entirely in native C++/Metal:
+  original gate/up affine storage, SG16/B32 K partitions and output tiles, and
+  exact BF16 boundaries. The first kernel retained four accumulators, ran the
+  two weights in consecutive phases, held one reduced gate scalar per output,
+  and emitted BF16 SiLU-times-up directly. Its K/N `512/256` standalone result
+  was bit-exact against separate selected QMMs plus MLX SiLU/multiply.
+- The sequential fused form preserved full-model width, digest, and last token
+  while reaching **26.413620964 tok/s**. Steady verify rose to
+  **189.425--190.547 ms**, roughly 3.3 ms above control. Reduced grid
+  concurrency outweighs eliminated launch and elementwise work.
+- Reworked the candidate into a narrower two-plane grid: z=0 consumes the
+  original gate tensors and writes gate output; z=1 independently consumes up
+  and writes up output. Both keep the exact selected kernel arithmetic, while
+  one Metal submission replaces two. Standalone gate/up outputs were each
+  bit-exact at K/N `512/256`. One trace reached **26.851756856 tok/s** with
+  steady verify generally **185.848--187.028 ms** and the exact trajectory.
+- Five process-isolated adjacent no-trace pairs used the exact baseline command
+  plus `SGLANG_MLX_NATIVE_M8_PAIRED_QMM=1` only for candidates:
+
+  | Pair | Separate tok/s | Paired tok/s | Delta tok/s |
+  |---:|---:|---:|---:|
+  | 1 | 26.928227174 | 26.988569313 | +0.060342139 |
+  | 2 | 26.969434153 | 26.966388240 | -0.003045913 |
+  | 3 | 26.932138773 | 26.973712039 | +0.041573266 |
+  | 4 | 26.950369132 | 26.960561359 | +0.010192227 |
+  | 5 | 26.936430574 | 26.935599929 | -0.000830645 |
+
+  Means are **26.943319961 / 26.964966176 tok/s**. The movement is
+  **+0.021646215 tok/s / +0.08034%** and two pairs are flat/slower. Every run
+  reproduced 22 refills, width **6.090909091**, digest `6de63586df62ab2b`,
+  and last token 220.
+- Strict candidate-library and standalone-test builds passed under
+  `-Wall -Wextra -Werror` with only the established macOS 26.0 / MLX 26.2
+  linker warning. All candidate C++/Metal/header/test changes were removed
+  through `apply_patch`; the worktree returned clean and `git diff --check`
+  passed. PERF-FA108 closes both forms because the launch-only movement is
+  noise-scale and sequential arithmetic fusion regresses. The next candidate
+  needs material verifier arithmetic savings or a natural-prompt proposal
+  signal.

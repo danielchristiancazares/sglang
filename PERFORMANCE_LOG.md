@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max DFlash2 M=8 gate/up dispatch fusion, sampled direct `128 / 32 warm / 128 timed` | separate SG16/B32 gate/up five-sample mean **26.943319961 tok/s** | paired two-plane dispatch five-sample mean **26.964966176 tok/s** | **+0.021646215 / +0.08034%**, with two of five adjacent pairs flat/slower; exact trajectory preserved and complexity rejected. Sequential fused-SwiGLU arm regressed trace throughput **26.801071247 -> 26.413620964** | PERF-A077 exact PERF-A076 direct contract at selector temperature 1.15 | 2026-09-01 06:18 PDT |
 | M1 Max DFlash2 selector calibration, sampled served `6237+128`, real 131K pools | adjacent selector temperature 1.0: **15.434 / 15.449 / 15.443 / 15.443 / 15.443 tok/s**, mean **15.4424** | selector temperature 1.15: **15.870 / 15.884 / 15.890 / 15.896 / 15.893 tok/s**, mean **15.8866** | **+0.4442 / +2.876%**; exact 6,365 tokens in every sample, stable coherent digest within each setting, mean emitted width **3.878788 -> 4.031250**; retained opt-in with **4.1134 tok/s** to the floor | exact PERF-A065 contract plus `SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE=1.15` | 2026-09-01 06:04 PDT |
 | M1 Max DSpark target-state score, sampled served `6237+128`, real 131K pools | ratio-1.75 baseline **13.580 tok/s** | temporary score-0.525 bypass **13.652 tok/s** | one-sample **+0.072 / +0.530%** versus its no-bypass trace, while trailing selected cooldown-16 by **2.9876 tok/s**; real score/accepted-width Pearson **0.141** closes the scheduler and retains trace-only telemetry | PERF-A075 exact PERF-A073 contract with trace-only target score; temporary threshold source removed | 2026-09-01 05:33 PDT |
 | M1 Max native DSpark low-budget probe cooldown, sampled served `6237+128`, real 131K pools | confidence-budget ratio 1.75 mean **13.6058 tok/s** | 16 target-only refills after each M=2 choice: first five **17.028 / 17.080 / 17.036 / 17.102 / 14.952 tok/s**, mean **16.6396**; recovery **17.011** | all-sample **+3.0338 / +22.298%**; five normal samples within the six-request window mean **17.0514**; one transiently contended sample retained; exact tokens and one shared reasoning/output SHA-256 | PERF-A074 exact PERF-A073 contract plus `SGLANG_MLX_NATIVE_DSPARK_BYPASS_REFILLS=16` | 2026-09-01 05:10 PDT |
@@ -799,6 +800,7 @@ tree throughput can be ranked for production.
 | PERF-A074 | Skip a bounded number of DSpark draft/verify probes after the confidence scheduler selects the low-value M=2 tier. | Native DSpark refill scheduler, exact target-only target/draft-context advance, and trace telemetry | Retained opt-in at **16** bypass refills; default remains disabled | The first five real samples average **16.6396 tok/s**, including a retained transiently contended **14.952** sample; five normal samples within six requests average **17.0514**. Every request completes exact 6,365 tokens with shared SHA-256 `1d1398eb...`. The selected setting remains **3.3604 tok/s** below the floor. See PERF-FA102/103. |
 | PERF-A075 | Evaluate the trained DSpark confidence projection on the current normalized target hidden state before drafting. | Trace-only native target-state/Markov feature projection at the DSpark refill owner | Telemetry retained; threshold scheduler rejected and removed | Direct score-0.525 screens reached **33.222 / 32.788 tok/s**, yet the real request reached only **13.652 tok/s**. On the no-policy real trace, M=2/M=8 score ranges overlap and score versus accepted width has Pearson **0.141**. Faster-target DFlash mixing and a 64-column verifier tile also fail their gates. See PERF-FA104/105/106. |
 | PERF-A076 | Calibrate the learned DFlash2 selector distribution while forwarding exact proposal q to rejection sampling. | Native DFlash selector score owner and shared exact p/q verifier | Retained opt-in at temperature **1.15**; identity remains default | Five consecutive real-131K-pool sampled `6237+128` requests average **15.8866 tok/s**, **+2.876%** over the adjacent identity-temperature mean **15.4424**. Every sample completes exact 6,365 tokens; candidate mean emitted width rises **3.878788 -> 4.031250**. Temperature 0.95 regresses the real request to **13.739 tok/s**; see PERF-FA107. |
+| PERF-A077 | Submit the two exact M=8 affine gate/up projections together and test direct SwiGLU production. | Native SG16/B32 Metal QMM and shared target MLP owner | Rejected and removed | A sequential one-grid SwiGLU kernel regressed steady verify about **3.3 ms**. A two-plane paired grid preserved both outputs bit-exactly and moved five-sample direct mean only **26.943319961 -> 26.964966176 tok/s** (**+0.08034%**), with two adjacent pairs flat/slower. See PERF-FA108. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -3995,3 +3997,53 @@ tree throughput can be ranked for production.
   cleanly. Identity remains the default while the 1.15 setting stays opt-in;
   its selected real mean retains a **4.1134 tok/s** floor gap. The next branch
   measures DFlash verification-width economics at the natural request.
+
+### 2026-09-01 06:18 PDT - PERF-A077 M=8 gate/up fusion lacks an execution margin
+
+- Began from signed `095b4ba664479dbb1e44053a248040df4f9a209a`
+  (`perf(mps): calibrate DFlash selector temperature`), 57 commits ahead of
+  `origin/main`, with a clean worktree, clear listener/process preflight, 92%
+  free memory, zero throttled pages, and normal thermal/performance status.
+- Reopened PERF-FA081 only at its recorded boundary: a native M=8 kernel
+  consumed the original gate/up affine tensors without concatenated storage.
+  The first form ran gate then up in one threadgroup, kept only four
+  accumulators live per phase, retained the gate reduction across phases, and
+  emitted the BF16 SwiGLU product directly. A permanent C++ probe established
+  bit-exact output against separate SG16/B32 products plus MLX BF16
+  SiLU/multiply.
+- The exact traced control at selector temperature 1.15 reached
+  **26.801071247 tok/s**, 22 timed refills, width **6.090909091**, digest
+  `6de63586df62ab2b`, and last token 220. Steady verify generally measured
+  **186.215--187.345 ms**. The sequential fused-SwiGLU form preserved the
+  trajectory while reaching **26.413620964 tok/s** and steady verify
+  **189.425--190.547 ms**. Serializing the two formerly independent output
+  grids added roughly **3.3 ms** per verification and closed this form.
+- The second form narrowed the candidate to launch submission only. One Metal
+  grid used its z plane to select gate or up tensors and wrote two independent
+  outputs; each workgroup retained the selected SG16/B32 arithmetic and
+  occupancy, and the existing MLX SiLU/multiply remained the consumer.
+  Standalone K/N `512/256` gate and up outputs were both bit-exact against two
+  independent selected-kernel calls.
+- Five process-isolated adjacent no-trace pairs on exact `128 / 32 warm / 128
+  timed` produced:
+
+  | Pair | Separate tok/s | Paired tok/s | Delta tok/s |
+  |---:|---:|---:|---:|
+  | 1 | 26.928227174 | 26.988569313 | +0.060342139 |
+  | 2 | 26.969434153 | 26.966388240 | -0.003045913 |
+  | 3 | 26.932138773 | 26.973712039 | +0.041573266 |
+  | 4 | 26.950369132 | 26.960561359 | +0.010192227 |
+  | 5 | 26.936430574 | 26.935599929 | -0.000830645 |
+
+  Means are **26.943319961 / 26.964966176 tok/s**, a candidate movement of
+  **+0.021646215 tok/s / +0.08034%**. Every arm reproduced 22 refills, width
+  **6.090909091**, digest `6de63586df62ab2b`, and last token 220. The movement
+  is smaller than pair noise and does not justify a new kernel, public helper,
+  test surface, environment switch, or production server window.
+- Both candidate libraries and standalone tests built under
+  `-Wall -Wextra -Werror` with only the established macOS 26.0 / MLX 26.2
+  linker warning. All experimental source and tests were removed through
+  `apply_patch`; `git diff --check` returned the worktree to clean before this
+  evidence update. PERF-FA108 closes both forms. The next branch requires a
+  material target-verifier cost mechanism or a proposal signal with natural
+  acceptance correlation.
