@@ -201,6 +201,7 @@ class Engine {
   void snapshot();
   void restore();
   void forward_argmax(const int32_t* tokens, int n, int32_t* out);
+  mlx::core::array mtp_seed_hidden() const;
   void mtp_reset();
   int mtp_draft(int32_t bonus, int32_t* drafts, int n_draft);
   mlx::core::array mtp_forward(
