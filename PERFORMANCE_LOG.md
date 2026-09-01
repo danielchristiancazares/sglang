@@ -5,7 +5,7 @@
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
 | M1 Max native full-Q4 plus affine-W4 DFlash2, sampled direct `128 / 32 warm / 128 timed` | adjacent selected-QMM control **9.304876 tok/s**, mean emitted width **3.175** | M8 K-split **11.241518 / 11.243767 tok/s**, mean **11.242643**, mean emitted width **2.909091** | **+1.937767 / +20.825%** from adjacent control; **8.757357 tok/s** remains to the served floor; steady cycle is about **257--263 ms** | add `SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1` to the signed PERF-A059 command | 2026-09-01 02:17 PDT |
-| M1 Max full-Q4 plus affine-W4 DFlash2, Codex 0.151.0 xhigh tool turn, real 131K pools | first 8,192-token external prefill exhausted Metal; 2,048-token external continuation bypassed the native engine | exact one-tool turn and final marker completed; first prefill **90.75 prompt tok/s**, decode about **7.6--11.85 tok/s**, tool continuation peak **15.20 tok/s** | native 2,048-token target/capture units remove the first-request residency failure; behavior passes and generation remains below 20 | exact server and bounded Codex commands recorded in `notes/experiment-log.md` under PERF-A059 | 2026-09-01 02:03 PDT |
+| M1 Max full-Q4 plus affine-W4 DFlash2, Codex 0.151.0 xhigh tool turn, real 131K pools | pre-M8 exact turn: first prefill **90.75 prompt tok/s**, decode about **7.6--11.85 tok/s**, continuation peak **15.20 tok/s** | M8 exact turn: first prefill **95.05 prompt tok/s**, steady reported decode intervals **10.54--17.20 tok/s**, continuation prefill **80.48 tok/s** | one exact tool and final marker, exit zero; behavior passes and generation remains below 20 | exact server and bounded Codex commands recorded in `notes/experiment-log.md` under PERF-A061 | 2026-09-01 02:28 PDT |
 | M1 Max full-Q4 DFlash2 steady verification cycle | stock MLX affine path: draft **41.288--41.686 ms**, verify **352.531--356.089 ms**; partial restore/re-forward **83--191 ms** | selected affine QMM: draft **34.211--37.378 ms**, verify **305.130--305.604 ms**; accepted-prefix replay about **2--6 ms** | draft and verify each improve about **15%** at the measured bounds; recurrent partial commit becomes a low-single-digit-ms stage | `SGLANG_MLX_NATIVE_TRACE_SPEC=1` matched direct full-Q4 screens | 2026-09-01 02:03 PDT |
 | M1 Max native early-out27 v2 with recurrent QKV restored from Q4, sampled served `6237+128`, real 131K pools | selected Q2 checkpoint **20.1556 tok/s** mean with reproducible malformed extra tool call | two independent QKV windows **20.0222 / 20.0292 tok/s** mean; every sample above 20 | **-0.1334 / -0.662%** from selected mean; one clean xhigh tool turn, one post-window turn recovered after a malformed extra call | `SGLANG_MLX_NATIVE_LINEAR_ATTN_OVERRIDE_PATH=<immutable-q4> SGLANG_MLX_NATIVE_LINEAR_ATTN_OVERRIDE_SCOPE=qkv ... bench_openai_stream.py --input-tokens 6237 --output-tokens 128 ...`; then the pinned xhigh Codex shell gate | 2026-09-01 00:26 PDT |
 | M1 Max native early-out27 v2 with recurrent QKV+Z restored from Q4, sampled served `6237+128`, real 131K pools | selected Q2 checkpoint **20.1556 tok/s** mean with reproducible malformed extra tool call | first QKV+Z sample **19.948 tok/s** with a clean xhigh tool turn | **-0.2076 / -1.030%** from selected mean; **0.052 tok/s** below floor; one `/bin/pwd`, correct result, exact final marker, exit 0 | same precision-overlay command with scope `qkvz`; then the pinned xhigh Codex shell gate | 2026-09-01 00:26 PDT |
@@ -772,7 +772,8 @@ tree throughput can be ranked for production.
 | PERF-A056 | Restore only the precision-critical recurrent projections from immutable Q4 weights. | Native Qwen3.8 checkpoint loader and gated-delta projections | Speed floor passed; behavior narrowing active | QKV-only restoration sustains **20.0222 / 20.0292 tok/s** across independent five-sample windows with every sample above 20. One xhigh turn passed cleanly; a post-window turn completed after one malformed extra call. QKV+Z passes a clean xhigh turn at **19.948 tok/s**, **0.052 tok/s** below the floor. |
 | PERF-A057 | Integrate the Qwen3.8-specific DFlash2 draft into the native MLX C++ lane. | Native draft checkpoint loader, block proposal/selector, target verify, and accepted-state commit | Runtime and real-client behavior qualified; throughput active | The exact 175-tensor affine-W4 artifact loads through `Engine::load_mtp`; native capture, five draft layers, selector, exact p/q verification, and accepted-path commit complete one exact Codex xhigh tool turn. Direct sampled throughput is **9.300145 tok/s**, and real-client telemetry remains below 20. |
 | PERF-A059 | Bound DFlash target/capture prefill inside the native engine and retain verified accepted-prefix state. | Native `Engine::prefill`, target capture, recurrent tape, full-attention logical commit, and affine small-batch QMM | Retained in signed `d57a6ac11c` | Internal 2,048-token units complete the 6.2K Codex prompt without changing the Python ABI. W2/W4 QMM parity passes long-K and wide-N cases; recurrent prefix replay is FP32 bit-exact for lengths 1--7; focused native engine suite passes 8 tests. |
-| PERF-A060 | Partition M=8 affine-W4 verification products across SIMD groups. | Native Metal quantized-matmul owner for DFlash target verification | Retained in signed `b853514b5c`; real-client gate next | Two process-isolated samples average **11.242643 tok/s** versus adjacent control **9.304876**, a **20.825%** gain. Verify falls from about **305--306 ms** to **225.5--226.7 ms**; parity passes long-K, wide-N, and invalid-contract cases. |
+| PERF-A060 | Partition M=8 affine-W4 verification products across SIMD groups. | Native Metal quantized-matmul owner for DFlash target verification | Retained in signed `b853514b5c`; real-client behavior passed | Two process-isolated samples average **11.242643 tok/s** versus adjacent control **9.304876**, a **20.825%** gain. Verify falls from about **305--306 ms** to **225.5--226.7 ms**; parity passes long-K, wide-N, and invalid-contract cases. |
+| PERF-A061 | Qualify the M8 K-split path through a real Codex `xhigh` tool turn with real 131K pools. | Native DFlash server, Responses API, reasoning parser, tool parser, and Codex client | Behavior qualified; served-throughput work active | Thread `01a05c45-6b01-7a21-8a69-065170fd3402` executed exactly one requested command and returned exact `QWEN38_DFLASH2_READY`, exit zero. First prefill reached **95.05 tok/s** and reported generation intervals reached **17.20 tok/s**; live verify remains about **251--253 ms**. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -3367,3 +3368,36 @@ tree throughput can be ranked for production.
 - Decision: retain as opt-in signed commit
   `b853514b5c8e18fe073a30d54103b2149e70257d`. The real 131K-configured Codex
   xhigh behavior and served-throughput gate is next.
+
+### 2026-09-01 02:28 PDT - PERF-A061 M8 real Codex qualification
+
+- Launched the committed full-Q4 target plus affine-W4 DFlash2 draft with real
+  131,072 context and token pools, one request, five auxiliary slots, internal
+  2,048-token native DFlash prefill units, and both selected affine-QMM
+  switches. The server resolved the Qwen3 reasoning and Qwen3 Coder tool
+  parsers, incremental output, language-only mode, radix disabled, and native
+  sampling seed 42. `/health`, `/v1/models`, and `/model_info` passed; the
+  model list reported 131,072 maximum length and image/audio understanding
+  remained disabled.
+- The bounded Codex 0.151.0 request used the isolated pinned configuration,
+  explicit `model_context_window=131072`, compaction threshold 117,964, and
+  `model_reasoning_effort="xhigh"`. Thread
+  `01a05c45-6b01-7a21-8a69-065170fd3402` called exactly
+  `/bin/zsh -c '/usr/bin/printf QWEN38_DFLASH2_TOOL=passed'`, observed exact
+  stdout and exit zero, then returned exact `QWEN38_DFLASH2_READY`. Codex
+  exited zero with 12,822 input, 349 output, and 296 reasoning-output tokens.
+- The first request prefetched 6,228 tokens at **95.05 prompt tok/s**. After
+  the initial decode interval, server telemetry reported **10.54, 12.46,
+  13.66, 13.72, 14.16, and 17.20 tok/s**. Natural accepted counts spanned
+  zero through seven. The 6,594-token tool-result continuation prefetched at
+  **80.48 prompt tok/s** and completed the final marker.
+- Live first-request cycles generally spent **30.7--35.9 ms** drafting and
+  **251.2--253.5 ms** verifying, with sampling about **0.6--0.8 ms** and
+  ordinary accepted-prefix commits about **2.5--4.9 ms**. This preserves the
+  direct M8 execution win while identifying roughly 25--27 ms of additional
+  target verification cost at a 6.2K full-attention history.
+- Post-turn `/health` passed. The foreground server exited cleanly on
+  `Ctrl+C`; port 30000 and matching server/compiler processes are absent,
+  memory is 94% free, and macOS reports normal thermal/performance status.
+  The verifier remains the next measured optimization owner, and the hard
+  real served generation floor remains 20 tok/s.

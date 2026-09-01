@@ -18270,3 +18270,84 @@ mean 13.929045  17.125658 446.051        39.730
   as good. `main` is now 36 commits ahead of `origin/main`. The worktree then
   contains only this recovery-record update. The next gate is a clean real
   131K-configured Codex xhigh tool turn with the K-split switch enabled.
+
+### 2026-09-01 02:28 PDT - M8-backed DFlash2 passes the real Codex xhigh tool gate
+
+- Began from clean signed HEAD
+  `f370d51169521562a020e332c6ae7345e67d9083` on `main`, 37 commits ahead of
+  `origin/main`. Port 30000 and matching SGLang/Metal compiler processes were
+  absent. System memory was 94% free and macOS reported no thermal or
+  performance warning.
+- Exact server launch was:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER -u MLX_METAL_FAST_SYNCH \
+    MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    PYTHONPATH=/Users/dcazares/sglang/python \
+    SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 \
+    SGLANG_MLX_CLEAR_CACHE_STEPS=0 \
+    SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_MTP_DIR=/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-MLX-AffineQ4 \
+    SGLANG_MLX_NATIVE_SMALL_BATCH_QMM=1 \
+    SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1 \
+    SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT=1 \
+    SGLANG_MLX_NATIVE_TRACE_SPEC=1 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    --served-model-name qwen3.8-27b --language-model-only \
+    --context-length 131072 --max-total-tokens 131072 \
+    --max-running-requests 1 --max-mamba-cache-size 5 \
+    --chunked-prefill-size 8192 --max-prefill-tokens 8192 \
+    --disable-radix-cache --mlx-enable-sampling --sampling-defaults model \
+    --random-seed 42 --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --stream-interval 4 --scheduler-recv-interval 4 \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments confirmed real 131,072 context and total-token pools,
+  one running request, five auxiliary slots, BF16 KV, 8,192-token outer
+  prefill, radix disabled, native sampling seed 42, both Qwen parsers,
+  incremental output, and language-only mode. `/health`, `/v1/models`, and
+  `/model_info` passed. The model list reported `qwen3.8-27b` with maximum
+  length 131,072; image and audio understanding remained disabled.
+- Exact bounded client command was:
+
+  ```bash
+  env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home \
+    SGLANG_API_KEY=local \
+    /opt/homebrew/bin/timeout --signal=INT --kill-after=10s 240s \
+    /opt/homebrew/bin/codex exec --strict-config --ephemeral --ignore-rules \
+    -C /Users/dcazares/sglang \
+    -c model_context_window=131072 \
+    -c model_auto_compact_token_limit=117964 \
+    -c 'model_reasoning_effort="xhigh"' \
+    --color never --json \
+    'Use exec_command exactly once. Set cmd to /usr/bin/printf QWEN38_DFLASH2_TOOL=passed. After it succeeds, reply exactly QWEN38_DFLASH2_READY.'
+  ```
+
+- Thread `01a05c45-6b01-7a21-8a69-065170fd3402` prefetched 6,228 tokens at
+  **95.05 prompt tok/s**. It issued exactly one tool,
+  `/bin/zsh -c '/usr/bin/printf QWEN38_DFLASH2_TOOL=passed'`; stdout was exact
+  and exit status was zero. The final response was exact
+  `QWEN38_DFLASH2_READY`, Codex exited zero, and usage was 12,822 input, 349
+  output, and 296 reasoning-output tokens. After the first telemetry interval,
+  reported generation rates were **10.54, 12.46, 13.66, 13.72, 14.16, and
+  17.20 tok/s**. Natural acceptance ranged from zero through seven. The
+  6,594-token tool-result continuation prefetched at **80.48 prompt tok/s**
+  and completed the exact marker.
+- At 6.2K target history, steady cycles generally measured **30.7--35.9 ms**
+  draft, **251.2--253.5 ms** verify, about **0.6--0.8 ms** sample, and
+  **2.5--4.9 ms** ordinary commit. Full-acceptance cycles retained the fast
+  tape path; two isolated first-use/state-transition commits measured about
+  13.5 and 68.1 ms. The live history adds roughly 25--27 ms to the short
+  direct harness's **225.5--226.7 ms** verifier. This makes target verification
+  the measured next optimization owner.
+- Post-turn `/health` passed. The foreground server PID 9721 and its children
+  exited through `Ctrl+C`. Port 30000 is free, no matching SGLang/Metal
+  compiler work remains, memory returned to 94% free, and macOS
+  thermal/performance status is normal. The behavior gate passes with the M8
+  kernel enabled; the real served 20 tok/s generation gate remains open.
