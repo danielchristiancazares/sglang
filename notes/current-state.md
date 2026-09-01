@@ -187,10 +187,11 @@ dots, A106 vector input reads, A108 parameter broadcast, alternate threadgroup
 geometry, mixed-target Q4 custom execution, and the published Q4 MTP head are
 closed by current measurements. Dense BF16 recurrent b/a row fusion is exact
 and aggregate-flat at **18.993221731 vs 18.993383731 tok/s** across ten samples
-per arm, so its source remains outside `main`. A107's distinct 128-bit input
-read form and A101's paired-lane mapping remain unmeasured. Exact 131K serving,
-sampled behavior, and Codex `xhigh` qualification follow only after a direct
-candidate clears 20 with margin.
+per arm, so its source remains outside `main`. A101 paired-lane word sharing
+and A107 128-bit activation reads are exact and slower across the production-
+shape matrix; both are closed. Exact 131K serving, sampled behavior, and Codex
+`xhigh` qualification follow only after a direct candidate clears 20 with
+margin.
 
 The requested Q5 lane now serves through a provenance-pinned derived artifact.
 Bartowski's immutable `Qwen3.8-27B-Q5_K_S.gguf` source is pinned at revision
@@ -416,8 +417,9 @@ Each even SIMD lane reads both adjacent ten-byte packs through five aligned
 neighbor. AIR preserves that masked mapping. Dynamic weight-load operations
 fall from 160 to 80 per SIMD group and output row while bytes remain 320. A
 standalone C++ pack/unpack check passes **1,001,026** deterministic cases.
-Fresh-session Metal parity and a matched kernel benchmark determine whether
-the shuffle cost improves the now-selected A100 path.
+Fresh-session parity and complete digests pass, while gate/up, down, and
+attention-output regress roughly **5--9%** in the matched matrix. A101 is
+closed under the current compiler/GPU topology.
 
 PERF-A103 supplies a branchless middle point. Each lane rounds its ten-byte
 segment back to the pair's aligned 20-byte base and reads three aligned 32-bit

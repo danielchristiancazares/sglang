@@ -22340,3 +22340,52 @@ mean 13.929045  17.125658 446.051        39.730
   copy contains Daniel's A095/Q4 changes; stage the validated candidate blob
   directly into the index so those bytes remain untouched in the working
   tree. Exact 131K and Codex gates remain pending.
+
+### 2026-09-01 15:46 PDT - A101/A107 close the queued Q5 load variants
+
+- Signed commit `59a50653c4d5bdc9a4ed1bc18f0451da063f9f77`
+  (`perf(mlx): load Q5 words at aligned width`) promoted A100 plus its records.
+  Its EDDSA signature verifies good. The candidate engine blob was staged
+  directly; Daniel's working-copy engine hash remained exactly
+  `0260ff714075fd6dc01619a544d7071870d75955` before and after commit. The
+  index returned empty and only the three existing user-owned code paths
+  remained modified.
+- Mutated the now-artifact-backed `perf-a100` detached worktree to A101. Even
+  lanes load one 20-byte adjacent Q5 pair through `packed_uint4` plus one
+  trailing `uint`; three uniform `simd_shuffle_up` calls supply words 2--4 to
+  odd lanes. Each lane reconstructs its original ten-byte windows and executes
+  the unchanged sixteen FP32 FMAs. Strict full-library, parity, and
+  microbenchmark builds pass. Artifact SHA-256 values are A101 dylib
+  `36821ab373384d69366ea4614586260f2fdb4400552f24ef47da309ac2d8d9b8`,
+  parity `0282eb53ff3a91d1312511d3341e8cc8dca8357c21800f93ee509406157f657e`,
+  and benchmark
+  `bdf6778824cf7eccd56fb0aa3d957716d113cf424a234cb4190e11ba80f53ad2`.
+- A101 parity returns **0.03125 / 0.03125 / 0.0234375** and all four digests
+  match A100. Its order/reverse milliseconds versus A100 are gate/up
+  **0.505742/0.469187 vs 0.483396/0.433035**, down
+  **0.467180/0.464544 vs 0.431774/0.436414**, attention-output
+  **0.345742/0.353793 vs 0.320258/0.330694**, and value
+  **0.309436/0.304927 vs 0.301531/0.303991**. The masked branch and shuffles
+  cost more than the reduced dynamic load count; A101 is rejected before a
+  full-model launch.
+- Tightened the persistent A106 worktree to A107. Two `uint4` loads fetch the
+  same 32 activation bytes; their four 64-bit halves retain the four
+  `bfloat4` conversions, sequential input sum, and all downstream arithmetic.
+  Strict builds pass. Artifact SHA-256 values are A107 dylib
+  `50a4fc1874b473dcda4c2e0eb029b753f181333cd2a33cff7f352f3ffb6d9d3e`,
+  parity `dec8fa1a7c990e8cc4ce6c75bfdb5d17688a14cf726683754e9bfb06ce88e83f`,
+  and benchmark
+  `06e8e0404eefe288a4290eeaf9dfefce47d5e8c5c978a0d8608456b0319c2ac3`.
+- A107 parity and digests match A094. Its order/reverse milliseconds versus
+  A094 are gate/up **0.486450/0.438125 vs 0.475459/0.434990**, down
+  **0.444962/0.441823 vs 0.426812/0.435401**, attention-output
+  **0.333475/0.337715 vs 0.338058/0.330822**, and value
+  **0.303557/0.306522 vs 0.299531/0.301201**. Wider transactions do not improve
+  the dominant high-byte projections; A107 is rejected before full-model work.
+- PERF-FA129 records both closures. A100 remains selected at
+  **19.134907634 tok/s**. Port 30000 and matching model/compiler workloads are
+  clear after the batch; all test/benchmark processes exited naturally.
+- The required fresh analysis-only profiling subagent attempt returned
+  `agent thread limit reached`; this environment still exposes only the
+  primary collaboration slot. Profiling and candidate reconciliation remain
+  with the primary agent.
