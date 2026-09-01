@@ -237,6 +237,7 @@ class Engine {
   void draft_commit_verified_prefix(
       const TargetForward& verified, int token_count);
   int32_t target_only_spec_refill(int32_t token);
+  float dspark_anchor_score(int32_t token);
   void dflash_spec_refill(int32_t token);
   void load_dspark(
       const std::unordered_map<std::string, mlx::core::array>& weights);

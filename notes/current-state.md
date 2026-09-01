@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-05:10 PDT.
+05:33 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -281,8 +281,23 @@ sample reaches **17.011**. Five normal samples within the six-request window
 average **17.0514 tok/s**. Every request completes exact 6,365 tokens with one
 shared reasoning/output digest. Cooldown sixteen is the strongest measured
 speculative serving lane and remains opt-in; it retains a **3.3604 tok/s** gap
-to the floor on the all-sample mean. A cheap pre-draft signal or further
-target-only improvement is required to remove periodic probe cost.
+to the floor on the all-sample mean.
+
+The cheap target-state predictor branch is now closed as a scheduler. Its
+score-0.525 direct screens reached **33.222 / 32.788 tok/s**, while the exact
+natural request reached only **13.652 tok/s**. On a no-policy real trace, M=2
+and M=8 score ranges overlap and score versus accepted width has Pearson
+**0.141**. The target-state score remains available under the existing trace
+flag as diagnostic telemetry; its parser and scheduling branch were removed.
+Longer fixed cooldowns 64/128 reach only **18.402 / 19.664 tok/s** directly.
+
+DFlash2 also cannot reuse the faster mixed-precision target unchanged:
+QKV-only and complete recurrent restoration collapse direct accepted width to
+**2.653 / 1.984** and throughput to **10.130 / 7.841 tok/s**. A two-phase
+64-column M8 verifier preserves the selected digest and width yet falls to
+**8.961 tok/s**; it was removed. The full-Q4 target and SG16/B32 verifier
+remain the compatible selections. Further progress returns to shared target
+decode cost while preserving the qualified target-only lane above 20.
 
 Two DSpark proposal-fidelity candidates are closed. Independently applying
 target top-k/top-p filtering to each draft row fell to **6.997461 tok/s** and

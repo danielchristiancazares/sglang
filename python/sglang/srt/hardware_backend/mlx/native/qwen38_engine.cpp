@@ -3565,6 +3565,19 @@ int32_t Engine::target_only_spec_refill(int32_t token) {
   return spec_buf_[0];
 }
 
+float Engine::dspark_anchor_score(int32_t token) {
+  array target_hidden = mx::fast::rms_norm(
+      expand_dims(last_hidden_, 1), final_norm_, cfg_.rms_norm_eps);
+  array anchor(&token, {1, 1}, mx::int32);
+  array score = dspark_confidence(
+      target_hidden,
+      take(dspark_markov_w1_, anchor, 0),
+      dspark_confidence_weight_,
+      dspark_confidence_bias_);
+  eval(score);
+  return score.item<float>();
+}
+
 void Engine::dflash_spec_refill(int32_t token) {
   constexpr int kDraftTokens = 7;
   spec_buf_n_ = 0;
@@ -3621,6 +3634,14 @@ void Engine::dspark_spec_refill(int32_t token) {
 
   const bool sampled = sampling_enabled_;
   const bool confidence_budget = dspark_confidence_cost_ratio_ > 0.0f;
+  const bool trace = native_spec_trace_enabled();
+  if (trace) {
+    const float anchor_score = dspark_anchor_score(token);
+    std::fprintf(
+        stderr,
+        "qwen38_dspark anchor_score=%.6f\n",
+        anchor_score);
+  }
   array draft_hidden = dspark_forward(token);
   auto [draft_tokens, draft_probs] =
       dspark_propose(draft_hidden, token, sampled);
