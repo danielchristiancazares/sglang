@@ -2854,22 +2854,115 @@ option, or serving dispatch was added.
   effectively than sixteen refills.
 - Scope: native affine-W4 DSpark, ratio 1.75, exact sampled
   `128 / 32 warm / 256 timed`, selected full-Q4 target, and seed 42.
-- Attempted change: screened fixed cooldowns **4, 8, 16, and 32** through the
+- Attempted change: screened fixed cooldowns **4, 8, 16, 32, 64, and 128** through the
   checked runtime control while preserving every other direct setting.
-- Benchmark evidence: the four settings reached **19.198827552 /
-  17.781301933 / 24.332648695 / 19.215717015 tok/s**. Their respective
-  refill counts were **151 / 175 / 104 / 173**, and every setting followed a
+- Benchmark evidence: the six settings reached **19.198827552 /
+  17.781301933 / 24.332648695 / 19.215717015 / 18.401520476 /
+  19.663812056 tok/s**. Their respective refill counts were
+  **151 / 175 / 104 / 173 / 249 / 235**, and every setting followed a
   different exact sampled trajectory. The no-cooldown ratio-1.75 control was
-  **24.494388127 tok/s**.
+  **24.494388127 tok/s**. The longer settings approach target-only behavior
+  with mean widths **1.028112450 / 1.089361702**.
 - Correctness evidence: all settings completed exact 256-token sampling with
   finite nonempty output; strict warning-as-error candidate builds passed.
 - Failure mode: fixed cooldown changes target sampling and therefore the
   future confidence/acceptance trajectory. Four and eight probe too often;
   thirty-two misses useful high-confidence regions on this screen.
-- Why not to retry unchanged: 4/8/32 trail the selected 16-refill screen by
-  **5.116931143 / 6.551346762 / 5.116931680 tok/s** respectively.
+- Why not to retry unchanged: 4/8/32/64/128 trail the selected 16-refill
+  screen by **5.116931143 / 6.551346762 / 5.116931680 / 5.931128219 /
+  4.668836639 tok/s** respectively.
 - Reopen only if: a representative teacher-forced trace supplies a stable
   counterfactual trajectory or a cheap current-token predictor replaces
   periodic probing.
 - Related commit or revert: the generic checked cooldown remains; PERF-A074
   selects **16** only as an opt-in measured setting.
+
+## PERF-FA104 - DSpark target-state anchor bypass
+
+- Hypothesis: the trained confidence projection evaluated on the current
+  normalized target hidden state and current-token Markov embedding could
+  identify low-value draft cycles before paying for the five-layer DSpark
+  block.
+- Scope: native affine-W4 DSpark, ratio 1.75, exact sampled direct
+  `128 / 32 warm / 256 timed`, the representative real-131K-pool
+  `6237+128` request, selected full-Q4 target, and seed 42.
+- Attempted change: added a checked temporary threshold that executed exact
+  target-only refill whenever the trace-only target-state score exceeded the
+  configured value. Thresholds 0.475, 0.5, 0.525, 0.55, and 0.6 were screened.
+- Benchmark evidence: direct rates were **16.393088197 / 30.299622883 /
+  33.221518376 / 30.796768648 / 16.111013104 tok/s**. Threshold 0.525 repeated
+  at **32.788326664** and **32.834047040 tok/s**. The real threshold-0.525
+  request reached only **13.652 tok/s**, below cooldown-16's **16.6396 tok/s**
+  mean. Its adjacent no-threshold trace reached **13.580 tok/s**.
+- Correctness evidence: each direct screen and both real requests completed
+  exact sampled decoding. The threshold request completed 6,365 tokens with
+  `finish_reason=length` and recorded SHA-256 `c92e4510...`; health,
+  language-only metadata, and verified cleanup passed.
+- Failure mode: the synthetic trace's score relation does not transfer to the
+  natural prompt. On 48 no-policy real cycles, M=2/M=8 score ranges overlap,
+  score versus accepted width has Pearson **0.140841**, and threshold 0.525
+  classifies 13 cycles from each budget tier as bypasses.
+- Why not to retry unchanged: a one-sample **0.072 tok/s** movement over the
+  adjacent baseline is far below the selected cooldown and the required floor,
+  while the predictor has no useful real-prompt separation.
+- Reopen only if: a calibrated current-token feature demonstrates stable
+  held-out natural-prompt separation and improves cooldown-16 in a complete
+  five-sample real window.
+- Related commit or revert: the threshold parser, state, and scheduling branch
+  were removed. PERF-A075 retains only target-state score telemetry under the
+  existing speculative trace flag.
+
+## PERF-FA105 - DFlash2 on the faster mixed-precision target
+
+- Hypothesis: attaching DFlash2 to the QKV-restored target that already clears
+  20 tok/s would preserve enough proposal overlap to add speculative margin.
+- Scope: affine-W4 DFlash2, native exact p/q verification, selected early-out27
+  v2 target, immutable Q4 recurrent-projection donor, QKV-only and complete
+  recurrent override scopes, seed 42, and direct sampled
+  `128 / 32 warm / 128 timed`.
+- Attempted change: changed the target checkpoint and existing precision
+  override only; the DFlash artifact, learned selector, verifier, sampler, and
+  kernels stayed fixed.
+- Benchmark evidence: QKV-only reached **10.130497494 tok/s**, 49 refills, and
+  width **2.653061224**. Complete recurrent restoration reached
+  **7.841259160 tok/s**, 64 refills, and width **1.984375**. The compatible
+  full-Q4 target reproduces **31.317933897 tok/s**, 19 refills, and width
+  **6.684210526**.
+- Correctness evidence: both mixed-target screens completed exact rejection
+  sampling with finite 128-token output and recorded deterministic digests.
+- Failure mode: the draft is trained against the full-Q4 target distribution;
+  the faster mixed target changes logits enough to collapse accepted width.
+- Why not to retry unchanged: both precision scopes lose more than 21 tok/s
+  directly before server overhead.
+- Reopen only if: a DFlash2 checkpoint is trained or distilled against the
+  selected mixed target, with measured natural-prompt proposal overlap.
+- Related commit or revert: no source change was retained; both existing
+  checkpoints remain immutable.
+
+## PERF-FA106 - Two-phase 64-column M8 affine verifier tile
+
+- Hypothesis: one threadgroup covering 64 output columns could reuse four M=8
+  input fragments across two 32-column weight-staging phases and halve the
+  output grid within the selected 32 KiB storage budget.
+- Scope: SG16 affine-W4 M=8 verifier, full-Q4 target, affine-W4 DFlash2,
+  selected direct `128 / 32 warm / 128 timed`, and exact p/q sampling.
+- Attempted change: temporarily doubled the output tile to 64, retained a
+  32-column staging tile, held eight FP32 SIMD-matrix accumulators, and reused
+  four BF16 input fragments across both output halves.
+- Benchmark evidence: direct throughput fell from the restored 32-column
+  **31.317933897 tok/s** to **8.960931772 tok/s**, a
+  **22.357002125 tok/s / 71.387219%** regression. Both arms used 19 refills and
+  mean width **6.684210526**.
+- Correctness evidence: warning-as-error library/test builds passed. Synthetic
+  M8 parity passed K/N `512/256`, `5120/64`, and `512/6144`; the full-model
+  candidate reproduced digest `46bd4bb035b72c2b` and last token 20.
+- Failure mode: the eight accumulator fragments plus retained input fragments
+  create severe register/occupancy pressure, while halving the threadgroup grid
+  removes parallelism.
+- Why not to retry unchanged: exact whole-model throughput regresses by more
+  than 70% with unchanged acceptance.
+- Reopen only if: a device or kernel representation can hold the wider tile
+  without register pressure and an isolated real-tensor microbenchmark first
+  beats SG16/B32.
+- Related commit or revert: the 64-column source was removed; the signed
+  SG16/B32 kernel remains exact and selected.

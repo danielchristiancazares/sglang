@@ -19461,3 +19461,159 @@ mean 13.929045  17.125658 446.051        39.730
   Periodic cooldown alone cannot remove the remaining floor gap because every
   probe still pays complete draft and target verification. The next branch
   requires a cheap pre-draft signal or another target-only decode improvement.
+
+### 2026-09-01 05:33 PDT - DSpark target-state score and shared verifier screens
+
+- Began from clean signed HEAD
+  `8f58bd5b5bed3186d3c3c619a6e044ee4203bf7b`, 55 commits ahead of
+  `origin/main`. Its EDDSA signature verified as good. Port 30000 and matching
+  SGLang/direct/compiler processes were clear; memory was 92--93% free with
+  zero throttled pages and macOS reported normal thermal/performance status.
+- Added trace-only native evaluation of the existing trained DSpark confidence
+  projection over the normalized current target hidden state plus the
+  current-token Markov embedding. The evaluation runs only when
+  `SGLANG_MLX_NATIVE_TRACE_SPEC=1`; ordinary decode retains the prior path and
+  cost. The strict candidate library was
+  `/private/tmp/libqwen38_dspark_anchor_trace.dylib`.
+- A ratio-1.75 sampled direct `128 / 32 warm / 256 timed` trace reached
+  **24.321012666 tok/s**, 47 timed refills, mean emitted width
+  **5.553191489**, digest `75fac01a0ef1f7d8`, and last token 19. Across all 68
+  warmup/timed cycles, M=2 was selected 22 times and M=8 46 times. Their
+  target-state scores averaged **0.476591 / 0.407225**, with ranges
+  **0.286968--0.860604 / 0.314893--0.491090**. Pearson score correlation was
+  **-0.539047** with official first-position confidence and **-0.291199** with
+  accepted length. A score above 0.5 identified six M=2 cycles and zero M=8
+  cycles on this synthetic trace. The traced rate is within **0.02194 tok/s**
+  of the adjacent **24.34295 tok/s** telemetry control.
+- Temporarily implemented a checked pre-draft bypass through
+  `SGLANG_MLX_NATIVE_DSPARK_ANCHOR_BYPASS_THRESHOLD`. Exact direct thresholds
+  0.475, 0.5, 0.525, 0.55, and 0.6 produced:
+
+  | Threshold | Tok/s | Timed refills | Mean width | Digest | Last token |
+  |---:|---:|---:|---:|---|---:|
+  | 0.475 | 16.393088197 | 87 | 2.908045977 | `0a207a3f9492ad6f` | 11 |
+  | 0.5 | 30.299622883 | 49 | 5.142857143 | `bedd60cde78e6369` | 17 |
+  | 0.525 | 33.221518376 | 44 | 5.772727273 | `bedd60cde78e6369` | 17 |
+  | 0.55 | 30.796768648 | 44 | 5.772727273 | `bedd60cde78e6369` | 17 |
+  | 0.6 | 16.111013104 | 96 | 2.708333333 | `d7d3178d3c9a6003` | 19 |
+
+  A fresh threshold-0.525 repeat reached **32.788326664 tok/s** on the same
+  trajectory. A traced repeat reached **32.834047040 tok/s** and recorded 18
+  target-only bypasses, nine M=2 verifies, and 33 M=8 verifies across warmup
+  and timing.
+- Rebuilt the repository dylib and launched the threshold-0.525 real gate in
+  the foreground with root PID 14178 using exactly:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER -u MLX_METAL_FAST_SYNCH \
+    MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    PYTHONPATH=/Users/dcazares/sglang/python \
+    SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 \
+    SGLANG_MLX_CLEAR_CACHE_STEPS=0 SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_MTP_DIR=/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DSpark-MLX-AffineQ4 \
+    SGLANG_MLX_NATIVE_SMALL_BATCH_QMM=1 \
+    SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1 \
+    SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT=1 \
+    SGLANG_MLX_NATIVE_TRACE_SPEC=1 \
+    SGLANG_MLX_NATIVE_DSPARK_CONFIDENCE_COST_RATIO=1.75 \
+    SGLANG_MLX_NATIVE_DSPARK_ANCHOR_BYPASS_THRESHOLD=0.525 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    --served-model-name qwen3.8-27b --language-model-only \
+    --context-length 131072 --max-total-tokens 131072 \
+    --max-running-requests 1 --max-mamba-cache-size 5 \
+    --chunked-prefill-size 8192 --max-prefill-tokens 8192 \
+    --disable-radix-cache --mlx-enable-sampling --sampling-defaults model \
+    --random-seed 42 --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --stream-interval 4 --scheduler-recv-interval 4 \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments retained real 131,072 context/token pools, one running
+  request, five auxiliary slots, 8,192-token prefill chunks, seed 42, both
+  Qwen parsers, incremental output, language-only mode, and disabled radix
+  cache/graphs. `/health`, `/v1/models`, and `/model_info` passed; maximum
+  model length was 131,072 and image/audio understanding remained disabled.
+- The exact client command for both real samples was:
+
+  ```bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b --input-tokens 6237 --output-tokens 128 \
+    --temperature 1.0 --top-p 0.95 --top-k 20 \
+    --presence-penalty 1.5 --skip-warmup --timeout 600
+  ```
+
+  Threshold 0.525 reached **13.652 generation tok/s**, **109.133 prompt
+  tok/s**, **57.150588 s TTFT**, and **66.453264 s** end to end. It completed
+  exact 6,365 tokens with `finish_reason=length`, 31 output fragments, and
+  reasoning/output SHA-256
+  `c92e4510efb86ca08711fe296f67632ac1bc79684811c24d19ceca40c042f70b`.
+- PID 14178 exited through `Ctrl+C`, and its verified listener/process tree
+  cleared. A fresh foreground no-threshold ratio-1.75 trace then ran under root
+  PID 14221 with the same command and the threshold variable omitted; stderr
+  was captured in `/private/tmp/qwen38_dspark_anchor_baseline_server.log`.
+  It reached **13.580 generation tok/s**, **109.283 prompt tok/s**,
+  **57.072169 s TTFT**, and **66.424241 s** end to end, completing exact 6,365
+  tokens with `finish_reason=length` and selected ratio-1.75 SHA-256
+  `7af3ef829ce6717a226bb3d06ad62dfa18bcf44b15684ac9cc1c614b3b7349bd`.
+  In the 48 cycles following `#new-token: 6237`, M=2/M=8 counts were 28/20,
+  score means **0.538717 / 0.585506**, score ranges
+  **0.355775--0.777300 / 0.348645--0.827828**, official first-confidence
+  means **0.755275 / 0.913082**, and accepted widths **1.678571 / 4.2**.
+  Target score Pearson correlation was **0.291966** with official confidence
+  and **0.140841** with accepted width. Threshold 0.525 flags 13 M=2 and 13
+  M=8 cycles; flagged mean width is **3.076923**. This natural trace closes the
+  target-state feature as a scheduler. Its temporary parser, state, and bypass
+  branch were removed; trace-only telemetry remains.
+- Extended the existing fixed-cooldown direct screen at ratio 1.75. Cooldowns
+  64 and 128 reached **18.401520476 / 19.663812056 tok/s**, with **249 / 235**
+  timed refills, widths **1.028112450 / 1.089361702**, digests
+  `ae189c0f39f766dc` / `10d11fb4b52fa51e`, and last tokens 26/198. Both trail
+  cooldown 16's **24.332648695 tok/s** direct result; PERF-FA103 records the
+  complete 4/8/16/32/64/128 ladder.
+- Screened the existing affine-W4 DFlash2 draft against the faster selected
+  target at
+  `/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2`,
+  using the immutable full-Q4 donor at
+  `/Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff`.
+  The QKV-only recurrent override reached **10.130497494 tok/s**, 49 refills,
+  width **2.653061224**, digest `a4ab89efac8e8135`, and last token 2,592. A
+  complete recurrent override reached **7.841259160 tok/s**, 64 refills, width
+  **1.984375**, digest `24992016503f11ef`, and last token 5,205. The compatible
+  full-Q4 target reproduced **31.317933897 tok/s**, 19 refills, width
+  **6.684210526**, digest `46bd4bb035b72c2b`, and last token 20. Proposal
+  overlap therefore requires a target-matched DFlash2 artifact; see
+  PERF-FA105.
+- Temporarily widened the M=8 affine verifier tile from 32 to 64 output
+  columns in two staging phases. It retained 32-column weight staging, eight
+  accumulators, four reused input fragments, and the selected 32 KiB shared
+  allocation while halving the threadgroup grid. Strict library/test builds
+  passed. Synthetic M=8 parity passed K/N `512/256`, `5120/64`, and
+  `512/6144`, with maximum absolute differences **0.0625 / 0.03125**. The
+  full-model candidate reproduced the selected 19 refills, width
+  **6.684210526**, digest `46bd4bb035b72c2b`, and last token 20, while falling
+  to **8.960931772 tok/s**. Restoring SG16/B32 recovered
+  **31.317933897 tok/s**, a **22.357002125 tok/s / 71.387219%** delta. The
+  wider source was removed; PERF-FA106 records the closed candidate.
+- Final source contains only the trace-gated target-state score. The strict
+  warning-as-error library
+  `/private/tmp/libqwen38_dspark_anchor_trace_final2.dylib` and its standalone
+  test built with the established macOS 26.0 / MLX 26.2 linker warning. YaRN
+  offsets 0/9,000/131,071 passed with maximum errors
+  `5.96046e-08 / 0.000168275 / 0.0015974`; confidence/budget parity and final
+  marker `qwen38 DSpark YaRN/confidence parity passed` passed. Focused native
+  pytest passed **8 tests** with 16 existing warnings. Final default DFlash
+  reproduced **31.317933897 tok/s**, width **6.684210526**, digest
+  `46bd4bb035b72c2b`, and last token 20. Default DSpark reproduced
+  **10.036881881 tok/s**, width **2.428571429**, digest `5a38c7070d7badeb`,
+  and last token 16.
+- PID 14221 exited through `Ctrl+C`; its log records clean application
+  shutdown. Final port 30000 and matching server/direct/compiler processes are
+  clear. Memory returned to 92% free with zero throttled pages and macOS
+  thermal/performance status is normal. Retain the target-state score solely
+  as trace telemetry. Shared target decode cost is the next optimization
+  surface.
