@@ -2513,3 +2513,53 @@ option, or serving dispatch was added.
 - Related commit or revert: the generic precision-overlay diagnostic remains
   opt-in while `qkv`, `z`, and complete recurrent families are narrowed; the
   output-only candidate is closed.
+
+## PERF-FA092 - Broaden the DFlash small-batch QMM to 5,120 outputs
+
+- Hypothesis: routing the target and draft `17408 -> 5120` down projections
+  through the custom batch-eight affine product would extend its isolated
+  microbenchmark gain across the full verification cycle.
+- Scope: full-Q4 target, affine-W4 DFlash2 draft, seven proposed tokens,
+  selected recurrent tape commit, and the existing output-tiled Metal QMM.
+- Attempted change: first admitted every affine projection with at least
+  5,120 outputs, then narrowed the experiment to the exact
+  `17408 -> 5120` down-projection shape.
+- Benchmark evidence: the selected `N >= 6144` route measured steady draft
+  **34.211--37.378 ms** and verify **305.130--305.604 ms**. The exact-down arm
+  regressed to **34.906--38.626 ms** draft and **314.693--315.150 ms** verify.
+  The broader 5,120-output route also regressed the full-Q4 cycle.
+- Correctness evidence: the standalone `17408 -> 5120` comparison remained
+  within BF16 accumulation tolerance; this rejection is based on reachable
+  full-model cost.
+- Failure mode: the broader predicate also reaches draft projection families
+  whose shapes favor MLX's stock product, while the isolated down-projection
+  saving does not repay the changed whole-cycle schedule.
+- Why not to retry unchanged: both the broad and exact-shape dispatches lose
+  against an adjacent selected full-model control.
+- Reopen only if: a role-aware target-only dispatch or a different K-split
+  kernel wins the complete verification cycle.
+- Related commit or revert: both experimental predicates were removed; the
+  retained opt-in dispatch requires at least 6,144 output features.
+
+## PERF-FA093 - Fixed four-token DFlash2 block
+
+- Hypothesis: drafting three tokens per verification would halve the current
+  target pass and raise throughput when the seven-token block has modest
+  acceptance.
+- Scope: full-Q4 target, affine-W4 DFlash2 draft, block size four, three draft
+  tokens, selected QMM and accepted-prefix tape commit.
+- Attempted change: changed the fixed block from eight to four and screened
+  the same direct random-token workload.
+- Benchmark evidence: steady draft measured **18.735--19.078 ms**, verify
+  **170.274--170.941 ms**, and total **191.727--192.747 ms**. Mean emitted
+  width was **1.142857**. Perfect width four would provide only about
+  **20.85 tok/s** before server and client overhead.
+- Correctness evidence: the candidate completed the direct decode screen; the
+  production constants were restored to block eight and seven draft tokens.
+- Failure mode: the reduced target work also caps useful emission, leaving no
+  operating margin at the 20 tok/s gate under ordinary acceptance.
+- Why not to retry unchanged: measured acceptance is far below the width
+  required to exploit the already narrow perfect-acceptance ceiling.
+- Reopen only if: an adaptive policy predicts high-confidence short blocks
+  from current logits and a real-client A/B window clears 20 with margin.
+- Related commit or revert: the fixed block-four source change was removed.

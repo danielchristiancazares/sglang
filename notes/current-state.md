@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-00:43 PDT.
+02:09 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -177,17 +177,34 @@ One pinned Codex 0.151.0 `xhigh` turn completed the requested shell tool
 cleanly. A second completed the work after sampling a malformed extra
 `write_stdin` call, so strict structured-output reliability remains active.
 
-DFlash2 is an active native integration track. The exact
-`incoai/Qwen3.8-27B-DFlash2` BF16 source is preserved separately. A standalone
-C++20 MLX converter has produced and reload-verified a distinct 175-tensor,
-1.2 GiB affine-W4/G64 draft artifact at
-`/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-MLX-AffineQ4`.
-Its model SHA-256 is
+DFlash2 now runs end to end through the native C++ MLX engine in signed commit
+`d57a6ac11c` (`feat(mps): add native DFlash2 runtime`). The exact
+`incoai/Qwen3.8-27B-DFlash2` BF16 source remains immutable, and the distinct
+175-tensor affine-W4/G64 draft artifact remains at
+`/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-MLX-AffineQ4`
+with model SHA-256
 `33bf2ddd0d46c27d6f383b6822ab897eb87261d34ca9c6eeb6a0f232026f723c`.
-The next implementation seam is the existing native C++ `load_mtp` entry:
-autodetect the DFlash tensor contract there, then add target-layer capture,
-block drafting, exact rejection sampling, and compact accepted-path recurrent
-commit while preserving the Codex harness.
+The existing `Engine::load_mtp` entry autodetects its tensor contract. Native
+target-layer capture, five-layer block drafting, selector sampling, exact p/q
+rejection, and accepted-prefix recurrent-state replay are implemented behind
+the existing opt-in draft path.
+
+The native prefill owner divides DFlash target/capture work into internal
+2,048-token units while preserving one external SGLang prefill call. This
+completed 4,096- and 6,237-token direct prompts and the real 6.2K-token Codex
+shape that previously exhausted Metal residency. A real 131K-configured Codex
+0.151.0 `xhigh` turn then issued exactly one requested shell tool and returned
+the exact final marker. The first prompt reached **90.75 prompt tok/s**.
+
+Generation remains the active gap. Real Codex telemetry settled around
+**7.6--11.85 tok/s** and reached **15.20 tok/s** on a high-acceptance tool
+continuation. A current direct `128 / 32 warm / 128 timed` sample measured
+**9.300145 tok/s** at mean emitted width **3.175**. Steady full-Q4 DFlash
+cycles spend about **34--37 ms** drafting and **305--306 ms** verifying;
+accepted-prefix replay now costs about **2--6 ms**. The next kernel candidate
+is a verify-specialized M=8 affine-W4 product that partitions K across SIMD
+groups. The hard admission gate remains a real served Codex workload at or
+above **20 tok/s** with exact tools and 131K capacity.
 
 ## Native backend roadmap handoff
 
