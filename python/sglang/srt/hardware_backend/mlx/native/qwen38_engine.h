@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -131,6 +132,7 @@ class Engine {
   bool request_boundary_pending_ = false;
   std::vector<int32_t> token_history_;
   bool sampling_enabled_ = false;
+  std::uint64_t sampling_seed_ = 67396869;
   int max_reasoning_tokens_ = 0;
   int selected_reasoning_tokens_ = 0;
   bool reasoning_open_ = false;

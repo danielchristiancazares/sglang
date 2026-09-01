@@ -831,7 +831,7 @@ Engine::Engine(MlxQwen38Config cfg, const std::string& model_dir)
   load_weights(model_dir);
   sampling_enabled_ = native_sampling_enabled();
   if (sampling_enabled_) {
-    mx::random::seed(native_sampling_seed());
+    sampling_seed_ = native_sampling_seed();
   }
   max_reasoning_tokens_ = native_reasoning_token_limit();
   reset();
@@ -850,6 +850,9 @@ void Engine::reset() {
       layer.attn.offset = 0;
       layer.attn.cache_length = 0;
     }
+  }
+  if (sampling_enabled_) {
+    mx::random::seed(sampling_seed_);
   }
   reset_decode_pipeline();
   request_boundary_pending_ = false;

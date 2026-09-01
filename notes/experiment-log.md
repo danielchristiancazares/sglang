@@ -17608,3 +17608,99 @@ mean 13.929045  17.125658 446.051        39.730
   snapshot as one coherent interactive-lane change. Then run an independent
   committed 64-partial server restart, at least one fresh sampled client
   window, and the exact xhigh tool command before compact promotion.
+
+### 2026-08-31 16:55 PDT - sampled native lane signed and independent speed window passes
+
+- Signed the sampler, reasoning bound, and prompt-boundary snapshot as
+  `883da94c33d6083dd25df46be5cbae11bd3bdf83` with subject
+  `feat(mps): make native Qwen xhigh interactive`. Signature inspection
+  reported a good EDDSA signature. The commit changed only the two native
+  engine sources plus `PERFORMANCE_LOG.md`, `FAILED_PATHS.md`, and this ledger.
+- A fresh committed-source launch used the 16:49 command with
+  `MLX_SDPA_BLOCKS=64`, the real 131,072 context/token pools, seed 42,
+  256-token reasoning bound, one running request, five Mamba slots, language-
+  only serving, both Qwen parsers, radix disabled, and 8,192-token chunks.
+  Health, model list, and model info passed.
+- Five production-sampled `6237+128` requests measured decode **20.163,
+  20.165, 20.123, 20.073, and 20.154 tok/s**, mean **20.1356**. Prompt
+  throughput averaged **107.0508 tok/s**, TTFT **58.262115 s**, and end-to-end
+  latency **64.569354 s**. Every sample exceeded 20 and completed exact total
+  6,365 with `finish_reason=length`.
+- The exact xhigh Codex shell gate then issued `/bin/pwd` once and sampled an
+  additional malformed `write_stdin` call with string session id `"ce2910"`.
+  GNU timeout exited 124. The same seed had passed before the five benchmarks;
+  MLX's process-global random stream had advanced across those unrelated
+  requests, so the configured seed did not define a request-local trajectory.
+
+### 2026-08-31 17:18 PDT - full request reset takes ownership of the sampling seed
+
+- Stored `SGLANG_MLX_NATIVE_SAMPLING_SEED` in `Engine` and moved
+  `mx::random::seed()` into the full `Engine::reset()` owner. The C API request
+  boundary maps strict-prefix and prompt-snapshot continuations through
+  `begin_request()`, so those continuations preserve their active random
+  stream. An unrelated prompt performs a full reset and starts from the
+  configured seed independently of prior traffic.
+- The exact five-request sampled server window measured **20.155, 20.148,
+  20.157, 20.152, and 20.166 tok/s**, mean **20.1556**. Mean prompt throughput
+  was **107.12 tok/s**, mean TTFT **58.224555 s**, and mean end-to-end latency
+  **64.525519 s**. Every response completed exact total 6,365 with
+  `finish_reason=length`; all five output/reasoning payloads shared SHA-256
+  `91dbc7056abfdc989aaee9e1d0f1fa3abc410637aabe144ac2ab0ea9bd97df3e`.
+- Replaying the actual client after those five requests now reproduced the
+  fixed seed instead of the previous request-order drift. This exposed a
+  separate checkpoint-quality issue: the model could complete `/bin/pwd` and
+  then construct malformed tool arguments. The seed-ownership change remains
+  a request-semantics and reproducibility win while structured-output work
+  continues.
+
+### 2026-08-31 17:33 PDT - structured-output boundary screens are rejected
+
+- Screened an opt-in policy that sampled only while reasoning was open and
+  used argmax afterward. Seed 42 with a 256-token reasoning cap completed one
+  requested tool and the final marker after an unnecessary escalation attempt.
+  A 128-token cap completed one `/bin/pwd` and the final marker while Codex's
+  router reported trailing function-argument characters. Seed 67396869 emitted
+  duplicate fields and an alphanumeric session id and timed out.
+- The native engine runs a two-token decode pipeline. Replacing the already
+  sampled lookahead when `</think>` was emitted removed that boundary's stale
+  sampled token. On root/listener PID 83200, the exact Codex command still
+  exited zero with one `/bin/pwd`, the correct working directory, and final
+  `QWEN38_TOOL_READY`, while the router reported one trailing-character tool
+  payload. Usage was **12,700 input / 364 output / 214 reasoning-output
+  tokens**.
+- Full request logging localized the payload to the first assistant response:
+  one valid `exec_command` block was followed by a malformed second
+  `write_stdin` block before assistant end. The prompt-snapshot continuation
+  itself produced the final answer. This closed greedy-after-reasoning and its
+  close-token pipeline replacement as PERF-FA089.
+- A narrower opt-in then forced assistant end immediately after the first
+  complete tool block. Root/listener PID 83566 issued the valid `/bin/pwd`
+  exactly once; each later assistant turn reconstructed `write_stdin` with
+  fabricated session id `"85dfe4"`. The parser logged failed numeric
+  conversion, Codex emitted repeated schema errors, and GNU timeout exited
+  **124**. Server decode telemetry remained around 20.0--20.4 tok/s. This
+  closes single-tool-call turn truncation as PERF-FA090.
+- Both experimental policies were removed. Each verified server tree stopped
+  through foreground `Ctrl+C`. Port 30000, Codex clients, matching SGLang
+  processes, and Metal/Clang compiler workers were absent afterward. Memory
+  returned to 92% free with zero throttled pages.
+
+### 2026-08-31 17:43 PDT - reseed-only change selected for signed checkpoint
+
+- Returned the source to the two-line behavioral change plus one stored seed:
+  constructor configuration stores the seed and full `Engine::reset()` applies
+  it. Branch `main` remained at signed `883da94`, ahead of `origin/main` by
+  29, with only `qwen38_engine.cpp`, `qwen38_engine.h`, and the three recovery
+  records modified.
+- Rebuilt through
+  `env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx
+  python/sglang/srt/hardware_backend/mlx/native/build.sh`; the known macOS
+  26.0/MLX 26.2 link warning remained. Q/k normalization plus full-attention
+  RoPE parity, recurrent norm/gate parity, and residual RMSNorm parity passed.
+  `.venv/bin/python -m pytest -q
+  test/registered/unit/hardware_backend/mlx/test_native_qwen38_engine.py`
+  finished **8 passed** with 16 existing warnings. `git diff --check` passed.
+- Handoff: sign the request-local seed ownership as an atomic reproducibility
+  fix. Then pursue structured-output quality with a model/grammar mechanism
+  whose actual Codex behavior passes cleanly while the sampled throughput
+  window remains at or above 20 tok/s.
