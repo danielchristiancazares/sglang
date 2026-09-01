@@ -22143,3 +22143,72 @@ mean 13.929045  17.125658 446.051        39.730
   ablation, MTP post-norm/history arms, exact 131K serving, sampled 20 tok/s,
   arithmetic/tool/reasoning gates, and Codex 0.151.0 `xhigh` follow in that
   order. The active goal remains open.
+
+### 2026-09-01 15:05 PDT - Fresh boot recovers Metal and mixed Q5 reaches 19.032 tok/s
+
+- IT restarted the host. `kern.boottime` changed from 2026-08-31 18:06:52 to
+  **2026-09-01 14:52:42 PDT**. The console and SSH sessions returned, port
+  30000 was free, and the former stuck process was absent. Before model work,
+  memory pressure reported **95% free**, zero compressed pages, zero
+  swapins/swapouts, zero throttled pages, and no thermal or performance
+  warning. The bounded stock-MLX recovery probe evaluated 1,024 FP32
+  `ones + ones` elements in **0.016555 s**, returned first value `2.0`, and
+  exited zero.
+- The signed-history rewrite at 14:50 moved `main` to signed commit
+  `f86fcc00cd02caa3ff90d72bb471c85a7393d571`, 78 commits ahead of
+  `origin/main`. Its tree `8acf7f0ed47d347141d7e059aa2c269e88051aee`
+  is exactly the tree of the 94-commit handoff
+  `4bf74479001fee77b6f06822664c020a2defbe3a`; no source or ledger content was
+  lost. Reboot cleanup removed `/private/tmp` candidates. Rebuilt the A094
+  control and main-worktree A095 artifacts under the persistent
+  `/Users/dcazares/.cache/sglang-qwen38` tree. The analysis-only subagent
+  request again returned `agent thread limit reached` because the environment
+  exposes one total collaboration slot.
+- Stock custom-Metal recovery is complete. A094 and A095 standalone parity
+  both returned maximum absolute errors **0.03125 / 0.03125 / 0.0234375** at
+  K/N `512/64`, `5120/128`, and `17408/32`. Their complete outputs agree at
+  the first production gate/up microbenchmark digest
+  `245b954f045f18cc`. At `5120x17408`, the first `8/50` timing pair was
+  **0.769299160 / 0.775672500 ms**. Longer `100/1000` order/reverse windows
+  converged to A094 **0.435047000 ms** and A095 **0.437388208 ms** after an
+  initial clock-ramp pair, establishing A095 as neutral pending the remaining
+  matrix.
+- The pinned mixed 4.951-bpw target intentionally stores 96 recurrent
+  projections as BF16: `in_proj_a` and `in_proj_b` in each of 48 linear
+  layers. `QLinear::operator()` already executes BF16 weights with dense
+  matmul, while `Engine::load_qlinear` still required affine scales and
+  biases. The first mixed smoke therefore exited cleanly with `missing weight
+  language_model.model.layers.0.linear_attn.in_proj_b.scales`. Added a narrow
+  BF16 branch in the shared loader: require a rank-two weight, mark it valid,
+  and preserve the existing affine path for all packed weights. Strict
+  C++20/O3 warning-as-error dylib compilation passes. The broad installed
+  `clang-format` check continues to report pre-existing whole-file style
+  differences; `git diff --check` passes.
+- With that loader branch, the mixed target completed a `128 / 1 / 16` smoke
+  at **18.168825593 tok/s** using generic QMM. The exact full screen used:
+
+  ```text
+  env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 240s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a095_q4_user_dense.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128
+  ```
+
+  The four one-variable results were generic **18.121698566 tok/s**, Q5 QMV
+  only **19.032187257**, Q4 QMV only **17.221199280**, and both QMV paths
+  **17.987099210**. The Q5-only gain is **0.910488691 tok/s / 5.024301%**;
+  the selected configuration leaves **0.967812743 tok/s** to 20. The clean
+  A094+dense-loader library then reached **19.010697650 tok/s** with the same
+  token digest `d0193f6d413b68c1` and last token 11406 as A095, so the A095
+  difference is only **0.113040%** and carries no promotion claim. The Q4
+  path remains disabled for the mixed target.
+- The published namespaced Q4 MTP head loaded successfully. Block-three
+  sampled smokes reached **9.122242179 tok/s**, mean width 1.882353; post-norm
+  seed reached **9.507655940**, width 1.764706; enabling the Q4 QMV reached
+  **11.341033334**, width 2.285714. All trail Q5-only target execution, so MTP
+  is outside the immediate 20-tok/s route.
+- Persistent rebuilt artifact SHA-256 identities include A094/A095 parity
+  `ffea88fc...f2167` / `1b1fdab3...9193`, A094/A095 microbenchmarks
+  `8b931c91...204` / `39cd0e0e...eed`, and A094/main dense-loader dylibs
+  `6f471ea6...dec0` / `46ece19d...96c5`. The main worktree still preserves
+  Daniel's Q4 engine/header/test edits and the isolated A095 hunk. Only the
+  dense-loader branch and this evidence are candidates for the next atomic
+  commit. Next screen the aligned Q5 weight/input load candidates, starting
+  from A103 and A106, against the selected mixed target.
