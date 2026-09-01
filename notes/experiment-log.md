@@ -21030,3 +21030,77 @@ mean 13.929045  17.125658 446.051        39.730
 - Decision: retain the native conversion as the first compressed-KV win. Next
   run the exact 131K FP8 capacity and paging gate, then add a fused native FP8
   attention owner so long-history decode avoids materializing FP32 K/V copies.
+
+### 2026-09-01 11:29 PDT - Exact 131K FP8 pool recovers 10.28x and remains residency-bound
+
+- Started from signed commit
+  `d321b3e14458e06f4c157b8ed19c1f278bed1cfb`
+  (`perf(mps): enable native FP8 cache conversion`), 70 commits ahead of
+  `origin/main`, with a verified good EDDSA signature. The three pre-existing
+  modified native-engine paths remained user-owned and untouched. Port 30000,
+  matching workloads/compiler processes, memory, and thermals were clear.
+- Launched exactly:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=0 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenQ4_K.gguf \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-Q5_K_S.gguf \
+    --served-model-name qwen3.8-27b-q5 --load-format gguf --dtype float32 \
+    --kv-cache-dtype fp8_e4m3 --context-length 131072 \
+    --max-total-tokens 131072 --max-running-requests 1 \
+    --max-mamba-cache-size 1 --mem-fraction-static 0.95 \
+    --chunked-prefill-size 2048 --max-prefill-tokens 8192 --page-size 1 \
+    --disable-radix-cache --disable-overlap-schedule \
+    --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
+    --incremental-streaming-output \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments preserved exact context/pool 131,072, request input cap
+  131,066, one request, one Mamba slot, page one, and FP8 KV. Weight loading
+  took **71.93 s** at **20.00 GB**. The Mamba slot occupied 0.29 GB. The exact
+  cache occupied **2.00 GB K + 2.00 GB V** and left **6.99 GB**, versus
+  4.00+4.00 GB and 0.99 GB for the same artifact's BF16 pool. Automatic
+  six-token warmup passed.
+- `/health`, `/v1/models`, and `/model_info` passed. The served model exposed
+  maximum length 131,072, Qwen3.5 text generation, and image/audio
+  understanding disabled. Root/listener 24369 owned tracker/scheduler/
+  detokenizer 24372/24373/24374.
+- A cold-residency sampled `128+32` request completed exact at **2.638 tok/s**,
+  **5.737 prompt tok/s**, **22.310584 s TTFT**, and **34.062398 s E2E**. A
+  subsequent orchestration attempt yielded its client process and lost stdout
+  collection; process inspection confirmed no benchmark client remained
+  before the admitted window, so that request is excluded.
+- Five sequential cache-flushed requests under the ordinary sampler measured:
+
+  | Sample | Gen tok/s | Prompt tok/s | TTFT s | E2E s | Output SHA-256 |
+  |---:|---:|---:|---:|---:|---|
+  | 1 | 3.098 | 5.839 | 21.922251 | 31.929734 | `b56fe5dc...646cc` |
+  | 2 | 3.299 | 5.915 | 21.639897 | 31.035651 | `e6d202d3...32353` |
+  | 3 | 3.264 | 5.887 | 21.741808 | 31.238994 | `bfb3adf4...ad125` |
+  | 4 | 3.273 | 5.928 | 21.592876 | 31.064729 | `2fd793aa...20f17` |
+  | 5 | 3.251 | 5.918 | 21.629686 | 31.164948 | `2fd793aa...20f17` |
+
+  Means are **3.237 generation tok/s**, **5.8974 prompt tok/s**,
+  **21.705304 s TTFT**, and **31.286811 s E2E**. All five completed exact
+  160-token usage, `finish_reason=length`, and 32 streamed reasoning
+  fragments. This is **10.276190x / +927.619%** over the same artifact's
+  0.315 tok/s BF16 result and **31.735294x** over the original
+  F16-embedding/BF16 capacity result.
+- The exact FP8 mean remains **55.419%** below the 1K FP8 mean of 7.2614 tok/s.
+  After the cold sample, `memory_pressure` reported 89% system-wide free
+  capacity, zero throttled pages, and 823.75 MiB encrypted swap used. After
+  the complete window and behavior checks it still reported 89% and zero
+  throttling while swap reached 857.19 MiB. The active compressor and stable
+  three-token/s region establish a remaining full-pool residency cost.
+- Exact-pool arithmetic returned visible **703** with coherent reasoning. The
+  tool gate returned exactly one parsed `multiply({"a": 37, "b": 19})`
+  call with `finish_reason=tool_calls`. Foreground `Ctrl+C` stopped the
+  verified tree. Every PID, port, matching workload, and compiler process was
+  absent afterward; memory recovered to 95% free, swap settled at 540.75 MiB,
+  pages throttled remained zero, and thermals stayed normal.
+- Decision: retain FP8 for exact capacity. Next reduce additional resident
+  bytes for short-context throughput and route populated histories through
+  fused compressed attention so generic SDPA does not materialize FP32 K/V.

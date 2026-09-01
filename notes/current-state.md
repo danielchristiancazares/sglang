@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-11:17 PDT.
+11:29 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -255,10 +255,17 @@ PyTorch's original composite implementation. **400,006** reference encodes,
 all **256** raw decodes, offsets, strides, empty tensors, and BF16 fallback
 pass. A 1K FP8 server completes warmup and five sampled `128+32` requests at
 **7.248 / 7.277 / 7.268 / 7.251 / 7.263 tok/s**, mean **7.2614**, with
-arithmetic and parsed tools preserved. The exact 131K FP8 pool is the next
-capacity gate, followed by a fused native FP8 attention owner for long-history
-decode. The sustained 20 tok/s admission window and Codex `xhigh` work gate
-remain due.
+arithmetic and parsed tools preserved.
+
+The exact 131K FP8 pool now passes. It occupies **2.00 GB K + 2.00 GB V** and
+leaves **6.99 GB** by server accounting, versus 8.00 GB and 0.99 GB for the
+same artifact's BF16 pool. Five cache-flushed sampled requests average
+**3.237 tok/s**, **10.276x** the BF16 result, with exact reasoning,
+arithmetic, and tools. The fully allocated pool still trails the 1K FP8 mean
+by **55.419%**. Another resident-byte reduction owns short-context recovery;
+a fused native FP8 attention owner owns long-history decode without FP32 K/V
+materialization. The sustained 20 tok/s admission window and Codex `xhigh`
+work gate remain due.
 
 The unchanged Q5_K_M artifact is closed on this loader because mixed merged
 weights contain Q8_0 shards unsupported by the native Metal merge path. The
