@@ -3120,3 +3120,56 @@ option, or serving dispatch was added.
   tensors.
 - Related commit or revert: all experimental C++/Metal/header/test changes
   were removed; PERF-A080 records the result.
+
+## PERF-FA112 - Unchanged Bartowski Q5_K_M on native Metal GGUF
+
+- Hypothesis: the balanced Q5_K_M source artifact can load and serve directly
+  through the existing heterogeneous GGUF execution path.
+- Scope: pinned Bartowski revision
+  `f0eec4a4bb4975114a030d048952d83c0a53c034`, exact
+  `Qwen3.8-27B-Q5_K_M.gguf`, M1 Max, native MPS GGUF quantization, float32
+  model dtype, BF16 KV, one request, and a 1,024-token pool.
+- Attempted change: downloaded and checksum-verified the immutable source,
+  passed its actual-file Q4_0/Q5_K/Q6_K native arithmetic gate, then launched
+  the ordinary SGLang GGUF loader with conservative caches.
+- Benchmark evidence: server startup did not reach warmup or a generation
+  sample. The loader raised `NotImplementedError` while processing mixed
+  merged weights because that native Metal path does not support Q8_0 shards.
+- Correctness evidence: actual-file batch-one parity passed Q4_0, Q5_K, and
+  Q6_K before startup. The source is exactly 20,752,787,040 bytes and verifies
+  as SHA-256 `e731e180...caa8`.
+- Failure mode: Q5_K_M's heterogeneous merged tensors include Q8_0 members at
+  a loader boundary whose supported native set excludes Q8_0.
+- Why not to retry unchanged: the exception is deterministic during weight
+  transformation and precedes all cache sizing and serving work.
+- Reopen only if: the exact mixed-merge owner gains Q8_0 support or a
+  provenance-preserving derived artifact converts the affected merged shards.
+- Related commit or revert: PERF-A082 selects the narrower Q5_K_S source and a
+  distinct token-embedding derivative. The immutable Q5_K_M source remains
+  available as a control.
+
+## PERF-FA113 - Unchanged Bartowski Q5_K_S token embedding
+
+- Hypothesis: the smaller Q5_K_S source artifact can complete native Metal
+  startup without artifact transformation.
+- Scope: pinned Bartowski revision
+  `f0eec4a4bb4975114a030d048952d83c0a53c034`, exact
+  `Qwen3.8-27B-Q5_K_S.gguf`, M1 Max, native MPS GGUF quantization, float32
+  model dtype, BF16 KV, one request, and a 1,024-token pool.
+- Attempted change: downloaded and checksum-verified the immutable source,
+  passed actual-file Q4_0/Q5_K/Q6_K native arithmetic, and launched the same
+  conservative SGLang configuration used for Q5_K_M.
+- Benchmark evidence: weight loading completed in **43.06 s** at **20.00 GB**
+  residency with **11.99 GB** available. Mamba and 1,024-token BF16 KV caches
+  allocated. Automatic warmup then raised `NotImplementedError` because the
+  native Metal GGUF embedding path does not support Q5_K.
+- Correctness evidence: the source is exactly 19,680,945,760 bytes, verifies
+  as SHA-256 `b52fbc24...e569`, and passes representative packed-tensor parity.
+- Failure mode: `token_embd.weight` is Q5_K; the current embedding dispatch
+  supports a narrower set than the native quantized matrix owner.
+- Why not to retry unchanged: every first-token forward reaches the same
+  unsupported embedding dispatch after successful weight and cache setup.
+- Reopen only if: native Q5_K embedding support reaches the shared execution
+  owner. The derived F16-embedding artifact already supplies the active path.
+- Related commit or revert: PERF-A082 converts only the source token embedding
+  to F16 and retains all other source tensor encodings.

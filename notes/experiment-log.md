@@ -20213,3 +20213,106 @@ mean 13.929045  17.125658 446.051        39.730
   `4.76837e-07/2.95486e-07`. This establishes loader and native Metal
   arithmetic support for the exact Q5 target. A small served baseline is next,
   followed by the real 131,072-token pool and Codex `xhigh` behavior gate.
+
+### 2026-09-01 08:44 PDT - Q5_K_S derivative reaches first served baseline
+
+- Continued from signed `8b5b1a9eee1de922a82a23921e6adeb86f262c85`,
+  63 commits ahead of `origin/main`. The three pre-existing modified native
+  affine-QMV paths remained user-owned and untouched. Port 30000, matching
+  Qwen/SGLang/benchmark/converter/compiler processes, and prior server trees
+  were clear before each launch. Preflight memory was 94% free with zero
+  throttled pages, power mode was 2, and thermal/performance status was normal.
+- A conservative Q5_K_M launch used:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=0 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-Q5_K_M.gguf \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-Q5_K_M.gguf \
+    --served-model-name qwen3.8-27b-q5 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 1024 --max-total-tokens 1024 \
+    --max-running-requests 1 --chunked-prefill-size 256 \
+    --max-prefill-tokens 512 --disable-radix-cache \
+    --disable-overlap-schedule --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  It failed during weight processing with `NotImplementedError: Mixed merged
+  GGUF weights contain types unsupported by the native Metal path: Q8_0`.
+  The tree exited and cleanup returned to a clear port, clear workload scan,
+  94% free memory, and normal thermals. PERF-FA112 closes an unchanged retry.
+- Downloaded the narrower source with:
+
+  ```bash
+  .venv/bin/hf download bartowski/Qwen3.8-27B-GGUF \
+    Qwen3.8-27B-Q5_K_S.gguf \
+    --revision f0eec4a4bb4975114a030d048952d83c0a53c034 \
+    --format quiet
+  ```
+
+  The pinned source is exactly **19,680,945,760 bytes** and a full local hash
+  produced SHA-256
+  `b52fbc242bde75a8e8f1dd2ec9ef9da4a1ce074d2513d3087a4f15003c11e569`.
+  Actual-file native-MPS parity passed Q4_0, Q5_K, and Q6_K. The same 1K
+  launch loaded weights in **43.06 s** as `Qwen3_5ForCausalLM`, reported
+  **20.00 GB** residency and **11.99 GB** available, and allocated 0.29 GB of
+  Mamba cache plus 0.06 GB of BF16 KV. Warmup then reached
+  `NotImplementedError: The native Metal GGUF embedding path does not support
+  this weight type: Q5_K`. Cleanup was complete. PERF-FA113 closes the
+  unchanged artifact on this execution surface.
+- Restored official llama.cpp at commit
+  `749f688fcaa4c472ec034b08cb8a907c45cfaa02`, build 10547, in
+  `/private/tmp/llama.cpp-q5`. The CPU-only tool configuration used Release,
+  `GGML_METAL=OFF`, server/examples/tests disabled, tools enabled, and a
+  two-job `llama-quantize` build. A narrow external C++ patch changes COPY
+  eligibility only for an explicitly overridden `token_embd.weight`; every
+  unspecified tensor continues through COPY unchanged. Dry run listed 866
+  tensors and exactly one conversion:
+  `token_embd.weight` Q5_K **833.59 MiB** to F16 **2,425.00 MiB**.
+- Materialized the derived checkpoint with:
+
+  ```bash
+  /private/tmp/llama.cpp-q5/build-q5/bin/llama-quantize \
+    --allow-requantize --token-embedding-type F16 \
+    /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-Q5_K_S.gguf \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenF16.gguf \
+    COPY 4
+  ```
+
+  It completed in **19.59656 s**. The artifact is a distinct regular file,
+  exactly **21,349,656,160 bytes**, with full SHA-256
+  `c05a777870159b0779a441e2f58b543a0660af466d833d5b550a8aab9c17fcfb`.
+  The source volume retained 101 GiB free. The existing actual-file native
+  parity command passed Q4_0/Q5_K/Q6_K with maximum absolute/relative errors
+  `4.76837e-07/2.05552e-07`, `9.53674e-07/4.60024e-07`, and
+  `4.76837e-07/2.95486e-07`.
+- Launched the derived model with the exact conservative command above while
+  changing `--model-path` to the derivative and keeping tokenizer provenance
+  at the immutable Q5_K_S source. Weight load completed in **68.21 s** with
+  **21.37 GB** residency and **10.62 GB** available. The 1K caches left
+  **10.50 GB** available. Native Metal warmup completed, the launcher declared
+  ready, and `/v1/models` exposed `qwen3.8-27b-q5` with maximum model length
+  1,024. `/model_info` reported Qwen3.5 text execution with image and audio
+  understanding disabled.
+- The first ordinary sampled request used:
+
+  ```bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b-q5 --input-tokens 128 --output-tokens 32 \
+    --temperature 1.0 --top-p 0.95 --top-k 20 \
+    --presence-penalty 1.5 --skip-warmup --timeout 600
+  ```
+
+  It completed exact `128+32=160` tokens with `finish_reason=length`. All 32
+  output tokens arrived as reasoning, with output/reasoning SHA-256
+  `70977c61cdccc1f820d5a48cfe8621c2a82d7c94e1e94b76691a525c362e5c05`.
+  Generation was **5.746 tok/s**, prompt **5.8 tok/s**, TTFT
+  **22.070851 s**, and end to end **27.466190 s**. The active gap is
+  **14.254 tok/s / 3.481x** before 131K and Codex qualification.
+- Listener/root PID 20456 and children 20459/20460/20461 were resolved before
+  foreground `Ctrl+C`. All four PIDs were absent, port 30000 and matching
+  workload scans were clear, memory returned to 95% free with zero throttled
+  pages, and thermal/performance status remained normal. Profiling the live
+  Q5_K/Q6_K single-token projection path is next.
