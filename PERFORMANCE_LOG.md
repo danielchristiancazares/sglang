@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max Qwen3.8-27B Q5_K_S, Q4_K token embedding, 1K FP8 KV pool, sampled served `128+32` | same-artifact BF16 smoke: **7.086 tok/s**, **5.809 prompt tok/s**, **22.033405 s TTFT**, **26.408174 s E2E** | native FP8 five-run mean **7.2614 tok/s**, **5.8668 prompt tok/s**, **21.818682 s TTFT**, **26.087973 s E2E** | first native FP8 capacity lane; **+0.1754 tok/s / +2.475%** versus the prior same-artifact smoke; exact lengths, reasoning, arithmetic, and tools pass | PERF-A089 server contract; five cache-flushed ordinary sampled requests | 2026-09-01 11:17 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S, Q4_K token embedding, exact 131K BF16 pool, sampled served `128+32` | F16 token embedding: **0.102 tok/s**, **5.271 prompt tok/s**, **24.284058 s TTFT**, **329.689187 s E2E** | Q4_K token embedding: **0.315 tok/s**, **5.616 prompt tok/s**, **22.790664 s TTFT**, **121.240667 s E2E** | runtime residency **21.37 -> 20.00 GB**; **3.088235x / +208.824%** generation; exact capacity, reasoning, arithmetic, and tools pass; paging remains active | exact PERF-A088 server contract, changing only model artifact; ordinary sampled client with `--skip-warmup` | 2026-09-01 10:55 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S-derived, exact 131K BF16 pool, sampled served `128+32` | selected 1K-pool mean **7.1646 tok/s**, **5.809 prompt tok/s**, **22.035143 s TTFT** | exact 131K pool: **0.102 tok/s**, **5.271 prompt tok/s**, **24.284058 s TTFT**, **329.689187 s E2E** | exact capacity, health, language-only metadata, and reasoning pass; generation is **98.576%** slower under unified-memory paging; stock MPS float8 allocation is unsupported | exact PERF-A086 server contract; ordinary sampled client with `--skip-warmup` | 2026-09-01 10:39 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S-derived, Q6_K exact-batch-four verifier projections | matched `SGLANG_MPS_Q6_K_BATCH4_ROWS16=0`: head **29.166000 ms**, QKV **1.442333 ms** | 16-row/eight-lane cohort: head **6.121375 ms**, QKV **0.588500 ms** | **-79.012% / -59.198%** latency; sampled same-GGUF NEXTN `128+128` improves **3.3384 -> 3.7028 tok/s** (**+10.915%**) even though control acceptance is higher | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $Q5_DERIVED --tensor {output.weight,blk.0.attn_qkv.weight} --batch-size 4 --warmup 8 --iterations 25`; matched sampled server window | 2026-09-01 10:20 PDT |
@@ -819,8 +820,9 @@ tree throughput can be ranked for production.
 | PERF-A084 | Double the batch-one Q5_K output-row cohort while each lane decodes eight adjacent weights. | Native Metal GGUF Q5_K matrix-vector kernel and guarded common quantized-matmul dispatch | Retained; second Q5 kernel win | Reversed-order matched served windows improve `128+32` mean **7.1342 -> 7.1646 tok/s** and `128+128` median **7.456 -> 7.500 tok/s**. The 1,024-row K/V projections retain the prior mapping; direct candidate, tail, alignment, fallback, and full-model behavior gates pass. |
 | PERF-A085 | Reuse each Q6_K row across all four verifier activations and produce sixteen rows per threadgroup. | Native Metal GGUF Q6_K exact-batch-four kernel and guarded common quantized-matmul dispatch | Retained; first served NEXTN verifier-kernel win | Matched head/QKV medians improve **29.166000 -> 6.121375 ms** and **1.442333 -> 0.588500 ms**. Five sampled same-GGUF NEXTN requests improve **3.3384 -> 3.7028 tok/s** while disabled-control acceptance is slightly higher. Candidate, 17-row tail, batch-three fallback, and batch-eight preservation checks pass. The unchanged three-step same-GGUF NEXTN configuration remains below target-only serving; see PERF-FA115. |
 | PERF-A086 | Establish exact 131K capacity and residency behavior for the derived Q5 target. | M1 Max unified memory, 21.37 GB derived model, one FP32 Mamba slot, and exact 131,072-token BF16 KV pool | Capacity passed; unchanged residency rejected | Server startup, warmup, health, language-only metadata, and exact request pass. The 8.00 GB KV allocation leaves no reported headroom and one sampled `128+32` request falls to **0.102 tok/s** with active paging; see PERF-FA116. |
-| PERF-A087 | Screen the existing FP8 KV configuration before native implementation. | PyTorch 2.10.0 MPS float8 storage/conversion and generic SGLang KV pool dtype | Framework route unavailable | Direct `torch.float8_e4m3fn` conversion raises the unsupported-MPS-dtype `TypeError` before pool allocation. A native uint8-backed owner is required; see PERF-FA117. |
+| PERF-A087 | Screen the existing FP8 KV configuration before native implementation. | PyTorch 2.11.0 MPS float8 storage/conversion and generic SGLang KV pool dtype | Framework route unavailable | Direct `torch.float8_e4m3fn` conversion raises the unsupported-MPS-dtype `TypeError`. Byte-backed float8 views and indexed gathers work, which enabled PERF-A089 to supply the missing native conversion; see PERF-FA117. |
 | PERF-A088 | Reduce the only transformed Q5 artifact tensor while preserving the Q5_K_S body. | Pinned llama.cpp COPY conversion of `token_embd.weight` Q5_K to Q4_K, native embedding parity, behavior, and exact 131K residency | Retained smaller capacity artifact | The 19,522,020,960-byte artifact preserves 865 source tensors, loads at 20.00 GB, and leaves 0.99 GB after the exact 8.00 GB BF16 cache. Matched 131K generation improves **0.102 -> 0.315 tok/s** (**3.088235x**). A 1K smoke reaches **7.086 tok/s** and arithmetic/tools pass. |
+| PERF-A089 | Supply the missing MPS E4M3FN value conversion while preserving SGLang's byte-backed generic KV pool. | Existing native Metal extension, narrow MPS `aten::_to_copy` specialization, contiguous/strided FP32-to-FP8 and FP8-to-FP32 kernels | Retained; exact 131K qualification active | 400,006 CPU-reference encodes and all 256 raw decodes match bit-exactly; offset/strided/empty and ordinary BF16 fallback checks pass. A 1K FP8 server warms and five sampled requests average **7.2614 tok/s** with arithmetic/tools preserved. No Python source changed. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -4461,3 +4463,40 @@ tree throughput can be ranked for production.
   iteration; a native uint8-backed KV cache is now the active 4 GB residency
   lever. Both server trees exited cleanly, all PIDs/listeners/workloads were
   absent, memory recovered to 95% free, and reported thermals were normal.
+
+### 2026-09-01 11:17 PDT - PERF-A089 native MPS E4M3FN conversion
+
+- PyTorch **2.11.0** can allocate a `uint8` MPS tensor, reinterpret it as
+  `float8_e4m3fn`, and gather indexed rows. Its stock FP32/FP8 value
+  conversion remains unavailable. SGLang's generic KV pool already owns that
+  exact byte-backed storage layout, so the missing operation was isolated to
+  conversion at cache write and attention read boundaries.
+- Added a narrow native MPS `_to_copy` implementation to the existing Metal
+  extension. It handles contiguous and positive-stride FP32/E4M3FN pairs,
+  uses PyTorch's exact E4M3FN round-to-nearest-even bit contract, and forwards
+  every other dtype/device/layout case to the original composite
+  implementation. The change adds no Python source.
+- Exact validation passed **400,006** reference FP32 encodes, every one of the
+  **256** raw FP8 decodes at the FP32 bit level, storage-offset and strided
+  encode/decode cases, empty tensors, and the ordinary MPS BF16 fallback.
+  Extension compilation and `git diff --check` pass.
+- The first live implementation admitted the contiguous key tensor and then
+  exposed a strided value view. Generalizing the native index calculation to
+  eight dimensions closed that boundary. The successful 1,024-token launch
+  loaded the 20.00 GB Q5 artifact in **76.38 s**, allocated one 0.29 GB Mamba
+  slot and **0.02+0.02 GB** FP8 K/V pools, completed automatic warmup, and
+  exposed healthy language-only metadata.
+- After an initial **7.044 tok/s** smoke, five cache-flushed sampled
+  `128+32` requests measured generation
+  **7.248 / 7.277 / 7.268 / 7.251 / 7.263 tok/s**, mean **7.2614**. Prompt
+  throughput was **5.835 / 5.866 / 5.886 / 5.865 / 5.882**, mean
+  **5.8668 tok/s**. TTFT mean was **21.818682 s** and E2E mean was
+  **26.087973 s**. Every request returned exact 160-token length output with
+  32 preserved reasoning fragments.
+- Deterministic behavior returned final arithmetic answer **703** and exactly
+  one parsed `multiply` call with arguments `a=37, b=19` and
+  `finish_reason=tool_calls`. Root/listener 24186 owned tracker/scheduler/
+  detokenizer 24198/24199/24200. Foreground shutdown cleared every PID, port
+  30000, matching workload, and compiler process; memory recovered with zero
+  throttled pages and normal reported thermals. Retain the native conversion
+  and qualify the exact 131K FP8 pool next.

@@ -1,6 +1,7 @@
 #include <torch/extension.h>
 
 #include <ATen/mps/MPSStream.h>
+#include <ATen/ops/_to_copy_native.h>
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -3180,6 +3181,93 @@ inline ushort f32_to_bf16_rne(float value) {
     return ushort(bits >> 16);
 }
 
+inline uchar f32_to_fp8_e4m3fn(float value) {
+    constexpr uint fp8_max = 0x43f00000u;
+    constexpr uint denorm_mask = 0x46800000u;
+    uint bits = as_type<uint>(value);
+    const uint sign = bits & 0x80000000u;
+    bits ^= sign;
+
+    uchar result;
+    if (bits >= fp8_max) {
+        result = 0x7f;
+    } else if (bits < 0x3c800000u) {
+        bits = as_type<uint>(
+            as_type<float>(bits) + as_type<float>(denorm_mask));
+        result = uchar(bits - denorm_mask);
+    } else {
+        const uint mantissa_odd = (bits >> 20) & 1u;
+        bits += 0xc407ffffu + mantissa_odd;
+        result = uchar(bits >> 20);
+    }
+    return result | uchar(sign >> 24);
+}
+
+inline float fp8_e4m3fn_to_f32(uchar input) {
+    const uint word = uint(input) << 24;
+    const uint sign = word & 0x80000000u;
+    const uint nonsign = word & 0x7fffffffu;
+    uint renorm_shift = nonsign != 0 ? clz(nonsign) : 32;
+    renorm_shift = renorm_shift > 4 ? renorm_shift - 4 : 0;
+    const int inf_nan_mask =
+        (int(nonsign + 0x01000000u) >> 8) & int(0x7f800000u);
+    const int zero_mask = int(nonsign - 1u) >> 31;
+    const uint result = sign |
+        ((((nonsign << renorm_shift >> 4) +
+           ((0x78u - renorm_shift) << 23)) |
+          uint(inf_nan_mask)) &
+         ~uint(zero_mask));
+    return as_type<float>(result);
+}
+
+struct Float8ConversionArgs {
+    uint count;
+    uint dimensions;
+    ulong sizes[8];
+    ulong strides[8];
+};
+
+inline ulong float8_conversion_input_index(
+        uint linear_index,
+        constant Float8ConversionArgs & args) {
+    if (args.dimensions == 0) {
+        return linear_index;
+    }
+    ulong remaining = linear_index;
+    ulong input_index = 0;
+    for (int dimension = int(args.dimensions) - 1;
+         dimension >= 0;
+         --dimension) {
+        const ulong size = args.sizes[dimension];
+        const ulong coordinate = remaining % size;
+        remaining /= size;
+        input_index += coordinate * args.strides[dimension];
+    }
+    return input_index;
+}
+
+kernel void convert_f32_to_fp8_e4m3fn(
+        device const float * input,
+        device uchar * output,
+        constant Float8ConversionArgs & args,
+        uint index [[thread_position_in_grid]]) {
+    if (index < args.count) {
+        output[index] = f32_to_fp8_e4m3fn(
+            input[float8_conversion_input_index(index, args)]);
+    }
+}
+
+kernel void convert_fp8_e4m3fn_to_f32(
+        device const uchar * input,
+        device float * output,
+        constant Float8ConversionArgs & args,
+        uint index [[thread_position_in_grid]]) {
+    if (index < args.count) {
+        output[index] = fp8_e4m3fn_to_f32(
+            input[float8_conversion_input_index(index, args)]);
+    }
+}
+
 #if defined(SGLANG_EXTEND_GQA) && SGLANG_SIMDGROUP_MATRIX && SGLANG_EXTEND_GQA
 inline float simd_max_16(float value) {
     value = max(value, simd_shuffle_xor(value, 8));
@@ -4029,6 +4117,13 @@ struct AttentionArgs {
     float scale;
 };
 
+struct Float8ConversionArgs {
+    uint32_t count;
+    uint32_t dimensions;
+    uint64_t sizes[8];
+    uint64_t strides[8];
+};
+
 struct ExtendAttentionArgs {
     uint32_t query_tokens;
     uint32_t num_q_heads;
@@ -4141,6 +4236,8 @@ struct Pipelines {
     id<MTLComputePipelineState> dense_f32_batch8 = nil;
     id<MTLComputePipelineState> prepare_full_attention = nil;
     id<MTLComputePipelineState> sigmoid_mul_inplace = nil;
+    id<MTLComputePipelineState> f32_to_fp8_e4m3fn = nil;
+    id<MTLComputePipelineState> fp8_e4m3fn_to_f32 = nil;
 };
 
 Pipelines & pipelines() {
@@ -4254,6 +4351,10 @@ Pipelines & pipelines() {
         value.dense_f32_batch8 = compile(@"dense_f32_batch_8");
         value.prepare_full_attention = compile(@"prepare_full_attention_f32");
         value.sigmoid_mul_inplace = compile(@"sigmoid_mul_inplace_f32");
+        value.f32_to_fp8_e4m3fn =
+            compile(@"convert_f32_to_fp8_e4m3fn");
+        value.fp8_e4m3fn_to_f32 =
+            compile(@"convert_fp8_e4m3fn_to_f32");
     });
     return value;
 }
@@ -5930,7 +6031,101 @@ torch::Tensor extend_gqa_bf16(
     return output;
 }
 
+torch::Tensor mps_float8_to_copy(
+    const torch::Tensor & self,
+    std::optional<at::ScalarType> dtype,
+    std::optional<at::Layout> layout,
+    std::optional<at::Device> device,
+    std::optional<bool> pin_memory,
+    bool non_blocking,
+    std::optional<at::MemoryFormat> memory_format) {
+    const at::ScalarType target_dtype = dtype.value_or(self.scalar_type());
+    const at::Layout target_layout = layout.value_or(self.layout());
+    const at::Device target_device = device.value_or(self.device());
+    const bool supported_memory_format =
+        !memory_format.has_value() ||
+        *memory_format == at::MemoryFormat::Preserve ||
+        *memory_format == at::MemoryFormat::Contiguous;
+    const bool encode =
+        self.scalar_type() == at::ScalarType::Float &&
+        target_dtype == at::ScalarType::Float8_e4m3fn;
+    const bool decode =
+        self.scalar_type() == at::ScalarType::Float8_e4m3fn &&
+        target_dtype == at::ScalarType::Float;
+
+    if (!(self.device().is_mps() && target_device == self.device() &&
+          target_layout == at::Layout::Strided &&
+          !pin_memory.value_or(false) && supported_memory_format &&
+          self.dim() <= 8 && (encode || decode))) {
+        return at::native::_to_copy(
+            self,
+            dtype,
+            layout,
+            device,
+            pin_memory,
+            non_blocking,
+            memory_format);
+    }
+
+    TORCH_CHECK(
+        self.numel() <= std::numeric_limits<uint32_t>::max(),
+        "native Metal FP8 conversion supports at most uint32 elements");
+    Float8ConversionArgs args = {};
+    args.count = static_cast<uint32_t>(self.numel());
+    if (args.count != 0 && !self.is_contiguous()) {
+        args.dimensions = static_cast<uint32_t>(self.dim());
+        for (int64_t dimension = 0; dimension < self.dim(); ++dimension) {
+            TORCH_CHECK(
+                self.size(dimension) > 0 && self.stride(dimension) >= 0,
+                "native Metal FP8 conversion requires positive sizes and nonnegative strides");
+            args.sizes[dimension] =
+                static_cast<uint64_t>(self.size(dimension));
+            args.strides[dimension] =
+                static_cast<uint64_t>(self.stride(dimension));
+        }
+    }
+    torch::Tensor output;
+    if (encode) {
+        output = torch::empty(
+                     self.sizes(),
+                     self.options().dtype(at::ScalarType::Byte))
+                     .view(at::ScalarType::Float8_e4m3fn);
+    } else {
+        output = torch::empty(
+            self.sizes(), self.options().dtype(at::ScalarType::Float));
+    }
+    if (args.count == 0) {
+        return output;
+    }
+
+    auto buffer_of = [](const torch::Tensor & tensor) {
+        return (__bridge id<MTLBuffer>)tensor.storage().data_ptr().get();
+    };
+    auto offset_of = [](const torch::Tensor & tensor) -> NSUInteger {
+        return tensor.storage_offset() * tensor.element_size();
+    };
+    Pipelines & p = pipelines();
+    id<MTLComputePipelineState> pipeline =
+        encode ? p.f32_to_fp8_e4m3fn : p.fp8_e4m3fn_to_f32;
+    TORCH_CHECK(pipeline != nil, "native Metal FP8 conversion is unavailable");
+    at::mps::MPSStream * stream = at::mps::getCurrentMPSStream();
+    dispatch_sync(stream->queue(), ^{
+        id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:buffer_of(self) offset:offset_of(self) atIndex:0];
+        [encoder setBuffer:buffer_of(output) offset:offset_of(output) atIndex:1];
+        [encoder setBytes:&args length:sizeof(args) atIndex:2];
+        [encoder dispatchThreads:MTLSizeMake(args.count, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    });
+    return output;
+}
+
 }  // namespace
+
+TORCH_LIBRARY_IMPL(aten, MPS, module) {
+    module.impl("_to_copy", TORCH_FN(mps_float8_to_copy));
+}
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
     module.def("supports_bf16_decode_gqa", &supports_bf16_decode_gqa,
