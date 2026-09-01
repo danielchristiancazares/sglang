@@ -836,7 +836,7 @@ constexpr const char* kAffineM8KsplitQmmSource = R"(
         constexpr ushort OutputTile = 16;
         constexpr ushort KTile = 32;
         constexpr ushort KStep = 8;
-        constexpr ushort SimdGroups = 8;
+        constexpr ushort SimdGroups = 16;
         constexpr uint K = KConst;
         constexpr uint PackedK = K / 8;
         constexpr uint QuantGroups = K / 64;
@@ -1237,7 +1237,7 @@ array QLinear::operator()(const array& x) const {
     if (native_m8_ksplit_qmm_enabled() && x.shape()[1] == 8 &&
         x.dtype() == mx::bfloat16 && w.dtype() == mx::uint32 &&
         scales.dtype() == mx::bfloat16 && biases.dtype() == mx::bfloat16 &&
-        group_size == 64 && bits == 4 && input_features % 256 == 0 &&
+        group_size == 64 && bits == 4 && input_features % 512 == 0 &&
         output_features % 16 == 0) {
       if (native_qmm_trace_enabled()) {
         std::fprintf(
@@ -1328,7 +1328,7 @@ array affine_qmm_m8_ksplit(const QLinear& linear, const array& x) {
   }
   const int input_features = static_cast<int>(x.shape()[2]);
   const int output_features = static_cast<int>(linear.w.shape()[0]);
-  if (input_features % 256 != 0 || output_features % 16 != 0 ||
+  if (input_features % 512 != 0 || output_features % 16 != 0 ||
       linear.w.shape()[1] * 8 != input_features ||
       linear.scales.shape() != mx::Shape{
           output_features, input_features / linear.group_size} ||
@@ -1344,8 +1344,8 @@ array affine_qmm_m8_ksplit(const QLinear& linear, const array& x) {
        array(output_features, mx::int32)},
       {{1, 8, output_features}},
       {x.dtype()},
-      {256, output_features / 16, 1},
-      {256, 1, 1},
+      {512, output_features / 16, 1},
+      {512, 1, 1},
       {{"KConst", mx::fast::TemplateArg{input_features}}},
       std::nullopt,
       false,
