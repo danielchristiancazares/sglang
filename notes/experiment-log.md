@@ -20118,3 +20118,55 @@ mean 13.929045  17.125658 446.051        39.730
   this record change. Candidate dylib/test binaries remain reproducible
   temporary artifacts in `/private/tmp`; the 15 MiB trace remains available
   for later attribution. PERF-FA111 closes the scalar-output SIMD geometry.
+
+### 2026-09-01 07:41 PDT - Metal shader attribution selects affine QMV
+
+- Began from clean signed
+  `9fe92afcb175c8beaf520058932780dcfacdeb10`, 61 commits ahead of
+  `origin/main`. Port 30000 was free; only the ordinary macOS Metal compiler
+  services were present. Memory was 95% free with zero throttled pages,
+  AC/battery power mode was 2, and macOS reported normal thermal and
+  performance status.
+- A first bounded 30-second trace with Metal GPU Counters spent the window in
+  instrumentation startup and killed target PID 16748 before model execution;
+  the target trace duration was 0.776705 s and contains no usable decode
+  sample. Port/process cleanup was clear. The completed retry used:
+
+  ```bash
+  xctrace record --template 'Metal System Trace' \
+    --instrument 'Metal GPU Counters' --time-limit 2m --window 16s \
+    --output /private/tmp/qwen38-full-q4-target-long-shaders.trace \
+    --no-prompt --target-stdout - \
+    --env MLX_SDPA_BLOCKS=64 --env MLX_MAX_MB_PER_BUFFER=128 \
+    --env SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 \
+    --env SGLANG_MLX_NATIVE_SAMPLING=1 \
+    --env SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    --env SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    --launch -- /private/tmp/bench_qwen38_native \
+    python/sglang/srt/hardware_backend/mlx/native/libqwen38_engine.dylib \
+    /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    6237 1 128
+  ```
+
+  Target PID 16761 exited zero after **6.686056458 s / 19.144319346 tok/s**,
+  digest `b9b90c038014cbe7`, and last token 40218. The trace retains a 1.381783 s
+  Shader Timeline window; its performance movement is instrumentation
+  overhead, not an admission result.
+- Exported `metal-shader-profiler-shader-list` and
+  `gpu-shader-profiler-sample` to `/private/tmp/qwen38-shader-list.xml` and
+  `/private/tmp/qwen38-shader-samples.xml`. A temporary warning-as-error C++20
+  aggregator mapped 47,676 of 48,343 sampled PCs. The distribution is:
+  **88.470%** MLX affine-W4 `qmv_fast`; **3.550% / 0.354%** SDPA pass one/two;
+  **2.358%** fused recurrent update; **1.405%** full-attention q/k norm plus
+  RoPE; **0.707%** recurrent norm/gate; and **0.257%** recurrent q/k norm.
+  The temporary source was removed through `apply_patch`; the trace, exports,
+  and compiled analyzer remain reproducible under `/private/tmp`.
+- Verified the installed MLX package is 0.32.2 and fetched the official source
+  read-only into `/private/tmp/mlx-upstream`. Tag
+  `1f8e74e3f12f31365464a6867c6579f0e9b29d85` matches the installed release;
+  official HEAD `117188cd735299f396a08f7697a81759b1e0550b` has no post-tag QMV change.
+  Its new GQA SDPA specializations require at least 8,192 history tokens, so
+  they do not cover the exact 6,237-token shape. MLX's stock QMV computes four
+  output rows per SIMD group with two SIMD groups per threadgroup. That exact
+  matrix tile, its quant-parameter traffic, and dependency dispatch are the
+  next production-reachable optimization owners.

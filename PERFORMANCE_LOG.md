@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max full-Q4 target-only long-history GPU shader attribution, sampled `6237 / 1 warm / 128 timed` | prior Metal System Trace exposed command-buffer cadence without Shader Timeline labels | **88.470%** affine-W4 `qmv_fast`; **3.904%** two-pass SDPA; **2.358%** recurrent state update; **1.405%** full-attention q/k norm plus RoPE | 47,676 of 48,343 sampled shader PCs map to the target process; the remaining throughput branch is the stock-compatible matrix-tiled QMV/dependency owner | `xctrace record --template 'Metal System Trace' --instrument 'Metal GPU Counters' ...` plus exported shader-PC attribution | 2026-09-01 07:41 PDT |
 | M1 Max native full-Q4 target-only prefill, sampled served `6237+128`, real 131K pools | one-shot native prefill: Metal OOM before generation | internal 2,048-token prefill: **19.300 tok/s**, **109.988 prompt tok/s**, **56.706198 s TTFT**, **63.286374 s E2E** | exact 6,365-token request now completes with coherent reasoning; direct long-history decode is **19.586705 tok/s** and short decode remains above 20 with an exact digest; **0.700 tok/s** remains to the served floor | exact target-only server/client contract plus `SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048` | 2026-09-01 07:09 PDT |
 | M1 Max full-Q4 affine-W4 batch-one QMV, direct `128 / 32 warm / 128 timed` | stock MLX **20.339874670 tok/s** | one-SIMD-per-output **10.456143330 tok/s**; quant-parameter subgroup broadcast **7.773375044 tok/s** | **-48.593% / -61.783%**; both native forms removed after exact standalone parity and full-model screens | candidate dylib plus `SGLANG_MLX_NATIVE_BATCH_ONE_QMV=1` under the target-only direct contract | 2026-09-01 07:28 PDT |
 | M1 Max DFlash2 selected-q M=2/M=8 budget, sampled served `6237+128`, real 131K pools | adjacent current-source threshold-disabled **15.883 / 15.908 / 15.900 / 15.899 / 15.897 tok/s**, mean **15.8974** | mean-q6 threshold 0.62 **16.167 / 16.181 / 16.178 / 16.179 / 16.183 tok/s**, mean **16.1776** | **+0.2802 / +1.763%**; all requests exact with a stable coherent digest; 23 M=2 and 19 M=8 cycles per request; retained opt-in with **3.8224 tok/s** to the floor | exact PERF-A076 server/client contract plus `SGLANG_MLX_NATIVE_DFLASH_MEAN_Q_THRESHOLD=0.62` | 2026-09-01 06:54 PDT |
@@ -805,6 +806,9 @@ tree throughput can be ranked for production.
 | PERF-A076 | Calibrate the learned DFlash2 selector distribution while forwarding exact proposal q to rejection sampling. | Native DFlash selector score owner and shared exact p/q verifier | Retained opt-in at temperature **1.15**; identity remains default | Five consecutive real-131K-pool sampled `6237+128` requests average **15.8866 tok/s**, **+2.876%** over the adjacent identity-temperature mean **15.4424**. Every sample completes exact 6,365 tokens; candidate mean emitted width rises **3.878788 -> 4.031250**. Temperature 0.95 regresses the real request to **13.739 tok/s**; see PERF-FA107. |
 | PERF-A077 | Submit the two exact M=8 affine gate/up projections together and test direct SwiGLU production. | Native SG16/B32 Metal QMM and shared target MLP owner | Rejected and removed | A sequential one-grid SwiGLU kernel regressed steady verify about **3.3 ms**. A two-plane paired grid preserved both outputs bit-exactly and moved five-sample direct mean only **26.943319961 -> 26.964966176 tok/s** (**+0.08034%**), with two adjacent pairs flat/slower. See PERF-FA108. |
 | PERF-A078 | Budget DFlash2 verification from the current block's exact selected proposal probabilities. | Native sparse-q owner, common exact rejection verifier, checked prefix slicing, and trace telemetry | Retained opt-in at mean-q6 threshold **0.62**; full M=8 remains default | Five real-131K-pool sampled `6237+128` requests average **16.1776 tok/s**, **+1.763%** over the adjacent current-source **15.8974 tok/s** control. Each request uses 23 M=2 and 19 M=8 cycles, returns exact 6,365 tokens, and shares output SHA-256 `bdf9428e...`. Thresholds 0.55/0.65 reach **15.191 / 16.056 tok/s** on their admission screens; see PERF-FA109. |
+| PERF-A079 | Bound target-only prefill residency with internal native chunks. | Native target-only prefill owner and full-Q4 long-prompt path | Retained opt-in at 2,048 tokens | The representative real-131K-pool request now completes at **19.300 tok/s** with exact token count and coherent reasoning; direct long-history decode reaches **19.586705 tok/s**. The absent setting preserves one-shot behavior. |
+| PERF-A080 | Replace MLX batch-one QMV with a scalar-output native Metal geometry. | Full-Q4 affine-W4/G64 target projections | Rejected and removed | One-SIMD-per-output and subgroup-broadcast forms reach **10.456143330 / 7.773375044 tok/s** versus stock **20.339874670**. See PERF-FA111. |
+| PERF-A081 | Attribute full-Q4 long-history decode at the shader-PC owner before another kernel change. | Metal GPU Counters Shader Timeline and native target process | Complete; matrix-tiled QMV branch active | 47,676 mapped samples place **88.470%** in MLX `affine_qmv_fast`, **3.904%** in two-pass SDPA, and **2.358%** in the recurrent update. Installed MLX 0.32.2 matches current official QMV source; upstream HEAD adds no QMV optimization after that tag. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -4170,3 +4174,27 @@ tree throughput can be ranked for production.
   record update. PERF-FA111 closes this scalar-output geometry. A future
   affine route requires a stock-competitive matrix/SIMD tile or a fused
   downstream consumer that eliminates measured work.
+
+### 2026-09-01 07:41 PDT - PERF-A081 long-history shader attribution
+
+- Recorded the full-Q4 target-only sampled `6237 / 1 warm / 128 timed` shape
+  with Metal GPU Counters and Shader Timeline enabled. The instrumented target
+  completed in **6.686056458 s / 19.144319346 tok/s**, digest
+  `b9b90c038014cbe7`, and last token 40218. Profiling overhead changes timing
+  and the sampled trajectory, so this run supplies attribution only.
+- Exported the target shader address ranges and GPU program-counter samples.
+  A temporary strict C++20 aggregator mapped **47,676 / 48,343** sampled PCs:
+  **42,769 / 88.470%** are MLX
+  `affine_qmv_fast_bfloat16_t_gs_64_b_4_batch_0`; **1,887 / 3.904%** are the
+  two long-history SDPA passes; **1,140 / 2.358%** are the fused recurrent
+  state update; and **679 / 1.405%** are the fused full-attention q/k norm plus
+  RoPE kernel. Every remaining individually mapped owner is below 0.71%.
+- The installed dependency is MLX **0.32.2**, official tag
+  `1f8e74e3f12f31365464a6867c6579f0e9b29d85`. Official HEAD
+  `117188cd735299f396a08f7697a81759b1e0550b` has no post-tag QMV change; its
+  relevant Metal attention change adds GQA kernels at histories of at least
+  8,192 and does not cover the 6,237-token admission shape.
+- Removed the temporary aggregator source after strict compilation and use.
+  Retained the reproducible trace and XML exports under `/private/tmp`. The
+  next candidate must preserve MLX's multi-output SIMD accumulation geometry
+  while improving its output tile, parameter loads, or dependency dispatch.
