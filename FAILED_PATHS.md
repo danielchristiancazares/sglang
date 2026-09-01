@@ -3061,3 +3061,32 @@ option, or serving dispatch was added.
   target checkpoint, or representative request distribution changes.
 - Related commit or revert: PERF-A078 retains only the checked opt-in
   scheduler; threshold 0.62 is selected and the default remains full M=8.
+
+## PERF-FA110 - One-shot full-Q4 target-only long prefill
+
+- Hypothesis: the existing one-shot target-only prefill can admit the exact
+  6,237-token representative request within M1 Max unified-memory residency.
+- Scope: native full-Q4 target-only engine, one 6,237-token native prefill,
+  BF16 KV, real 131,072 context/token pools, and one running request.
+- Attempted change: first launched the target-only server with its unchanged
+  one-shot native prefill. A stale `.venv-mps` build-prefix selection caused
+  the initial launcher build to miss MLX headers; rebuilding with the active
+  `.venv` prefix isolated the runtime result.
+- Benchmark evidence: the rebuilt server reached the exact request and then
+  exhausted Metal residency during the 6,237-token native prefill, before any
+  generation sample. The same target with opt-in 2,048-token internal chunks
+  completes directly and through the real 131K serving surface.
+- Correctness evidence: the retained chunked arm completes exact 6,365 tokens
+  with `finish_reason=length` and coherent reasoning. Single-chunk sampled
+  controls preserve the exact 256-token digest and final token.
+- Failure mode: the one-shot graph retains the whole-prompt working set across
+  64 target layers and exceeds available Metal residency on this model and
+  request shape.
+- Why not to retry unchanged: the failure is deterministic under the recorded
+  full-Q4, 6,237-token, 131K-pool contract, and internal chunking directly
+  removes the residency lifetime.
+- Reopen only if: model residency, MLX command-buffer lifetime, unified-memory
+  capacity, or target prefill storage ownership changes materially.
+- Related commit or revert: PERF-A079 retains checked opt-in target-only
+  internal chunking at 2,048; the absent-value default preserves one-shot
+  behavior.

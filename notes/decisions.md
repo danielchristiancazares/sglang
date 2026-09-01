@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-09-01 06:18 PDT.
+**Reconciled through:** 2026-09-01 07:09 PDT.
 
 ## Selected production choices
 
@@ -244,6 +244,7 @@ has not.
 | Native DFlash2 | Retained; signed `d57a6ac11c` plus later verifier optimizations | The exact affine-W4 draft, learned selector, exact p/q verifier, accepted-state replay, real 131K pools, and one Codex `xhigh` tool turn pass. Five identity-temperature controls average **15.4424 tok/s** on sampled `6237+128`; proposal acceptance remains the active floor gap |
 | DFlash2 selector temperature | Retained opt-in at **1.15**; identity remains default | Five consecutive exact real-131K-pool `6237+128` samples average **15.8866 tok/s**, **+2.876%** over the adjacent identity mean, with exact token counts and stable coherent output. Exact rescaled q flows into rejection sampling. Temperature 0.95 is closed by its **13.739 tok/s** real-request regression |
 | DFlash2 selected-q M=2/M=8 budget | Retained opt-in at mean-q6 threshold **0.62**; full M=8 remains default | Five exact real-131K-pool `6237+128` samples average **16.1776 tok/s**, **+1.763%** over the adjacent current-source **15.8974 tok/s** control. Each request selects 23 M=2 and 19 M=8 cycles and preserves exact sparse-q rejection. Thresholds 0.55/0.65 are closed by **15.191 / 16.056 tok/s** admission screens. The retained arm remains **3.8224 tok/s** below the floor |
+| Full-Q4 target-only internal prefill | Retained opt-in at **2,048 tokens**; one-shot remains default | The one-shot 6,237-token request exhausts Metal residency. Internal target-only chunks complete direct prefill and exact real-131K serving at **19.300 tok/s**, while a single-chunk sampled control preserves its exact digest above 20. DFlash2/DSpark capture and ordinary MTP behavior remain unchanged; decode retains a **0.700 tok/s** served gap |
 | Native DSpark v2 | Retained execution base; signed `21cd561dfc` plus trained-confidence telemetry | Official BF16 and derived affine-W4 checkpoints run through five YaRN full-attention layers, rank-256 Markov correction, and the shared exact verifier. Affine-W4 reaches **10.050625 tok/s** direct and **11.242 tok/s** on the representative real-131K-pool request. Trace-only confidence preserves exact trajectories and supplies seven FP32 survival probabilities for cost-based scheduling |
 | Fixed shortened DSpark verification | Rejected as production policy; bounded verifier retained | Counts one through six reach at most **11.920231 tok/s** direct. Target M=6/M=7 are especially slow through the generic affine-QMM route, while M=8 uses SG16/B32. Adaptive scheduling may choose only between measured M=2 and M=8 tiers |
 | Trained-confidence DSpark M=2/M=8 budget | Retained opt-in at complete-cycle ratio **1.75**; fixed M=8 remains default | Five consecutive exact real-131K-pool `6237+128` samples average **13.6058 tok/s**, **+20.267%** over the adjacent **11.313 tok/s** control, with one shared reasoning/output digest. Ratio 1.4 is closed by its **10.916 tok/s** real-request regression. The selected adaptive result remains below DFlash2 and the 20 tok/s floor |

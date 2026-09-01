@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-06:54 PDT.
+07:09 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -333,6 +333,19 @@ QKV-only and complete recurrent restoration collapse direct accepted width to
 **8.961 tok/s**; it was removed. The full-Q4 target and SG16/B32 verifier
 remain the compatible selections. Further progress returns to shared target
 decode cost while preserving the qualified target-only lane above 20.
+
+The full-Q4 target-only lane now has a memory-safe representative prefill.
+Checked opt-in `SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048`
+evaluates and releases 2,048-token target units inside the native owner. It
+completes direct 6,237-token prefill and the exact real-131K-pool served
+`6237+128` request that exhausted Metal residency on the one-shot path. The
+served sample reaches **19.300 generation tok/s**, **109.988 prompt tok/s**,
+**56.706198 s TTFT**, and **63.286374 s E2E**, with exact token count and
+coherent reasoning. Direct long-history decode reaches **19.586705 tok/s**;
+single-chunk sampled decode retains its exact digest above 20. DFlash2 and
+DSpark retain their existing capture chunks, ordinary MTP is unchanged, and
+the default target-only path remains one-shot. The target-only served gap is
+now **0.700 tok/s**.
 
 Two DSpark proposal-fidelity candidates are closed. Independently applying
 target top-k/top-p filtering to each draft row fell to **6.997461 tok/s** and
