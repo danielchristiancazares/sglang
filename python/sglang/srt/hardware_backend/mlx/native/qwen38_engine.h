@@ -36,6 +36,10 @@ mlx::core::array dspark_confidence(
     const mlx::core::array& markov_embeddings,
     const mlx::core::array& weight,
     const mlx::core::array& bias);
+int dspark_select_verify_draft_tokens(
+    const float* confidence,
+    int count,
+    float full_to_short_cost_ratio);
 
 struct FullAttn {
   QLinear q_proj;
@@ -263,6 +267,7 @@ class Engine {
       const mlx::core::array& confidence,
       bool dense_proposal,
       bool greedy,
+      float confidence_cost_ratio,
       const char* trace_tag);
 
   void load_weights(const std::string& model_dir);
@@ -321,6 +326,7 @@ class Engine {
   mlx::core::array dspark_confidence_weight_{0};
   mlx::core::array dspark_confidence_bias_{0};
   int dspark_verify_draft_tokens_ = 7;
+  float dspark_confidence_cost_ratio_ = 0.0f;
   std::vector<DSparkLayer> dspark_layers_;
   std::vector<LayerSnap> snap_;
   int32_t spec_buf_[8]{};
