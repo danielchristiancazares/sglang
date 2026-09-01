@@ -21103,3 +21103,59 @@ mean 13.929045  17.125658 446.051        39.730
 - Decision: retain FP8 for exact capacity. Next reduce additional resident
   bytes for short-context throughput and route populated histories through
   fused compressed attention so generic SDPA does not materialize FP32 K/V.
+
+### 2026-09-01 11:43 PDT - Native affine-Q5 more than doubles the direct target rate
+
+- Continued from signed commit
+  `a5d90069c5cf6693bda254f6b7a9d9c69c0a3c1a`, 71 commits ahead of
+  `origin/main`. The three modified native-engine/test paths remained
+  pre-existing user-owned work. Port 30000 and matching server, benchmark,
+  compiler, and download processes were clear; memory pressure reported 94%
+  free, zero throttled pages, and normal thermal/performance state. The
+  configured single agent slot again rejected the skill-required analysis
+  subagent with `agent thread limit reached`.
+- Hugging Face discovery found
+  `lukaskremla/Qwen3.8-27B-5bit-MLX-TextOnly`. Pinned revision
+  `2568951b893b6427d0a8eb91cc7f4307154c2f05` reports an exact
+  **18,514,909,284-byte** inventory and provenance from `Qwen/Qwen3.8-27B`
+  through MLX-LM 0.31.2. Downloaded that exact revision into the ordinary Hub
+  cache. The four safetensor shards verify as:
+
+  | Shard | SHA-256 |
+  |---|---|
+  | 1 | `21b2bb76b0b5e01dc0b48dc4bbb448c0c506a21e5651615c37321ff0b0d317d8` |
+  | 2 | `10b2b7d89ea5963fbb84942087d9323ef4b6ba4aa2f2498d8734009f37922add` |
+  | 3 | `586db3982613720dfa916c6de803f85a7eaafe538af97d0ff43b56a02dda8314` |
+  | 4 | `47b1db6c6140ac6f974681b9c25fa2bf7eefed2927c5e3063c133960623222dd` |
+
+  Header-only inspection found 1,847 tensors: 498 U32 and 1,349 BF16, with
+  zero `vision_tower` names. Config selects affine bits five, group size 64,
+  64 language layers, 262,144 maximum positions, and BF16 activations.
+- An isolated MLX 0.32.2 affine-five-bit quantize/matmul probe passed before
+  full-model work. The checked-in build script's stale `.venv-mps` default
+  failed to find MLX headers; the reproducible build supplied the active
+  `MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx`
+  and produced `/private/tmp/libqwen38_affine_q5_baseline.dylib`. The only
+  compiler message was the established macOS 26.0/MLX 26.2 linker warning.
+- The native target-only command environment was
+  `MLX_SDPA_BLOCKS=64`, `MLX_MAX_MB_PER_BUFFER=128`, internal prefill chunk
+  2,048, native sampling seed 42, and reasoning cap 256. A
+  `128 / 1 warm / 16 timed` smoke completed in **0.986095458 s** at
+  **16.225609671 tok/s**, digest `8e8b328774a98b6c`, last token 23. The
+  complete `128 / 32 warm / 128 timed` control completed in
+  **7.841933208 s** at **16.322505765 tok/s**, digest
+  `dba01798d97b3f4e`, last token 15.
+- Reused the selected affine-W4 DFlash2 artifact and every selected control:
+  small-batch and M8 K-split QMM, tape commit, selector temperature 1.15,
+  mean-q6 threshold 0.62, seed 42, and exact p/q trace. It completed 128 timed
+  tokens in **11.123983791 s / 11.506669050 tok/s**, with 56 refills, mean
+  width **2.232142857**, digest `35a871d75810e1c9`, and last token 99945.
+  W4 draft time settled near 31--34 ms. Affine-Q5 target M=2 verification was
+  about 114 ms and M=8 verification about 363--368 ms. Source reachability
+  confirms the selected M8 K-split kernel accepts bits four only; Q5 uses the
+  generic MLX product. PERF-FA119 closes the unchanged composition.
+- Decision: retain the immutable affine-Q5 artifact and native target route.
+  It improves the selected GGUF Q5 1K-FP8 mean by **2.248x** before any Q5
+  native-kernel work. Next implement exact five-bit unpacking in the common
+  M=8 K-split verifier, validate synthetic and checkpoint parity, then measure
+  direct fixed cycles and the exact natural 131K serving contract.

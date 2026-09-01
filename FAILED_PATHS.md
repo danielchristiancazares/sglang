@@ -3315,3 +3315,31 @@ option, or serving dispatch was added.
   path.
 - Related commit or revert: PERF-A090 retains exact FP8 capacity and records
   this incomplete-speed boundary.
+
+## PERF-FA119 - Unchanged Q4-tuned DFlash controls on affine Q5
+
+- Hypothesis: the selected DFlash2 temperature and mean-q budget can lift the
+  new native affine-Q5 target above 20 tok/s without another kernel change.
+- Scope: immutable affine-Q5/G64 target, affine-W4 DFlash2 draft, native
+  sampling seed 42, selector temperature 1.15, mean-q6 threshold 0.62, and
+  direct `128 / 32 warm / 128 timed` decode.
+- Attempted change: reused the complete selected full-Q4 DFlash environment
+  while changing only the target checkpoint to affine Q5.
+- Benchmark evidence: target-only reached **16.322505765 tok/s**. The unchanged
+  DFlash composition reached **11.506669050 tok/s**, 56 refills, and mean
+  emitted width **2.232142857**. M=2 verification was about 114 ms and M=8
+  verification about 363--368 ms.
+- Correctness evidence: the target and draft loaded, exact p/q rejection ran,
+  128 timed tokens completed, and the process exited cleanly.
+- Failure mode: the retained M=8 K-split Metal verifier accepts affine bits
+  two/four only. Five-bit target matrices fall through to generic MLX QMM;
+  the Q4-calibrated proposal controls also yield too few tokens on this direct
+  trajectory to repay that cost.
+- Why not to retry unchanged: it is **4.815836715 tok/s / 29.505%** slower
+  than the adjacent target-only result and **8.493330950 tok/s** below the
+  required floor.
+- Reopen only if: a native affine-five-bit verifier materially reduces fixed
+  M=8/M=2 cost, followed by selector/budget recalibration on the natural
+  request.
+- Related commit or revert: PERF-A091 retains the checkpoint and baseline;
+  no source change was made by this failed composition.
