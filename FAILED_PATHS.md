@@ -3289,3 +3289,29 @@ option, or serving dispatch was added.
   PERF-A089 retains an SGLang native Metal conversion over the already
   byte-backed pool and therefore changes the premise without changing the
   stock result.
+
+## PERF-FA118 - Exact 131K E4M3FN cache as the complete Q5 speed solution
+
+- Hypothesis: halving the exact attention cache from BF16 to E4M3FN restores
+  the small-pool Q5 decode rate while preserving requested capacity.
+- Scope: Q4_K-embedding Q5 artifact, one FP32 Mamba slot, exact 131,072-token
+  FP8 K/V pool, native Metal conversion, and ordinary sampled `128+32` serving.
+- Attempted change: launched signed PERF-A089 with
+  `context_length=max_total_tokens=131072` and `kv_cache_dtype=fp8_e4m3`.
+- Benchmark evidence: K/V residency fell **8.00 -> 4.00 GB** and reported
+  headroom rose **0.99 -> 6.99 GB**. Five cache-flushed samples measured
+  **3.098 / 3.299 / 3.264 / 3.273 / 3.251 tok/s**, mean **3.237**. This is
+  **10.276x** the matched BF16 result and **55.419%** below the 1K FP8 mean.
+- Correctness evidence: exact pool allocation, automatic warmup, health,
+  maximum model length, language-only metadata, exact sampled token counts,
+  reasoning, arithmetic `703`, and one parsed multiply call all pass.
+- Failure mode: the 4.00 GB fully allocated pool still creates a material
+  residency penalty on the 32 GB unified-memory machine. Long populated
+  histories also retain generic FP8-to-FP32 gather materialization.
+- Why not to retry unchanged: five warmed sequential samples establish a
+  stable 3.237 tok/s region, **16.763 tok/s / 6.179x** from the floor.
+- Reopen only if: another resident-byte reduction changes the full-pool
+  boundary or fused compressed attention removes the long-history conversion
+  path.
+- Related commit or revert: PERF-A090 retains exact FP8 capacity and records
+  this incomplete-speed boundary.

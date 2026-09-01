@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max Qwen3.8-27B Q5_K_S, Q4_K token embedding, exact 131K FP8 KV pool, sampled served `128+32` | same-artifact BF16: **0.315 tok/s**, **5.616 prompt tok/s**, **22.790664 s TTFT**, **121.240667 s E2E** | FP8 five-run mean **3.237 tok/s**, **5.8974 prompt tok/s**, **21.705304 s TTFT**, **31.286811 s E2E** | cache **8.00 -> 4.00 GB**, reported headroom **0.99 -> 6.99 GB**; **10.276x / +927.619%** generation; exact capacity, reasoning, arithmetic, and tools pass | exact PERF-A090 server contract; five cache-flushed ordinary sampled requests | 2026-09-01 11:29 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S, Q4_K token embedding, 1K FP8 KV pool, sampled served `128+32` | same-artifact BF16 smoke: **7.086 tok/s**, **5.809 prompt tok/s**, **22.033405 s TTFT**, **26.408174 s E2E** | native FP8 five-run mean **7.2614 tok/s**, **5.8668 prompt tok/s**, **21.818682 s TTFT**, **26.087973 s E2E** | first native FP8 capacity lane; **+0.1754 tok/s / +2.475%** versus the prior same-artifact smoke; exact lengths, reasoning, arithmetic, and tools pass | PERF-A089 server contract; five cache-flushed ordinary sampled requests | 2026-09-01 11:17 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S, Q4_K token embedding, exact 131K BF16 pool, sampled served `128+32` | F16 token embedding: **0.102 tok/s**, **5.271 prompt tok/s**, **24.284058 s TTFT**, **329.689187 s E2E** | Q4_K token embedding: **0.315 tok/s**, **5.616 prompt tok/s**, **22.790664 s TTFT**, **121.240667 s E2E** | runtime residency **21.37 -> 20.00 GB**; **3.088235x / +208.824%** generation; exact capacity, reasoning, arithmetic, and tools pass; paging remains active | exact PERF-A088 server contract, changing only model artifact; ordinary sampled client with `--skip-warmup` | 2026-09-01 10:55 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S-derived, exact 131K BF16 pool, sampled served `128+32` | selected 1K-pool mean **7.1646 tok/s**, **5.809 prompt tok/s**, **22.035143 s TTFT** | exact 131K pool: **0.102 tok/s**, **5.271 prompt tok/s**, **24.284058 s TTFT**, **329.689187 s E2E** | exact capacity, health, language-only metadata, and reasoning pass; generation is **98.576%** slower under unified-memory paging; stock MPS float8 allocation is unsupported | exact PERF-A086 server contract; ordinary sampled client with `--skip-warmup` | 2026-09-01 10:39 PDT |
@@ -823,6 +824,7 @@ tree throughput can be ranked for production.
 | PERF-A087 | Screen the existing FP8 KV configuration before native implementation. | PyTorch 2.11.0 MPS float8 storage/conversion and generic SGLang KV pool dtype | Framework route unavailable | Direct `torch.float8_e4m3fn` conversion raises the unsupported-MPS-dtype `TypeError`. Byte-backed float8 views and indexed gathers work, which enabled PERF-A089 to supply the missing native conversion; see PERF-FA117. |
 | PERF-A088 | Reduce the only transformed Q5 artifact tensor while preserving the Q5_K_S body. | Pinned llama.cpp COPY conversion of `token_embd.weight` Q5_K to Q4_K, native embedding parity, behavior, and exact 131K residency | Retained smaller capacity artifact | The 19,522,020,960-byte artifact preserves 865 source tensors, loads at 20.00 GB, and leaves 0.99 GB after the exact 8.00 GB BF16 cache. Matched 131K generation improves **0.102 -> 0.315 tok/s** (**3.088235x**). A 1K smoke reaches **7.086 tok/s** and arithmetic/tools pass. |
 | PERF-A089 | Supply the missing MPS E4M3FN value conversion while preserving SGLang's byte-backed generic KV pool. | Existing native Metal extension, narrow MPS `aten::_to_copy` specialization, contiguous/strided FP32-to-FP8 and FP8-to-FP32 kernels | Retained; exact 131K qualification active | 400,006 CPU-reference encodes and all 256 raw decodes match bit-exactly; offset/strided/empty and ordinary BF16 fallback checks pass. A 1K FP8 server warms and five sampled requests average **7.2614 tok/s** with arithmetic/tools preserved. No Python source changed. |
+| PERF-A090 | Qualify the native FP8 conversion at the requested exact token pool. | Q4_K-embedding Q5 artifact, one FP32 Mamba slot, 131,072-token byte-backed FP8 K/V pool, sampled behavior | Retained exact-capacity selection; additional residency reduction active | Exact K/V allocation falls **8.00 -> 4.00 GB** and reported headroom rises **0.99 -> 6.99 GB**. Five sampled requests average **3.237 tok/s**, **10.276x** the matched BF16 result, while the full pool remains **55.42%** below the 1K FP8 mean. See PERF-FA118. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -4500,3 +4502,50 @@ tree throughput can be ranked for production.
   30000, matching workload, and compiler process; memory recovered with zero
   throttled pages and normal reported thermals. Retain the native conversion
   and qualify the exact 131K FP8 pool next.
+
+### 2026-09-01 11:29 PDT - PERF-A090 exact 131K FP8 capacity
+
+- The signed PERF-A089 source relaunched with exact
+  `context_length=max_total_tokens=131072`, one request, one Mamba slot,
+  memory fraction 0.95, page one, chunk 2,048, and prefill cap 8,192. The
+  20.00 GB model loaded in **71.93 s**. Its exact FP8 pool occupied
+  **2.00 GB K + 2.00 GB V** and left **6.99 GB** by server accounting,
+  compared with 4.00+4.00 GB and 0.99 GB for the same artifact's BF16 pool.
+  Automatic warmup, health, maximum model length 131,072, and language-only
+  metadata passed.
+- One cold-residency sampled request reached **2.638 tok/s** and remained
+  exact. A later orchestration call yielded its client session before stdout
+  collection; process inspection confirmed that client ended before the
+  admitted window, and the sample is excluded. Five subsequent sequential,
+  cache-flushed samples measured:
+
+  | Sample | Gen tok/s | Prompt tok/s | TTFT s | E2E s | Output SHA-256 |
+  |---:|---:|---:|---:|---:|---|
+  | 1 | 3.098 | 5.839 | 21.922251 | 31.929734 | `b56fe5dc...646cc` |
+  | 2 | 3.299 | 5.915 | 21.639897 | 31.035651 | `e6d202d3...32353` |
+  | 3 | 3.264 | 5.887 | 21.741808 | 31.238994 | `bfb3adf4...ad125` |
+  | 4 | 3.273 | 5.928 | 21.592876 | 31.064729 | `2fd793aa...20f17` |
+  | 5 | 3.251 | 5.918 | 21.629686 | 31.164948 | `2fd793aa...20f17` |
+
+  Means are **3.237 generation tok/s**, **5.8974 prompt tok/s**,
+  **21.705304 s TTFT**, and **31.286811 s E2E**. Every request completed exact
+  160-token usage with 32 streamed reasoning fragments. This is
+  **10.276190x / +927.619%** over the same artifact's 0.315 tok/s BF16
+  result and **31.735294x** over the original F16-embedding/BF16 result.
+- The full FP8 pool remains **55.419%** below the 1K FP8 mean of 7.2614 tok/s.
+  `memory_pressure` reported 89% system-wide free capacity and zero throttled
+  pages while the compressor remained active; encrypted swap usage moved from
+  823.75 MiB after the first sample to 857.19 MiB after the full window and
+  behavior gates. This isolates a material full-pool residency cost even
+  after removing four cache gigabytes.
+- Exact-pool deterministic behavior returned arithmetic **703** and exactly
+  one parsed `multiply({"a": 37, "b": 19})` call with
+  `finish_reason=tool_calls`. Root/listener 24369 owned tracker/scheduler/
+  detokenizer 24372/24373/24374. Foreground shutdown cleared every PID, port,
+  matching workload, and compiler process. Memory recovered to 95% free,
+  swap usage settled at 540.75 MiB, pages throttled remained zero, and
+  reported thermals stayed normal.
+- Decision: retain FP8 as the exact-capacity cache selection. Another cache or
+  model-residency reduction owns the short-context throughput recovery; a
+  fused native FP8 attention owner remains required for long populated
+  histories where generic SDPA materializes FP32 K/V.
