@@ -18732,3 +18732,47 @@ mean 13.929045  17.125658 446.051        39.730
   affine-W4 converter and derived checkpoint at a distinct path, followed by
   native DSpark loading and execution through the existing exact target
   verifier and recurrent tape-commit path.
+
+### 2026-09-01 03:31 PDT - derived affine-W4 DSpark checkpoint
+
+- Added `benchmark/mac/convert_dspark_mlx.cpp`, a standalone C++20 converter
+  with an exact 62-tensor BF16 source gate. It validates every production
+  tensor name, shape, and dtype before conversion. The selected 37 matrices
+  are `fc`, every two-dimensional transformer weight, and
+  `markov_head.markov_w2`; `markov_w1` remains BF16 for direct lookup and the
+  confidence tensors remain dense for checkpoint fidelity.
+- Built with:
+
+  ```bash
+  clang++ -std=c++20 -O3 -Wall -Wextra -Werror \
+    -isystem .venv/lib/python3.11/site-packages/mlx/include \
+    benchmark/mac/convert_dspark_mlx.cpp \
+    -L.venv/lib/python3.11/site-packages/mlx/lib \
+    -Wl,-rpath,.venv/lib/python3.11/site-packages/mlx/lib -lmlx \
+    -o /private/tmp/convert_dspark_mlx
+  ```
+
+  The established macOS 26.0 / MLX 26.2 linker warning was the only output.
+  `/private/tmp/convert_dspark_mlx --self-test` passed the four selected and
+  three retained name classes plus affine dequantization parity.
+- With port/server/compiler processes clear, 93% free memory, and normal
+  thermal/performance state, ran:
+
+  ```bash
+  /private/tmp/convert_dspark_mlx \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DSpark-BF16/model.safetensors \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DSpark-MLX-AffineQ4/model.safetensors
+  ```
+
+- All 37 conversions completed and the converter reloaded the partial output,
+  verified all 136 tensor names/shapes/dtypes and every provenance field, then
+  atomically renamed it into place. The distinct derived artifact is
+  **1,136,258,326 bytes** with SHA-256
+  `a69938fff75fecb662da3f8c5acfb6e2d4e147f776d6e6709966455d54584033`.
+  Header inspection confirmed `dspark-mlx-affine`, `affine-w4-gs64`, 37
+  quantized matrices, source revision
+  `b9a5dbdf03bc999c6c73c426b19c2d9041cea393`, and source SHA-256
+  `2aff025f45823b40ebe726b9dfa40302f3512bd9a11c3a7347de32a567acd9a7`.
+- `clang-format --dry-run --Werror` and `git diff --check` passed. Native
+  loader/backbone/Markov integration is next; neither downloaded checkpoint
+  was modified.
