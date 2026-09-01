@@ -4,7 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
-| M1 Max Qwen3.8-27B Q5_K_S-derived target, sampled served `128+32`, 1K pool | unchanged Q5_K_M/Q5_K_S artifacts fail at mixed-Q8_0 merge/Q5_K embedding execution | derived Q5_K_S with only `token_embd.weight` in F16: **5.746 tok/s**, **5.8 prompt tok/s**, **22.070851 s TTFT**, **27.466190 s E2E** | first complete Q5 SGLang baseline; exact 160 tokens and reasoning preserved; **14.254 tok/s / 3.481x** remains to the floor | `bench_openai_stream.py --model qwen3.8-27b-q5 --input-tokens 128 --output-tokens 32 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup --timeout 600` | 2026-09-01 08:44 PDT |
+| M1 Max Qwen3.8-27B Q5_K_S-derived target, sampled served `128+32`, 1K pool | generic Q6_K batch-one path: **5.746 tok/s**, **5.8 prompt tok/s**, **22.070851 s TTFT**, **27.466190 s E2E** | Q6_K two-row reuse: five-run **7.052 tok/s** mean, warmed-four **7.144**; five-run **5.713 prompt tok/s**, **22.431710 s TTFT**, **26.830541 s E2E** | **+1.306 / +22.732%** generation; exact 160 tokens and reasoning preserved; **12.948 tok/s / 2.836x** remains to the floor | `bench_openai_stream.py --model qwen3.8-27b-q5 --input-tokens 128 --output-tokens 32 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup --timeout 600` | 2026-09-01 09:04 PDT |
 | M1 Max full-Q4 target-only long-history GPU shader attribution, sampled `6237 / 1 warm / 128 timed` | prior Metal System Trace exposed command-buffer cadence without Shader Timeline labels | **88.470%** affine-W4 `qmv_fast`; **3.904%** two-pass SDPA; **2.358%** recurrent state update; **1.405%** full-attention q/k norm plus RoPE | 47,676 of 48,343 sampled shader PCs map to the target process; the remaining throughput branch is the stock-compatible matrix-tiled QMV/dependency owner | `xctrace record --template 'Metal System Trace' --instrument 'Metal GPU Counters' ...` plus exported shader-PC attribution | 2026-09-01 07:41 PDT |
 | M1 Max native full-Q4 target-only prefill, sampled served `6237+128`, real 131K pools | one-shot native prefill: Metal OOM before generation | internal 2,048-token prefill: **19.300 tok/s**, **109.988 prompt tok/s**, **56.706198 s TTFT**, **63.286374 s E2E** | exact 6,365-token request now completes with coherent reasoning; direct long-history decode is **19.586705 tok/s** and short decode remains above 20 with an exact digest; **0.700 tok/s** remains to the served floor | exact target-only server/client contract plus `SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048` | 2026-09-01 07:09 PDT |
 | M1 Max full-Q4 affine-W4 batch-one QMV, direct `128 / 32 warm / 128 timed` | stock MLX **20.339874670 tok/s** | one-SIMD-per-output **10.456143330 tok/s**; quant-parameter subgroup broadcast **7.773375044 tok/s** | **-48.593% / -61.783%**; both native forms removed after exact standalone parity and full-model screens | candidate dylib plus `SGLANG_MLX_NATIVE_BATCH_ONE_QMV=1` under the target-only direct contract | 2026-09-01 07:28 PDT |
@@ -811,6 +811,7 @@ tree throughput can be ranked for production.
 | PERF-A080 | Replace MLX batch-one QMV with a scalar-output native Metal geometry. | Full-Q4 affine-W4/G64 target projections | Rejected and removed | One-SIMD-per-output and subgroup-broadcast forms reach **10.456143330 / 7.773375044 tok/s** versus stock **20.339874670**. See PERF-FA111. |
 | PERF-A081 | Attribute full-Q4 long-history decode at the shader-PC owner before another kernel change. | Metal GPU Counters Shader Timeline and native target process | Complete; matrix-tiled QMV branch active | 47,676 mapped samples place **88.470%** in MLX `affine_qmv_fast`, **3.904%** in two-pass SDPA, and **2.358%** in the recurrent update. Installed MLX 0.32.2 matches current official QMV source; upstream HEAD adds no QMV optimization after that tag. |
 | PERF-A082 | Establish a runnable provenance-pinned Q5 checkpoint and served baseline. | Bartowski Q5_K_M/Q5_K_S source artifacts, pinned llama.cpp COPY conversion, native Metal GGUF execution, and sampled OpenAI serving | Derived Q5_K_S base retained; throughput optimization active | Converting only the unsupported 833.59 MiB Q5_K token embedding to F16 yields a 21,349,656,160-byte artifact with SHA-256 `c05a7778...fcfb`. It loads at 21.37 GB, warms, and completes exact sampled `128+32` at **5.746 tok/s** with reasoning preserved. Unchanged Q5_K_M and Q5_K_S fail at distinct current native boundaries; see PERF-FA112/113. |
+| PERF-A083 | Reuse one activation fragment across two Q6_K output rows during batch-one decode. | Native Metal GGUF Q6_K matrix-vector kernel and guarded common quantized-matmul dispatch | Retained; first Q5 kernel win | Matched QKV/head medians improve **0.748917 -> 0.448125 ms** and **12.009166 -> 3.324625 ms**. Five sampled served requests average **7.052 tok/s**, **22.732%** above the 5.746 baseline; warmed-four average **7.144**. Actual-file optimized, odd-row fallback, and batch-eight parity pass. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -4251,3 +4252,48 @@ tree throughput can be ranked for production.
   foreground `Ctrl+C`. All four PIDs, matching workloads, and port 30000 were
   absent afterward. Memory returned to 95% free with zero throttled pages and
   normal thermal/performance status.
+
+### 2026-09-01 09:04 PDT - PERF-A083 Q6_K batch-one two-row reuse
+
+- Change: adapted pinned llama.cpp build 10547's Q6_K matrix-vector mapping at
+  commit `749f688fcaa4c472ec034b08cb8a907c45cfaa02`. Two 32-thread SIMD groups
+  each reuse one sixteen-value activation fragment across two contiguous output
+  rows. The common native Metal quantized-matmul owner selects the new path only
+  for batch one, complete four-row output cohorts, aligned compact views, and a
+  32-wide pipeline capable of 64 threads. The generic kernel remains available
+  through `SGLANG_MPS_Q6_K_BATCH1_ROWS2=0` and owns every failed guard.
+- Actual-file parity on the derived Q5 checkpoint passed the optimized 16-row
+  domain at Q6_K maximum absolute/relative error
+  **2.98023e-07 / 1.84679e-07**, the 17-row fallback at
+  **4.76837e-07 / 2.95486e-07**, and untouched batch-eight execution at
+  **1.90735e-06 / 5.17281e-07**. The same commands passed all Q4_0 and Q5_K
+  representatives.
+- Representative Q6_K QKV matched windows used eight warmups and 25 timed
+  synchronized iterations. Candidate raw milliseconds were
+  `0.505667,0.480250,0.472250,0.472292,0.467542,0.470875,0.420750,0.436709,0.426916,0.440166,0.430208,0.431083,0.408542,0.411167,0.420458,0.464000,0.454042,0.562750,0.461916,0.450500,0.455083,0.443375,0.446542,0.443875,0.448125`;
+  control raw milliseconds were
+  `0.934292,0.895042,0.820542,0.765208,0.739458,0.727042,0.761625,0.762875,0.753666,0.756208,0.759292,0.744917,0.752209,0.756458,0.738875,0.725667,0.729625,0.737000,0.748917,0.741458,0.738041,0.751417,0.748125,0.738916,0.748166`.
+  Medians improve **0.748917 -> 0.448125 ms**, a **40.2%** reduction, and
+  effective bandwidth rises **53.559 -> 89.510 GiB/s**.
+- Full Q6_K vocabulary-head candidate raw milliseconds were
+  `3.409916,3.369167,3.323542,3.343833,3.398375,3.371625,3.348250,3.316583,3.321625,3.310583,3.324625,3.318875,3.368708,3.358375,3.337458,3.342958,3.321375,3.309542,3.294125,3.282834,3.290000,3.283791,3.357209,3.371958,3.320000`;
+  matched control raw milliseconds were
+  `12.169000,12.017916,11.969959,12.002459,12.026000,11.976916,11.952083,12.032125,11.994584,12.051875,12.047541,11.966500,11.994291,12.009959,11.947250,11.970917,11.989958,11.959583,12.001833,12.009166,12.019875,12.035583,12.090417,12.115042,12.035375`.
+  Medians improve **12.009166 -> 3.324625 ms**, a **72.3%** reduction, and
+  effective bandwidth rises **80.960 -> 292.442 GiB/s**.
+- A clean foreground server loaded the same 21.37 GB artifact and completed
+  five cache-flushed ordinary-sampling `128+32` requests. Generation samples
+  were **6.685 / 7.176 / 7.134 / 7.135 / 7.131 tok/s**, mean **7.0522** and
+  warmed-four mean **7.1440**. Prompt samples were
+  **5.336 / 5.822 / 5.794 / 5.806 / 5.805 tok/s**; TTFT samples were
+  **23.985920 / 21.984879 / 22.092834 / 22.046234 / 22.048684 s**; E2E
+  samples were **28.622898 / 26.304740 / 26.438155 / 26.391247 / 26.395664
+  s**. Five-run generation improves **22.732%** over the committed
+  **5.746 tok/s** baseline. Every request returned exact `128+32=160` tokens,
+  `finish_reason=length`, and all 32 output tokens as preserved reasoning.
+- Root/listener PID 20985 and children 20992/20993/20994 were resolved before
+  foreground `Ctrl+C`. All PIDs, matching workloads, and port 30000 were absent
+  after cleanup. Memory returned to 94% free with zero throttled pages and
+  normal thermal/performance status. The active Q5 gap is now
+  **12.9478 tok/s / 2.8360x**; remaining Q5_K projections, model execution
+  overhead, 131K capacity, and speculative economics own the next iterations.

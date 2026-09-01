@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-08:44 PDT.
+09:04 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -183,11 +183,20 @@ with SHA-256
 Actual-file native-MPS parity passes for Q4_0, Q5_K, and Q6_K. The derived
 checkpoint loads as `Qwen3_5ForCausalLM`, occupies 21.37 GB at runtime, warms
 the native Metal path, and exposes the language-only `qwen3.8-27b-q5` serving
-surface. Its first sampled exact `128+32` baseline preserves reasoning and
-reaches **5.746 generation tok/s**, **5.8 prompt tok/s**, **22.070851 s TTFT**,
-and **27.466190 s** end to end. This leaves a **14.254 tok/s / 3.481x** decode
-gap. The real 131K pool, sustained 20 tok/s admission window, and Codex
-`xhigh` work gate remain due.
+surface. The first retained Q5 optimization adapts pinned llama.cpp's Q6_K
+batch-one matrix-vector mapping so each SIMD group reuses its activation
+fragment across two output rows. Matched QKV and vocabulary-head medians fall
+**0.748917 -> 0.448125 ms** and **12.009166 -> 3.324625 ms**. Optimized,
+odd-row fallback, and batch-eight actual-file parity all pass.
+
+Five ordinary sampled exact `128+32` requests reach
+**6.685 / 7.176 / 7.134 / 7.135 / 7.131 generation tok/s**, mean **7.0522**
+and warmed-four mean **7.1440**, versus the committed generic-kernel baseline
+of **5.746 tok/s**. Every request preserves 32 reasoning tokens and exact
+length. The five-run prompt/TTFT/E2E means are **5.7126 tok/s**,
+**22.431710 s**, and **26.830541 s**. This leaves a
+**12.9478 tok/s / 2.8360x** decode gap. The real 131K pool, sustained 20 tok/s
+admission window, and Codex `xhigh` work gate remain due.
 
 The unchanged Q5_K_M artifact is closed on this loader because mixed merged
 weights contain Q8_0 shards unsupported by the native Metal merge path. The

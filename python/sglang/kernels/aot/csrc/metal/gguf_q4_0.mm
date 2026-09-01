@@ -585,6 +585,102 @@ INSTANTIATE_QUANT_BATCH("iq2_xxs_batch_4", block_iq2_xxs, 256, 4)
 INSTANTIATE_QUANT_BATCH("iq2_xxs_batch_8", block_iq2_xxs, 256, 8)
 #undef INSTANTIATE_QUANT_BATCH
 
+// Reuse each activation fragment across two Q6_K output rows. This mapping
+// adapts kernel_mul_mv_q6_K_f32_impl from ggml-org/llama.cpp's
+// ggml/src/ggml-metal/ggml-metal.metal at
+// 749f688fcaa4c472ec034b08cb8a907c45cfaa02; see THIRDPARTYNOTICES.txt.
+kernel void q6_K_batch_1_rows2(
+        device const block_q6_K * weights,
+        device const float * input,
+        device float * output,
+        constant Q4Args & args,
+        uint group [[threadgroup_position_in_grid]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr ushort rows_per_simdgroup = 2;
+    constexpr ushort simdgroups = 2;
+    constexpr uchar mask0 = 0x03;
+    constexpr uchar mask1 = 0x0c;
+    constexpr uchar mask2 = 0x30;
+    constexpr uchar mask3 = 0xc0;
+
+    const uint first_row =
+        (group * simdgroups + simd_id) * rows_per_simdgroup;
+    const ushort tid = lane / 2;
+    const ushort block_cohort = lane & 1;
+    const ushort input_half = tid / 8;
+    const ushort input_lane = tid & 7;
+    const ushort local = 4 * input_lane;
+    const ushort scale_index = 8 * input_half + local / 16;
+    const ushort input_offset = 128 * input_half + local;
+    const ushort low_offset = 64 * input_half + local;
+    const ushort high_offset = 32 * input_half + local;
+
+    float sums[rows_per_simdgroup] = {0.0f};
+    float input_values[16];
+
+    for (uint block_index = block_cohort;
+         block_index < args.blocks_per_row;
+         block_index += 2) {
+        device const float * input_block =
+            input + block_index * 256 + input_offset;
+#pragma unroll
+        for (ushort i = 0; i < 4; ++i) {
+            input_values[4 * i] = input_block[i];
+            input_values[4 * i + 1] = input_block[i + 32];
+            input_values[4 * i + 2] = input_block[i + 64];
+            input_values[4 * i + 3] = input_block[i + 96];
+        }
+
+#pragma unroll
+        for (ushort row_offset = 0;
+             row_offset < rows_per_simdgroup;
+             ++row_offset) {
+            device const block_q6_K * block =
+                weights +
+                (first_row + row_offset) * args.blocks_per_row +
+                block_index;
+            device const uchar * low0 = block->ql + low_offset;
+            device const uchar * low1 = low0 + 32;
+            device const uchar * high = block->qh + high_offset;
+            device const char * scales = block->scales + scale_index;
+            float4 accumulators = float4(0.0f);
+
+#pragma unroll
+            for (ushort i = 0; i < 4; ++i) {
+                accumulators[0] += input_values[4 * i] *
+                    float(int((low0[i] & 0x0f) |
+                        ((high[i] & mask0) << 4)) - 32);
+                accumulators[1] += input_values[4 * i + 1] *
+                    float(int((low1[i] & 0x0f) |
+                        ((high[i] & mask1) << 2)) - 32);
+                accumulators[2] += input_values[4 * i + 2] *
+                    float(int((low0[i] >> 4) |
+                        (high[i] & mask2)) - 32);
+                accumulators[3] += input_values[4 * i + 3] *
+                    float(int((low1[i] >> 4) |
+                        ((high[i] & mask3) >> 2)) - 32);
+            }
+
+            sums[row_offset] += float(block->d) * (
+                accumulators[0] * float(scales[0]) +
+                accumulators[1] * float(scales[2]) +
+                accumulators[2] * float(scales[4]) +
+                accumulators[3] * float(scales[6]));
+        }
+    }
+
+#pragma unroll
+    for (ushort row_offset = 0;
+         row_offset < rows_per_simdgroup;
+         ++row_offset) {
+        const float sum = simd_sum(sums[row_offset]);
+        if (lane == 0) {
+            output[first_row + row_offset] = sum;
+        }
+    }
+}
+
 // Reuse each activation fragment across four Q2_K output rows. This mapping
 // adapts kernel_mul_mv_q2_K_f32_impl from ggml-org/llama.cpp's
 // ggml/src/ggml-metal/ggml-metal.metal at
@@ -3832,6 +3928,7 @@ struct Pipelines {
     id<MTLComputePipelineState> q5_K_batch8_vec4 = nil;
     id<MTLComputePipelineState> q5_K_batch24_vec4 = nil;
     id<MTLComputePipelineState> q6_K_batch1 = nil;
+    id<MTLComputePipelineState> q6_K_batch1_rows2 = nil;
     id<MTLComputePipelineState> q6_K_batch4 = nil;
     id<MTLComputePipelineState> q6_K_batch8 = nil;
     id<MTLComputePipelineState> q6_K_batch8_vec4 = nil;
@@ -3937,6 +4034,7 @@ Pipelines & pipelines() {
         value.q5_K_batch8_vec4 = compile(@"q5_K_batch_8_vec4");
         value.q5_K_batch24_vec4 = compile(@"q5_K_batch_24_vec4");
         value.q6_K_batch1 = compile(@"q6_K_batch_1");
+        value.q6_K_batch1_rows2 = compile(@"q6_K_batch_1_rows2");
         value.q6_K_batch4 = compile(@"q6_K_batch_4");
         value.q6_K_batch8 = compile(@"q6_K_batch_8");
         value.q6_K_batch8_vec4 = compile(@"q6_K_batch_8_vec4");
@@ -4269,6 +4367,10 @@ torch::Tensor quant_matmul(
         const char * value = std::getenv("SGLANG_MPS_Q2_K_BATCH1_ROWS4");
         return value == nullptr || std::string(value) != "0";
     }();
+    static const bool q6_k_batch1_rows2_enabled = [] {
+        const char * value = std::getenv("SGLANG_MPS_Q6_K_BATCH1_ROWS2");
+        return value == nullptr || std::string(value) != "0";
+    }();
     static const bool iq2_large_batch_enabled = [] {
         const char * value = std::getenv("SGLANG_MPS_IQ2_LARGE_BATCH");
         return value == nullptr || std::string(value) != "0";
@@ -4281,6 +4383,12 @@ torch::Tensor quant_matmul(
         p.q2_K_batch1_rows4 != nil &&
         p.q2_K_batch1_rows4.threadExecutionWidth == 32 &&
         p.q2_K_batch1_rows4.maxTotalThreadsPerThreadgroup >= 64;
+    const bool use_q6_k_batch1_rows2 = q6_k_batch1_rows2_enabled &&
+        weight_type == 14 && batch_size == 1 && output_size % 4 == 0 &&
+        weight_offset % 2 == 0 && input_offset % 4 == 0 &&
+        p.q6_K_batch1_rows2 != nil &&
+        p.q6_K_batch1_rows2.threadExecutionWidth == 32 &&
+        p.q6_K_batch1_rows2.maxTotalThreadsPerThreadgroup >= 64;
     const bool use_iq2_large_batch = iq2_large_batch_enabled &&
         weight_type == 16 && batch_size > 8 &&
         p.iq2_xxs_large_batch != nil &&
@@ -4324,7 +4432,9 @@ torch::Tensor quant_matmul(
     } else if (weight_type == 14) {
         pipeline = use_q6_vec24 ? p.q6_K_batch24_vec4
             : (use_q6_batch24 ? p.q6_K_batch24_split16
-            : (batch_tile == 1 ? p.q6_K_batch1
+            : (batch_tile == 1
+                ? (use_q6_k_batch1_rows2
+                    ? p.q6_K_batch1_rows2 : p.q6_K_batch1)
                 : (batch_tile == 4 ? p.q6_K_batch4
                     : (batch_size == 8 ? p.q6_K_batch8_vec4
                                        : p.q6_K_batch8))));
@@ -4367,7 +4477,8 @@ torch::Tensor quant_matmul(
             : ((use_q5_vec4_batch1 || use_four_row_batch1)
                 ? 1 : (batch_size + batch_tile - 1) / batch_tile);
         const NSUInteger threads =
-            (use_four_row_batch1 || use_q4_k_batch1_rows2) ? 64 : 128;
+            (use_four_row_batch1 || use_q4_k_batch1_rows2 ||
+             use_q6_k_batch1_rows2) ? 64 : 128;
         [encoder dispatchThreadgroups:MTLSizeMake(output_groups, batch_groups, 1)
                     threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
     });

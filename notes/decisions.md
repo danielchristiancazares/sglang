@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-09-01 07:09 PDT.
+**Reconciled through:** 2026-09-01 09:04 PDT.
 
 ## Selected production choices
 
@@ -239,7 +239,8 @@ has not.
 
 | Candidate | Status | Why |
 |---|---|---|
-| Bartowski Qwen3.8-27B Q5_K_S with one F16 token embedding | Active Q5 serving base | The immutable pinned Q5_K_S source hashes to `b52fbc24...e569`. Pinned llama.cpp build 10547 copies all 865 remaining tensors and converts only `token_embd.weight`; the 21,349,656,160-byte derivative hashes to `c05a7778...fcfb`, passes Q4_0/Q5_K/Q6_K native-MPS parity, loads at 21.37 GB, and completes sampled exact `128+32` serving at **5.746 tok/s**. Real 131K capacity and the 20 tok/s floor remain active. |
+| Bartowski Qwen3.8-27B Q5_K_S with one F16 token embedding | Active Q5 serving base | The immutable pinned Q5_K_S source hashes to `b52fbc24...e569`. Pinned llama.cpp build 10547 copies all 865 remaining tensors and converts only `token_embd.weight`; the 21,349,656,160-byte derivative hashes to `c05a7778...fcfb`, passes Q4_0/Q5_K/Q6_K native-MPS parity, and loads at 21.37 GB. With the selected Q6_K batch-one kernel it averages **7.0522 tok/s** across five sampled exact `128+32` requests, versus the **5.746 tok/s** generic-kernel baseline. Real 131K capacity and the 20 tok/s floor remain active. |
+| Q6_K batch-one two-row activation reuse | Retained at the common native Metal GGUF matmul owner | Matched QKV/head medians improve **0.748917 -> 0.448125 ms** and **12.009166 -> 3.324625 ms**. Five served samples average **7.0522 tok/s**, **+22.732%** over the committed baseline. Optimized 16-row, generic 17-row, and untouched batch-eight actual-file parity pass. `SGLANG_MPS_Q6_K_BATCH1_ROWS2=0` retains the matched generic control. |
 | Unchanged Bartowski Q5_K_M and Q5_K_S artifacts | Closed on the current native Metal GGUF surface | Q5_K_M fails while processing mixed merged Q8_0 weights. Q5_K_S loads its 20.00 GB weights and reaches the unsupported Q5_K token-embedding path during warmup. Reopen an unchanged source artifact when its exact native execution boundary gains support. |
 | Bartowski Qwen3.8-27B IQ2_XXS checkpoint | Retained native playground | The current official-tokenizer/Python-ingress baseline reaches **9.189086 tok/s** aggregate on exact `12+256`, passes sampled behavior and tool continuity, completes exact `32761+1` in the 32K BF16 pool, and passes a strict Codex 0.151.0 scratch edit from a dedicated default/exec-low-reasoning `CODEX_HOME`; the intermediate medium hashes separately retain forced-compaction continuation evidence |
 | Two-minute Apple Qwen/Codex actual-work gate | Parser-enabled xhigh shell round trip qualified at real 131K; autonomous multi-file qualification pending | Keep the normal trusted-repository prompt and hash-pinned isolated home. Wrap every non-interactive attempt with GNU `timeout --signal=INT --kill-after=10s 120s` in process-group mode. With the unchanged 6,232-token prompt primed through a 5,952-token aligned checkpoint, Codex completed one exact `exec_command` plus final response in about 91.6 seconds at 12,678 input / 12,328 cached / 188 output / 131 reasoning-output tokens. The actual Responses body remained uncapped. Cold 6K prefill and automatic multi-file ownership remain open; prompt-elision flags remain diagnostic-only overrides |
