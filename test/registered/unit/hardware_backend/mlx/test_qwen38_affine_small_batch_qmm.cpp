@@ -46,22 +46,41 @@ bool CheckParity(int rows, int input_features, int output_features, int bits) {
       mx::float32);
   mx::array actual = mx::astype(
       sglang::mlx_qwen38::affine_qmm_small_batch(linear, input), mx::float32);
-  mx::eval(expected, actual);
+  const bool check_m8 = rows == 8 && bits == 4 && input_features % 256 == 0 &&
+                        output_features % 16 == 0;
+  mx::array m8 =
+      check_m8
+          ? mx::astype(sglang::mlx_qwen38::affine_qmm_m8_ksplit(linear, input),
+                       mx::float32)
+          : actual;
+  mx::eval(expected, actual, m8);
 
   float maximum_absolute_error = 0.0f;
+  float m8_maximum_absolute_error = 0.0f;
   const float *expected_data = expected.data<float>();
   const float *actual_data = actual.data<float>();
+  const float *m8_data = m8.data<float>();
   for (std::size_t index = 0; index < expected.size(); ++index) {
     maximum_absolute_error =
         std::max(maximum_absolute_error,
                  std::abs(expected_data[index] - actual_data[index]));
+    m8_maximum_absolute_error =
+        std::max(m8_maximum_absolute_error,
+                 std::abs(expected_data[index] - m8_data[index]));
   }
   std::cout << "rows=" << rows << " K=" << input_features
             << " N=" << output_features << " bits=" << bits
-            << " max_abs=" << maximum_absolute_error << '\n';
-  const float error_limit = input_features <= 128 ? 0.02f : 0.25f;
+            << " max_abs=" << maximum_absolute_error;
+  if (check_m8) {
+    std::cout << " m8_max_abs=" << m8_maximum_absolute_error;
+  }
+  std::cout << '\n';
+  const float error_limit =
+      input_features <= 128 ? 0.02f : (input_features <= 256 ? 0.04f : 0.25f);
   return std::isfinite(maximum_absolute_error) &&
-         maximum_absolute_error <= error_limit;
+         maximum_absolute_error <= error_limit &&
+         std::isfinite(m8_maximum_absolute_error) &&
+         m8_maximum_absolute_error <= error_limit;
 }
 
 bool RejectsInvalidShape() {
@@ -87,8 +106,16 @@ bool RejectsInvalidShape() {
   try {
     (void)sglang::mlx_qwen38::affine_qmm_small_batch(linear, input);
   } catch (const std::runtime_error &error) {
-    return std::string_view(error.what()) ==
-           "invalid small-batch affine QMM inputs";
+    if (std::string_view(error.what()) !=
+        "invalid small-batch affine QMM inputs") {
+      return false;
+    }
+    try {
+      (void)sglang::mlx_qwen38::affine_qmm_m8_ksplit(linear, input);
+    } catch (const std::runtime_error &m8_error) {
+      return std::string_view(m8_error.what()) ==
+             "invalid M8 K-split affine QMM inputs";
+    }
   }
   return false;
 }
@@ -103,7 +130,8 @@ int main() {
       }
     }
   }
-  if (!CheckParity(8, 5120, 64, 4) || !CheckParity(6, 64, 6144, 4) ||
+  if (!CheckParity(8, 256, 256, 4) || !CheckParity(8, 5120, 64, 4) ||
+      !CheckParity(8, 256, 6144, 4) || !CheckParity(6, 64, 6144, 4) ||
       !RejectsInvalidShape()) {
     return 1;
   }

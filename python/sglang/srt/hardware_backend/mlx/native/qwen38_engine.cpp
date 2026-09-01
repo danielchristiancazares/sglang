@@ -83,6 +83,13 @@ bool native_small_batch_qmm_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_m8_ksplit_qmm_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_M8_KSPLIT_QMM");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 bool native_qmm_trace_enabled() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_TRACE_QMM");
@@ -824,6 +831,106 @@ constexpr const char* kAffineSmallBatchQmmSource = R"(
         }
 )";
 
+constexpr const char* kAffineM8KsplitQmmSource = R"(
+        constexpr ushort Rows = 8;
+        constexpr ushort OutputTile = 16;
+        constexpr ushort KTile = 32;
+        constexpr ushort KStep = 8;
+        constexpr ushort SimdGroups = 8;
+        constexpr uint K = KConst;
+        constexpr uint PackedK = K / 8;
+        constexpr uint QuantGroups = K / 64;
+        constexpr uint KChunk = K / SimdGroups;
+
+        threadgroup bfloat staged_w[
+            SimdGroups][KTile * OutputTile];
+        threadgroup float partial[
+            SimdGroups][Rows * OutputTile];
+
+        const ushort tid = thread_position_in_threadgroup.x;
+        const ushort lane = thread_index_in_simdgroup;
+        const ushort simd_id = simdgroup_index_in_threadgroup;
+        const uint output_start =
+            threadgroup_position_in_grid.y * OutputTile;
+        const uint k_begin = simd_id * KChunk;
+        const uint k_end = k_begin + KChunk;
+
+        simdgroup_bfloat8x8 input_fragment;
+        simdgroup_bfloat8x8 weight_left;
+        simdgroup_bfloat8x8 weight_right;
+        simdgroup_float8x8 accumulator_left =
+            make_filled_simdgroup_matrix<float, 8>(0.0f);
+        simdgroup_float8x8 accumulator_right =
+            make_filled_simdgroup_matrix<float, 8>(0.0f);
+
+        const ushort output_column = lane % OutputTile;
+        const ushort packed_lane = lane / OutputTile;
+        for (uint k_start = k_begin; k_start < k_end; k_start += KTile) {
+#pragma unroll
+          for (ushort pack_step = 0; pack_step < 2; ++pack_step) {
+            const ushort pack_in_tile = pack_step * 2 + packed_lane;
+            const uint k_base = k_start + pack_in_tile * 8;
+            const uint output = output_start + output_column;
+            const uint packed = w[output * PackedK + k_base / 8];
+            const uint parameter = output * QuantGroups + k_base / 64;
+            const float scale = static_cast<float>(scales[parameter]);
+            const float bias = static_cast<float>(biases[parameter]);
+#pragma unroll
+            for (ushort value = 0; value < 8; ++value) {
+              const uint quantized = (packed >> (value * 4)) & 0xfu;
+              staged_w[simd_id][
+                  (pack_in_tile * 8 + value) * OutputTile + output_column] =
+                  static_cast<bfloat>(scale * quantized + bias);
+            }
+          }
+          simdgroup_barrier(mem_flags::mem_threadgroup);
+
+#pragma unroll
+          for (ushort k_step = 0; k_step < KTile / KStep; ++k_step) {
+            simdgroup_load(
+                input_fragment, x + k_start + k_step * KStep, K);
+            simdgroup_load(
+                weight_left,
+                staged_w[simd_id] + k_step * KStep * OutputTile,
+                OutputTile);
+            simdgroup_load(
+                weight_right,
+                staged_w[simd_id] + k_step * KStep * OutputTile + 8,
+                OutputTile);
+            simdgroup_multiply_accumulate(
+                accumulator_left,
+                input_fragment,
+                weight_left,
+                accumulator_left);
+            simdgroup_multiply_accumulate(
+                accumulator_right,
+                input_fragment,
+                weight_right,
+                accumulator_right);
+          }
+          simdgroup_barrier(mem_flags::mem_threadgroup);
+        }
+
+        simdgroup_store(
+            accumulator_left, partial[simd_id], OutputTile);
+        simdgroup_store(
+            accumulator_right, partial[simd_id] + 8, OutputTile);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (ushort offset = tid; offset < Rows * OutputTile;
+             offset += SimdGroups * 32) {
+          float value = 0.0f;
+#pragma unroll
+          for (ushort group = 0; group < SimdGroups; ++group) {
+            value += partial[group][offset];
+          }
+          const ushort row = offset / OutputTile;
+          const ushort column = offset % OutputTile;
+          y[row * N_size + output_start + column] =
+              static_cast<bfloat>(value);
+        }
+)";
+
 std::vector<array> compute_g_fn(const std::vector<array>& xs) {
   return {mx::exp(-mx::exp(astype(xs[0], mx::float32)) * softplus(xs[1] + xs[2]))};
 }
@@ -914,6 +1021,16 @@ const mx::fast::CustomKernelFunction& affine_small_batch_qmm_metal() {
       {"w", "scales", "biases", "x", "K", "N", "M"},
       {"y"},
       kAffineSmallBatchQmmSource,
+      kAffineSmallBatchQmmHeader);
+  return kernel;
+}
+
+const mx::fast::CustomKernelFunction& affine_m8_ksplit_qmm_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_affine_m8_ksplit_qmm",
+      {"w", "scales", "biases", "x", "N_size"},
+      {"y"},
+      kAffineM8KsplitQmmSource,
       kAffineSmallBatchQmmHeader);
   return kernel;
 }
@@ -1117,6 +1234,20 @@ array QLinear::operator()(const array& x) const {
       x.shape()[0] == 1 && x.shape()[1] >= 6 && x.shape()[1] <= 8) {
     const int input_features = static_cast<int>(x.shape()[2]);
     const int output_features = static_cast<int>(w.shape()[0]);
+    if (native_m8_ksplit_qmm_enabled() && x.shape()[1] == 8 &&
+        x.dtype() == mx::bfloat16 && w.dtype() == mx::uint32 &&
+        scales.dtype() == mx::bfloat16 && biases.dtype() == mx::bfloat16 &&
+        group_size == 64 && bits == 4 && input_features % 256 == 0 &&
+        output_features % 16 == 0) {
+      if (native_qmm_trace_enabled()) {
+        std::fprintf(
+            stderr,
+            "qwen38_qmm m8_ksplit rows=8 K=%d N=%d bits=4\n",
+            input_features,
+            output_features);
+      }
+      return affine_qmm_m8_ksplit(*this, x);
+    }
     if (x.dtype() == mx::bfloat16 && w.dtype() == mx::uint32 &&
         scales.dtype() == mx::bfloat16 && biases.dtype() == mx::bfloat16 &&
         group_size == 64 && (bits == 2 || bits == 4) &&
@@ -1180,6 +1311,42 @@ array affine_qmm_small_batch(const QLinear& linear, const array& x) {
       {output_features / 64 * 128, 1, 1},
       {128, 1, 1},
       {{"Bits", mx::fast::TemplateArg{linear.bits}}},
+      std::nullopt,
+      false,
+      {});
+  return outputs[0];
+}
+
+array affine_qmm_m8_ksplit(const QLinear& linear, const array& x) {
+  if (!linear.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
+      x.shape()[1] != 8 || x.dtype() != mx::bfloat16 ||
+      linear.w.dtype() != mx::uint32 ||
+      linear.scales.dtype() != mx::bfloat16 ||
+      linear.biases.dtype() != mx::bfloat16 || linear.group_size != 64 ||
+      linear.bits != 4) {
+    throw std::runtime_error("invalid M8 K-split affine QMM inputs");
+  }
+  const int input_features = static_cast<int>(x.shape()[2]);
+  const int output_features = static_cast<int>(linear.w.shape()[0]);
+  if (input_features % 256 != 0 || output_features % 16 != 0 ||
+      linear.w.shape()[1] * 8 != input_features ||
+      linear.scales.shape() != mx::Shape{
+          output_features, input_features / linear.group_size} ||
+      linear.biases.shape() != linear.scales.shape()) {
+    throw std::runtime_error("unsupported M8 K-split affine QMM shape");
+  }
+
+  auto outputs = affine_m8_ksplit_qmm_metal()(
+      {linear.w,
+       linear.scales,
+       linear.biases,
+       x,
+       array(output_features, mx::int32)},
+      {{1, 8, output_features}},
+      {x.dtype()},
+      {256, output_features / 16, 1},
+      {256, 1, 1},
+      {{"KConst", mx::fast::TemplateArg{input_features}}},
       std::nullopt,
       false,
       {});
