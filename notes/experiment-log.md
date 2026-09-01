@@ -20170,3 +20170,47 @@ mean 13.929045  17.125658 446.051        39.730
   output rows per SIMD group with two SIMD groups per threadgroup. That exact
   matrix tile, its quant-parameter traffic, and dependency dispatch are the
   next production-reachable optimization owners.
+
+### 2026-09-01 08:22 PDT - pinned Q5_K_M target downloaded and verified
+
+- Resumed from `main` at signed `70c0d0f16bd102cd7b9aa87706639cf8b59baa19`,
+  62 commits ahead of `origin/main`. Three pre-existing modified paths contain
+  the in-flight native affine batch-one QMV experiment:
+  `qwen38_engine.cpp`, `qwen38_engine.h`, and its focused C++ test. They remain
+  user-owned and uncommitted. Port 30000 and matching SGLang, Qwen, benchmark,
+  trace, download, hash, and build processes were clear before Metal
+  execution. Memory pressure reported 94% free with zero throttled pages;
+  macOS reported no thermal or performance warning.
+- Selected the balanced Bartowski Q5 artifact already present in the pinned
+  repository revision and downloaded it exactly with:
+
+  ```bash
+  .venv/bin/hf download bartowski/Qwen3.8-27B-GGUF \
+    Qwen3.8-27B-Q5_K_M.gguf \
+    --revision f0eec4a4bb4975114a030d048952d83c0a53c034 \
+    --format quiet
+  ```
+
+  The immutable snapshot path is
+  `/Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-Q5_K_M.gguf`.
+  Its target is a symlink to content-addressed blob
+  `e731e180460b906f373294a4e2de10541e80ee676af7f8c949a84dbb6ed3caa8`.
+  The resolved file is exactly **20,752,787,040 bytes** and a full local
+  `shasum -a 256` independently reproduced SHA-256
+  `e731e180460b906f373294a4e2de10541e80ee676af7f8c949a84dbb6ed3caa8`.
+  No incomplete Hub blob remains; the data volume retains 140 GiB free.
+- The smallest actual-file native-MPS gate used the existing focused harness:
+
+  ```bash
+  .venv/bin/python benchmark/mac/test_mps_gguf_quant.py \
+    /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-Q5_K_M.gguf \
+    --rows 17 --batch-size 1
+  ```
+
+  It passed the three tensor families present in this artifact: Q4_0
+  `blk.64.attn_k.weight` at maximum absolute/relative error
+  `4.76837e-07/2.05552e-07`, Q5_K `token_embd.weight` at
+  `5.96046e-07/3.00862e-07`, and Q6_K `output.weight` at
+  `4.76837e-07/2.95486e-07`. This establishes loader and native Metal
+  arithmetic support for the exact Q5 target. A small served baseline is next,
+  followed by the real 131,072-token pool and Codex `xhigh` behavior gate.
