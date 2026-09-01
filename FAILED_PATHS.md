@@ -3588,3 +3588,33 @@ option, or serving dispatch was added.
   runtime.
 - Related commit or revert: candidate remains outside `main` in persistent
   detached worktree `perf-ab-fusion`; no source revert is required.
+
+## PERF-FA129 - Paired Q5 word loads and 128-bit activation reads
+
+- Hypothesis: halving Q5 weight-load instructions with lane sharing or halving
+  activation-load transactions can improve the selected A100 kernel further.
+- Scope: exact gate/up, down, attention-output, and value-projection shapes;
+  selected `100 / 1000` process-isolated order/reverse microbenchmark.
+- Attempted change: A101 has even lanes load five 32-bit words for each
+  adjacent lane pair and supplies odd lanes with three SIMD shuffles. A107
+  reads each lane's 32 activation bytes through two `uint4` transactions and
+  converts their four 64-bit halves as `bfloat4`.
+- Benchmark evidence: A101 regresses gate/up, down, and attention-output by
+  roughly **5--9%** across paired means and is also slower at value width.
+  A107 regresses gate/up and down in both directions, has a mixed attention-
+  output result, and is slower at value width. Exact raw means are retained in
+  `PERFORMANCE_LOG.md`.
+- Correctness evidence: both candidates compile under strict warnings, pass
+  representative parity at **0.03125 / 0.03125 / 0.0234375**, and reproduce
+  every control digest.
+- Failure mode: A101 replaces coalesced lane-local loads with a masked branch
+  and three shuffle dependencies. A107 changes transaction width while
+  retaining all conversions and arithmetic, leaving the streamed Q5 weights
+  and dominant dependency chain unchanged.
+- Why not to retry unchanged: every high-byte production shape is flat or
+  slower, so neither mechanism can fund the remaining 4.521% full-model gap.
+- Reopen only if: a future compiler removes the masked/shuffle overhead, the
+  activation base contract or cache hierarchy changes, or the wider reads fuse
+  with a separate input consumer.
+- Related commit or revert: selected A100 remains in signed commit
+  `59a50653c4`; A101/A107 artifacts remain outside `main`.
