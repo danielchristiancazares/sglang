@@ -300,6 +300,7 @@ class Engine {
   int selected_reasoning_tokens_ = 0;
   bool reasoning_open_ = false;
   bool reasoning_cap_selected_ = false;
+  int target_only_prefill_chunk_size_ = 0;
   bool prompt_snapshot_valid_ = false;
   std::vector<int32_t> prompt_snapshot_history_;
 

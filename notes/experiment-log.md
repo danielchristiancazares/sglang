@@ -19975,3 +19975,85 @@ mean 13.929045  17.125658 446.051        39.730
 - Retain threshold 0.62 as an opt-in exact DFlash2 budget. Full M=8 remains
   the default. The selected mean is **3.8224 tok/s** below the requested floor;
   the next branch must improve target arithmetic or proposal overlap further.
+
+### 2026-09-01 07:09 PDT - full-Q4 target-only long prefill reaches serving
+
+- Began from clean signed `ce15a82a0d9e41ab4f027cea6a23a6b2f5c22852`,
+  59 commits ahead of `origin/main`. Port 30000 and matching SGLang, native
+  benchmark, compiler, and Metal workloads were absent. System memory was 92%
+  free with zero throttled pages, and macOS reported normal thermal and
+  performance status.
+- Established the current-source full-Q4 target-only sampled baseline with:
+
+  ```bash
+  env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    /private/tmp/bench_qwen38_native \
+    python/sglang/srt/hardware_backend/mlx/native/libqwen38_engine.dylib \
+    /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    128 32 256
+  ```
+
+  It measured **12.606964375 s / 20.306236488 tok/s**, digest
+  `35b0d203b5a2b19d`, and last token 71093.
+- Added checked native-only
+  `SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE`. An absent value is zero
+  and preserves one-shot target-only prefill. A present value must parse
+  completely as an integer from 1 through 8,192. The shared prefill owner now
+  chooses this chunk only when no draft is loaded, calls the ordinary stateful
+  target forward for each unit, and synchronizes each unit to bound temporary
+  residency. DFlash2 and DSpark retain fixed 2,048-token captured target
+  forwards; the ordinary MTP branch retains its prior one-shot path.
+- Strict `-std=c++20 -O3 -fPIC -shared -Wall -Wextra -Werror` compilation with
+  MLX headers marked external produced
+  `/private/tmp/libqwen38_target_prefill_chunk_candidate.dylib`. Only the
+  established macOS 26.0 / MLX 26.2 linker warning remained. The repository
+  dylib rebuilt from the active MLX prefix with SHA-256
+  `399a7662b4485d4c98d8e6c456b4ed65c36073e8f7c7b846f78ebd21e07062fa`.
+  Values 0 and 8,193 each failed before model loading with the exact integer
+  range diagnostic.
+- Candidate default and chunk-2,048 single-chunk controls measured
+  **20.339874670 / 20.301552601 tok/s**. Both reproduced baseline digest
+  `35b0d203b5a2b19d` and last token 71093. The chunked long direct command
+  changed only the prompt/output shape to `6237 32 128`; it completed at
+  **6.535045208 s / 19.586704594 tok/s**, digest `c7d6e4c732907ca5`, and
+  last token 83. This is the first full-Q4 target-only direct completion at
+  the representative history after the one-shot Metal OOM.
+- Launched one foreground target-only server with the full-Q4 immutable
+  snapshot, real 131,072 context and total-token pools, one request, five
+  Mamba slots, BF16 KV, 8,192-token outer prefill, radix disabled, native
+  sampling seed 42, both Qwen parsers, incremental output, stream/receive
+  interval four, disabled graphs, and only the new internal chunk set to
+  2,048. Resolved arguments confirmed every capacity and behavior control.
+  `/health`, `/v1/models`, and `/model_info` passed; model info reported image
+  and audio understanding disabled.
+- The exact client command was:
+
+  ```bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b --input-tokens 6237 --output-tokens 128 \
+    --temperature 1.0 --top-p 0.95 --top-k 20 \
+    --presence-penalty 1.5 --skip-warmup --timeout 600
+  ```
+
+  It completed exact 6,365 tokens with `finish_reason=length`, coherent
+  reasoning, and output/reasoning SHA-256
+  `17f13ded7c4f2bbae58af6de1e825a6e5b5d0055a3589e3b2c6e048c6f9f5cd7`.
+  Generation was **19.300 tok/s**, prompt **109.988 tok/s**, TTFT
+  **56.706198 s**, and end to end **63.286374 s**. Server-side steady decode
+  telemetry was **19.55--19.56 tok/s**. This clears the former residency
+  failure and leaves **0.700 tok/s** to the client floor.
+- Focused native pytest passed **8 tests** with 16 existing warnings.
+  DFlash2 regression reached **31.353044621 tok/s**, 19 refills, width
+  **6.684210526**, digest `46bd4bb035b72c2b`, last token 20. DSpark reached
+  **10.048528637 tok/s**, 14 refills, width **2.428571429**, digest
+  `5a38c7070d7badeb`, last token 16. These reproduce the established exact
+  trajectories through the refactored common prefill owner.
+- The server root PID 15997 and children 16001/16002/16003 were resolved before
+  shutdown and stopped through foreground `Ctrl+C`. All four PIDs were absent,
+  port 30000 and matching workload scans were clear, memory returned to 95%
+  free with zero throttled pages, and thermal/performance status was normal.
+  PERF-A079 retains chunk 2,048 as an opt-in capacity setting. Target-only
+  single-token arithmetic and serving-loop cost are the next active branch.

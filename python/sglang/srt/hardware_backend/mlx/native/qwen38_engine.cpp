@@ -105,6 +105,25 @@ bool native_dflash_tape_commit_enabled() {
       std::string_view(value) != "false";
 }
 
+int native_target_only_prefill_chunk_size() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE");
+  if (value == nullptr || *value == '\0') {
+    return 0;
+  }
+  int chunk_size = 0;
+  const std::string_view text(value);
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), chunk_size);
+  if (error != std::errc() || end != text.data() + text.size() ||
+      chunk_size < 1 || chunk_size > 8192) {
+    throw std::runtime_error(
+        "SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE must be an integer "
+        "from 1 through 8192");
+  }
+  return chunk_size;
+}
+
 float native_dflash_selector_temperature() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE");
@@ -1707,6 +1726,7 @@ Engine::Engine(MlxQwen38Config cfg, const std::string& model_dir)
   if (cfg_.hidden_size <= 0 || cfg_.num_hidden_layers <= 0) {
     throw std::runtime_error("invalid Qwen3.8 config");
   }
+  target_only_prefill_chunk_size_ = native_target_only_prefill_chunk_size();
   layers_.resize(static_cast<size_t>(cfg_.num_hidden_layers));
   load_weights(model_dir);
   sampling_enabled_ = native_sampling_enabled();
@@ -4030,17 +4050,25 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
   token_history_.insert(
       token_history_.end(), new_tokens, new_tokens + new_token_count);
   array hidden(0);
-  if (dflash_valid_ || dspark_valid_) {
-    constexpr int kDraftPrefillChunkSize = 2048;
+  const bool capture_draft_context = dflash_valid_ || dspark_valid_;
+  constexpr int kDraftPrefillChunkSize = 2048;
+  const int internal_chunk_size = capture_draft_context
+      ? kDraftPrefillChunkSize
+      : (!has_mtp() ? target_only_prefill_chunk_size_ : 0);
+  if (internal_chunk_size > 0) {
     for (int offset = 0; offset < new_token_count;
-         offset += kDraftPrefillChunkSize) {
+         offset += internal_chunk_size) {
       const int chunk_size = std::min(
-          kDraftPrefillChunkSize, new_token_count - offset);
+          internal_chunk_size, new_token_count - offset);
       array chunk_ids(
           new_tokens + offset, {1, chunk_size}, mx::int32);
-      TargetForward target = forward_hidden_captured(chunk_ids);
-      hidden = target.hidden;
-      draft_append_context(target.captured, chunk_size);
+      if (capture_draft_context) {
+        TargetForward target = forward_hidden_captured(chunk_ids);
+        hidden = target.hidden;
+        draft_append_context(target.captured, chunk_size);
+      } else {
+        hidden = forward_hidden(chunk_ids);
+      }
       mx::synchronize();
     }
   } else {

@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native full-Q4 target-only prefill, sampled served `6237+128`, real 131K pools | one-shot native prefill: Metal OOM before generation | internal 2,048-token prefill: **19.300 tok/s**, **109.988 prompt tok/s**, **56.706198 s TTFT**, **63.286374 s E2E** | exact 6,365-token request now completes with coherent reasoning; direct long-history decode is **19.586705 tok/s** and short decode remains above 20 with an exact digest; **0.700 tok/s** remains to the served floor | exact target-only server/client contract plus `SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048` | 2026-09-01 07:09 PDT |
 | M1 Max DFlash2 selected-q M=2/M=8 budget, sampled served `6237+128`, real 131K pools | adjacent current-source threshold-disabled **15.883 / 15.908 / 15.900 / 15.899 / 15.897 tok/s**, mean **15.8974** | mean-q6 threshold 0.62 **16.167 / 16.181 / 16.178 / 16.179 / 16.183 tok/s**, mean **16.1776** | **+0.2802 / +1.763%**; all requests exact with a stable coherent digest; 23 M=2 and 19 M=8 cycles per request; retained opt-in with **3.8224 tok/s** to the floor | exact PERF-A076 server/client contract plus `SGLANG_MLX_NATIVE_DFLASH_MEAN_Q_THRESHOLD=0.62` | 2026-09-01 06:54 PDT |
 | M1 Max DFlash2 M=8 gate/up dispatch fusion, sampled direct `128 / 32 warm / 128 timed` | separate SG16/B32 gate/up five-sample mean **26.943319961 tok/s** | paired two-plane dispatch five-sample mean **26.964966176 tok/s** | **+0.021646215 / +0.08034%**, with two of five adjacent pairs flat/slower; exact trajectory preserved and complexity rejected. Sequential fused-SwiGLU arm regressed trace throughput **26.801071247 -> 26.413620964** | PERF-A077 exact PERF-A076 direct contract at selector temperature 1.15 | 2026-09-01 06:18 PDT |
 | M1 Max DFlash2 selector calibration, sampled served `6237+128`, real 131K pools | adjacent selector temperature 1.0: **15.434 / 15.449 / 15.443 / 15.443 / 15.443 tok/s**, mean **15.4424** | selector temperature 1.15: **15.870 / 15.884 / 15.890 / 15.896 / 15.893 tok/s**, mean **15.8866** | **+0.4442 / +2.876%**; exact 6,365 tokens in every sample, stable coherent digest within each setting, mean emitted width **3.878788 -> 4.031250**; retained opt-in with **4.1134 tok/s** to the floor | exact PERF-A065 contract plus `SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE=1.15` | 2026-09-01 06:04 PDT |
@@ -4108,3 +4109,35 @@ tree throughput can be ranked for production.
 - Retain threshold 0.62 as an opt-in DFlash2 scheduler. The default remains
   full M=8. The measured candidate is **3.8224 tok/s** below the required
   served floor, so target-cycle arithmetic and proposal quality remain active.
+
+### 2026-09-01 07:09 PDT - PERF-A079 target-only internal prefill chunking
+
+- Generalized the native prefill owner with a checked target-only chunk size.
+  `SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE` accepts integers from 1
+  through 8,192 and defaults to zero, preserving the one-shot path. DFlash2
+  and DSpark continue to use their fixed 2,048-token target-capture chunks;
+  the ordinary MTP lane remains unchanged.
+- Current-source full-Q4 target-only sampled `128 / 32 warm / 256 timed`
+  baseline was **20.306236488 tok/s**, digest `35b0d203b5a2b19d`, last token
+  71093. The candidate measured **20.339874670 tok/s** with the option absent
+  and **20.301552601 tok/s** at chunk 2,048, preserving that digest and final
+  token in both arms. Values 0 and 8,193 fail before model loading with the
+  exact checked-range diagnostic.
+- Chunk 2,048 completed direct `6237 / 32 warm / 128 timed` at
+  **19.586704594 tok/s**, digest `c7d6e4c732907ca5`, last token 83. The exact
+  real-131K-pool served request then completed at **19.300 generation tok/s**,
+  **109.988 prompt tok/s**, **56.706198 s TTFT**, and **63.286374 s E2E**.
+  It produced exact `6237+128=6365` tokens, `finish_reason=length`, coherent
+  reasoning, and SHA-256
+  `17f13ded7c4f2bbae58af6de1e825a6e5b5d0055a3589e3b2c6e048c6f9f5cd7`.
+- Strict `-Wall -Wextra -Werror` compilation passed with only the established
+  external MLX linker warning. Focused native pytest passed **8 tests** with
+  16 existing warnings. Refactored-path regressions reproduced DFlash2
+  **31.353044621 tok/s**, width **6.684210526**, digest
+  `46bd4bb035b72c2b`, and DSpark **10.048528637 tok/s**, width
+  **2.428571429**, digest `5a38c7070d7badeb`.
+- Retain chunk 2,048 as the target-only long-prefill setting. It converts the
+  representative one-shot OOM into an exact served completion while leaving
+  the default path unchanged. Target-only long-history decode remains
+  **0.700 tok/s** below the client floor, making single-token target arithmetic
+  and serving-loop cost the next active branch. See PERF-FA110.
