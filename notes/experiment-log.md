@@ -18646,3 +18646,52 @@ mean 13.929045  17.125658 446.051        39.730
   verifies as good. PERF-FA096 records BF16 as a rejected production draft;
   affine-W4 remains selected. The next candidate is the proposal-selection
   policy, including the official worker's greedy head path.
+
+### 2026-09-01 03:17 PDT - official greedy proposal policy fails real sampling
+
+- Began from clean signed HEAD
+  `558b1abbb95468abecaeb24e23810ced5949cf16`, 46 commits ahead of
+  `origin/main`. Port 30000 and matching server/direct processes were absent,
+  memory was 93% free, and thermal/performance status was normal.
+- Added a temporary C++-only
+  `SGLANG_MLX_NATIVE_DFLASH_GREEDY_DRAFT=1` branch at the proposal owner. It
+  used `argmax` over the target LM head for each of seven draft positions,
+  represented q as one token with probability one, and generalized the exact
+  residual slice to the proposal-support width. Every checkpoint, target
+  kernel, verifier geometry, state-commit path, and target sampling parameter
+  stayed fixed.
+- Strict warning-as-error candidate and repository dylib builds passed with
+  the established macOS 26.0 / MLX 26.2 linker warning. One traced direct run
+  reached **37.310474449 tok/s** with steady draft **24.5--24.8 ms**, verify
+  generally **185--187 ms**, and nearly every block fully accepted.
+- Five no-trace, process-isolated runs used the exact PERF-A062 command plus
+  `SGLANG_MLX_NATIVE_DFLASH_GREEDY_DRAFT=1`. They measured **37.537355901,
+  37.505550294, 37.500869778, 37.532174042, and 37.517706423 tok/s**, mean
+  **37.518731288**. Every run reproduced 16 refills, mean width **7.9375**,
+  digest `1c33d03ba961ff25`, and last token 198. This appeared **6.191397066
+  tok/s / 19.763562%** above the learned-selector direct mean.
+- Preflight again found port/server/direct processes clear, 93% free memory,
+  and normal thermals. Launched the exact 03:03 131K-pool server command with
+  the single additional greedy environment switch. Resolved arguments retained
+  `context_length=131072`, `max_total_tokens=131072`,
+  `max_running_requests=1`, and `max_mamba_cache_size=5`.
+- The unchanged exact sampled command
+  `.venv/bin/python scripts/windows/bench_openai_stream.py --model
+  qwen3.8-27b --input-tokens 6237 --output-tokens 128 --temperature 1.0
+  --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup --timeout 600`
+  completed at only **9.512 generation tok/s**, **109.642 observed prompt
+  tok/s**, **56.885039 s TTFT**, and **70.236581 s** end to end. It returned
+  exact 6,365 tokens with `finish_reason=length`; output/reasoning SHA-256 was
+  `62bc27d075d3d68fd4eb9fbbf8d4db312390c505bd36ddfe578086720c2b656e`.
+  Natural accepted lengths were commonly zero or one, with occasional larger
+  blocks. Relative to the learned selector's **15.328 tok/s**, greedy loses
+  **5.816 tok/s / 37.943633%**.
+- Post-request health passed. Foreground PID 11428 and verified children
+  11431, 11432, and 11433 exited through `Ctrl+C`. Port 30000 and matching
+  processes are clear, memory returned to 93% free, and thermal/performance
+  status is normal.
+- Rejected the policy and removed all temporary source changes through
+  `apply_patch`; `git diff --check` passes and the source worktree matches
+  signed HEAD. PERF-FA097 records why synthetic direct acceptance can no
+  longer admit proposal-policy candidates. The real 6.2K sampled request is
+  now the first acceptance screen.
