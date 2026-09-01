@@ -5,7 +5,7 @@ Qwen3.8 production line. A comparable result records the request shape, server
 mode, cache treatment, sampling profile, graph state, GPU environment, and
 resolved launcher arguments.
 
-**Native-Windows reconciled through:** 2026-08-21 13:48 PDT.
+**Native-Windows reconciled through:** 2026-08-30 18:04 PDT.
 
 **Apple M1 Max Q2 addendum reconciled through:** 2026-08-23 16:25 PDT.
 
@@ -85,38 +85,87 @@ temperature, free VRAM, listener, process tree, and competing WDDM clients.
 | Current fixed control | `6213/512`, temperature 0, simulated accepted length 3 | Attribute deterministic execution and dispatch cost on the selected linear topology |
 | Current real control | `6213/512`, normal rejection sampling | Measure production generation throughput |
 | Sampled profile | Temperature `1.0`, top-p `0.95`, top-k `20`, presence `1.5` | Match the selected Qwen reasoning workload |
-| Native acceptance | `bench_spec_acceptance.py` under sampled production settings | Pair TPS with emitted/accepted length, proposal counts, histograms, and verify cycles |
+| Native acceptance | The qualified Python probe, with the C++23 candidate matched against it under sampled production settings | Pair TPS with emitted/accepted length, proposal counts, histograms, and verify cycles |
 | Long ladder | `32768/16`, `32768/512`, `65536/16` | Catch prefill, residency, repeated-request, and long-decode regressions |
 | Primary scoreboard and capacity gate | `199000/16` | Rank near-limit prompt/generation throughput and prove exact total `199016` inside the selected 200K pool |
 | Real client | Standalone OpenCode2 with fixed provider/workload | Final reasoning, tool continuity, queue, parser, and wall-time integration |
 
-`6213` input tokens come from the calibrated local OpenCode-shaped fixture in
-[`../benchmark/windows/qwen38_local_prompt.json`](../benchmark/windows/qwen38_local_prompt.json).
+The streaming and acceptance clients synthesize their request from the exact
+inline prompt unit
+`Inspect this local program carefully, preserve its behavior, and identify the next useful correctness or performance change. `
+and the filler unit ` x`, then calibrate that text through the live server
+tokenizer. The `6213` label names the resulting exact token count. The separate
+[`../benchmark/windows/qwen38_local_prompt.json`](../benchmark/windows/qwen38_local_prompt.json)
+fixture belongs to the OpenCode-shaped integration workload and carries its own
+provenance.
 
 ## Standard commands
 
 Primary 200K scoreboard:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600
+.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py `
+  --base-url http://127.0.0.1:30000 `
+  --model qwen3.8-27b `
+  --backend sglang `
+  --input-tokens 199000 `
+  --output-tokens 16 `
+  --warmup-output-tokens 16 `
+  --warmup-runs 1 `
+  --timeout 600 `
+  --temperature 0
 ```
 
 Greedy current-shape control:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512
+.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py `
+  --base-url http://127.0.0.1:30000 `
+  --model qwen3.8-27b `
+  --backend sglang `
+  --input-tokens 6213 `
+  --output-tokens 512 `
+  --warmup-output-tokens 16 `
+  --warmup-runs 1 `
+  --timeout 600 `
+  --temperature 0
 ```
 
 Sampled-profile control:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5
+.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py `
+  --base-url http://127.0.0.1:30000 `
+  --model qwen3.8-27b `
+  --backend sglang `
+  --input-tokens 6213 `
+  --output-tokens 512 `
+  --warmup-output-tokens 16 `
+  --warmup-runs 1 `
+  --timeout 600 `
+  --temperature 1.0 `
+  --top-p 0.95 `
+  --top-k 20 `
+  --presence-penalty 1.5
 ```
 
 Reasoning-disabled sampled control:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --disable-thinking
+.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py `
+  --base-url http://127.0.0.1:30000 `
+  --model qwen3.8-27b `
+  --backend sglang `
+  --input-tokens 6213 `
+  --output-tokens 512 `
+  --warmup-output-tokens 16 `
+  --warmup-runs 1 `
+  --timeout 600 `
+  --temperature 1.0 `
+  --top-p 0.95 `
+  --top-k 20 `
+  --presence-penalty 1.5 `
+  --disable-thinking
 ```
 
 The 2026-08-16 exploratory result for that mode was **129.722 tok/s** over ten
@@ -126,10 +175,166 @@ from the reasoning-preserved production contract.
 Native speculative acceptance counters:
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\windows\bench_spec_acceptance.py
+.\.venv\Scripts\python.exe .\scripts\windows\bench_spec_acceptance.py `
+  --base-url http://127.0.0.1:30000 `
+  --model qwen3.8-27b `
+  --input-tokens 6213 `
+  --output-tokens 512 `
+  --warmup-output-tokens 16 `
+  --timeout 600 `
+  --temperature 1.0 `
+  --top-p 0.95 `
+  --top-k 20 `
+  --presence-penalty 1.5
 ```
 
 Add `--disable-thinking` to take the matching non-thinking acceptance probe.
+
+## Native C++23 client candidate
+
+The portable, framework-free client implementation lives under
+[`../benchmark/native`](../benchmark/native). It provides two CPU-only C++23
+executables:
+
+- `bench_openai_stream.cpp`, covering the OpenAI-compatible streaming,
+  calibration, warmup, cache, timing, token, fragment, and digest contract;
+- `bench_spec_acceptance.cpp`, covering exact raw-token `/generate` requests
+  and fail-closed speculative-counter validation.
+
+The client process owns host orchestration while the serving process owns GPU
+execution. This keeps the load generator free of a second CUDA context and
+preserves both native Windows and Apple use. The public headers enforce C++23
+through `config.hpp`.
+
+On Windows, enter the existing native toolchain environment and compile either
+entry point with the shared source set. MSVC's `c++latest` mode is the current
+C++23-capable switch on this toolchain; the source-level guard verifies the
+resolved language version:
+
+```powershell
+. .\scripts\windows\initialize_cuda_build_env.ps1 -MaxJobs 2
+cl.exe /nologo /std:c++latest /O2 /EHsc /W4 /WX /permissive- `
+  /Zc:__cplusplus /I benchmark\native\include `
+  benchmark\native\src\arguments.cpp `
+  benchmark\native\src\http_client.cpp `
+  benchmark\native\src\json.cpp `
+  benchmark\native\src\openai_benchmark.cpp `
+  benchmark\native\src\sha256.cpp `
+  benchmark\native\src\sse_parser.cpp `
+  benchmark\native\bench_openai_stream.cpp `
+  /Fe:sglang_bench_openai_stream.exe /link ws2_32.lib
+```
+
+Replace the final source and output name with
+`bench_spec_acceptance.cpp` and `sglang_bench_spec_acceptance.exe` for the
+acceptance probe. Apple Clang uses the same sources with `-std=c++23` and omits
+the Windows socket library:
+
+```bash
+c++ -std=c++23 -O2 -Wall -Wextra -Wpedantic -Werror \
+  -I benchmark/native/include \
+  benchmark/native/src/arguments.cpp \
+  benchmark/native/src/http_client.cpp \
+  benchmark/native/src/json.cpp \
+  benchmark/native/src/openai_benchmark.cpp \
+  benchmark/native/src/sha256.cpp \
+  benchmark/native/src/sse_parser.cpp \
+  benchmark/native/bench_openai_stream.cpp \
+  -o sglang_bench_openai_stream
+```
+
+Use complete explicit arguments for each live pair. The native stream keeps the
+legacy 128-token CLI default. The qualified controls set their 512- or 16-token
+completion shape explicitly. These examples use the repository-root `/Fe`
+outputs from the documented build; an isolated build substitutes its recorded
+absolute executable path:
+
+```powershell
+.\sglang_bench_openai_stream.exe `
+  --base-url http://127.0.0.1:30000 `
+  --model qwen3.8-27b `
+  --backend sglang `
+  --input-tokens 6213 `
+  --output-tokens 512 `
+  --warmup-output-tokens 16 `
+  --warmup-runs 1 `
+  --timeout 600 `
+  --temperature 0
+
+.\sglang_bench_openai_stream.exe `
+  --base-url http://127.0.0.1:30000 `
+  --model qwen3.8-27b `
+  --backend sglang `
+  --input-tokens 6213 `
+  --output-tokens 512 `
+  --warmup-output-tokens 16 `
+  --warmup-runs 1 `
+  --timeout 600 `
+  --temperature 1.0 `
+  --top-p 0.95 `
+  --top-k 20 `
+  --presence-penalty 1.5
+
+.\sglang_bench_openai_stream.exe `
+  --base-url http://127.0.0.1:30000 `
+  --model qwen3.8-27b `
+  --backend sglang `
+  --input-tokens 199000 `
+  --output-tokens 16 `
+  --warmup-output-tokens 16 `
+  --warmup-runs 1 `
+  --timeout 600 `
+  --temperature 0
+
+.\sglang_bench_spec_acceptance.exe `
+  --base-url http://127.0.0.1:30000 `
+  --model qwen3.8-27b `
+  --input-tokens 6213 `
+  --output-tokens 512 `
+  --warmup-output-tokens 16 `
+  --timeout 600 `
+  --temperature 1.0 `
+  --top-p 0.95 `
+  --top-k 20 `
+  --presence-penalty 1.5
+```
+
+Add `--disable-thinking` to both members of a paired profile when qualifying
+the non-thinking route. Carry every explicit Python override into its native
+partner.
+
+The checked-in Python clients remain the measurement authority while the native
+candidate completes matched live qualification on Windows and Apple. Every
+pair resolves the same model, token-count, warmup, timeout, sampling,
+seed-when-supported, stream backend, and thinking values. Stream promotion
+requires matching calibrated counts, decoded request semantics, cache/warmup
+order, exact usage and finish reason, and output field names and types.
+Deterministic stream controls also require matching combined and per-channel
+digests, character counts, and fragment counts; sampled stream profiles retain
+those values as independent per-sample evidence.
+
+Acceptance promotion requires the same 11 field names and compatible JSON
+types, exact equal prompt/completion counts and thinking mode, finite latency,
+valid counter ranges, and externally recomputed rate, accepted-length, cycle-
+sum, and weighted-histogram algebra for every Python and native result. The
+native companion additionally establishes exact calibration, warmup counts,
+measured counts, and length finish through its fail-closed response validator.
+Record each unseeded digest, latency, counter, and histogram independently, and
+compare adjacent Python/native/Python windows for stable client-neutral timing
+and acceptance distributions. Semantic behavior remains governed by the
+sampled stream, reasoning, arithmetic, and tool gates. Record the client
+implementation with every result.
+
+**Windows live status (2026-08-30 17:55 PDT): passed.** One argument-free
+four-slot production launch completed adjacent Python/native/Python windows
+for deterministic and sampled `6213+512`, exact `199000+16`, and sampled
+acceptance. Every stream result preserved the 38-field schema, exact usage and
+length finish; deterministic windows also matched all hashes and
+fragment/character counts. Every acceptance result preserved the 11-field
+schema and exact counts, and all counter/histogram algebra passed. Native
+timing stayed within or favorably adjacent to the Python observations. Apple
+Clang/M1 Max live parity remains the final client-promotion gate, so Python
+retains cross-platform scoreboard authority.
 
 For deterministic linear fixed-work attribution, launch
 `serve_qwen38_27b_nvfp4_5090.ps1 -SimulateAcceptedLength 3`. That server is an

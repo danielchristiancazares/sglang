@@ -11,7 +11,7 @@ under `docs/`.
 
 Last reconciled with
 [`notes/experiment-log.md`](notes/experiment-log.md) through
-**2026-08-30 16:59 PDT**. A later experiment-log entry or fresh runtime
+**2026-08-30 18:04 PDT**. A later experiment-log entry or fresh runtime
 evidence supersedes every snapshot in this file.
 
 ## Recover context before acting
@@ -295,6 +295,16 @@ contract. The standard controls are:
 .\.venv\Scripts\python.exe .\scripts\windows\bench_spec_acceptance.py
 .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600
 ```
+
+`benchmark/native` contains the portable CPU-only C++23 replacements for the
+stream and acceptance clients. Their strict host suites pass under GCC C++23
+and MSVC's C++23-capable `c++latest` mode. The matched Windows
+Python/native/Python stream and acceptance gates pass, including exact
+`199000+16`; Apple remains pending. Keep the Python commands above as the
+cross-platform scoreboard authority through the Apple gate, and record the
+client implementation with every sample. Build instructions and the promotion
+contract are in
+[`notes/benchmark-contract.md`](notes/benchmark-contract.md).
 
 - Change one experimental variable at a time and compare with a fresh matched
   control.

@@ -313,13 +313,23 @@ __global__ void linear_rejection_sampling_kernel(
     const int64_t* proposal_out_indices, const float* accept_uniforms,
     const float* bonus_uniforms, const float* target_probs,
     const float* draft_probs, uint32_t* device_status,
-    uint32_t num_slots, uint32_t vocab_size) {
+    uint32_t num_slots, uint32_t vocab_size,
+    bool require_ready_status) {
   __shared__ KernelState state;
   __shared__ float thread_masses[kLinearRejectionSamplingThreads];
   __shared__ uint32_t thread_bonus_tokens[
       kLinearRejectionSamplingThreads];
 
   const uint32_t thread = threadIdx.x;
+  if (require_ready_status) {
+    if (thread == 0) {
+      state.inputs_valid = device_status[0] == 0U ? 1U : 0U;
+    }
+    __syncthreads();
+    if (state.inputs_valid == 0U) {
+      return;
+    }
+  }
   if (thread == 0) {
     LinearRejectionSamplingDeviceCode code =
         LinearRejectionSamplingDeviceCode::kOk;
@@ -464,9 +474,12 @@ __global__ void linear_rejection_sampling_kernel(
 
 }  // namespace
 
-NativeRuntimeError launch_linear_rejection_sampling(
+namespace {
+
+[[nodiscard]] NativeRuntimeError launch_linear_rejection_sampling_impl(
     const CudaExecutionContext& context,
-    const LinearRejectionSamplingBuffers& buffers) noexcept {
+    const LinearRejectionSamplingBuffers& buffers,
+    bool require_ready_status) noexcept {
   LinearRejectionSamplingShape shape{};
   const NativeRuntimeError layout_status =
       validate_layout(context, buffers, &shape);
@@ -495,7 +508,7 @@ NativeRuntimeError launch_linear_rejection_sampling(
           reinterpret_cast<uint32_t*>(
               buffers.device_status.data_bytes()),
           static_cast<uint32_t>(shape.num_slots),
-          static_cast<uint32_t>(shape.vocab_size));
+          static_cast<uint32_t>(shape.vocab_size), require_ready_status);
   const cudaError_t launch_status = cudaGetLastError();
   if (launch_status != cudaSuccess) {
     return make_error(
@@ -505,6 +518,20 @@ NativeRuntimeError launch_linear_rejection_sampling(
         static_cast<int32_t>(launch_status));
   }
   return native_runtime_ok();
+}
+
+}  // namespace
+
+NativeRuntimeError launch_linear_rejection_sampling(
+    const CudaExecutionContext& context,
+    const LinearRejectionSamplingBuffers& buffers) noexcept {
+  return launch_linear_rejection_sampling_impl(context, buffers, false);
+}
+
+NativeRuntimeError launch_linear_rejection_sampling_if_ready(
+    const CudaExecutionContext& context,
+    const LinearRejectionSamplingBuffers& buffers) noexcept {
+  return launch_linear_rejection_sampling_impl(context, buffers, true);
 }
 
 }  // namespace sglang::native

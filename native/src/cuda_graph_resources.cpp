@@ -222,6 +222,12 @@ std::string_view native_runtime_operation_name(
       return "validate_linear_rejection_sampling";
     case NativeRuntimeOperation::kLaunchLinearRejectionSampling:
       return "launch_linear_rejection_sampling";
+    case NativeRuntimeOperation::kValidateLinearVerifyRng:
+      return "validate_linear_verify_rng";
+    case NativeRuntimeOperation::kLaunchSeededLinearVerifyRng:
+      return "launch_seeded_linear_verify_rng";
+    case NativeRuntimeOperation::kLaunchStatefulLinearVerifyRng:
+      return "launch_stateful_linear_verify_rng";
     default:
       return "invalid_runtime_operation";
   }
