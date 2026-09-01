@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-06:18 PDT.
+06:54 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -237,8 +237,23 @@ completes exact 6,365 tokens with a stable coherent digest within its setting,
 and exact rescaled q continues into rejection sampling. Temperature 0.95,
 which appeared strongest on the repeated-token direct screen, reaches only
 **13.739 tok/s** on the natural request and is closed. The selected opt-in
-retains **4.1134 tok/s** to the requested floor. DFlash verifier-width
-economics are the next active branch.
+establishes the proposal distribution used by the selected verifier budget.
+
+The common exact verifier now also supports a checked DFlash-only current-block
+q budget. Mean selected q over proposal positions one through six has Pearson
+**0.801577** with accepted length on the natural trace, while accepted-length
+lag-one autocorrelation is only **0.324698**. With selector temperature 1.15,
+the opt-in mean-q6 threshold **0.62** chooses target M=2 below the boundary and
+M=8 otherwise. Five exact real-131K-pool `6237+128` requests reach **16.167 /
+16.181 / 16.178 / 16.179 / 16.183 tok/s**, mean **16.1776**, versus adjacent
+current-source full-M=8 **15.883 / 15.908 / 15.900 / 15.899 / 15.897**, mean
+**15.8974**. The gain is **0.2802 tok/s / 1.763%**. Each candidate request
+uses 23 M=2 cycles averaging **133.648 ms** and 19 M=8 cycles averaging
+**248.447 ms**, completes exact 6,365 tokens, and reproduces coherent SHA-256
+`bdf9428e...`. Thresholds 0.55 and 0.65 are closed at **15.191 / 16.056
+tok/s**. Full M=8 remains the default; threshold 0.62 is retained opt-in with
+**3.8224 tok/s** to the requested floor. Target-cycle arithmetic and proposal
+quality are the next active branches.
 
 Native M=8 gate/up fusion is also closed under the current kernel geometry. A
 single workgroup that computes both products and exact BF16 SwiGLU serializes

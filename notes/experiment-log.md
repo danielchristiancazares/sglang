@@ -19838,3 +19838,140 @@ mean 13.929045  17.125658 446.051        39.730
   noise-scale and sequential arithmetic fusion regresses. The next candidate
   needs material verifier arithmetic savings or a natural-prompt proposal
   signal.
+
+### 2026-09-01 06:54 PDT - DFlash2 selected-q budget improves sampled serving 1.763%
+
+- Began from signed `e1d1a0613a04ae031f1d6a6a880a8485729bebb2`, 58
+  commits ahead of `origin/main`, with only trace-only selected-q/target-p work
+  in `qwen38_engine.cpp`. Port 30000 and matching server/direct/compiler
+  processes were clear. Memory was 92% free with zero throttled pages, and
+  macOS reported normal thermal/performance status.
+- A natural no-policy selector-temperature-1.15 trace completed exact
+  `6237+128` at **15.86 tok/s**. Its 32 accepted draft counts were
+  `[7,7,6,5,6,2,1,0,1,2,3,4,3,4,3,2,2,4,2,5,0,3,2,2,3,1,3,7,1,2,0,4]`.
+  Mean selected q over positions one through six has Pearson **0.801577313**
+  with accepted length; mean-q5/7 correlations are **0.763930 / 0.757170**,
+  and accepted-length lag-one autocorrelation is **0.324698**. This admits a
+  current-block decision after exact sparse q is available.
+- Added checked opt-in
+  `SGLANG_MLX_NATIVE_DFLASH_MEAN_Q_THRESHOLD` entirely in native C++. An
+  absent value resolves to zero. Present values must parse completely as
+  finite FP32 greater than zero and at most one. The common exact verifier
+  evaluates the sparse proposal once, finds exact q for each selected token,
+  averages positions one through six, and selects one draft token when the
+  mean is below the threshold. Existing prefix slices retain the matching
+  tokens, sparse indices, and probabilities before exact p/q rejection and
+  residual sampling. DFlash passes its resolved threshold; DSpark passes zero.
+  Default untraced execution avoids the q inspection.
+- Extended speculative trace output with selected q, mean-q6, target p, and
+  exact `min(1,p/q)` acceptance probability. Trace and opt-in scheduling read
+  arrays only after their existing evaluation barrier. The default trace-free
+  path retains its prior graph and scheduling behavior.
+- The first warning-as-error compile used `-I` for MLX's external headers and
+  stopped on three unused-parameter warnings plus one deprecated-copy warning
+  inside MLX. Repeating the same build with `-isystem` passed with only the
+  established macOS 26.0 / MLX 26.2 linker warning, producing
+  `/private/tmp/libqwen38_dflash_q_budget_candidate.dylib`. The repository
+  dylib rebuilt with exact
+  `MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx`
+  and SHA-256
+  `ac1edcd10a0fb31228a75035acadcd37fa67f564f61e39a86489d2a0499ec746`.
+  Present thresholds 0 and 1.01 each fail closed with
+  `SGLANG_MLX_NATIVE_DFLASH_MEAN_Q_THRESHOLD must be a positive finite number
+  no greater than one`.
+- The exact threshold-0.62 direct command was:
+
+  ```bash
+  env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_NATIVE_SMALL_BATCH_QMM=1 \
+    SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1 \
+    SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT=1 \
+    SGLANG_MLX_NATIVE_TRACE_SPEC=1 \
+    SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE=1.15 \
+    SGLANG_MLX_NATIVE_DFLASH_MEAN_Q_THRESHOLD=0.62 \
+    /private/tmp/bench_qwen38_native \
+    /private/tmp/libqwen38_dflash_q_budget_candidate.dylib \
+    /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    128 32 128 \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-MLX-AffineQ4
+  ```
+
+  It reached **22.891918473 tok/s**, 32 refills, mean width **3.843750**,
+  digest `79bf856f14024a3e`, and last token 20. Steady M=2 cycles were about
+  **120 ms** total with **92 ms** verification; M=8 remained about **216 ms**
+  total with **186 ms** verification. The selected fixed direct trajectory at
+  the same temperature remains faster, so this result establishes mechanism
+  and cost rather than production admission.
+- Every real arm used the exact PERF-A076 foreground launch with full-Q4
+  target, affine-W4 DFlash2, real 131,072 context/token pools, one running
+  request, five Mamba slots, 8,192-token outer chunks, both Qwen parsers,
+  request seed 42, selected QMMs/tape commit, selector temperature 1.15, and
+  trace enabled. Only
+  `SGLANG_MLX_NATIVE_DFLASH_MEAN_Q_THRESHOLD=T` changed. Resolved arguments
+  retained `context_length=131072`, `max_total_tokens=131072`,
+  `max_running_requests=1`, and `max_mamba_cache_size=5`. Health, model list,
+  and language-only model info passed. The exact client remained:
+
+  ```bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b --input-tokens 6237 --output-tokens 128 \
+    --temperature 1.0 --top-p 0.95 --top-k 20 \
+    --presence-penalty 1.5 --skip-warmup --timeout 600
+  ```
+
+- Admission screens at thresholds 0.55/0.62/0.65 reached **15.191 / 16.151 /
+  16.056 tok/s**. They completed exact 6,365 tokens with
+  `finish_reason=length`; foreground PIDs 15165, 15111, and 15190 exited
+  through `Ctrl+C` with application shutdown complete before the next launch.
+  PERF-FA109 closes 0.55 and 0.65 under the current target/draft/request shape.
+- A fresh threshold-0.62 launch ran under foreground PID 15213. Five
+  consecutive exact samples were:
+
+  | Sample | Generation tok/s | Prompt tok/s | TTFT s | E2E s |
+  |---:|---:|---:|---:|---:|
+  | 1 | 16.167 | 109.774 | 56.816503 | 64.672015 |
+  | 2 | 16.181 | 109.308 | 57.058949 | 64.907745 |
+  | 3 | 16.178 | 109.511 | 56.953346 | 64.803690 |
+  | 4 | 16.179 | 109.113 | 57.160957 | 65.010610 |
+  | 5 | 16.183 | 109.452 | 56.984009 | 64.831852 |
+
+  Generation mean is **16.1776 tok/s**. Each request completed exact 6,365
+  tokens with coherent reasoning and shared output/reasoning SHA-256
+  `bdf9428e30eca513e416f3dc69973a6d28ecf9ec864abdd3e72442eec8fda653`.
+  Across all five requests, trace contained 115 M=2 and 95 M=8 cycles. Their
+  mean emitted widths were **1.608695652 / 4.947368421** and mean complete
+  costs **133.647530 / 248.447411 ms**. Each request's 42 cycles emitted 131
+  server-side tokens before the exact 128-token client limit.
+- The adjacent current-source threshold-disabled control ran under foreground
+  PID 15355. Five consecutive samples were:
+
+  | Sample | Generation tok/s | Prompt tok/s | TTFT s | E2E s |
+  |---:|---:|---:|---:|---:|
+  | 1 | 15.883 | 109.777 | 56.815258 | 64.811202 |
+  | 2 | 15.908 | 109.370 | 57.026593 | 65.010169 |
+  | 3 | 15.900 | 109.451 | 56.984280 | 64.971681 |
+  | 4 | 15.899 | 109.326 | 57.049510 | 65.037594 |
+  | 5 | 15.897 | 109.157 | 57.138002 | 65.127035 |
+
+  Generation mean is **15.8974 tok/s**. Each request completed exact 6,365
+  tokens with shared SHA-256
+  `3bc2d4a6534c3938d24d5cb2ea2f512a6a868ec80159f5310b3e962b6ecb3606`.
+  Its 160 M=8 cycles across five requests emitted 645 server-side tokens, mean
+  width **4.031250**, at mean complete cost **248.091756 ms**. Candidate delta
+  is **+0.2802 tok/s / +1.762552%**. Both five-sample output trajectories are
+  stable and exact; their different digests are expected from exact adaptive
+  sampling's changed RNG shape.
+- Focused native pytest passed **8 tests** with 16 existing warnings.
+  Unset-path DFlash direct regression reached **31.302904851 tok/s**, 19
+  refills, width **6.684210526**, digest `46bd4bb035b72c2b`, and last token 20.
+  Unset-path DSpark reached **10.117263162 tok/s**, 14 refills, width
+  **2.428571429**, digest `5a38c7070d7badeb`, and last token 16. Strict
+  compilation and `git diff --check` pass. PID 15355 exited through `Ctrl+C`
+  with application shutdown complete; port 30000 and matching server,
+  benchmark, and compiler processes were clear afterward.
+- Retain threshold 0.62 as an opt-in exact DFlash2 budget. Full M=8 remains
+  the default. The selected mean is **3.8224 tok/s** below the requested floor;
+  the next branch must improve target arithmetic or proposal overlap further.

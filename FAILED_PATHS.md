@@ -3031,3 +3031,33 @@ option, or serving dispatch was added.
   without changing BF16 boundaries.
 - Related commit or revert: every candidate source/test change was removed;
   the selected separate SG16/B32 products remain unchanged.
+
+## PERF-FA109 - DFlash2 mean-q thresholds outside the retained 0.62 arm
+
+- Hypothesis: a lower or higher selected-q boundary may improve the balance
+  between 133--135 ms M=2 cycles and 247--250 ms M=8 cycles on the natural
+  reasoning request.
+- Scope: full-Q4 target, affine-W4 DFlash2, selector temperature 1.15, exact
+  sparse-q rejection sampling, real 131,072 context/token pools, and sampled
+  `6237+128` serving.
+- Attempted change: screened mean-q6 thresholds 0.55, 0.62, and 0.65 through
+  the same checked native scheduler and otherwise identical foreground server
+  and client commands.
+- Benchmark evidence: the thresholds reached **15.191 / 16.151 / 16.056
+  tok/s** respectively. The retained 0.62 arm then averaged **16.1776 tok/s**
+  over five requests, while an adjacent threshold-disabled control averaged
+  **15.8974 tok/s**.
+- Correctness evidence: every arm completed exact 6,365 tokens with
+  `finish_reason=length` and coherent reasoning. Each five-request setting
+  reproduced one stable output digest. Exact selected sparse q continues into
+  the prefix verifier and residual sampler.
+- Failure mode: 0.55 leaves too many low-yield full-width cycles; 0.65
+  shortens additional borderline cycles whose useful accepted prefixes repay
+  M=8 cost. Both produce weaker exact sampled trajectories than 0.62 on the
+  representative admission workload.
+- Why not to retry unchanged: the bracketing screens isolate the useful local
+  boundary, and the retained arm has a full matched five-sample window.
+- Reopen only if: target M=2/M=8 cost, selector temperature, draft checkpoint,
+  target checkpoint, or representative request distribution changes.
+- Related commit or revert: PERF-A078 retains only the checked opt-in
+  scheduler; threshold 0.62 is selected and the default remains full M=8.

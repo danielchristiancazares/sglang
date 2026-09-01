@@ -124,6 +124,25 @@ float native_dflash_selector_temperature() {
   return temperature;
 }
 
+float native_dflash_mean_q_threshold() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_DFLASH_MEAN_Q_THRESHOLD");
+  if (value == nullptr || *value == '\0') {
+    return 0.0f;
+  }
+  float threshold = 0.0f;
+  const std::string_view text(value);
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), threshold);
+  if (error != std::errc() || end != text.data() + text.size() ||
+      !std::isfinite(threshold) || threshold <= 0.0f || threshold > 1.0f) {
+    throw std::runtime_error(
+        "SGLANG_MLX_NATIVE_DFLASH_MEAN_Q_THRESHOLD must be a positive "
+        "finite number no greater than one");
+  }
+  return threshold;
+}
+
 int native_dspark_verify_draft_tokens() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_DSPARK_VERIFY_DRAFT_TOKENS");
@@ -2420,11 +2439,13 @@ void Engine::load_dflash2(
         "Qwen3.8-27B DFlash2 requires target shape 64x5120x248320");
   }
   dflash_selector_temperature_ = native_dflash_selector_temperature();
+  dflash_mean_q_threshold_ = native_dflash_mean_q_threshold();
   if (native_spec_trace_enabled()) {
     std::fprintf(
         stderr,
-        "qwen38_dflash selector_temperature=%.6f\n",
-        dflash_selector_temperature_);
+        "qwen38_dflash selector_temperature=%.6f mean_q_threshold=%.6f\n",
+        dflash_selector_temperature_,
+        dflash_mean_q_threshold_);
   }
 
   const auto dense = [this, &weights](
@@ -3312,6 +3333,7 @@ int Engine::verify_speculative_block(
     bool dense_proposal,
     bool greedy,
     float confidence_cost_ratio,
+    float sparse_mean_q_threshold,
     const char* trace_tag) {
   constexpr int kMaxDraftTokens = 7;
   const bool trace = native_spec_trace_enabled();
@@ -3329,6 +3351,13 @@ int Engine::verify_speculative_block(
        (!has_confidence || proposal_token_count != kMaxDraftTokens ||
         !dense_proposal || greedy))) {
     throw std::runtime_error("invalid speculative confidence budget");
+  }
+  if (!std::isfinite(sparse_mean_q_threshold) ||
+      sparse_mean_q_threshold < 0.0f || sparse_mean_q_threshold > 1.0f ||
+      (sparse_mean_q_threshold > 0.0f &&
+       (dense_proposal || greedy ||
+        proposal_token_count != kMaxDraftTokens))) {
+    throw std::runtime_error("invalid sparse speculative q budget");
   }
   if (has_confidence &&
       (confidence.shape() != mx::Shape{1, proposal_token_count} ||
@@ -3367,6 +3396,39 @@ int Engine::verify_speculative_block(
     }
   }
   const auto draft_done = std::chrono::steady_clock::now();
+  float sparse_mean_q = 0.0f;
+  if ((trace || sparse_mean_q_threshold > 0.0f) && !dense_proposal &&
+      !greedy) {
+    const int support = static_cast<int>(proposal_probs.shape()[2]);
+    const int mean_positions = std::min(proposal_token_count, 6);
+    const int32_t* const drafted = draft_tokens.data<int32_t>();
+    const int32_t* const indices = proposal_indices.data<int32_t>();
+    const float* const probabilities = proposal_probs.data<float>();
+    if (trace) {
+      std::fprintf(stderr, "qwen38_%s selected_q=", trace_tag);
+    }
+    for (int position = 0; position < proposal_token_count; ++position) {
+      float selected_q = 0.0f;
+      for (int index = 0; index < support; ++index) {
+        const int offset = position * support + index;
+        if (indices[offset] == drafted[position]) {
+          selected_q = probabilities[offset];
+          break;
+        }
+      }
+      if (position < mean_positions) {
+        sparse_mean_q += selected_q;
+      }
+      if (trace) {
+        std::fprintf(
+            stderr, "%s%.6f", position == 0 ? "" : ",", selected_q);
+      }
+    }
+    sparse_mean_q /= static_cast<float>(mean_positions);
+    if (trace) {
+      std::fprintf(stderr, " mean_q6=%.6f\n", sparse_mean_q);
+    }
+  }
   if (trace && has_confidence) {
     const float* const values = confidence.data<float>();
     std::fprintf(stderr, "qwen38_%s confidence=", trace_tag);
@@ -3386,6 +3448,17 @@ int Engine::verify_speculative_block(
           trace_tag,
           draft_token_count,
           confidence_cost_ratio);
+    }
+  } else if (sparse_mean_q_threshold > 0.0f &&
+             sparse_mean_q < sparse_mean_q_threshold) {
+    draft_token_count = 1;
+    if (trace) {
+      std::fprintf(
+          stderr,
+          "qwen38_%s q_budget drafts=1 mean_q6=%.6f threshold=%.6f\n",
+          trace_tag,
+          sparse_mean_q,
+          sparse_mean_q_threshold);
     }
   }
   array verified_draft_tokens = draft_tokens;
@@ -3465,7 +3538,34 @@ int Engine::verify_speculative_block(
             p),
         mx::int32);
     array accepted_array = sum(mx::cumprod(accepted_flags, -1), -1);
-    eval(accepted_array);
+    if (trace) {
+      eval(p, q, accepted_array);
+      const float* const target_values = p.data<float>();
+      const float* const proposal_values = q.data<float>();
+      std::fprintf(stderr, "qwen38_%s target_p=", trace_tag);
+      for (int position = 0; position < draft_token_count; ++position) {
+        std::fprintf(
+            stderr,
+            "%s%.6f",
+            position == 0 ? "" : ",",
+            target_values[position]);
+      }
+      std::fprintf(stderr, " accept_probability=");
+      for (int position = 0; position < draft_token_count; ++position) {
+        const float proposal = proposal_values[position];
+        const float probability = proposal > 0.0f
+            ? std::min(1.0f, target_values[position] / proposal)
+            : 1.0f;
+        std::fprintf(
+            stderr,
+            "%s%.6f",
+            position == 0 ? "" : ",",
+            probability);
+      }
+      std::fprintf(stderr, "\n");
+    } else {
+      eval(accepted_array);
+    }
     verify_done = std::chrono::steady_clock::now();
     accepted = std::clamp(
         accepted_array.item<int32_t>(), 0, draft_token_count);
@@ -3633,6 +3733,7 @@ void Engine::dflash_spec_refill(int32_t token) {
       /*dense_proposal=*/false,
       /*greedy=*/false,
       /*confidence_cost_ratio=*/0.0f,
+      dflash_mean_q_threshold_,
       "dflash");
 }
 
@@ -3724,6 +3825,7 @@ void Engine::dspark_spec_refill(int32_t token) {
       /*dense_proposal=*/sampled,
       /*greedy=*/!sampled,
       dspark_confidence_cost_ratio_,
+      /*sparse_mean_q_threshold=*/0.0f,
       "dspark");
   if (confidence_budget && dspark_bypass_refills_ > 0 &&
       selected_draft_tokens == 1) {
