@@ -20620,3 +20620,164 @@ mean 13.929045  17.125658 446.051        39.730
   **12.8354 tok/s / 2.7915x** remaining floor gap. Next: commit this atomic
   win, then target batch-four Q5/Q6 matrix cost for NEXTN or qualify real 131K
   target-only capacity before another speculative launch.
+
+### 2026-09-01 10:20 PDT - Q6_K batch-four kernel wins inside corrected GGUF NEXTN
+
+- Started from signed commit
+  `b4ae3662dba6c0d18e853e9f8452f11c79d65cce`
+  (`perf(mps): widen Q5_K batch-one row cohorts`) on `main`, 66 commits ahead
+  of `origin/main`. Its EDDSA signature verified good before this iteration.
+  The modified `qwen38_engine.cpp`, `qwen38_engine.h`, and
+  `test_qwen38_affine_small_batch_qmm.cpp` paths remained pre-existing
+  user-owned work and stayed outside this candidate. The configured single
+  agent slot still leaves the skill-required analysis-only subagent batch
+  unavailable while this root is active.
+- Implemented `q6_K_batch_4_vec4_rows16` in
+  `python/sglang/kernels/aot/csrc/metal/gguf_q4_0.mm`. Each eight-lane cohort
+  owns one output row, each lane decodes four adjacent weights, the row is
+  reused across all four activation vectors, and four SIMD groups produce
+  sixteen rows per 128-thread group. The final selector requires Q6_K, exact
+  batch four, four-byte weight alignment, 16-byte input alignment, a 32-wide
+  pipeline, and 128-thread capacity. The dispatch grid uses sixteen output
+  rows per group. `SGLANG_MPS_Q6_K_BATCH4_ROWS16=0` is the process-scoped
+  matched control. No Python source changed.
+- The exact microbench form was:
+
+  ```bash
+  .venv/bin/python benchmark/mac/bench_mps_gguf_quant.py \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenF16.gguf \
+    --tensor TENSOR --batch-size 4 --warmup 8 --iterations 25
+  ```
+
+  The pre-candidate committed-source `output.weight` samples were
+  `28.198708,28.113958,28.117875,28.107292,28.054625,28.080584,28.103292,
+  28.118708,28.116375,28.051333,28.076917,28.110375,28.096250,28.101125,
+  27.843666,28.024166,28.057209,28.079541,28.067625,28.091833,28.028041,
+  28.066750,28.071584,28.106541,28.079750 ms`, median **28.080584 ms /
+  34.725 GiB/s**. The matched final-source disabled-control samples were
+  `29.175792,29.115125,29.166000,29.199875,29.163750,29.192542,29.201208,
+  29.128333,29.155750,29.197750,29.181125,29.212708,29.194625,29.164375,
+  29.085291,29.128166,29.164125,29.137666,29.170625,29.095666,29.093959,
+  29.138042,29.205250,29.183042,29.172750 ms`, median **29.166000 ms /
+  33.433 GiB/s**. Candidate samples were
+  `6.130833,6.119083,6.179000,6.094334,6.085875,6.093375,6.121375,6.134292,
+  6.173709,6.141167,6.142917,6.138042,6.142000,6.122000,6.096834,6.040416,
+  6.114500,6.131083,6.078958,6.115042,6.082792,6.035958,6.105750,6.135083,
+  6.130458 ms`, median **6.121375 ms / 159.293 GiB/s**. The final matched
+  latency reduction is **79.011949%**.
+- `blk.0.attn_qkv.weight` committed-source samples were
+  `1.455792,1.439416,1.449916,1.456041,1.444500,1.449708,1.457375,1.459334,
+  1.454375,1.447792,1.440875,1.548125,1.444125,1.467083,1.645125,1.435666,
+  1.434250,1.446250,1.428959,1.451583,1.436167,1.433334,1.446750,1.443292,
+  1.429625 ms`, median **1.446750 ms / 27.844 GiB/s**. The matched disabled
+  samples were
+  `1.488250,1.464208,1.438208,1.462041,1.441500,1.449917,1.442333,1.441916,
+  1.449042,1.433208,1.440458,1.456417,1.447459,1.439916,1.443209,1.436708,
+  1.431583,1.444625,1.430250,1.428000,1.435917,1.445583,1.465416,1.448375,
+  1.440500 ms`, median **1.442333 ms / 27.929 GiB/s**. Candidate samples
+  were
+  `0.679417,0.654375,0.684542,0.600000,0.582375,0.588500,0.582333,0.585917,
+  0.561917,0.583833,0.668500,0.650250,0.661000,0.654834,0.643625,0.643167,
+  0.640250,0.560625,0.571875,0.558958,0.573833,0.560667,0.567583,0.571250,
+  0.656875 ms`, median **0.588500 ms / 68.451 GiB/s**, a **59.198049%**
+  final matched latency reduction.
+- The derived-artifact actual-file smoke at 17 rows and exact batch four
+  passed Q4_0/Q5_K/Q6_K with maximum absolute/relative errors
+  `1.90735e-06/6.27034e-07`, `2.6226e-06/7.75595e-07`, and
+  `1.66893e-06/8.06965e-07`. A batch-three fallback Q6_K run passed at
+  `1.54972e-06/4.32145e-07`; a batch-eight preservation run passed at
+  `1.90735e-06/5.17281e-07` through the established specialization.
+- The first real NEXTN launch used the following exact command and omitted the
+  explicit draft-quantization argument:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=0 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenF16.gguf \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-Q5_K_S.gguf \
+    --served-model-name qwen3.8-27b-q5 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 1024 --max-total-tokens 1024 \
+    --max-running-requests 1 --chunked-prefill-size 256 \
+    --max-prefill-tokens 512 --disable-radix-cache \
+    --disable-overlap-schedule --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --speculative-algorithm NEXTN \
+    --speculative-draft-model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenF16.gguf \
+    --speculative-draft-load-format gguf --speculative-num-steps 3 \
+    --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
+    --host 127.0.0.1 --port 30000
+  ```
+
+  The target loaded in **80.31 s**, occupied **21.37 GB**, and left
+  **10.62 GB**. Draft configuration resolved as BF16/`Linear`, emitted missing
+  packed-weight warnings, occupied the entire remaining **10.62 GB**, and
+  failed before KV allocation because the minimum viable static fraction was
+  1.0000. The parent tree exited itself. Port 30000, matching processes, and
+  compiler workers were clear; memory recovered to 95% free with zero
+  throttled pages and normal reported thermal state. This is the same retained
+  ordering boundary recorded for the earlier bundled GGUF MTP lane: target
+  quantization inference happens after draft propagation.
+- The corrected candidate launch inserted exactly
+  `--speculative-draft-model-quantization gguf` after draft load format. Server
+  args resolved `_speculative_draft_quantization_explicitly_set=True` and the
+  draft logged `effective quantization=gguf, fusion projection=ColumnParallelLinear`.
+  Target load took **81.87 s** at **21.37 GB**; draft load took **54.65 s** at
+  **1.00 GB**. One FP32 Mamba state plus transient intermediate state and the
+  1,024-token target/draft BF16 KV pools left **8.50 GB**. Algorithm provenance
+  resolved the requested NEXTN alias to synchronous EAGLE worker v2. Root/
+  listener 22210 owned tracker 22213, scheduler 22214, and detokenizer 22215;
+  PID 22210 alone listened on 127.0.0.1:30000. Health returned HTTP 200,
+  `/v1/models` exposed length 1,024, and `/model_info` reported generation
+  enabled with image/audio understanding disabled.
+- One sampled `128+32` smoke completed exact 160 tokens at **3.414 tok/s** and
+  preserved reasoning. The complete candidate window then used five sequential
+  cache-flushed requests:
+
+  ```bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b-q5 --input-tokens 128 --output-tokens 128 \
+    --temperature 1.0 --top-p 0.95 --top-k 20 \
+    --presence-penalty 1.5 --skip-warmup --timeout 600
+  ```
+
+  | Arm | Sample | Gen tok/s | Prompt tok/s | TTFT s | E2E s | Accept len/rate |
+  |---|---:|---:|---:|---:|---:|---:|
+  | candidate | 1 | 3.643 | 5.783 | 22.135753 | 56.998245 | 3.00 / 0.67 |
+  | candidate | 2 | 3.799 | 5.799 | 22.071513 | 55.502606 | 2.92 / 0.64 |
+  | candidate | 3 | 3.711 | 5.810 | 22.029586 | 56.254073 | 2.80 / 0.60 |
+  | candidate | 4 | 3.699 | 5.800 | 22.070622 | 56.401024 | 3.00 / 0.67 |
+  | candidate | 5 | 3.662 | 5.789 | 22.109727 | 56.791044 | 3.08 / 0.69 |
+
+  Generation mean is **3.7028 tok/s** and mean accepted length is **2.960**.
+  Every request returned exact 256-token length output, all completion tokens
+  in preserved reasoning, with distinct ordinary sampled digests.
+- The matched disabled-control launch added only
+  `SGLANG_MPS_Q6_K_BATCH4_ROWS16=0` to the corrected environment. Target/draft
+  loads took **83.25/57.27 s**, residency and **8.50 GB** post-cache headroom
+  matched the candidate, and root/listener 22332 owned tracker/scheduler/
+  detokenizer 22341/22342/22343. The five sequential samples were:
+
+  | Arm | Sample | Gen tok/s | Prompt tok/s | TTFT s | E2E s | Accept len/rate |
+  |---|---:|---:|---:|---:|---:|---:|
+  | control | 1 | 3.215 | 5.784 | 22.129797 | 61.638058 | 3.00 / 0.67 |
+  | control | 2 | 3.619 | 5.796 | 22.084859 | 57.177327 | 3.25 / 0.75 |
+  | control | 3 | 3.269 | 5.798 | 22.076308 | 60.923672 | 3.00 / 0.67 |
+  | control | 4 | 3.373 | 5.834 | 21.940752 | 59.588846 | 2.92 / 0.64 |
+  | control | 5 | 3.216 | 5.804 | 22.054535 | 61.543028 | 2.95 / 0.65 |
+
+  Control generation mean is **3.3384 tok/s** and accepted-length mean is
+  **3.024**. The candidate therefore gains **0.3644 tok/s / 10.915409%**
+  despite slightly less favorable acceptance. This proves production
+  reachability for the exact-batch-four kernel. The complete same-GGUF NEXTN
+  lane remains **50.6293%** below the selected target-only `128+128` median
+  **7.500 tok/s** and **16.2972 tok/s / 5.4013x** from the requested floor;
+  PERF-FA115 closes that unchanged complete configuration.
+- Both verified foreground trees exited through `Ctrl+C`. All eight recorded
+  PIDs, port 30000, matching server/benchmark processes, and compiler workers
+  were absent after final cleanup. Memory returned to 94% free with zero
+  throttled pages, and `pmset -g therm` reported no thermal or performance
+  warning. Decision: retain and commit the narrow Q6_K kernel plus its recovery
+  record. Next: qualify the derived target at real 131K capacity, then return
+  to a materially cheaper draft/verification topology rather than this closed
+  same-GGUF configuration.

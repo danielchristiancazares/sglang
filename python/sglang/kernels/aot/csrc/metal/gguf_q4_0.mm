@@ -1813,6 +1813,90 @@ kernel void q6_K_batch_8_vec4(
     }
 }
 
+// At batch four, assign each eight-lane cohort a separate output row. Every
+// cohort dequantizes one row once and reuses it across all four activations,
+// allowing a 128-thread group to produce sixteen rows.
+kernel void q6_K_batch_4_vec4_rows16(
+        device const block_q6_K * weights,
+        device const float * input,
+        device float * output,
+        constant Q4Args & args,
+        uint group [[threadgroup_position_in_grid]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr ushort lanes_per_row = 8;
+    constexpr ushort batch_size = 4;
+    constexpr ushort rows_per_simdgroup = 4;
+    constexpr ushort rows_per_threadgroup = 16;
+    const ushort row_in_simdgroup = lane / lanes_per_row;
+    const ushort thread_x = lane & (lanes_per_row - 1);
+    const uint row = group * rows_per_threadgroup
+        + simd_id * rows_per_simdgroup + row_in_simdgroup;
+    const bool valid_row = row < args.output_size;
+    device const block_q6_K * row_weights = valid_row
+        ? weights + row * args.blocks_per_row : weights;
+    float sums[batch_size] = {0.0f};
+    device const float * input_rows[batch_size] = {
+        input,
+        input + args.input_size,
+        input + 2 * args.input_size,
+        input + 3 * args.input_size,
+    };
+    if (valid_row) {
+        const uint lane_base = thread_x * 4;
+        for (uint block_index = 0;
+             block_index < args.blocks_per_row;
+             ++block_index) {
+            device const block_q6_K * block = row_weights + block_index;
+            const float block_scale = float(block->d);
+#pragma unroll(2)
+            for (ushort half_block = 0; half_block < 2; ++half_block) {
+#pragma unroll(4)
+                for (ushort quadrant = 0; quadrant < 4; ++quadrant) {
+                    const uint ql_offset = half_block * 64 + lane_base
+                        + ((quadrant & 1) ? 32 : 0);
+                    const uchar4 packed_low =
+                        *reinterpret_cast<device const uchar4 *>(
+                            block->ql + ql_offset);
+                    const uchar4 low = quadrant < 2
+                        ? packed_low & uchar4(0x0f) : packed_low >> 4;
+                    const uchar4 packed_high =
+                        *reinterpret_cast<device const uchar4 *>(
+                            block->qh + half_block * 32 + lane_base);
+                    const uchar4 high =
+                        (packed_high >> (quadrant * 2)) & uchar4(3);
+                    const int4 quant = int4(low | (high << 4)) - 32;
+                    const uint scale_index = half_block * 8
+                        + (lane_base / 16) + quadrant * 2;
+                    const float4 weight = block_scale
+                        * float(block->scales[scale_index]) * float4(quant);
+                    const uint column = block_index * 256
+                        + half_block * 128 + quadrant * 32 + lane_base;
+#pragma unroll(batch_size)
+                    for (ushort batch = 0; batch < batch_size; ++batch) {
+                        sums[batch] += dot(
+                            weight,
+                            *reinterpret_cast<device const float4 *>(
+                                input_rows[batch] + column));
+                    }
+                }
+            }
+        }
+    }
+#pragma unroll(batch_size)
+    for (ushort batch = 0; batch < batch_size; ++batch) {
+        sums[batch] += simd_shuffle_down(sums[batch], 4);
+        sums[batch] += simd_shuffle_down(sums[batch], 2);
+        sums[batch] += simd_shuffle_down(sums[batch], 1);
+    }
+    if (thread_x == 0 && valid_row) {
+#pragma unroll(batch_size)
+        for (ushort batch = 0; batch < batch_size; ++batch) {
+            output[batch * args.output_size + row] = sums[batch];
+        }
+    }
+}
+
 // Give each eight-lane cohort a separate output row at batch one. Each lane
 // decodes four adjacent weights at a time, and all four cohorts reuse the same
 // input vector while producing sixteen rows per threadgroup.
@@ -4020,6 +4104,7 @@ struct Pipelines {
     id<MTLComputePipelineState> q6_K_batch1 = nil;
     id<MTLComputePipelineState> q6_K_batch1_rows2 = nil;
     id<MTLComputePipelineState> q6_K_batch4 = nil;
+    id<MTLComputePipelineState> q6_K_batch4_vec4_rows16 = nil;
     id<MTLComputePipelineState> q6_K_batch8 = nil;
     id<MTLComputePipelineState> q6_K_batch8_vec4 = nil;
     id<MTLComputePipelineState> q6_K_batch24_split = nil;
@@ -4128,6 +4213,8 @@ Pipelines & pipelines() {
         value.q6_K_batch1 = compile(@"q6_K_batch_1");
         value.q6_K_batch1_rows2 = compile(@"q6_K_batch_1_rows2");
         value.q6_K_batch4 = compile(@"q6_K_batch_4");
+        value.q6_K_batch4_vec4_rows16 =
+            compile(@"q6_K_batch_4_vec4_rows16");
         value.q6_K_batch8 = compile(@"q6_K_batch_8");
         value.q6_K_batch8_vec4 = compile(@"q6_K_batch_8_vec4");
         value.q6_K_batch24_split = compile(@"q6_K_batch_24_split");
@@ -4467,6 +4554,10 @@ torch::Tensor quant_matmul(
         const char * value = std::getenv("SGLANG_MPS_Q5_K_BATCH1_ROWS32");
         return value == nullptr || std::string(value) != "0";
     }();
+    static const bool q6_k_batch4_rows16_enabled = [] {
+        const char * value = std::getenv("SGLANG_MPS_Q6_K_BATCH4_ROWS16");
+        return value == nullptr || std::string(value) != "0";
+    }();
     static const bool iq2_large_batch_enabled = [] {
         const char * value = std::getenv("SGLANG_MPS_IQ2_LARGE_BATCH");
         return value == nullptr || std::string(value) != "0";
@@ -4492,6 +4583,12 @@ torch::Tensor quant_matmul(
         p.q5_K_batch1_vec8_rows32 != nil &&
         p.q5_K_batch1_vec8_rows32.threadExecutionWidth == 32 &&
         p.q5_K_batch1_vec8_rows32.maxTotalThreadsPerThreadgroup >= 128;
+    const bool use_q6_k_batch4_rows16 = q6_k_batch4_rows16_enabled &&
+        weight_type == 14 && batch_size == 4 &&
+        weight_offset % 4 == 0 && input_offset % 16 == 0 &&
+        p.q6_K_batch4_vec4_rows16 != nil &&
+        p.q6_K_batch4_vec4_rows16.threadExecutionWidth == 32 &&
+        p.q6_K_batch4_vec4_rows16.maxTotalThreadsPerThreadgroup >= 128;
     const bool use_iq2_large_batch = iq2_large_batch_enabled &&
         weight_type == 16 && batch_size > 8 &&
         p.iq2_xxs_large_batch != nil &&
@@ -4540,7 +4637,9 @@ torch::Tensor quant_matmul(
             : (batch_tile == 1
                 ? (use_q6_k_batch1_rows2
                     ? p.q6_K_batch1_rows2 : p.q6_K_batch1)
-                : (batch_tile == 4 ? p.q6_K_batch4
+                : (batch_tile == 4
+                    ? (use_q6_k_batch4_rows16
+                        ? p.q6_K_batch4_vec4_rows16 : p.q6_K_batch4)
                     : (batch_size == 8 ? p.q6_K_batch8_vec4
                                        : p.q6_K_batch8))));
     } else if (weight_type == 16) {
@@ -4573,12 +4672,14 @@ torch::Tensor quant_matmul(
             ((weight_type == 16 || weight_type == 29) && batch_size == 1);
         const NSUInteger output_groups = use_iq2_large_batch
             ? (output_size + 63) / 64
-            : (use_q5_k_batch1_rows32
+            : (use_q6_k_batch4_rows16
+                ? (output_size + 15) / 16
+                : (use_q5_k_batch1_rows32
                 ? (output_size + 31) / 32
                 : (use_q5_vec4_batch1
                     ? (output_size + 15) / 16
                     : (use_four_row_batch1
-                        ? (output_size + 7) / 8 : (output_size + 3) / 4)));
+                        ? (output_size + 7) / 8 : (output_size + 3) / 4))));
         const NSUInteger batch_groups = use_iq2_large_batch
             ? (batch_size + 31) / 32
             : ((use_q5_vec4_batch1 || use_four_row_batch1)
