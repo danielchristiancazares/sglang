@@ -2753,3 +2753,34 @@ option, or serving dispatch was added.
 - Related commit or revert: converter and loader changes were removed with
   `apply_patch`; the 1,227,639,900-byte derived artifact was deleted and is
   reproducible from the immutable source using the experiment record.
+
+## PERF-FA100 - Fixed shortened DSpark verification
+
+- Hypothesis: verifying fewer than seven DSpark proposals would reduce target
+  work enough to offset the smaller maximum emitted width.
+- Scope: affine-W4 DSpark, the selected full-Q4 target, exact dense-q
+  rejection, seed 42, accepted-prefix tape commit, and direct
+  `128 / 1 warm / 32 timed` sampling.
+- Attempted change: generalized the shared verifier to checked one-through-seven
+  draft prefixes and swept each fixed prefix while retaining the identical
+  seven-position proposal graph.
+- Benchmark evidence: draft counts one through seven reached
+  **11.920230932 / 8.861865636 / 8.353200099 / 7.544333347 / 4.104265970 /
+  4.139508352 / 10.025000236 tok/s**. The corresponding mean widths were
+  **1.6 / 1.523809524 / 1.777777778 / 1.941176471 / 1.571428571 /
+  1.571428571 / 2.428571429**. M=6/7 verification cost roughly **327--332
+  ms**, while the selected M=8 kernel takes about **186--188 ms**.
+- Correctness evidence: every prefix completed exact p/q execution. Default
+  seven-token DSpark reproduced digest `5a38c7070d7badeb` and last token 16;
+  DFlash reproduced its selected digest `46bd4bb035b72c2b` and last token 20.
+- Failure mode: shortened blocks cap useful emission, and target matrices with
+  six or seven rows fall into a particularly slow generic affine-QMM tier.
+  The best fixed short block reaches 11.920231 tok/s, 8.079769 below the floor.
+- Why not to retry unchanged: all fixed shortened widths are below both the
+  required 20 tok/s and the retained target-only lane.
+- Reopen only if: a faster M=2 verifier plus materially improved proposal
+  survival clears the real-client floor, or an adaptive policy assigns M=2
+  only where its measured expected throughput exceeds M=8.
+- Related commit or revert: the checked bounded verifier is retained as
+  opt-in profiling and adaptive-scheduling infrastructure; default remains
+  seven drafts.

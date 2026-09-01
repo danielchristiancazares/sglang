@@ -320,6 +320,7 @@ class Engine {
   QLinear dspark_markov_w2_;
   mlx::core::array dspark_confidence_weight_{0};
   mlx::core::array dspark_confidence_bias_{0};
+  int dspark_verify_draft_tokens_ = 7;
   std::vector<DSparkLayer> dspark_layers_;
   std::vector<LayerSnap> snap_;
   int32_t spec_buf_[8]{};

@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-04:11 PDT.
+04:18 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -251,6 +251,15 @@ survival probabilities while preserving proposal width and the direct/served
 baseline digests. The natural prompt spans roughly **0.1895--0.9998** and
 confirms the signal is probabilistic. Bounded-width verifier profiling and a
 cost-based cumulative-survival budget are the active follow-up.
+
+The common exact verifier now accepts checked prefixes of one through seven
+draft tokens behind a DSpark-only opt-in width probe; DFlash and default
+DSpark remain at seven. The complete fixed-width direct sweep reaches
+**11.920231 / 8.861866 / 8.353200 / 7.544333 / 4.104266 / 4.139508 /
+10.025000 tok/s**. Target M=6/M=7 fall onto a slow generic affine-QMM tier,
+while M=8 uses the selected SG16/B32 kernel. M=2 and M=8 are the useful
+measured tiers for the next confidence scheduler; every fixed short-width
+policy is closed below the required floor.
 
 Two DSpark proposal-fidelity candidates are closed. Independently applying
 target top-k/top-p filtering to each draft row fell to **6.997461 tok/s** and

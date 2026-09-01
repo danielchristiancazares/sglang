@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native DSpark fixed verification-width sweep, sampled direct `128 / 1 warm / 32 timed` | seven drafts / target M=8 **10.025000 tok/s**, width **2.428571** | one draft / target M=2 **11.920231 tok/s**, width **1.6**; M=3/4/5/6/7 **8.861866 / 8.353200 / 7.544333 / 4.104266 / 4.139508 tok/s** | M=2 is the only useful short tier; M=6/7 hit a slow generic affine-QMM tier, while selected SG16/B32 makes M=8 faster; fixed shortening remains below 20 | PERF-A072 candidate dylib, exact PERF-A068 environment plus `SGLANG_MLX_NATIVE_DSPARK_VERIFY_DRAFT_TOKENS=1..7` | 2026-09-01 04:18 PDT |
 | M1 Max native DSpark trained-confidence telemetry, sampled direct `128 / 1 warm / 32 timed` | affine-W4 **10.050625 tok/s**, width **2.428571** | trace-enabled confidence **10.071235 tok/s**, width **2.428571** | exact digest/last token retained; steady draft **36.58--36.88 ms** includes confidence; timing movement is diagnostic noise | PERF-A071 candidate dylib with the existing trace flag and otherwise exact PERF-A068 environment | 2026-09-01 04:11 PDT |
 | M1 Max native Qwen3.8 DSpark v2, sampled served `6237+128`, real 131K pools | selected DFlash2 **15.328 tok/s** | first affine-W4 DSpark **11.242 tok/s** | **-4.086 / -26.657%**; DSpark live draft **42--45 ms**, verify **212--213 ms**; exact tokens/reasoning retained | exact PERF-A065 server/client contract, changing only `SGLANG_MLX_MTP_DIR` to the DSpark affine-W4 artifact | 2026-09-01 03:48 PDT |
 | M1 Max native Qwen3.8 DSpark v2, sampled direct `128 / 1 warm / 32 timed` | official BF16 **5.746863 tok/s**, width **2.285714**, steady draft **44.54--44.75 ms** | affine-W4 **10.050625 tok/s**, width **2.428571**, steady draft **36.55--40.07 ms** | first functional screen; trajectories differ, so throughput is admission evidence rather than a precision ranking; both remain below 20 | PERF-A068 direct command with the same target, seed, sampler, verifier, and only the draft directory changed | 2026-09-01 03:44 PDT |
@@ -789,6 +790,7 @@ tree throughput can be ranked for production.
 | PERF-A069 | Apply the target top-k/top-p policy independently to every DSpark proposal row. | Native DSpark proposal distribution and exact dense-q verifier | Rejected and removed | Direct throughput fell **10.050625 -> 6.997461 tok/s** and width **2.428571 -> 1.6** because the independently filtered draft and target supports differ. See PERF-FA098. |
 | PERF-A070 | Preserve DSpark `markov_w2` in BF16 inside the affine-W4 draft artifact. | C++ checkpoint converter, exact native linear loader, and immutable derived artifact | Rejected and removed | Direct throughput fell **10.050625 -> 7.044992 tok/s**, width **2.428571 -> 1.65**. Served throughput moved **11.242 -> 11.294 tok/s** on a different trajectory while artifact size rose **87.148 MiB**; this supplies no robust promotion signal. See PERF-FA099. |
 | PERF-A071 | Execute the official trained DSpark confidence head and expose exact per-position survival telemetry. | Native DSpark loader, BF16 hidden/Markov feature projection, FP32 sigmoid, and existing speculative trace | Retained; cost-based scheduler work active | Direct trace preserves width **2.428571**, digest `5a38c7070d7badeb`, and last token 16 at **10.071235 tok/s**. The natural served request preserves exact baseline reasoning SHA-256 at **11.303 tok/s**. Confidence spans useful regimes and remains probabilistic under exact p/q sampling. |
+| PERF-A072 | Generalize exact speculative verification to checked one-through-seven-token prefixes and measure every DSpark target batch. | Shared native p/q verifier, accepted-state commit, DSpark prefix selection, and trace telemetry | Retained as opt-in profiling/scheduling infrastructure; fixed short widths rejected | Default DSpark and DFlash reproduce their exact selected trajectories. DSpark target M=2 reaches **11.920231 tok/s**; M=3/4/5/6/7 reach **8.861866 / 8.353200 / 7.544333 / 4.104266 / 4.139508**, and selected M=8 reaches **10.025000**. The useful adaptive geometry is therefore binary M=2/M=8 under the current kernels. See PERF-FA100. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -3766,3 +3768,36 @@ tree throughput can be ranked for production.
 - Decision: retain as the measured input to native dynamic scheduling. Next,
   generalize the shared verifier to bounded widths and profile its M1 Max cost
   curve before selecting a survival budget.
+
+### 2026-09-01 04:18 PDT - PERF-A072 bounded DSpark verification
+
+- Generalized the common native exact verifier from a fixed seven-token draft
+  contract to checked prefixes of one through seven tokens. Target input,
+  p/q slicing, rejection and residual sampling, accepted-prefix recurrent
+  commit, output buffering, and trace telemetry now derive from the checked
+  prefix length. DFlash continues to supply seven drafts. DSpark reads an
+  opt-in `SGLANG_MLX_NATIVE_DSPARK_VERIFY_DRAFT_TOKENS`; an absent value keeps
+  seven, and malformed or out-of-range values fail closed.
+- The DSpark proposal remains the same seven-position semi-autoregressive
+  graph, with only a prefix passed into target verification. This isolates the
+  target cost curve needed by confidence scheduling. The exact sampled
+  `128 / 1 warm / 32 timed` results for draft counts one through seven were
+  **11.920230932 / 8.861865636 / 8.353200099 / 7.544333347 / 4.104265970 /
+  4.139508352 / 10.025000236 tok/s**. Mean emitted widths were respectively
+  **1.6 / 1.523809524 / 1.777777778 / 1.941176471 / 1.571428571 /
+  1.571428571 / 2.428571429**.
+- Target verification cost rises from about **92 ms** at M=2 through **210
+  ms** at M=5. M=6 and M=7 take roughly **327--332 ms** through the generic
+  affine small-batch route. M=8 returns to about **186--188 ms** through the
+  selected SG16/B32 K-split kernel. Draft cost remains roughly **37--40 ms**.
+  This leaves M=2 and M=8 as the useful current target tiers.
+- Default DSpark reproduced 14 refills, width **2.428571429**, digest
+  `5a38c7070d7badeb`, and last token 16. The unchanged DFlash path reproduced
+  **31.295166030 tok/s**, 19 refills, width **6.684210526**, digest
+  `46bd4bb035b72c2b`, and last token 20 on its established
+  `128 / 32 warm / 128 timed` workload.
+- Decision: retain the checked bounded verifier as exact opt-in scheduling
+  infrastructure. Close every fixed shortened width as a production policy;
+  the best, M=2, remains **8.079769 tok/s** below the floor. Next, compare a
+  trained-confidence M=2/M=8 budget against fixed M=8 on representative
+  natural reasoning.

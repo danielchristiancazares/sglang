@@ -19074,3 +19074,77 @@ mean 13.929045  17.125658 446.051        39.730
   checked 1--7 prefix, measure each M1 Max target cost tier, and select the
   native confidence budget from cumulative survival divided by complete cycle
   cost.
+
+### 2026-09-01 04:18 PDT - bounded DSpark verifier exposes two useful target tiers
+
+- Began from signed `975973142d66efb5274d2b0078135776a11e6cec` on `main`,
+  52 commits ahead of `origin/main`, with only the active native verifier
+  source/header changes present. Port 30000, matching server/direct/compiler
+  processes, and Metal workloads were clear. Memory was 93% free with zero
+  throttled pages and thermal/performance status normal.
+- Generalized `Engine::verify_speculative_block` at the shared target-verifier
+  owner from exactly seven drafts to a checked prefix of one through seven.
+  Target input construction, p/q rows, stochastic acceptance, residual/bonus
+  sampling, accepted-state commit, output bounds, and trace widths all derive
+  from that prefix. DFlash continues to pass seven tokens. DSpark alone reads
+  `SGLANG_MLX_NATIVE_DSPARK_VERIFY_DRAFT_TOKENS`, defaulting to seven and
+  rejecting malformed or out-of-range values.
+- DSpark continues to execute the identical seven-position draft/proposal
+  graph, then slices the chosen prefix. This makes the probe an isolated
+  measurement of target verification geometry. The strict warning-as-error
+  candidate library was `/private/tmp/libqwen38_dspark_variable_verify.dylib`;
+  compilation passed with only the established macOS 26.0 / MLX 26.2 link
+  warning.
+- The common command was:
+
+  ```bash
+  env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_NATIVE_SMALL_BATCH_QMM=1 \
+    SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1 \
+    SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT=1 \
+    SGLANG_MLX_NATIVE_TRACE_SPEC=1 \
+    SGLANG_MLX_NATIVE_DSPARK_VERIFY_DRAFT_TOKENS=N \
+    /private/tmp/bench_qwen38_native \
+    /private/tmp/libqwen38_dspark_variable_verify.dylib \
+    /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    128 1 32 \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DSpark-MLX-AffineQ4
+  ```
+
+- Counts one through seven produced respectively:
+
+  | Drafts / target M | Tok/s | Refills | Mean width | Digest | Last token | Steady verify |
+  |---:|---:|---:|---:|---|---:|---:|
+  | 1 / 2 | 11.920230932 | 20 | 1.600000000 | `ae3d5f2beda21155` | 18 | 91.86--92.69 ms |
+  | 2 / 3 | 8.861865636 | 21 | 1.523809524 | `c98e1eecc8d3e3a6` | 96083 | 130.64--132.12 ms |
+  | 3 / 4 | 8.353200099 | 18 | 1.777777778 | `ac8283619303e5f0` | 262 | 169.86--170.98 ms |
+  | 4 / 5 | 7.544333347 | 17 | 1.941176471 | `6557ca6fd8c95153` | 550 | 209.51--210.17 ms |
+  | 5 / 6 | 4.104265970 | 21 | 1.571428571 | `7c7dedee672bf2f4` | 112240 | 329.35--332.48 ms |
+  | 6 / 7 | 4.139508352 | 21 | 1.571428571 | `7c7dedee672bf2f4` | 112240 | 326.72--328.50 ms |
+  | 7 / 8 | 10.025000236 | 14 | 2.428571429 | `5a38c7070d7badeb` | 16 | 185.98--187.68 ms |
+
+- Draft work remained roughly **36.6--40.3 ms**. M=6/M=7 fall through the
+  generic small-batch affine path and are much slower than M=8, which uses the
+  selected SG16/B32 K-split kernel. M=2 is the only useful short tier and is
+  still **8.079769 tok/s** below the floor.
+- The default-unset DSpark regression reproduced **10.025000236 tok/s**, 14
+  refills, width **2.428571429**, digest `5a38c7070d7badeb`, and last token 16.
+  The unchanged DFlash regression at its established `128 / 32 warm / 128
+  timed` shape reached **31.295166030 tok/s**, 19 refills, width
+  **6.684210526**, digest `46bd4bb035b72c2b`, and last token 20.
+- Decision: retain the checked bounded verifier as opt-in profiling and
+  scheduling infrastructure, preserve seven as the default, and close fixed
+  shortened widths in PERF-FA100. The next candidate is a trained-confidence
+  M=2/M=8 cost budget, followed by representative natural-prompt admission.
+- Final strict `-Wall -Wextra -Werror` library and standalone DSpark-test
+  builds passed with the established external linker warning. The test passed
+  YaRN offsets 0/9,000/131,071 and confidence parity with final marker
+  `qwen38 DSpark YaRN/confidence parity passed`. Focused native pytest passed
+  **8 tests** with 16 existing warnings. An isolated load with width `0`
+  failed closed at the intended integer-range contract before execution.
+- `git diff --check` passed. The repository has no root `.clang-format`; a
+  whole-file Homebrew clang-format 23.1 dry run reports the existing native
+  engine style throughout, so no broad mechanical restyling was applied.
