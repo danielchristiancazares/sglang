@@ -22213,3 +22213,65 @@ mean 13.929045  17.125658 446.051        39.730
   dense-loader branch and this evidence are candidates for the next atomic
   commit. Next screen the aligned Q5 weight/input load candidates, starting
   from A103 and A106, against the selected mixed target.
+
+### 2026-09-01 15:23 PDT - Fresh-session Q5 candidates resolved; dense fusion is flat
+
+- Continued on signed `b07fb3c00fe787633c0decf7b90cb0cd9f66e6fa`, 79
+  commits ahead of `origin/main`. The main index was empty. Existing modified
+  engine/header/test paths remained Daniel-owned and unstaged. Port 30000 had
+  no listener; no SGLang, benchmark, xctrace, clang, or command-line Metal
+  workload was active. Launchd-owned `MTLCompilerService` PIDs 548/932/933
+  remained ordinary post-boot services. Memory pressure reported 95% free and
+  `pmset -g therm` reported no thermal or performance warning.
+- Reconstructed and ran A103, A104, A106, and A108 against A094 under the
+  exact PERF-A105 production-shape harness. All four pass representative
+  K/N parity at maximum errors **0.03125 / 0.03125 / 0.0234375** and share
+  A094's full result digests at gate/up, down, attention-output, and value
+  shapes. A103 is consistently slower; A104 and A106 are order-sensitive
+  noise; A108 regresses roughly 4--22%. Shape-specific `2/4/2` and `8/4/2`
+  geometry timings also converge with A094. Exact order/reverse values are in
+  `PERFORMANCE_LOG.md`; PERF-FA125 closes these current forms.
+- Reconfirmed the mixed target's exact runtime selection. Generic QMM reached
+  **18.121698566 tok/s**, Q5 QMV only **19.032187257**, Q4 QMV only
+  **17.221199280**, and both QMV paths **17.987099210** on exact
+  `128 / 32 warm / 128 timed`. PERF-FA126 keeps Q4 custom execution disabled.
+  The published Q4 MTP head's best block-three screen remains
+  **11.341033334 tok/s**, so PERF-FA127 closes that unchanged composition.
+- Built PERF-A109 in persistent detached worktree
+  `/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-ab-fusion`. It combines
+  each mixed layer's two dense BF16 `[48,5120]` b/a weights into one
+  `[96,5120]` weight during load, issues one matmul in `gated_delta`, splits
+  at row 48, and leaves quantized checkpoints on the original path. Strict
+  C++20/O3 `-Wall -Wextra -Werror` build and candidate `git diff --check`
+  pass. The dylib is
+  `/Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_ab_fusion.dylib`,
+  SHA-256
+  `5980d553005547de38564c640076df414baec1e717c1b1d123143439a10329d3`.
+- Every PERF-A109 process used the pinned mixed target revision
+  `596b8067f7cf429007bb668874ffee7e917c8340` and:
+
+  ```text
+  env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 240s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native <control-or-fusion.dylib> <mixed-model> 128 32 128
+  ```
+
+- First balanced five-versus-five window:
+  - A094 control **19.008018889, 19.018764842, 18.967816850,
+    18.975859871, 18.968574033**, mean **18.987806897 tok/s**;
+  - fusion **19.053691587, 18.981565248, 18.988260834, 19.011803229,
+    19.007743799**, mean **19.008612939 tok/s**.
+- Independent balanced five-versus-five window:
+  - A094 control **18.998121449, 19.026949772, 18.971042050,
+    18.988260834, 19.010428720**, mean **18.998960565 tok/s**;
+  - fusion **18.982331387, 18.966904100, 18.995294950, 18.931278663,
+    19.013343509**, mean **18.977830522 tok/s**.
+- Aggregate A094 control is **18.993383731 tok/s** and fusion is
+  **18.993221731**, a **-0.000162000 tok/s / -0.000853%** movement. All 20
+  outputs preserve digest `d0193f6d413b68c1` and last token 11406. The
+  independent window cancels the first apparent 0.11% gain; PERF-FA128 closes
+  the fusion and keeps its source outside `main`.
+- After the final run, every benchmark process exited naturally. Port 30000
+  and matching workloads remained clear. System memory returned to 95% free
+  with no thermal/performance warning. The selected measured mixed-Q5 mean is
+  now **18.993383731 tok/s**, leaving **1.006616269 tok/s / 5.299825%** to
+  the direct floor. Exact 131K serving and Codex gates remain pending until a
+  direct candidate clears 20 with margin.

@@ -3478,3 +3478,113 @@ option, or serving dispatch was added.
   before any full-model launch.
 - Related commit or revert: all parallel-stream source was removed before
   PERF-A094; sequential `Engine::mlp` remains authoritative.
+
+## PERF-FA125 - Q5 aligned-load, vector-input, dot, and parameter-broadcast variants
+
+- Hypothesis: fewer dynamic Q5 weight loads, wider activation transactions,
+  grouped FP32 dot instructions, or shared scale/bias loads can raise the
+  selected affine-Q5 batch-one kernel by the remaining five percent.
+- Scope: selected A094 Q5/G64 Metal QMV at exact gate/up `5120x17408`, down
+  `17408x5120`, attention-output `6144x5120`, and value `5120x1024` shapes;
+  process-isolated order/reverse `100 / 1000` timing.
+- Attempted change: evaluated A103 three-word overlapping weight loads, A104
+  four `float4` dots, A106 four aligned 64-bit activation reads, A108
+  four-lane parameter broadcast, and shape-specific `2/4/2` and `8/4/2`
+  threadgroup mappings.
+- Benchmark evidence: A103 was consistently slower than A094 across all four
+  shapes. A104 and A106 exchanged sub-percent order effects and converged in
+  reverse timing. A108 regressed representative latency by roughly **4--22%**.
+  Shape-specific geometries converged with control and supplied no durable
+  full-model funding signal. Raw means are retained under the corresponding
+  PERFORMANCE_LOG entry.
+- Correctness evidence: A103, A104, A106, and A108 pass representative parity
+  at maximum errors **0.03125 / 0.03125 / 0.0234375**. Their four complete
+  production-shape digests match A094 exactly.
+- Failure mode: the Metal compiler/hardware already coalesces the ordinary
+  input and parameter traffic effectively. Explicit funnels, vector
+  conversions, leader branches, shuffles, and changed reduction grouping
+  add instruction or scheduling cost without reducing streamed weight bytes.
+- Why not to retry unchanged: exact production-shape timing resolves each
+  mechanism, and none projects close to the remaining five-percent full-model
+  gap.
+- Reopen only if: a compiler/GPU change, shader-counter attribution, or a new
+  mapping reduces total streamed Q5 bytes or proves a distinct occupancy
+  bottleneck.
+- Related commit or revert: candidates remain isolated in persistent detached
+  worktrees; selected A094 source on `main` is unchanged.
+
+## PERF-FA126 - Custom affine-Q4 QMV in the mixed Q5-class target
+
+- Hypothesis: enabling the existing custom Q4 batch-one path for the mixed
+  artifact's 162 Q4 linears will compound the selected Q5 QMV gain.
+- Scope: pinned 4.951-bpw mixed target, seed 42, exact direct
+  `128 / 32 warm / 128 timed`, with Q4 and Q5 QMV switches independently
+  controlled.
+- Attempted change: measured generic QMM, Q5-only, Q4-only, and combined QMV
+  arms with all other command-buffer and sampling controls fixed.
+- Benchmark evidence: generic reached **18.121698566 tok/s**, Q5-only
+  **19.032187257**, Q4-only **17.221199280**, and both **17.987099210**.
+- Correctness evidence: every arm completed the exact token contract. The Q5
+  selected and adjacent clean-A094 arms share digest `d0193f6d413b68c1`.
+- Failure mode: the custom Q4 geometry remains slower than MLX's generic
+  batch-one owner on this model, erasing part or all of the Q5 gain.
+- Why not to retry unchanged: both isolated and combined full-model arms
+  directly measure the reachable mixed-target path.
+- Reopen only if: a new Q4 kernel beats generic MLX at the exact mixed-model
+  shapes under matched microbenchmarks before another full-model launch.
+- Related commit or revert: the Q4 switch remains opt-in and disabled for the
+  selected mixed-Q5 configuration.
+
+## PERF-FA127 - Published Q4 MTP head on the mixed Q5-class target
+
+- Hypothesis: the smaller published Q4 MTP head plus corrected post-norm seed
+  can amortize target verification and lift mixed-Q5 sampled throughput.
+- Scope: pinned mixed target, namespaced Q4/G64 MTP head, exact p/q sampling,
+  block three, original/post-norm target seed, and optional Q4 QMV.
+- Attempted change: ran three isolated direct smokes varying only seed and Q4
+  draft execution around the retained compatibility loader.
+- Benchmark evidence: original seed reached **9.122242179 tok/s**, width
+  **1.882352941**; post-norm reached **9.507655940**, width **1.764705882**;
+  Q4 QMV with original seed reached **11.341033334**, width **2.285714286**.
+- Correctness evidence: the head loads through its `mtp.` namespace, exact p/q
+  verification runs, and each arm completes its requested token count.
+- Failure mode: accepted width remains too low to repay draft and multi-token
+  target verification; the Q4 QMV improves draft cost while staying far below
+  target-only execution.
+- Why not to retry unchanged: the best arm trails the selected target-only
+  screen by **7.691153923 tok/s** and the required floor by
+  **8.658966666 tok/s**.
+- Reopen only if: a measured proposal-distribution or target-verification
+  breakthrough materially changes accepted tokens per refill or cycle cost.
+- Related commit or revert: loader and post-norm controls remain retained for
+  correctness research; the composition is unselected.
+
+## PERF-FA128 - Dense BF16 recurrent b/a row fusion
+
+- Hypothesis: combining the mixed artifact's two `[48,5120]` dense recurrent
+  b/a projections removes 48 Metal matmul dispatches per generated token.
+- Scope: pinned mixed target, selected A094 Q5 QMV, seed 42, exact
+  `128 / 32 warm / 128 timed`, and two independent balanced five-versus-five
+  process-isolated windows.
+- Attempted change: concatenated each layer's dense b/a weights at load,
+  issued one `[96,5120]` product, split its result at 48, and preserved the
+  original quantized path as fallback.
+- Benchmark evidence: window-one means were control **18.987806897** and
+  fusion **19.008612939 tok/s**. Independent window-two means were control
+  **18.998960565** and fusion **18.977830522**. Aggregate ten-sample means are
+  control **18.993383731** and fusion **18.993221731**, a
+  **-0.000162000 tok/s / -0.000853%** movement.
+- Correctness evidence: strict C++20/O3 warnings-as-errors compilation and
+  `git diff --check` pass. All 20 timed outputs reproduce digest
+  `d0193f6d413b68c1` and last token `11406`.
+- Failure mode: the removed tiny dense dispatches do not own measurable
+  end-to-end time; the larger product and result split offset their encoding
+  savings.
+- Why not to retry unchanged: the independent balanced window cancels the
+  first window's apparent 0.11% gain and the aggregate result is flat to four
+  significant decimal places.
+- Reopen only if: a fused native kernel also consumes b/a in the recurrent
+  update or profiling attributes a larger dense-dispatch cost under a changed
+  runtime.
+- Related commit or revert: candidate remains outside `main` in persistent
+  detached worktree `perf-ab-fusion`; no source revert is required.

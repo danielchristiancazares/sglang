@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-14:25 PDT.
+15:23 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -169,6 +169,25 @@ experiment-log entries.
 
 ## Active Apple handoff
 
+The current speed target is the immutable 4.951-bpw mixed-Q5 checkpoint at
+revision `596b8067f7cf429007bb668874ffee7e917c8340`, with the committed A094
+affine-Q5 batch-one Metal kernel explicitly enabled and the Q4 custom kernel
+disabled. Two balanced five-sample control windows give a selected mean of
+**18.993383731 tok/s** on sampled direct `128 / 32 warm / 128 timed`, with
+digest `d0193f6d413b68c1`. The direct gap is **1.006616269 tok/s / 5.299825%**.
+The generic mixed target reaches **18.121698566 tok/s**.
+
+The fresh-session candidate matrix is resolved through A109. A095 packed-byte
+loads are correct and neutral. A103 aligned overlapping loads, A104 vector
+dots, A106 vector input reads, A108 parameter broadcast, alternate threadgroup
+geometry, mixed-target Q4 custom execution, and the published Q4 MTP head are
+closed by current measurements. Dense BF16 recurrent b/a row fusion is exact
+and aggregate-flat at **18.993221731 vs 18.993383731 tok/s** across ten samples
+per arm, so its source remains outside `main`. A107's distinct 128-bit input
+read form and the prebuilt A100/A101 load mappings remain unmeasured. Exact
+131K serving, sampled behavior, and Codex `xhigh` qualification follow only
+after a direct candidate clears 20 with margin.
+
 The requested Q5 lane now serves through a provenance-pinned derived artifact.
 Bartowski's immutable `Qwen3.8-27B-Q5_K_S.gguf` source is pinned at revision
 `f0eec4a4bb4975114a030d048952d83c0a53c034`, occupies exactly
@@ -310,12 +329,11 @@ Codex qualification. A concurrent gate/up stream experiment caused a bounded
 custom-Metal event stall and is closed; use one sequential MLX stream.
 
 PERF-A095 replaces the selected kernel's two packed-four-byte plus two scalar
-weight reads with three packed reads over the same ten bytes. Strict host
-compilation passes, while a bounded 45-second standalone parity attempt still
-waits on the inherited custom-Metal event state. The timeout removed the test
-cleanly and left no compiler helper, server, benchmark, or port listener. Keep
-the source uncommitted until a fresh Metal session passes parity and a matched
-full-model screen.
+weight reads with three packed reads over the same ten bytes. Fresh-session
+parity passes at maximum errors **0.03125 / 0.03125 / 0.0234375**. The A094
+and A095 production-shape microbenchmarks converge, and mixed full-model
+screens reach **19.010697650 / 19.032187257 tok/s** with the same digest.
+This **0.113%** movement is neutral and A094 remains selected.
 
 PERF-A096 adds a smaller aggregate-Q5 checkpoint candidate. The immutable
 `maglun/Qwen3.8-27B-MLX-Mixed-4.95bpw` revision
@@ -326,8 +344,10 @@ the release SHA-256 manifest. The inventory is exactly the native engine's
 1,655 required language tensors: 1,253 BF16 and 402 U32 tensors, with 162
 affine-Q4 and 240 affine-Q5 matrices, every one group 64, zero missing or
 extra language keys, and zero packed-shape/bit-width errors. The text aggregate
-is **4.9510 bits per weight**; direct throughput, exact 131K capacity, behavior,
-and Codex qualification remain unmeasured until the Metal session is fresh.
+is **4.9510 bits per weight**. The committed dense-BF16 loader branch admits
+all 96 recurrent b/a tensors. Selected A094 Q5 QMV reaches
+**18.993383731 tok/s** across ten sampled direct controls; exact 131K capacity,
+behavior, and Codex qualification remain open.
 
 The reachable quantized-linear stream refines the aggregate artifact estimate.
 Excluding the embedding table, uniform Q5 traverses **17,615,093,760 bytes**
@@ -358,11 +378,14 @@ commit `0da5c5a135` teaches the shared native MTP loader to accept that namespac
 while preserving unprefixed sidecars. Signed commit `1b328149c7` adds the
 opt-in `SGLANG_MLX_NATIVE_MTP_POST_NORM_SEED=1` correction at the common
 sampled/greedy seed owner. Both compile under strict warnings. Published
-depth-three exact-sampling acceptance is **0.958762887 / 0.872852234 /
-0.759450172**, making the post-norm arm the first fresh-session MTP ablation.
-Committed MTP history and position origin remain isolated follow-up variables;
-the native engine currently clears the MTP attention cache at each refill,
-while the published server path uses committed history.
+depth-three exact-sampling acceptance is
+**0.958762887 / 0.872852234 / 0.759450172**. Fresh-session mixed-target
+block-three screens reach **9.122242179 tok/s**, post-norm seed
+**9.507655940**, and Q4 QMV **11.341033334**. The unchanged composition is
+closed for throughput. Committed MTP history and position origin remain
+isolated research variables; the native engine currently clears the MTP
+attention cache at each refill, while the published server path uses committed
+history.
 
 Offline Metal AIR inspection also queues PERF-A098 after PERF-A095. Apple
 Metal 32023.883 scalarizes PERF-A095's packed byte vectors to ten aligned-one
