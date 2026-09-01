@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native DFlash2 draft precision, sampled direct `128 / 32 warm / 128 timed` | affine-W4 **30.992508 tok/s**, width **6.684211** | official dense BF16 **9.044043 tok/s**, width **2.114754** | **-21.948464 / -70.819%**; dense loader retained for compatibility, BF16 production selection rejected | PERF-A062 direct command, one candidate dylib, changing only the final draft directory | 2026-09-01 03:10 PDT |
 | M1 Max native full-Q4 plus affine-W4 DFlash2, sampled direct `128 / 32 warm / 128 timed` | SG16/B16 mean **17.651701 tok/s**, mean emitted width **4.3** | SG16/B32 **31.347246 / 31.354397 / 31.268351 / 31.330814 / 31.335863 tok/s**, mean **31.327334**, mean emitted width **6.684211** | **+13.675633 / +77.475%**; direct throughput clears 20 by **11.327334 tok/s**; steady cycle is about **214--217 ms** | add `SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1` to the signed PERF-A059 command; SG16/B32 is in `3bae8a5e67` | 2026-09-01 02:54 PDT |
 | M1 Max full-Q4 plus affine-W4 DFlash2, Codex 0.151.0 xhigh tool turn, real 131K pools | SG16/B16 exact `6237+128` **15.336 tok/s**, live verify about **236--239 ms** | SG16/B32 exact `6237+128` **15.328 tok/s**, live verify about **211--214 ms**; exact xhigh tool turn passes | fixed cycle improves about **10%** while this sampled trajectory shifts; sustained result leaves **4.672 tok/s** to the floor | exact server, sampled control, and bounded Codex commands recorded under PERF-A065 | 2026-09-01 03:03 PDT |
 | M1 Max full-Q4 DFlash2 steady verification cycle | stock MLX affine path: draft **41.288--41.686 ms**, verify **352.531--356.089 ms**; partial restore/re-forward **83--191 ms** | selected affine QMM: draft **34.211--37.378 ms**, verify **305.130--305.604 ms**; accepted-prefix replay about **2--6 ms** | draft and verify each improve about **15%** at the measured bounds; recurrent partial commit becomes a low-single-digit-ms stage | `SGLANG_MLX_NATIVE_TRACE_SPEC=1` matched direct full-Q4 screens | 2026-09-01 02:03 PDT |
@@ -778,6 +779,7 @@ tree throughput can be ranked for production.
 | PERF-A063 | Qualify SG16 through sampled serving and a Codex `xhigh` tool turn with real 131K pools. | Native DFlash server, OpenAI streaming endpoint, Responses API, and Codex client | Behavior qualified; sustained-throughput work active | Exact `6237+128` reaches **15.336 tok/s** and exact token counts. Codex thread `01a05c5a-28a6-79f0-a526-efa19d961645` executes one command and returns exact final marker; one interval reaches **20.85 tok/s**. Live verify is **236--239 ms**. |
 | PERF-A064 | Double the SG16 M8 affine-W4 output tile and reuse threadgroup storage across disjoint phases. | Native Metal quantized-matmul owner for every reachable target and DFlash verification projection | Retained in signed `3bae8a5e67`; real-client behavior passed | Five no-trace samples average **31.327334 tok/s**, **77.475%** above SG16/B16. Verify falls to **185.4--186.7 ms** direct and **211--214 ms** at 6.2K live history. The exact served sample reaches **15.328 tok/s** because its sampled acceptance trajectory differs. |
 | PERF-A065 | Qualify SG16/B32 through sampled serving and a Codex `xhigh` tool turn with real 131K pools. | Native DFlash server, OpenAI streaming endpoint, Responses API, and Codex client | Behavior qualified; acceptance optimization active | Exact `6237+128` completes at **15.328 tok/s**, **109.106 prompt tok/s**, and exact 6,365 total tokens. Codex thread `01a05c69-215f-7fb0-a7f8-1425c9b2ae5a` executes one command, returns the exact final marker, and exits zero. |
+| PERF-A066 | Load the official 81-tensor BF16 DFlash2 checkpoint directly. | Shared native QLinear execution and exact DFlash checkpoint loader | Compatibility retained in signed `6cf95442cc`; BF16 performance choice rejected | Dense BF16 loads and completes exact direct decoding. It reaches **9.044043 tok/s** versus adjacent affine-W4 **30.992508**, with width **2.114754** versus **6.684211** and about **42 ms** versus **26--32 ms** draft work. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -3529,3 +3531,30 @@ tree throughput can be ranked for production.
   through foreground `Ctrl+C`; port 30000 and matching server/benchmark
   processes are clear, memory returned to 94% free, and thermal/performance
   status is normal. Continue with proposal-acceptance and fixed-cycle work.
+
+### 2026-09-01 03:10 PDT - PERF-A066 official dense BF16 DFlash2
+
+- Generalized the native `QLinear` execution owner to dispatch exact BF16
+  matrices through MLX matmul with validated dtype and feature dimensions.
+  The DFlash loader now distinguishes the official 81-tensor dense contract
+  from the derived 175-tensor affine contract and validates every matrix at
+  its exact `[output,input]` shape.
+- The official 3.6-GiB checkpoint loaded and completed the direct sampled
+  harness. One traced run reached **9.005226 tok/s** with steady draft
+  **41.5--42.1 ms**, verify generally **185--187 ms**, 61 refills, width
+  **2.114754**, digest `408f99f917ffffcc`, and last token 96968. A no-trace
+  repeat reached **9.044043 tok/s** with the same refill/width/digest result.
+- An adjacent affine-W4 run from the same binary reached **30.992508 tok/s**,
+  19 refills, width **6.684211**, digest `46bd4bb035b72c2b`, and last token 20.
+  Dense BF16 is **21.948464 tok/s / 70.818614%** slower in this matched screen.
+- Dense bit parity passed. Strict warning-as-error library and standalone-test
+  builds passed after classifying the external MLX headers as system headers;
+  the initial `-I` command correctly surfaced four warnings inside MLX under
+  `-Werror`. The combined affine/dense executable passed, the focused native
+  suite passed **8 tests** with 16 existing warnings, test formatting passed,
+  and `git diff --check` passed.
+- Retained official-checkpoint compatibility in signed commit
+  `6cf95442ccde5a2df2696553ad33ad217bff60da`
+  (`feat(mps): load native dense DFlash2 drafts`). Its EDDSA signature
+  verifies as good. PERF-FA096 closes dense BF16 as the unchanged production
+  selection; affine-W4 remains active while proposal policy is investigated.
