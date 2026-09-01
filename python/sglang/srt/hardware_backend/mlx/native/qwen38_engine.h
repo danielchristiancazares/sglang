@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -23,6 +24,9 @@ struct QLinear {
 
   mlx::core::array operator()(const mlx::core::array& x) const;
 };
+
+mlx::core::array affine_qmm_small_batch(
+    const QLinear& linear, const mlx::core::array& x);
 
 struct FullAttn {
   QLinear q_proj;
@@ -64,6 +68,49 @@ struct DecoderLayer {
   LinearAttn linear;
 };
 
+struct DFlashDynamicConv {
+  QLinear kernel_projection;
+  mlx::core::array base_kernel{0};
+};
+
+struct DFlashAttention {
+  QLinear q_proj;
+  QLinear k_proj;
+  QLinear v_proj;
+  QLinear o_proj;
+  mlx::core::array q_norm{0};
+  mlx::core::array k_norm{0};
+  mlx::core::array keys{0};
+  mlx::core::array values{0};
+  mlx::core::array positions{0};
+  int cache_length = 0;
+};
+
+struct DFlashLayer {
+  mlx::core::array input_norm{0};
+  mlx::core::array post_norm{0};
+  QLinear gate_proj;
+  QLinear up_proj;
+  QLinear down_proj;
+  DFlashAttention attn;
+  DFlashDynamicConv attention_conv;
+  DFlashDynamicConv mlp_conv;
+};
+
+struct LinearCommitTape {
+  mlx::core::array conv_tokens{0};
+  mlx::core::array keys{0};
+  mlx::core::array decay{0};
+  mlx::core::array delta{0};
+  bool valid = false;
+};
+
+struct TargetForward {
+  mlx::core::array hidden{0};
+  std::vector<mlx::core::array> captured;
+  std::vector<LinearCommitTape> linear_tapes;
+};
+
 struct LayerSnap {
   mlx::core::array conv{0};
   mlx::core::array rec{0};
@@ -85,7 +132,7 @@ class Engine {
   int32_t prefill(const int32_t* tokens, int n, bool schedule_decode);
   int32_t decode(int32_t token);
   void load_mtp(const std::string& mtp_dir);
-  bool has_mtp() const { return mtp_valid_; }
+  bool has_mtp() const { return mtp_valid_ || dflash_valid_; }
   int last_spec_width() const { return spec_buf_n_; }
 
   const MlxQwen38Config& config() const { return cfg_; }
@@ -95,9 +142,20 @@ class Engine {
   mlx::core::array logits(const mlx::core::array& hidden) const;
   mlx::core::array mlp(const DecoderLayer& layer, const mlx::core::array& x) const;
   mlx::core::array full_attn(FullAttn& layer, const mlx::core::array& x);
-  mlx::core::array gated_delta(LinearAttn& layer, const mlx::core::array& x);
+  mlx::core::array gated_delta(
+      LinearAttn& layer,
+      const mlx::core::array& x,
+      LinearCommitTape* commit_tape = nullptr);
   mlx::core::array forward_hidden(const mlx::core::array& tokens);
+  TargetForward forward_hidden_captured(
+      const mlx::core::array& tokens,
+      bool capture_commit_tape = false);
+  mlx::core::array forward_hidden_impl(
+      const mlx::core::array& tokens,
+      std::vector<mlx::core::array>* captured,
+      std::vector<LinearCommitTape>* commit_tapes);
   mlx::core::array select_token(const mlx::core::array& hidden);
+  mlx::core::array sampling_probabilities(const mlx::core::array& token_logits);
   int32_t emit_scheduled();
   void reset_decode_pipeline();
   void record_processed_token(int32_t token);
@@ -109,6 +167,39 @@ class Engine {
   mlx::core::array mtp_forward(
       const mlx::core::array& token_embed, const mlx::core::array& hidden);
   void spec_refill(int32_t token);
+  void load_dflash2(
+      const std::unordered_map<std::string, mlx::core::array>& weights);
+  void dflash_reset();
+  void dflash_append_context(
+      const std::vector<mlx::core::array>& captured,
+      int token_count);
+  void dflash_append_layer_context(
+      DFlashAttention& attn,
+      const mlx::core::array& projected,
+      int position_offset);
+  mlx::core::array dflash_grouped_convolve(
+      const mlx::core::array& hidden,
+      const mlx::core::array& dynamic,
+      const mlx::core::array& base) const;
+  std::pair<mlx::core::array, mlx::core::array> dflash_conv_prepare(
+      const DFlashDynamicConv& conv,
+      const mlx::core::array& hidden) const;
+  mlx::core::array dflash_conv_finish(
+      const DFlashDynamicConv& conv,
+      const mlx::core::array& hidden,
+      const mlx::core::array& dynamic) const;
+  mlx::core::array dflash_attention(
+      DFlashAttention& attn,
+      const mlx::core::array& hidden);
+  mlx::core::array dflash_forward(int32_t anchor);
+  std::tuple<mlx::core::array, mlx::core::array, mlx::core::array>
+  dflash_select(
+      const mlx::core::array& hidden,
+      const mlx::core::array& draft_logits,
+      int32_t anchor);
+  void dflash_commit_verified_prefix(
+      const TargetForward& verified, int token_count);
+  void dflash_spec_refill(int32_t token);
 
   void load_weights(const std::string& model_dir);
   QLinear load_qlinear(
@@ -147,6 +238,15 @@ class Engine {
   mlx::core::array mtp_pre_emb_{0};
   mlx::core::array mtp_pre_hid_{0};
   mlx::core::array mtp_norm_{0};
+  bool dflash_valid_ = false;
+  int dflash_context_offset_ = 0;
+  QLinear dflash_fc_;
+  mlx::core::array dflash_hidden_norm_{0};
+  mlx::core::array dflash_norm_{0};
+  QLinear dflash_selector_hidden_;
+  mlx::core::array dflash_predecessor_{0};
+  mlx::core::array dflash_successor_{0};
+  std::vector<DFlashLayer> dflash_layers_;
   std::vector<LayerSnap> snap_;
   int32_t spec_buf_[8]{};
   int spec_buf_n_ = 0;
@@ -200,6 +300,20 @@ std::pair<mlx::core::array, mlx::core::array> gated_delta_update(
     const mlx::core::array& g,
     const mlx::core::array& beta,
     const mlx::core::array& state);
+std::vector<mlx::core::array> gated_delta_update_outputs(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const mlx::core::array& g,
+    const mlx::core::array& beta,
+    const mlx::core::array& state,
+    bool capture_delta);
+mlx::core::array gated_delta_commit(
+    const mlx::core::array& keys,
+    const mlx::core::array& decay,
+    const mlx::core::array& delta,
+    const mlx::core::array& state,
+    int token_count);
 
 } // namespace mlx_qwen38
 } // namespace sglang

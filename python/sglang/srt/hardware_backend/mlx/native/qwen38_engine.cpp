@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
@@ -19,6 +20,7 @@
 #include "mlx/fast.h"
 #include "mlx/io.h"
 #include "mlx/random.h"
+#include "mlx/stream.h"
 #include "mlx/transforms.h"
 
 namespace sglang {
@@ -63,6 +65,34 @@ bool native_sampling_enabled() {
 
 bool native_state_trace_enabled() {
   const char* const value = std::getenv("SGLANG_MLX_NATIVE_TRACE_STATE");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
+bool native_spec_trace_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_TRACE_SPEC");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
+bool native_small_batch_qmm_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_SMALL_BATCH_QMM");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
+bool native_qmm_trace_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_TRACE_QMM");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
+bool native_dflash_tape_commit_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT");
   return value != nullptr && std::string_view(value) != "0" &&
       std::string_view(value) != "false";
 }
@@ -219,6 +249,18 @@ array last_token(const array& hidden) {
   return squeeze(slice(hidden, {0, seq - 1, 0}, {1, seq, shape[2]}), 1);
 }
 
+constexpr const char* kGatedDeltaHeader = R"(
+#define SGLANG_STORE_GATED_DELTA(value, time_index)
+)";
+
+constexpr const char* kGatedDeltaTapeHeader = R"(
+#define SGLANG_STORE_GATED_DELTA(value, time_index) \
+  if (thread_index_in_simdgroup == 0) { \
+    delta_out[(((b_idx * T + (time_index)) * Hv + hv_idx) * Dv) + dv_idx] = \
+        (value); \
+  }
+)";
+
 // Same Metal body as mlx-lm's gated_delta_kernel (scalar g, no mask).
 constexpr const char* kGatedDeltaSource = R"(
         auto n = thread_position_in_grid.z;
@@ -263,6 +305,7 @@ constexpr const char* kGatedDeltaSource = R"(
             kv_mem = simd_sum(kv_mem);
 
             auto delta = (v_[dv_idx] - kv_mem) * beta_[hv_idx];
+            SGLANG_STORE_GATED_DELTA(delta, t);
 
             float out = 0.0f;
             for (int i = 0; i < n_per_t; ++i) {
@@ -288,6 +331,47 @@ constexpr const char* kGatedDeltaSource = R"(
         for (int i = 0; i < n_per_t; ++i) {
           auto s_idx = n_per_t * dk_idx + i;
           o_state[s_idx] = static_cast<StT>(state[i]);
+        }
+)";
+
+constexpr const char* kGatedDeltaCommitSource = R"(
+        auto n = thread_position_in_grid.z;
+        auto b_idx = n / Hv;
+        auto hv_idx = n % Hv;
+        auto hk_idx = hv_idx / (Hv / Hk);
+        auto dk_idx = thread_position_in_threadgroup.x;
+        auto dv_idx = thread_position_in_grid.y;
+        constexpr int ValuesPerThread = Dk / 32;
+
+        auto input_state = state_in + (n * Dv + dv_idx) * Dk;
+        auto output_state = state_out + (n * Dv + dv_idx) * Dk;
+        float state[ValuesPerThread];
+#pragma unroll
+        for (int index = 0; index < ValuesPerThread; ++index) {
+          const int dimension = ValuesPerThread * dk_idx + index;
+          state[index] = static_cast<float>(input_state[dimension]);
+        }
+
+        for (int time_index = 0; time_index < token_count; ++time_index) {
+          const float decay_value = decay[
+              (b_idx * T + time_index) * Hv + hv_idx];
+          const float delta_value = delta[
+              ((b_idx * T + time_index) * Hv + hv_idx) * Dv + dv_idx];
+          auto key = keys +
+              (b_idx * T + time_index) * Hk * Dk + hk_idx * Dk;
+#pragma unroll
+          for (int index = 0; index < ValuesPerThread; ++index) {
+            const int dimension = ValuesPerThread * dk_idx + index;
+            state[index] = state[index] * decay_value;
+            state[index] =
+                state[index] + static_cast<float>(key[dimension]) * delta_value;
+          }
+        }
+
+#pragma unroll
+        for (int index = 0; index < ValuesPerThread; ++index) {
+          const int dimension = ValuesPerThread * dk_idx + index;
+          output_state[dimension] = state[index];
         }
 )";
 
@@ -610,6 +694,136 @@ constexpr const char* kGatedDeltaNormGateSource = R"(
         }
 )";
 
+constexpr const char* kAffineSmallBatchQmmHeader = R"(
+#include <metal_simdgroup>
+)";
+
+constexpr const char* kAffineSmallBatchQmmSource = R"(
+        constexpr ushort OutputTile = 64;
+        constexpr ushort RowTile = 8;
+        constexpr ushort KTile = 64;
+        constexpr ushort Threads = 128;
+        constexpr ushort ValuesPerWord = 32 / Bits;
+        constexpr ushort WordsPerRow = KTile / ValuesPerWord;
+        constexpr ushort QuantGroupsPerTile = KTile / 64;
+
+        threadgroup bfloat staged_x[RowTile * KTile];
+        threadgroup bfloat staged_w[OutputTile * KTile];
+        threadgroup float staged_scales[
+            OutputTile * QuantGroupsPerTile];
+        threadgroup float staged_biases[
+            OutputTile * QuantGroupsPerTile];
+        threadgroup float staged_y[RowTile * OutputTile];
+
+        const ushort tid = thread_position_in_threadgroup.x;
+        const ushort lane = thread_index_in_simdgroup;
+        const ushort simd_id = simdgroup_index_in_threadgroup;
+        const uint output_start =
+            threadgroup_position_in_grid.x * OutputTile;
+        const uint packed_k = K * Bits / 32;
+        const uint groups_per_row = K / 64;
+
+        simdgroup_float8x8 accumulators[2];
+        accumulators[0] =
+            make_filled_simdgroup_matrix<float, 8>(0.0f);
+        accumulators[1] =
+            make_filled_simdgroup_matrix<float, 8>(0.0f);
+
+        for (uint k_start = 0; k_start < K; k_start += KTile) {
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+
+          for (ushort index = tid; index < RowTile * KTile;
+               index += Threads) {
+            const ushort row = index / KTile;
+            const ushort column = index % KTile;
+            staged_x[index] = row < M
+                ? x[row * K + k_start + column]
+                : static_cast<bfloat>(0.0f);
+          }
+
+          if (tid < OutputTile * QuantGroupsPerTile) {
+            const ushort output = tid / QuantGroupsPerTile;
+            const ushort group = tid % QuantGroupsPerTile;
+            const uint parameter_index =
+                (output_start + output) * groups_per_row +
+                k_start / 64 + group;
+            staged_scales[tid] = static_cast<float>(scales[parameter_index]);
+            staged_biases[tid] = static_cast<float>(biases[parameter_index]);
+          }
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+
+          constexpr ushort PackedWords = OutputTile * WordsPerRow;
+          for (ushort index = tid; index < PackedWords;
+               index += Threads) {
+            const ushort output = index / WordsPerRow;
+            const ushort word_column = index % WordsPerRow;
+            const uint packed = w[
+                (output_start + output) * packed_k +
+                k_start / ValuesPerWord + word_column];
+            const ushort group =
+                word_column * ValuesPerWord / 64;
+            const ushort parameter = output * QuantGroupsPerTile + group;
+            const float scale = staged_scales[parameter];
+            const float bias = staged_biases[parameter];
+#pragma unroll
+            for (ushort value = 0; value < ValuesPerWord; ++value) {
+              const uint quantized =
+                  (packed >> (value * Bits)) & ((1u << Bits) - 1u);
+              staged_w[
+                  output * KTile + word_column * ValuesPerWord + value] =
+                  static_cast<bfloat>(scale * quantized + bias);
+            }
+          }
+
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+
+          threadgroup const bfloat* input_tile = staged_x;
+          threadgroup const bfloat* weight_tile =
+              staged_w + simd_id * 16 * KTile;
+#pragma unroll
+          for (ushort k_step = 0; k_step < KTile / 8; ++k_step) {
+            simdgroup_bfloat8x8 input_fragment;
+            simdgroup_bfloat8x8 weight_fragment;
+            simdgroup_barrier(mem_flags::mem_none);
+            simdgroup_load(
+                input_fragment, input_tile + k_step * 8, KTile, 0, false);
+#pragma unroll
+            for (ushort output_step = 0; output_step < 2; ++output_step) {
+              simdgroup_load(
+                  weight_fragment,
+                  weight_tile + output_step * 8 * KTile + k_step * 8,
+                  KTile,
+                  0,
+                  true);
+              simdgroup_multiply_accumulate(
+                  accumulators[output_step],
+                  input_fragment,
+                  weight_fragment,
+                  accumulators[output_step]);
+            }
+          }
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+#pragma unroll
+        for (ushort output_step = 0; output_step < 2; ++output_step) {
+          simdgroup_store(
+              accumulators[output_step],
+              staged_y + simd_id * 16 + output_step * 8,
+              OutputTile,
+              0,
+              false);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (ushort index = tid; index < M * OutputTile; index += Threads) {
+          const ushort row = index / OutputTile;
+          const ushort column = index % OutputTile;
+          y[row * N + output_start + column] =
+              static_cast<bfloat>(staged_y[row * OutputTile + column]);
+        }
+)";
+
 std::vector<array> compute_g_fn(const std::vector<array>& xs) {
   return {mx::exp(-mx::exp(astype(xs[0], mx::float32)) * softplus(xs[1] + xs[2]))};
 }
@@ -625,7 +839,27 @@ const mx::fast::CustomKernelFunction& gated_delta_metal() {
       "sglang_gated_delta_step",
       {"q", "k", "v", "g", "beta", "state_in", "T"},
       {"y", "state_out"},
-      kGatedDeltaSource);
+      kGatedDeltaSource,
+      kGatedDeltaHeader);
+  return kernel;
+}
+
+const mx::fast::CustomKernelFunction& gated_delta_tape_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_gated_delta_step_tape",
+      {"q", "k", "v", "g", "beta", "state_in", "T"},
+      {"y", "state_out", "delta_out"},
+      kGatedDeltaSource,
+      kGatedDeltaTapeHeader);
+  return kernel;
+}
+
+const mx::fast::CustomKernelFunction& gated_delta_commit_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_gated_delta_commit",
+      {"keys", "decay", "delta", "state_in", "T", "token_count"},
+      {"state_out"},
+      kGatedDeltaCommitSource);
   return kernel;
 }
 
@@ -671,6 +905,16 @@ const mx::fast::CustomKernelFunction& gated_delta_norm_gate_metal() {
       {"recurrent_out", "z", "weight", "eps"},
       {"gated_out"},
       kGatedDeltaNormGateSource);
+  return kernel;
+}
+
+const mx::fast::CustomKernelFunction& affine_small_batch_qmm_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_affine_small_batch_qmm",
+      {"w", "scales", "biases", "x", "K", "N", "M"},
+      {"y"},
+      kAffineSmallBatchQmmSource,
+      kAffineSmallBatchQmmHeader);
   return kernel;
 }
 
@@ -869,8 +1113,77 @@ array QLinear::operator()(const array& x) const {
   if (!valid) {
     throw std::runtime_error("QLinear used before load");
   }
+  if (native_small_batch_qmm_enabled() && x.ndim() == 3 &&
+      x.shape()[0] == 1 && x.shape()[1] >= 6 && x.shape()[1] <= 8) {
+    const int input_features = static_cast<int>(x.shape()[2]);
+    const int output_features = static_cast<int>(w.shape()[0]);
+    if (x.dtype() == mx::bfloat16 && w.dtype() == mx::uint32 &&
+        scales.dtype() == mx::bfloat16 && biases.dtype() == mx::bfloat16 &&
+        group_size == 64 && (bits == 2 || bits == 4) &&
+        input_features % 64 == 0 && output_features % 64 == 0 &&
+        output_features >= 6144) {
+      if (native_qmm_trace_enabled()) {
+        std::fprintf(
+            stderr,
+            "qwen38_qmm custom rows=%d K=%d N=%d bits=%d\n",
+            static_cast<int>(x.shape()[1]),
+            input_features,
+            output_features,
+            bits);
+      }
+      return affine_qmm_small_batch(*this, x);
+    }
+    if (native_qmm_trace_enabled()) {
+      std::fprintf(
+          stderr,
+          "qwen38_qmm fallback rows=%d K=%d N=%d bits=%d\n",
+          static_cast<int>(x.shape()[1]),
+          input_features,
+          output_features,
+          bits);
+    }
+  }
   return quantized_matmul(
       x, w, scales, biases, /*transpose=*/true, group_size, bits, "affine");
+}
+
+array affine_qmm_small_batch(const QLinear& linear, const array& x) {
+  if (!linear.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
+      x.shape()[1] < 2 || x.shape()[1] > 8 ||
+      x.dtype() != mx::bfloat16 || linear.w.dtype() != mx::uint32 ||
+      linear.scales.dtype() != mx::bfloat16 ||
+      linear.biases.dtype() != mx::bfloat16 || linear.group_size != 64 ||
+      (linear.bits != 2 && linear.bits != 4)) {
+    throw std::runtime_error("invalid small-batch affine QMM inputs");
+  }
+  const int rows = static_cast<int>(x.shape()[1]);
+  const int input_features = static_cast<int>(x.shape()[2]);
+  const int output_features = static_cast<int>(linear.w.shape()[0]);
+  if (input_features % 64 != 0 || output_features % 64 != 0 ||
+      linear.w.shape()[1] * 32 != input_features * linear.bits ||
+      linear.scales.shape() !=
+          mx::Shape{output_features, input_features / linear.group_size} ||
+      linear.biases.shape() != linear.scales.shape()) {
+    throw std::runtime_error("unsupported small-batch affine QMM shape");
+  }
+
+  auto outputs = affine_small_batch_qmm_metal()(
+      {linear.w,
+       linear.scales,
+       linear.biases,
+       x,
+       array(input_features, mx::int32),
+       array(output_features, mx::int32),
+       array(rows, mx::int32)},
+      {{1, rows, output_features}},
+      {x.dtype()},
+      {output_features / 64 * 128, 1, 1},
+      {128, 1, 1},
+      {{"Bits", mx::fast::TemplateArg{linear.bits}}},
+      std::nullopt,
+      false,
+      {});
+  return outputs[0];
 }
 
 std::pair<array, array> gated_delta_step(
@@ -892,13 +1205,14 @@ std::pair<array, array> gated_delta_step(
   return {astype(y, q.dtype()), st};
 }
 
-std::pair<array, array> gated_delta_update(
+std::vector<array> gated_delta_update_outputs(
     const array& q,
     const array& k,
     const array& v,
     const array& g,
     const array& beta,
-    const array& state) {
+    const array& state,
+    bool capture_delta) {
   int B = static_cast<int>(q.shape()[0]);
   int T = static_cast<int>(q.shape()[1]);
   int Hk = static_cast<int>(q.shape()[2]);
@@ -911,10 +1225,19 @@ std::pair<array, array> gated_delta_update(
   if (Hv % Hk != 0) {
     throw std::runtime_error("Hv must be a multiple of Hk");
   }
-  auto outs = gated_delta_metal()(
+  std::vector<mx::Shape> output_shapes = {
+      {B, T, Hv, Dv}, state.shape()};
+  std::vector<mx::Dtype> output_dtypes = {q.dtype(), state.dtype()};
+  if (capture_delta) {
+    output_shapes.push_back({B, T, Hv, Dv});
+    output_dtypes.push_back(mx::float32);
+  }
+  const auto& kernel =
+      capture_delta ? gated_delta_tape_metal() : gated_delta_metal();
+  return kernel(
       {q, k, v, g, beta, state, array(T, mx::int32)},
-      {{B, T, Hv, Dv}, state.shape()},
-      {q.dtype(), state.dtype()},
+      output_shapes,
+      output_dtypes,
       {32, Dv, B * Hv},
       {32, 4, 1},
       {
@@ -928,7 +1251,69 @@ std::pair<array, array> gated_delta_update(
       std::nullopt,
       false,
       {});
-  return {outs[0], outs[1]};
+}
+
+std::pair<array, array> gated_delta_update(
+    const array& q,
+    const array& k,
+    const array& v,
+    const array& g,
+    const array& beta,
+    const array& state) {
+  auto outputs = gated_delta_update_outputs(
+      q, k, v, g, beta, state, false);
+  return {outputs[0], outputs[1]};
+}
+
+array gated_delta_commit(
+    const array& keys,
+    const array& decay,
+    const array& delta,
+    const array& state,
+    int token_count) {
+  if (keys.ndim() != 4 || decay.ndim() != 3 || delta.ndim() != 4 ||
+      state.ndim() != 4 || keys.shape()[0] != delta.shape()[0] ||
+      keys.shape()[0] != state.shape()[0] ||
+      keys.shape()[0] != decay.shape()[0] ||
+      keys.shape()[1] != delta.shape()[1] ||
+      keys.shape()[1] != decay.shape()[1] ||
+      delta.shape()[2] != state.shape()[1] ||
+      delta.shape()[2] != decay.shape()[2] ||
+      delta.shape()[3] != state.shape()[2] ||
+      keys.shape()[3] != state.shape()[3] ||
+      state.shape()[1] % keys.shape()[2] != 0 ||
+      keys.shape()[3] % 32 != 0 || token_count <= 0 ||
+      token_count > keys.shape()[1] || decay.dtype() != mx::float32 ||
+      delta.dtype() != mx::float32 || state.dtype() != mx::float32) {
+    throw std::runtime_error("invalid gated-delta commit tape");
+  }
+  const int batch = static_cast<int>(keys.shape()[0]);
+  const int tape_length = static_cast<int>(keys.shape()[1]);
+  const int key_heads = static_cast<int>(keys.shape()[2]);
+  const int key_dim = static_cast<int>(keys.shape()[3]);
+  const int value_heads = static_cast<int>(state.shape()[1]);
+  const int value_dim = static_cast<int>(state.shape()[2]);
+  auto outputs = gated_delta_commit_metal()(
+      {keys,
+       decay,
+       delta,
+       state,
+       array(tape_length, mx::int32),
+       array(token_count, mx::int32)},
+      {state.shape()},
+      {state.dtype()},
+      {32, value_dim, batch * value_heads},
+      {32, 4, 1},
+      {
+          {"Dk", mx::fast::TemplateArg{key_dim}},
+          {"Dv", mx::fast::TemplateArg{value_dim}},
+          {"Hk", mx::fast::TemplateArg{key_heads}},
+          {"Hv", mx::fast::TemplateArg{value_heads}},
+      },
+      std::nullopt,
+      false,
+      {});
+  return outputs[0];
 }
 
 Engine::Engine(MlxQwen38Config cfg, const std::string& model_dir)
@@ -974,6 +1359,9 @@ void Engine::reset() {
   snap_.clear();
   if (mtp_valid_) {
     mtp_reset();
+  }
+  if (dflash_valid_) {
+    dflash_reset();
   }
 }
 
@@ -1290,7 +1678,8 @@ array Engine::full_attn(FullAttn& attn, const array& x) {
   return attn.o_proj(output * sigmoid(gate));
 }
 
-array Engine::gated_delta(LinearAttn& lin, const array& x) {
+array Engine::gated_delta(
+    LinearAttn& lin, const array& x, LinearCommitTape* commit_tape) {
   auto xshape = x.shape();
   int B = static_cast<int>(xshape[0]);
   int S = static_cast<int>(xshape[1]);
@@ -1304,6 +1693,10 @@ array Engine::gated_delta(LinearAttn& lin, const array& x) {
   int ksz = cfg_.linear_conv_kernel_dim;
 
   array qkv = lin.in_proj_qkv(x);
+  if (commit_tape != nullptr) {
+    commit_tape->conv_tokens = qkv;
+    commit_tape->valid = false;
+  }
   array z = reshape(lin.in_proj_z(x), {B, S, hv, dv});
   array b = lin.in_proj_b(x);
   array a = lin.in_proj_a(x);
@@ -1342,9 +1735,16 @@ array Engine::gated_delta(LinearAttn& lin, const array& x) {
 
   array beta = sigmoid(b);
   array g = compiled_compute_g()({lin.A_log, a, lin.dt_bias})[0];
-  auto updated = gated_delta_update(q, k, v, g, beta, lin.rec_state);
-  lin.rec_state = updated.second;
-  array out = updated.first;
+  auto updated = gated_delta_update_outputs(
+      q, k, v, g, beta, lin.rec_state, commit_tape != nullptr);
+  lin.rec_state = updated[1];
+  array out = updated[0];
+  if (commit_tape != nullptr) {
+    commit_tape->keys = k;
+    commit_tape->decay = g;
+    commit_tape->delta = updated[2];
+    commit_tape->valid = true;
+  }
   array gated = S == 1
       ? gated_delta_norm_gate(out, z, lin.norm, cfg_.rms_norm_eps)
       : astype(
@@ -1357,16 +1757,55 @@ array Engine::gated_delta(LinearAttn& lin, const array& x) {
 }
 
 array Engine::forward_hidden(const array& tokens) {
+  return forward_hidden_impl(tokens, nullptr, nullptr);
+}
+
+TargetForward Engine::forward_hidden_captured(
+    const array& tokens, bool capture_commit_tape) {
+  TargetForward result;
+  result.captured.reserve(5);
+  if (capture_commit_tape) {
+    result.linear_tapes.resize(layers_.size());
+  }
+  result.hidden = forward_hidden_impl(
+      tokens,
+      &result.captured,
+      capture_commit_tape ? &result.linear_tapes : nullptr);
+  if (result.captured.size() != 5) {
+    throw std::runtime_error(
+        "DFlash2 target capture requires layers 5, 19, 33, 47, and 61");
+  }
+  return result;
+}
+
+array Engine::forward_hidden_impl(
+    const array& tokens,
+    std::vector<array>* captured,
+    std::vector<LinearCommitTape>* commit_tapes) {
   array h = embed(tokens);
+  const auto capture = [&captured, &h](size_t layer_index) {
+    if (captured != nullptr &&
+        (layer_index == 5 || layer_index == 19 || layer_index == 33 ||
+         layer_index == 47 || layer_index == 61)) {
+      captured->push_back(h);
+    }
+  };
   const bool single_token = tokens.shape()[1] == 1;
   if (!single_token) {
-    for (auto& layer : layers_) {
+    for (size_t i = 0; i < layers_.size(); ++i) {
+      auto& layer = layers_[i];
       array n = mx::fast::rms_norm(h, layer.input_norm, cfg_.rms_norm_eps);
-      array r =
-          layer.is_linear ? gated_delta(layer.linear, n) : full_attn(layer.attn, n);
+      LinearCommitTape* const commit_tape =
+          commit_tapes != nullptr && layer.is_linear
+          ? &(*commit_tapes)[i]
+          : nullptr;
+      array r = layer.is_linear
+          ? gated_delta(layer.linear, n, commit_tape)
+          : full_attn(layer.attn, n);
       h = h + r;
       array n2 = mx::fast::rms_norm(h, layer.post_norm, cfg_.rms_norm_eps);
       h = h + mlp(layer, n2);
+      capture(i);
     }
     return h;
   }
@@ -1375,8 +1814,13 @@ array Engine::forward_hidden(const array& tokens) {
       h, layers_.front().input_norm, cfg_.rms_norm_eps);
   for (size_t i = 0; i < layers_.size(); ++i) {
     auto& layer = layers_[i];
-    array r =
-        layer.is_linear ? gated_delta(layer.linear, n) : full_attn(layer.attn, n);
+    LinearCommitTape* const commit_tape =
+        commit_tapes != nullptr && layer.is_linear
+        ? &(*commit_tapes)[i]
+        : nullptr;
+    array r = layer.is_linear
+        ? gated_delta(layer.linear, n, commit_tape)
+        : full_attn(layer.attn, n);
     auto post_norm =
         residual_rms_norm(h, r, layer.post_norm, cfg_.rms_norm_eps);
     h = post_norm.first;
@@ -1389,6 +1833,7 @@ array Engine::forward_hidden(const array& tokens) {
       h = next_norm.first;
       n = next_norm.second;
     }
+    capture(i);
   }
   return h;
 }
@@ -1446,6 +1891,44 @@ array Engine::select_token(const array& hidden) {
   array selected_rank = mx::argmax(filtered + noise, -1);
   return squeeze(
       mx::take_along_axis(candidate_ids, expand_dims(selected_rank, -1), -1),
+      -1);
+}
+
+array Engine::sampling_probabilities(const array& token_logits) {
+  constexpr int kTopK = 20;
+  constexpr float kTopP = 0.95f;
+  const auto shape = token_logits.shape();
+  const int vocab = static_cast<int>(shape.back());
+  if (vocab < kTopK) {
+    throw std::runtime_error("native sampling vocabulary is smaller than top-k");
+  }
+
+  array partitioned = mx::argpartition(token_logits, vocab - kTopK, -1);
+  mx::Shape start(shape.size(), 0);
+  mx::Shape end(shape);
+  start.back() = vocab - kTopK;
+  array candidate_ids = slice(partitioned, start, end);
+  array candidate_logits = astype(
+      mx::take_along_axis(token_logits, candidate_ids, -1), mx::float32);
+  array order = mx::argsort(-candidate_logits, -1);
+  candidate_ids = mx::take_along_axis(candidate_ids, order, -1);
+  candidate_logits = mx::take_along_axis(candidate_logits, order, -1);
+
+  array candidate_probs = mx::exp(
+      candidate_logits -
+      mx::logsumexp(astype(token_logits, mx::float32), -1, true));
+  array cumulative = mx::cumsum(candidate_probs, -1);
+  array keep = mx::less_equal(
+      cumulative - candidate_probs, array(kTopP, mx::float32));
+  array filtered = mx::where(
+      keep,
+      candidate_logits,
+      array(-std::numeric_limits<float>::infinity(), mx::float32));
+  array support_probs = mx::softmax(filtered, -1, true);
+  return mx::put_along_axis(
+      mx::zeros(token_logits.shape(), mx::float32),
+      candidate_ids,
+      support_probs,
       -1);
 }
 
@@ -1543,8 +2026,692 @@ int Engine::mtp_draft(int32_t bonus, int32_t* drafts, int n_draft) {
   return n_draft;
 }
 
+void Engine::load_dflash2(
+    const std::unordered_map<std::string, array>& weights) {
+  constexpr size_t kTensorCount = 175;
+  constexpr int kHiddenSize = 5120;
+  constexpr int kIntermediateSize = 17408;
+  constexpr int kDraftLayers = 5;
+  constexpr int kDraftHeads = 32;
+  constexpr int kDraftKvHeads = 8;
+  constexpr int kHeadDim = 128;
+  constexpr int kSelectorRank = 256;
+  constexpr int kDynamicWidth = 1280;
+  if (weights.size() != kTensorCount) {
+    throw std::runtime_error(
+        "DFlash2 checkpoint contains " + std::to_string(weights.size()) +
+        " tensors; expected " + std::to_string(kTensorCount));
+  }
+  if (cfg_.hidden_size != kHiddenSize || cfg_.num_hidden_layers != 64 ||
+      cfg_.vocab_size != 248320) {
+    throw std::runtime_error(
+        "Qwen3.8-27B DFlash2 requires target shape 64x5120x248320");
+  }
+
+  const auto dense = [this, &weights](
+                         const std::string& name,
+                         const mx::Shape& shape) -> array {
+    array value = require(weights, name);
+    if (value.shape() != shape || value.dtype() != mx::bfloat16) {
+      throw std::runtime_error("invalid DFlash2 tensor " + name);
+    }
+    return value;
+  };
+  const auto linear = [this, &weights](
+                          const std::string& prefix,
+                          int output_features,
+                          int input_features) -> QLinear {
+    QLinear value = load_qlinear(weights, prefix);
+    if (value.bits != 4 || value.group_size != 64 ||
+        value.w.dtype() != mx::uint32 ||
+        value.scales.dtype() != mx::bfloat16 ||
+        value.biases.dtype() != mx::bfloat16 ||
+        value.w.shape()[0] != output_features ||
+        value.scales.shape()[0] != output_features ||
+        value.scales.shape().back() * value.group_size != input_features) {
+      throw std::runtime_error("invalid DFlash2 affine linear " + prefix);
+    }
+    return value;
+  };
+
+  dflash_fc_ = linear("fc", kHiddenSize, kDraftLayers * kHiddenSize);
+  dflash_hidden_norm_ =
+      dense("hidden_norm.weight", {kHiddenSize});
+  dflash_norm_ = dense("norm.weight", {kHiddenSize});
+  dflash_selector_hidden_ = linear(
+      "candidate_selector.hidden_projection", kSelectorRank, kHiddenSize);
+  dflash_predecessor_ = dense(
+      "candidate_selector.predecessor_codebook",
+      {cfg_.vocab_size, kSelectorRank});
+  dflash_successor_ = dense(
+      "candidate_selector.successor_codebook",
+      {cfg_.vocab_size, kSelectorRank});
+
+  dflash_layers_.clear();
+  dflash_layers_.resize(kDraftLayers);
+  for (int index = 0; index < kDraftLayers; ++index) {
+    DFlashLayer& layer = dflash_layers_[static_cast<size_t>(index)];
+    const std::string prefix = "layers." + std::to_string(index);
+    layer.input_norm =
+        dense(prefix + ".input_layernorm.weight", {kHiddenSize});
+    layer.post_norm =
+        dense(prefix + ".post_attention_layernorm.weight", {kHiddenSize});
+    layer.gate_proj =
+        linear(prefix + ".mlp.gate_proj", kIntermediateSize, kHiddenSize);
+    layer.up_proj =
+        linear(prefix + ".mlp.up_proj", kIntermediateSize, kHiddenSize);
+    layer.down_proj =
+        linear(prefix + ".mlp.down_proj", kHiddenSize, kIntermediateSize);
+    layer.attn.q_proj =
+        linear(prefix + ".self_attn.q_proj", kDraftHeads * kHeadDim, kHiddenSize);
+    layer.attn.k_proj = linear(
+        prefix + ".self_attn.k_proj", kDraftKvHeads * kHeadDim, kHiddenSize);
+    layer.attn.v_proj = linear(
+        prefix + ".self_attn.v_proj", kDraftKvHeads * kHeadDim, kHiddenSize);
+    layer.attn.o_proj = linear(
+        prefix + ".self_attn.o_proj", kHiddenSize, kDraftHeads * kHeadDim);
+    layer.attn.q_norm =
+        dense(prefix + ".self_attn.q_norm.weight", {kHeadDim});
+    layer.attn.k_norm =
+        dense(prefix + ".self_attn.k_norm.weight", {kHeadDim});
+    layer.attention_conv.base_kernel = dense(
+        prefix + ".attention_conv.base_kernel", {2, 2, kHiddenSize});
+    layer.attention_conv.kernel_projection = linear(
+        prefix + ".attention_conv.kernel_projection",
+        kDynamicWidth,
+        kHiddenSize);
+    layer.mlp_conv.base_kernel = dense(
+        prefix + ".mlp_conv.base_kernel", {2, 2, kHiddenSize});
+    layer.mlp_conv.kernel_projection = linear(
+        prefix + ".mlp_conv.kernel_projection", kDynamicWidth, kHiddenSize);
+  }
+
+  mtp_valid_ = false;
+  dflash_valid_ = true;
+  dflash_reset();
+}
+
+void Engine::dflash_reset() {
+  dflash_context_offset_ = 0;
+  for (DFlashLayer& layer : dflash_layers_) {
+    layer.attn.keys = array(0);
+    layer.attn.values = array(0);
+    layer.attn.positions = array(0);
+    layer.attn.cache_length = 0;
+  }
+}
+
+void Engine::dflash_append_layer_context(
+    DFlashAttention& attn,
+    const array& projected,
+    int position_offset) {
+  constexpr int kKvHeads = 8;
+  constexpr int kHeadDim = 128;
+  constexpr int kSinkSize = 64;
+  constexpr int kWindowSize = 2048;
+  const int batch = static_cast<int>(projected.shape()[0]);
+  const int length = static_cast<int>(projected.shape()[1]);
+  if (length <= 0) {
+    return;
+  }
+
+  array keys = reshape(
+      attn.k_proj(projected), {batch, length, kKvHeads, kHeadDim});
+  keys = mx::fast::rms_norm(keys, attn.k_norm, 1e-6f);
+  keys = transpose(keys, {0, 2, 1, 3});
+  keys = mx::fast::rope(
+      keys,
+      kHeadDim,
+      /*traditional=*/false,
+      10000000.0f,
+      1.0f,
+      position_offset);
+  array values = transpose(
+      reshape(
+          attn.v_proj(projected),
+          {batch, length, kKvHeads, kHeadDim}),
+      {0, 2, 1, 3});
+  array positions = mx::arange(
+      position_offset, position_offset + length, mx::int32);
+
+  if (attn.cache_length == 0) {
+    attn.keys = keys;
+    attn.values = values;
+    attn.positions = positions;
+    attn.cache_length = length;
+  } else {
+    attn.keys = concatenate({attn.keys, keys}, 2);
+    attn.values = concatenate({attn.values, values}, 2);
+    attn.positions = concatenate({attn.positions, positions}, 0);
+    attn.cache_length += length;
+  }
+
+  const int maximum = kSinkSize + kWindowSize;
+  if (attn.cache_length > maximum) {
+    const int tail_start = attn.cache_length - kWindowSize;
+    array sink_keys = slice(
+        attn.keys, {0, 0, 0, 0}, {batch, kKvHeads, kSinkSize, kHeadDim});
+    array tail_keys = slice(
+        attn.keys,
+        {0, 0, tail_start, 0},
+        {batch, kKvHeads, attn.cache_length, kHeadDim});
+    array sink_values = slice(
+        attn.values, {0, 0, 0, 0}, {batch, kKvHeads, kSinkSize, kHeadDim});
+    array tail_values = slice(
+        attn.values,
+        {0, 0, tail_start, 0},
+        {batch, kKvHeads, attn.cache_length, kHeadDim});
+    array sink_positions =
+        slice(attn.positions, {0}, {kSinkSize});
+    array tail_positions = slice(
+        attn.positions, {tail_start}, {attn.cache_length});
+    attn.keys = concatenate({sink_keys, tail_keys}, 2);
+    attn.values = concatenate({sink_values, tail_values}, 2);
+    attn.positions = concatenate({sink_positions, tail_positions}, 0);
+    attn.cache_length = maximum;
+  }
+  async_eval(attn.keys, attn.values, attn.positions);
+}
+
+void Engine::dflash_append_context(
+    const std::vector<array>& captured, int token_count) {
+  constexpr int kSinkSize = 64;
+  constexpr int kWindowSize = 2048;
+  if (captured.size() != 5 || token_count <= 0) {
+    throw std::runtime_error("invalid DFlash2 target context capture");
+  }
+  const int available = static_cast<int>(captured.front().shape()[1]);
+  if (token_count > available) {
+    throw std::runtime_error("DFlash2 committed context exceeds target capture");
+  }
+  for (const array& value : captured) {
+    if (value.ndim() != 3 || value.shape()[0] != 1 ||
+        value.shape()[1] != available || value.shape()[2] != cfg_.hidden_size) {
+      throw std::runtime_error("inconsistent DFlash2 target capture shape");
+    }
+  }
+
+  std::vector<std::pair<int, int>> spans;
+  const bool empty = dflash_layers_.front().attn.cache_length == 0;
+  if (empty && token_count > kSinkSize + kWindowSize) {
+    spans.emplace_back(0, kSinkSize);
+    spans.emplace_back(token_count - kWindowSize, token_count);
+  } else if (!empty && token_count > kWindowSize) {
+    spans.emplace_back(token_count - kWindowSize, token_count);
+  } else {
+    spans.emplace_back(0, token_count);
+  }
+
+  for (const auto& [start, end] : spans) {
+    std::vector<array> selected;
+    selected.reserve(captured.size());
+    for (const array& value : captured) {
+      selected.push_back(slice(
+          value,
+          {0, start, 0},
+          {1, end, cfg_.hidden_size}));
+    }
+    array projected = mx::fast::rms_norm(
+        dflash_fc_(concatenate(selected, -1)),
+        dflash_hidden_norm_,
+        cfg_.rms_norm_eps);
+    for (DFlashLayer& layer : dflash_layers_) {
+      dflash_append_layer_context(
+          layer.attn, projected, dflash_context_offset_ + start);
+    }
+  }
+  dflash_context_offset_ += token_count;
+}
+
+array Engine::dflash_grouped_convolve(
+    const array& hidden, const array& dynamic, const array& base) const {
+  constexpr int kGroupSize = 16;
+  const int batch = static_cast<int>(hidden.shape()[0]);
+  const int length = static_cast<int>(hidden.shape()[1]);
+  const int hidden_size = static_cast<int>(hidden.shape()[2]);
+  const int groups = hidden_size / kGroupSize;
+  array blocks = reshape(
+      hidden, {batch, length, groups, kGroupSize});
+  array output = mx::zeros(blocks.shape(), hidden.dtype());
+  for (int offset = 0; offset < 2; ++offset) {
+    array values = blocks;
+    if (offset != 0) {
+      array leading =
+          mx::zeros({batch, offset, groups, kGroupSize}, hidden.dtype());
+      array preceding = slice(
+          blocks,
+          {0, 0, 0, 0},
+          {batch, length - offset, groups, kGroupSize});
+      values = concatenate({leading, preceding}, 1);
+    }
+    array kernel = reshape(
+        astype(take(base, offset, 0), hidden.dtype()),
+        {1, 1, groups, kGroupSize});
+    array dynamic_offset = expand_dims(take(dynamic, offset, 2), -1);
+    output = output + (kernel + dynamic_offset) * values;
+  }
+  return reshape(output, hidden.shape());
+}
+
+std::pair<array, array> Engine::dflash_conv_prepare(
+    const DFlashDynamicConv& conv, const array& hidden) const {
+  constexpr int kGroupSize = 16;
+  const int batch = static_cast<int>(hidden.shape()[0]);
+  const int length = static_cast<int>(hidden.shape()[1]);
+  const int groups = static_cast<int>(hidden.shape()[2]) / kGroupSize;
+  array dynamic = reshape(
+      conv.kernel_projection(hidden), {batch, length, 2, 2, groups});
+  array prepared = dflash_grouped_convolve(
+      hidden, take(dynamic, 0, 2), take(conv.base_kernel, 0, 0));
+  return {prepared, take(dynamic, 1, 2)};
+}
+
+array Engine::dflash_conv_finish(
+    const DFlashDynamicConv& conv,
+    const array& hidden,
+    const array& dynamic) const {
+  return dflash_grouped_convolve(
+      hidden, dynamic, take(conv.base_kernel, 1, 0));
+}
+
+array Engine::dflash_attention(
+    DFlashAttention& attn, const array& hidden) {
+  constexpr int kHeads = 32;
+  constexpr int kKvHeads = 8;
+  constexpr int kHeadDim = 128;
+  constexpr int kSlidingWindow = 2048;
+  const int batch = static_cast<int>(hidden.shape()[0]);
+  const int length = static_cast<int>(hidden.shape()[1]);
+  if (attn.cache_length <= 0) {
+    throw std::runtime_error("DFlash2 draft context cache is empty");
+  }
+
+  array queries = reshape(
+      attn.q_proj(hidden), {batch, length, kHeads, kHeadDim});
+  queries = mx::fast::rms_norm(queries, attn.q_norm, 1e-6f);
+  queries = transpose(queries, {0, 2, 1, 3});
+  queries = mx::fast::rope(
+      queries,
+      kHeadDim,
+      /*traditional=*/false,
+      10000000.0f,
+      1.0f,
+      dflash_context_offset_);
+
+  array noise_keys = reshape(
+      attn.k_proj(hidden), {batch, length, kKvHeads, kHeadDim});
+  noise_keys = mx::fast::rms_norm(noise_keys, attn.k_norm, 1e-6f);
+  noise_keys = transpose(noise_keys, {0, 2, 1, 3});
+  noise_keys = mx::fast::rope(
+      noise_keys,
+      kHeadDim,
+      /*traditional=*/false,
+      10000000.0f,
+      1.0f,
+      dflash_context_offset_);
+  array noise_values = transpose(
+      reshape(
+          attn.v_proj(hidden),
+          {batch, length, kKvHeads, kHeadDim}),
+      {0, 2, 1, 3});
+
+  array keys = concatenate({attn.keys, noise_keys}, 2);
+  array values = concatenate({attn.values, noise_values}, 2);
+  array block_positions = mx::arange(
+      dflash_context_offset_,
+      dflash_context_offset_ + length,
+      mx::int32);
+  array key_positions = concatenate({attn.positions, block_positions}, 0);
+  array query_grid = expand_dims(block_positions, 1);
+  array key_grid = expand_dims(key_positions, 0);
+  array context_mask = mx::logical_and(
+      mx::less(key_grid, array(dflash_context_offset_, mx::int32)),
+      mx::less(query_grid - key_grid, array(kSlidingWindow, mx::int32)));
+  array block_mask =
+      mx::greater_equal(key_grid, array(dflash_context_offset_, mx::int32));
+  array mask = mx::logical_or(context_mask, block_mask);
+
+  array output = mx::fast::scaled_dot_product_attention(
+      queries,
+      keys,
+      values,
+      1.0f / std::sqrt(static_cast<float>(kHeadDim)),
+      "",
+      mask);
+  output = reshape(
+      transpose(output, {0, 2, 1, 3}),
+      {batch, length, kHeads * kHeadDim});
+  return attn.o_proj(output);
+}
+
+array Engine::dflash_forward(int32_t anchor) {
+  constexpr int kBlockSize = 8;
+  constexpr int32_t kMaskToken = 248070;
+  int32_t tokens[kBlockSize];
+  tokens[0] = anchor;
+  std::fill(tokens + 1, tokens + kBlockSize, kMaskToken);
+  array ids(tokens, {1, kBlockSize}, mx::int32);
+  array hidden = embed(ids);
+  for (DFlashLayer& layer : dflash_layers_) {
+    array residual = hidden;
+    auto attention_prepared = dflash_conv_prepare(
+        layer.attention_conv,
+        mx::fast::rms_norm(
+            hidden, layer.input_norm, cfg_.rms_norm_eps));
+    array attention_output = dflash_attention(
+        layer.attn, attention_prepared.first);
+    hidden = residual + dflash_conv_finish(
+        layer.attention_conv,
+        attention_output,
+        attention_prepared.second);
+
+    residual = hidden;
+    auto mlp_prepared = dflash_conv_prepare(
+        layer.mlp_conv,
+        mx::fast::rms_norm(
+            hidden, layer.post_norm, cfg_.rms_norm_eps));
+    array mlp_output = layer.down_proj(
+        silu(layer.gate_proj(mlp_prepared.first)) *
+        layer.up_proj(mlp_prepared.first));
+    hidden = residual + dflash_conv_finish(
+        layer.mlp_conv, mlp_output, mlp_prepared.second);
+  }
+  hidden = mx::fast::rms_norm(
+      hidden, dflash_norm_, cfg_.rms_norm_eps);
+  return slice(
+      hidden, {0, 1, 0}, {1, kBlockSize, cfg_.hidden_size});
+}
+
+std::tuple<array, array, array> Engine::dflash_select(
+    const array& hidden, const array& draft_logits, int32_t anchor) {
+  constexpr int kTopK = 16;
+  constexpr int kSelectorRank = 256;
+  const int length = static_cast<int>(hidden.shape()[1]);
+  const int vocab = static_cast<int>(draft_logits.shape()[2]);
+  array partitioned = mx::argpartition(draft_logits, vocab - kTopK, -1);
+  array candidates = slice(
+      partitioned, {0, 0, vocab - kTopK}, {1, length, vocab});
+  array unary = mx::take_along_axis(draft_logits, candidates, -1);
+  array projected = dflash_selector_hidden_(hidden);
+  array predecessor(&anchor, {1}, mx::int32);
+  std::vector<array> path;
+  std::vector<array> probabilities;
+  path.reserve(static_cast<size_t>(length));
+  probabilities.reserve(static_cast<size_t>(length));
+  for (int position = 0; position < length; ++position) {
+    array ids = reshape(
+        slice(
+            candidates,
+            {0, position, 0},
+            {1, position + 1, kTopK}),
+        {1, kTopK});
+    array unary_row = reshape(
+        slice(
+            unary,
+            {0, position, 0},
+            {1, position + 1, kTopK}),
+        {1, kTopK});
+    array hidden_row = reshape(
+        slice(
+            projected,
+            {0, position, 0},
+            {1, position + 1, kSelectorRank}),
+        {1, kSelectorRank});
+    array predecessor_embedding = take(
+        dflash_predecessor_, predecessor, 0);
+    array successor_embedding = take(dflash_successor_, ids, 0);
+    array edges = sum(
+        expand_dims(predecessor_embedding * hidden_row, 1) *
+            successor_embedding,
+        -1);
+    array scores = astype(unary_row, mx::float32) +
+        astype(edges, mx::float32);
+    array probs = mx::softmax(scores, -1, true);
+    array selected = mx::random::categorical(mx::log(probs), -1);
+    predecessor = squeeze(
+        mx::take_along_axis(ids, expand_dims(selected, -1), -1), -1);
+    path.push_back(predecessor);
+    probabilities.push_back(probs);
+  }
+  return {
+      astype(mx::stack(path, 1), mx::int32),
+      astype(candidates, mx::int32),
+      mx::stack(probabilities, 1)};
+}
+
+void Engine::dflash_commit_verified_prefix(
+    const TargetForward& verified, int token_count) {
+  if (token_count <= 0 || verified.hidden.ndim() != 3 ||
+      token_count > verified.hidden.shape()[1] ||
+      verified.linear_tapes.size() != layers_.size() ||
+      snap_.size() != layers_.size()) {
+    throw std::runtime_error("invalid DFlash2 verified-prefix commit");
+  }
+
+  std::vector<array> committed_states;
+  committed_states.reserve(layers_.size() * 2);
+  for (size_t index = 0; index < layers_.size(); ++index) {
+    DecoderLayer& layer = layers_[index];
+    const LayerSnap& snapshot_state = snap_[index];
+    if (layer.is_linear) {
+      const LinearCommitTape& tape = verified.linear_tapes[index];
+      if (!snapshot_state.has_state || !tape.valid ||
+          snapshot_state.conv.ndim() != 3 ||
+          tape.conv_tokens.ndim() != 3 ||
+          snapshot_state.conv.shape()[0] != tape.conv_tokens.shape()[0] ||
+          snapshot_state.conv.shape()[2] != tape.conv_tokens.shape()[2] ||
+          token_count > tape.conv_tokens.shape()[1]) {
+        throw std::runtime_error("invalid DFlash2 linear commit tape");
+      }
+      const int batch = static_cast<int>(snapshot_state.conv.shape()[0]);
+      const int window = static_cast<int>(snapshot_state.conv.shape()[1]);
+      const int width = static_cast<int>(snapshot_state.conv.shape()[2]);
+      array committed_tokens = slice(
+          tape.conv_tokens,
+          {0, 0, 0},
+          {batch, token_count, width});
+      array combined = concatenate(
+          {snapshot_state.conv, committed_tokens}, 1);
+      layer.linear.conv_state = slice(
+          combined,
+          {0, token_count, 0},
+          {batch, token_count + window, width});
+      layer.linear.rec_state = gated_delta_commit(
+          tape.keys,
+          tape.decay,
+          tape.delta,
+          snapshot_state.rec,
+          token_count);
+      layer.linear.has_state = true;
+      committed_states.push_back(layer.linear.conv_state);
+      committed_states.push_back(layer.linear.rec_state);
+      continue;
+    }
+
+    const int committed_length = snapshot_state.cache_length + token_count;
+    if (layer.attn.cache_length < committed_length ||
+        layer.attn.offset < snapshot_state.offset + token_count) {
+      throw std::runtime_error("invalid DFlash2 attention commit state");
+    }
+    layer.attn.cache_length = committed_length;
+    layer.attn.offset = snapshot_state.offset + token_count;
+  }
+
+  const int hidden_size = static_cast<int>(verified.hidden.shape()[2]);
+  last_hidden_ = reshape(
+      slice(
+          verified.hidden,
+          {0, token_count - 1, 0},
+          {1, token_count, hidden_size}),
+      {1, hidden_size});
+  dflash_append_context(verified.captured, token_count);
+  async_eval(std::move(committed_states));
+}
+
+void Engine::dflash_spec_refill(int32_t token) {
+  constexpr int kDraftTokens = 7;
+  const bool trace = native_spec_trace_enabled();
+  const auto started = std::chrono::steady_clock::now();
+  auto draft_done = started;
+  auto verify_done = started;
+  auto sample_done = started;
+  spec_buf_n_ = 0;
+  spec_buf_pos_ = 0;
+  decode_scheduled_ = false;
+
+  if (reasoning_open_ && max_reasoning_tokens_ > 0 &&
+      selected_reasoning_tokens_ + kDraftTokens + 1 >=
+          max_reasoning_tokens_) {
+    int32_t input[1] = {token};
+    TargetForward target = forward_hidden_captured(
+        array(input, {1, 1}, mx::int32));
+    last_hidden_ = last_token(target.hidden);
+    dflash_append_context(target.captured, 1);
+    array next = select_token(target.hidden);
+    eval(next);
+    spec_buf_[0] = next.item<int32_t>();
+    spec_buf_n_ = 1;
+    return;
+  }
+
+  array draft_hidden = dflash_forward(token);
+  array draft_logits = lm_head_(draft_hidden);
+  auto [draft_tokens, draft_indices, draft_probs] =
+      dflash_select(draft_hidden, draft_logits, token);
+  eval(draft_tokens, draft_indices, draft_probs);
+  draft_done = std::chrono::steady_clock::now();
+  const int32_t* const drafted = draft_tokens.data<int32_t>();
+  int32_t input[kDraftTokens + 1];
+  input[0] = token;
+  for (int index = 0; index < kDraftTokens; ++index) {
+    input[index + 1] = drafted[index];
+  }
+
+  snapshot();
+  const bool tape_commit = native_dflash_tape_commit_enabled();
+  TargetForward verified = forward_hidden_captured(
+      array(input, {1, kDraftTokens + 1}, mx::int32), tape_commit);
+  last_hidden_ = last_token(verified.hidden);
+  array target_probs = sampling_probabilities(logits(verified.hidden));
+  array proposal = reshape(draft_tokens, {1, kDraftTokens});
+  array proposal_column = expand_dims(proposal, -1);
+  array target_rows = slice(
+      target_probs,
+      {0, 0, 0},
+      {1, kDraftTokens, cfg_.vocab_size});
+  array p = squeeze(
+      mx::take_along_axis(target_rows, proposal_column, -1), -1);
+  array q = sum(
+      draft_probs * mx::equal(draft_indices, proposal_column), -1);
+  array accepted_flags = astype(
+      mx::less(
+          mx::random::uniform(q.shape(), mx::float32) * q,
+          p),
+      mx::int32);
+  array accepted_array = sum(mx::cumprod(accepted_flags, -1), -1);
+  eval(accepted_array);
+  verify_done = std::chrono::steady_clock::now();
+  int accepted = accepted_array.item<int32_t>();
+  accepted = std::clamp(accepted, 0, kDraftTokens);
+
+  array next_probs(0);
+  if (accepted == kDraftTokens) {
+    next_probs = reshape(
+        slice(
+            target_probs,
+            {0, kDraftTokens, 0},
+            {1, kDraftTokens + 1, cfg_.vocab_size}),
+        {1, cfg_.vocab_size});
+  } else {
+    array target_row = reshape(
+        slice(
+            target_probs,
+            {0, accepted, 0},
+            {1, accepted + 1, cfg_.vocab_size}),
+        {1, cfg_.vocab_size});
+    array indices = reshape(
+        slice(
+            draft_indices,
+            {0, accepted, 0},
+            {1, accepted + 1, 16}),
+        {1, 16});
+    array proposal_values = reshape(
+        slice(
+            draft_probs,
+            {0, accepted, 0},
+            {1, accepted + 1, 16}),
+        {1, 16});
+    array residual_values =
+        mx::take_along_axis(target_row, indices, -1) - proposal_values;
+    array residual = mx::put_along_axis(
+        target_row, indices, residual_values, -1);
+    residual = mx::maximum(residual, array(0.0f, mx::float32));
+    array total = sum(residual, -1, true);
+    next_probs = mx::where(
+        mx::greater(total, array(0.0f, mx::float32)),
+        residual / mx::maximum(total, array(1e-30f, mx::float32)),
+        target_row);
+  }
+  array next = astype(
+      mx::random::categorical(mx::log(next_probs), -1), mx::int32);
+  eval(next);
+  sample_done = std::chrono::steady_clock::now();
+
+  if (accepted < kDraftTokens) {
+    if (tape_commit) {
+      dflash_commit_verified_prefix(verified, accepted + 1);
+    } else {
+      restore();
+      TargetForward committed = forward_hidden_captured(
+          array(input, {1, accepted + 1}, mx::int32));
+      last_hidden_ = last_token(committed.hidden);
+      dflash_append_context(committed.captured, accepted + 1);
+    }
+  } else {
+    dflash_append_context(verified.captured, kDraftTokens + 1);
+  }
+
+  for (int index = 0; index < accepted; ++index) {
+    spec_buf_[index] = drafted[index];
+  }
+  spec_buf_[accepted] = next.item<int32_t>();
+  spec_buf_n_ = accepted + 1;
+
+  if (reasoning_open_) {
+    for (int index = 0; index < spec_buf_n_; ++index) {
+      if (spec_buf_[index] == 248069) {
+        reasoning_open_ = false;
+        break;
+      }
+      ++selected_reasoning_tokens_;
+    }
+  }
+  if (trace) {
+    mx::synchronize();
+    const auto finished = std::chrono::steady_clock::now();
+    const auto elapsed_ms = [](auto begin, auto end) {
+      return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+    std::fprintf(
+        stderr,
+        "qwen38_dflash accepted=%d width=%d draft_ms=%.3f verify_ms=%.3f "
+        "sample_ms=%.3f commit_ms=%.3f total_ms=%.3f\n",
+        accepted,
+        spec_buf_n_,
+        elapsed_ms(started, draft_done),
+        elapsed_ms(draft_done, verify_done),
+        elapsed_ms(verify_done, sample_done),
+        elapsed_ms(sample_done, finished),
+        elapsed_ms(started, finished));
+  }
+}
+
 void Engine::spec_refill(int32_t token) {
   if (spec_buf_pos_ < spec_buf_n_ && token == last_emitted_) {
+    return;
+  }
+  if (dflash_valid_) {
+    dflash_spec_refill(token);
     return;
   }
   spec_buf_n_ = 0;
@@ -1601,6 +2768,10 @@ void Engine::load_mtp(const std::string& mtp_dir) {
   if (weights.empty()) {
     throw std::runtime_error("no MTP safetensors in " + mtp_dir);
   }
+  if (weights.contains("candidate_selector.predecessor_codebook")) {
+    load_dflash2(weights);
+    return;
+  }
   mtp_fc_ = load_qlinear(weights, "fc");
   mtp_pre_emb_ = require(weights, "pre_fc_norm_embedding.weight");
   mtp_pre_hid_ = require(weights, "pre_fc_norm_hidden.weight");
@@ -1618,6 +2789,7 @@ void Engine::load_mtp(const std::string& mtp_dir) {
   mtp_layer_.attn.q_norm = require(weights, "layers.0.self_attn.q_norm.weight");
   mtp_layer_.attn.k_norm = require(weights, "layers.0.self_attn.k_norm.weight");
   mtp_block_ = 3;
+  dflash_valid_ = false;
   mtp_valid_ = true;
   mtp_reset();
 }
@@ -1635,6 +2807,10 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
   if (n <= 0) {
     throw std::runtime_error("prefill requires at least one token");
   }
+  if (has_mtp() && schedule_decode) {
+    throw std::runtime_error(
+        "speculative prefill requires schedule_decode=false");
+  }
 
   const int32_t* new_tokens = tokens;
   int new_token_count = n;
@@ -1651,7 +2827,7 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
     const std::size_t common_prefix =
         static_cast<std::size_t>(mismatch.first - token_history_.begin());
     const bool can_reuse_current =
-        !mtp_valid_ && token_history_.size() < size_t(n) &&
+        !has_mtp() && token_history_.size() < size_t(n) &&
         std::equal(token_history_.begin(), token_history_.end(), tokens);
     const std::size_t snapshot_compare_count =
         std::min(prompt_snapshot_history_.size(), static_cast<std::size_t>(n));
@@ -1663,7 +2839,7 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
     const std::size_t snapshot_common = static_cast<std::size_t>(
         snapshot_mismatch.first - prompt_snapshot_history_.begin());
     const bool can_reuse_snapshot =
-        !can_reuse_current && !mtp_valid_ && prompt_snapshot_valid_ &&
+        !can_reuse_current && !has_mtp() && prompt_snapshot_valid_ &&
         prompt_snapshot_history_.size() < size_t(n) &&
         std::equal(
             prompt_snapshot_history_.begin(), prompt_snapshot_history_.end(),
@@ -1677,7 +2853,7 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
           token_history_.size(), n, common_prefix,
           prompt_snapshot_history_.size(), snapshot_common,
           can_reuse_current ? 1 : 0, can_reuse_snapshot ? 1 : 0,
-          mtp_valid_ ? 1 : 0);
+          has_mtp() ? 1 : 0);
     }
     if (can_reuse_current) {
       new_tokens += token_history_.size();
@@ -1717,9 +2893,25 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
 
   token_history_.insert(
       token_history_.end(), new_tokens, new_tokens + new_token_count);
-  array ids(new_tokens, {1, new_token_count}, mx::int32);
-  array hidden = forward_hidden(ids);
-  if (!mtp_valid_) {
+  array hidden(0);
+  if (dflash_valid_) {
+    constexpr int kDFlashPrefillChunkSize = 2048;
+    for (int offset = 0; offset < new_token_count;
+         offset += kDFlashPrefillChunkSize) {
+      const int chunk_size = std::min(
+          kDFlashPrefillChunkSize, new_token_count - offset);
+      array chunk_ids(
+          new_tokens + offset, {1, chunk_size}, mx::int32);
+      TargetForward target = forward_hidden_captured(chunk_ids);
+      hidden = target.hidden;
+      dflash_append_context(target.captured, chunk_size);
+      mx::synchronize();
+    }
+  } else {
+    array ids(new_tokens, {1, new_token_count}, mx::int32);
+    hidden = forward_hidden(ids);
+  }
+  if (!has_mtp()) {
     snapshot();
     prompt_snapshot_history_ = token_history_;
     prompt_snapshot_valid_ = true;
@@ -1743,7 +2935,7 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
 }
 
 int32_t Engine::decode(int32_t token) {
-  if (mtp_valid_) {
+  if (has_mtp()) {
     if (spec_buf_pos_ >= spec_buf_n_ || token != last_emitted_) {
       spec_refill(token);
     }
