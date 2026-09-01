@@ -1024,6 +1024,22 @@ code changes, or process state matter.
   extra language tensors, and zero bit-width inference errors. A fresh Metal
   session is the remaining boundary before direct throughput measurement.
 
+### Shader attribution selects a stock-exact Q4 cohort and reaches 19.24 tok/s
+
+- A selected-A100 Metal System Trace maps 48,156 target-process GPU PCs.
+  Stock affine-Q4 QMV owns **43.546%**, custom affine-Q5 QMV owns
+  **48.613%**, and all QMV owns **92.159%** of mapped execution.
+- A new Q4/G64 batch-one kernel preserves official MLX v0.32.2's helper and
+  FP32 expression structure while doubling the output cohort from eight to
+  sixteen rows. K/N `512/64`, `5120/128`, and `5120/17408` are bit-exact
+  against stock MLX. A faster hand-inlined form is rejected because small
+  BF16 differences change the seeded target trajectory.
+- Two independent balanced five-versus-five windows improve paired A100-only
+  **19.113936088 -> 19.241981332 tok/s**, **+0.669905%**, with the canonical
+  digest and last token in all 20 qualified runs. The direct gap is now
+  **0.758018668 tok/s / 3.939400%**; exact 131K serving and Codex `xhigh`
+  remain gated on clearing 20 with margin.
+
 ### 03:07–06:18 — DSpark-v2 crosses 150 tok/s and becomes the Windows default
 
 - The trained Qwen3.8-27B DSpark-v2 draft was integrated with online-FP8
