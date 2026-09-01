@@ -267,6 +267,18 @@ a fused native FP8 attention owner owns long-history decode without FP32 K/V
 materialization. The sustained 20 tok/s admission window and Codex `xhigh`
 work gate remain due.
 
+A native affine-Q5 route now supersedes the GGUF lane as the throughput
+candidate. The immutable text-only group-64 five-bit checkpoint at revision
+`2568951b893b6427d0a8eb91cc7f4307154c2f05` contains 498 U32 packed and
+1,349 BF16 tensors with no vision tensors. Its four model shards verify against
+their SHA-256-addressed Hub blobs. The existing compiled engine loads it
+directly and reaches **16.322505765 tok/s** on sampled direct
+`128 / 32 warm / 128 timed`, **2.248x** the GGUF Q5 1K-FP8 mean. Exact served
+131K, reasoning/tools, and Codex gates remain pending. The unchanged selected
+DFlash controls regress to **11.506669050 tok/s** because five-bit M=8 target
+verification falls through to generic MLX QMM. Native five-bit K-split
+verification is the active kernel branch.
+
 The unchanged Q5_K_M artifact is closed on this loader because mixed merged
 weights contain Q8_0 shards unsupported by the native Metal merge path. The
 unchanged Q5_K_S artifact loads its 20.00 GB weights and then reaches the

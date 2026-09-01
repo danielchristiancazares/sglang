@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max Qwen3.8-27B affine-Q5/G64 native target, sampled direct `128 / 32 warm / 128 timed` | GGUF Q5 1K-FP8 five-run mean **7.2614 tok/s** | first native affine-Q5 sample **16.322505765 tok/s** | **+9.061105765 tok/s / +124.781%**; immutable 18.51 GB five-bit target loads without source changes; served 131K and behavior gates pending | `bench_qwen38_native` with native sampling seed 42 and the pinned affine-Q5 snapshot | 2026-09-01 11:43 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S, Q4_K token embedding, exact 131K FP8 KV pool, sampled served `128+32` | same-artifact BF16: **0.315 tok/s**, **5.616 prompt tok/s**, **22.790664 s TTFT**, **121.240667 s E2E** | FP8 five-run mean **3.237 tok/s**, **5.8974 prompt tok/s**, **21.705304 s TTFT**, **31.286811 s E2E** | cache **8.00 -> 4.00 GB**, reported headroom **0.99 -> 6.99 GB**; **10.276x / +927.619%** generation; exact capacity, reasoning, arithmetic, and tools pass | exact PERF-A090 server contract; five cache-flushed ordinary sampled requests | 2026-09-01 11:29 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S, Q4_K token embedding, 1K FP8 KV pool, sampled served `128+32` | same-artifact BF16 smoke: **7.086 tok/s**, **5.809 prompt tok/s**, **22.033405 s TTFT**, **26.408174 s E2E** | native FP8 five-run mean **7.2614 tok/s**, **5.8668 prompt tok/s**, **21.818682 s TTFT**, **26.087973 s E2E** | first native FP8 capacity lane; **+0.1754 tok/s / +2.475%** versus the prior same-artifact smoke; exact lengths, reasoning, arithmetic, and tools pass | PERF-A089 server contract; five cache-flushed ordinary sampled requests | 2026-09-01 11:17 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S, Q4_K token embedding, exact 131K BF16 pool, sampled served `128+32` | F16 token embedding: **0.102 tok/s**, **5.271 prompt tok/s**, **24.284058 s TTFT**, **329.689187 s E2E** | Q4_K token embedding: **0.315 tok/s**, **5.616 prompt tok/s**, **22.790664 s TTFT**, **121.240667 s E2E** | runtime residency **21.37 -> 20.00 GB**; **3.088235x / +208.824%** generation; exact capacity, reasoning, arithmetic, and tools pass; paging remains active | exact PERF-A088 server contract, changing only model artifact; ordinary sampled client with `--skip-warmup` | 2026-09-01 10:55 PDT |
@@ -825,6 +826,7 @@ tree throughput can be ranked for production.
 | PERF-A088 | Reduce the only transformed Q5 artifact tensor while preserving the Q5_K_S body. | Pinned llama.cpp COPY conversion of `token_embd.weight` Q5_K to Q4_K, native embedding parity, behavior, and exact 131K residency | Retained smaller capacity artifact | The 19,522,020,960-byte artifact preserves 865 source tensors, loads at 20.00 GB, and leaves 0.99 GB after the exact 8.00 GB BF16 cache. Matched 131K generation improves **0.102 -> 0.315 tok/s** (**3.088235x**). A 1K smoke reaches **7.086 tok/s** and arithmetic/tools pass. |
 | PERF-A089 | Supply the missing MPS E4M3FN value conversion while preserving SGLang's byte-backed generic KV pool. | Existing native Metal extension, narrow MPS `aten::_to_copy` specialization, contiguous/strided FP32-to-FP8 and FP8-to-FP32 kernels | Retained; exact 131K qualification active | 400,006 CPU-reference encodes and all 256 raw decodes match bit-exactly; offset/strided/empty and ordinary BF16 fallback checks pass. A 1K FP8 server warms and five sampled requests average **7.2614 tok/s** with arithmetic/tools preserved. No Python source changed. |
 | PERF-A090 | Qualify the native FP8 conversion at the requested exact token pool. | Q4_K-embedding Q5 artifact, one FP32 Mamba slot, 131,072-token byte-backed FP8 K/V pool, sampled behavior | Retained exact-capacity selection; additional residency reduction active | Exact K/V allocation falls **8.00 -> 4.00 GB** and reported headroom rises **0.99 -> 6.99 GB**. Five sampled requests average **3.237 tok/s**, **10.276x** the matched BF16 result, while the full pool remains **55.42%** below the 1K FP8 mean. See PERF-FA118. |
+| PERF-A091 | Move the Q5 target onto the compiled native MLX engine with a genuine affine five-bit checkpoint. | Pinned text-only Qwen3.8-27B affine-Q5/G64 snapshot, native target loader, and sampled direct decode | Artifact retained; native five-bit verifier optimization active | Revision `2568951b...c2f05` contains 498 U32 packed tensors, 1,349 BF16 tensors, and no vision tensors. Direct `128 / 32 / 128` reaches **16.322505765 tok/s**, **2.248x** the GGUF Q5 1K-FP8 mean. The unchanged Q4-tuned DFlash path reaches only **11.506669050 tok/s** because affine-Q5 M=8 falls through the generic verifier; see PERF-FA119. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -4549,3 +4551,29 @@ tree throughput can be ranked for production.
   model-residency reduction owns the short-context throughput recovery; a
   fused native FP8 attention owner remains required for long populated
   histories where generic SDPA materializes FP32 K/V.
+
+### 2026-09-01 11:43 PDT - PERF-A091 native affine-Q5 target baseline
+
+- Downloaded the text-only affine-Q5/G64 checkpoint
+  `lukaskremla/Qwen3.8-27B-5bit-MLX-TextOnly` at immutable revision
+  `2568951b893b6427d0a8eb91cc7f4307154c2f05`. The Hub inventory is
+  **18,514,909,284 bytes**. Its four model-shard SHA-256 values are
+  `21b2bb76...317d8`, `10b2b7d8...22add`, `586db398...8314`, and
+  `47b1db6c...222dd`. Local headers expose 498 U32 packed tensors and 1,349
+  BF16 tensors, with no `vision_tower` tensors.
+- MLX 0.32.2 successfully quantized and executed an isolated affine five-bit
+  matrix before the model launch. The existing native engine inferred bit
+  width five from the checkpoint and loaded the full target without a source
+  change. A `128 / 1 warm / 16 timed` smoke reached **16.225609671 tok/s**.
+- The complete sampled direct `128 / 32 warm / 128 timed` control used seed
+  42, the 256-token reasoning cap, 128 MiB command-buffer budget, 64 SDPA
+  blocks, and internal target-only prefill chunk 2,048. It reached
+  **16.322505765 tok/s** in **7.841933208 s**, digest
+  `dba01798d97b3f4e`, and last token 15.
+- Reusing the selected Q4 DFlash controls unchanged reached only
+  **11.506669050 tok/s**, 56 refills, and mean width **2.232142857**. Trace
+  showed M=2 verification near 114 ms and M=8 verification near 363--368 ms;
+  the native M=8 K-split route currently admits only affine bits two/four, so
+  the five-bit target uses generic MLX QMM. PERF-FA119 closes that unchanged
+  composition. Next: add exact affine-five-bit unpacking to the common native
+  M=8 verifier, validate parity, and rerun fixed-cycle plus natural serving.

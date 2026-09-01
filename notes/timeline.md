@@ -962,6 +962,19 @@ code changes, or process state matter.
 
 ## 2026-09-01
 
+### Native affine-Q5 becomes the active Apple target
+
+- Pinned and downloaded the 18.51 GB text-only affine-Q5/G64 checkpoint at
+  revision `2568951b893b6427d0a8eb91cc7f4307154c2f05`; all four model shards
+  verify by SHA-256 and the tensor inventory contains no vision tower.
+- The existing compiled Qwen3.8 engine accepts five-bit affine tensors and
+  reaches **16.322505765 tok/s** on the first complete sampled direct control,
+  more than twice the selected GGUF-Q5 small-pool rate.
+- The selected Q4 DFlash policy regresses on this target because five-bit M=8
+  verification reaches generic MLX QMM. A native five-bit K-split verifier is
+  the next measured implementation branch before exact-131K serving and Codex
+  qualification.
+
 ### 03:07–06:18 — DSpark-v2 crosses 150 tok/s and becomes the Windows default
 
 - The trained Qwen3.8-27B DSpark-v2 draft was integrated with online-FP8
