@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-10:20 PDT.
+10:39 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -227,8 +227,20 @@ and warmed-four mean **7.2075**, versus the original generic-kernel baseline
 of **5.746 tok/s**. Every request preserves 32 reasoning tokens and exact
 length. The five-run prompt/TTFT/E2E means are **5.809 tok/s**,
 **22.035143 s**, and **26.362669 s**. This leaves a
-**12.8354 tok/s / 2.7915x** decode gap. The real 131K pool, sustained 20 tok/s
-admission window, and Codex `xhigh` work gate remain due.
+**12.8354 tok/s / 2.7915x** decode gap.
+
+The derived target now passes server startup, warmup, health, language-only
+metadata, and an exact request with real
+`context_length=max_total_tokens=131072`. Its BF16 attention cache occupies
+**8.00 GB** beside the **21.37 GB** model and leaves no reported allocation
+headroom. One exact sampled `128+32` diagnostic completes with preserved
+reasoning at **5.271 prompt tok/s**, **24.284058 s TTFT**, and only
+**0.102 generation tok/s / 329.689187 s E2E** while unified-memory paging is
+active. The stock `fp8_e4m3` route also stops before allocation because this
+PyTorch MPS runtime rejects float8 tensors. The active capacity work is native
+Q5_K token embedding for the immutable **19.68 GB** source, followed by a
+uint8-backed native compressed-KV owner. The sustained 20 tok/s admission
+window and Codex `xhigh` work gate remain due.
 
 The unchanged Q5_K_M artifact is closed on this loader because mixed merged
 weights contain Q8_0 shards unsupported by the native Metal merge path. The

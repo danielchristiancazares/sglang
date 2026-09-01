@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max Qwen3.8-27B Q5_K_S-derived, exact 131K BF16 pool, sampled served `128+32` | selected 1K-pool mean **7.1646 tok/s**, **5.809 prompt tok/s**, **22.035143 s TTFT** | exact 131K pool: **0.102 tok/s**, **5.271 prompt tok/s**, **24.284058 s TTFT**, **329.689187 s E2E** | exact capacity, health, language-only metadata, and reasoning pass; generation is **98.576%** slower under unified-memory paging; stock MPS float8 allocation is unsupported | exact PERF-A086 server contract; ordinary sampled client with `--skip-warmup` | 2026-09-01 10:39 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S-derived, Q6_K exact-batch-four verifier projections | matched `SGLANG_MPS_Q6_K_BATCH4_ROWS16=0`: head **29.166000 ms**, QKV **1.442333 ms** | 16-row/eight-lane cohort: head **6.121375 ms**, QKV **0.588500 ms** | **-79.012% / -59.198%** latency; sampled same-GGUF NEXTN `128+128` improves **3.3384 -> 3.7028 tok/s** (**+10.915%**) even though control acceptance is higher | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $Q5_DERIVED --tensor {output.weight,blk.0.attn_qkv.weight} --batch-size 4 --warmup 8 --iterations 25`; matched sampled server window | 2026-09-01 10:20 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S-derived target, sampled served `128+32`, 1K pool | generic Q6_K batch-one path: **5.746 tok/s**, **5.8 prompt tok/s**, **22.070851 s TTFT**, **27.466190 s E2E** | Q6_K two-row plus Q5_K 32-row reuse: five-run **7.1646 tok/s** mean, warmed-four **7.2075**; five-run **5.809 prompt tok/s**, **22.035143 s TTFT**, **26.362669 s E2E** | **+1.4186 / +24.688%** generation from the original baseline; Q5_K change adds **+0.426%** against its matched disabled mean; exact 160 tokens and reasoning preserved; **12.8354 tok/s / 2.7915x** remains to the floor | `bench_openai_stream.py --model qwen3.8-27b-q5 --input-tokens 128 --output-tokens 32 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup --timeout 600` | 2026-09-01 09:45 PDT |
 | M1 Max Q5_K batch-one 32-row cohort, sampled served `128+128`, 1K pool | matched `SGLANG_MPS_Q5_K_BATCH1_ROWS32=0`: **7.456 tok/s median**, **7.41675** first-four mean | default candidate: **7.500 tok/s median**, **7.44675** first-four mean, **7.5065** warmed-four mean | **+0.044 / +0.590%** median and **+0.404%** first-four mean; every request exact at 256 tokens; one control tail sample is retained as externally contended | same sampled command with `--output-tokens 128` | 2026-09-01 09:45 PDT |
@@ -816,6 +817,8 @@ tree throughput can be ranked for production.
 | PERF-A083 | Reuse one activation fragment across two Q6_K output rows during batch-one decode. | Native Metal GGUF Q6_K matrix-vector kernel and guarded common quantized-matmul dispatch | Retained; first Q5 kernel win | Matched QKV/head medians improve **0.748917 -> 0.448125 ms** and **12.009166 -> 3.324625 ms**. Five sampled served requests average **7.052 tok/s**, **22.732%** above the 5.746 baseline; warmed-four average **7.144**. Actual-file optimized, odd-row fallback, and batch-eight parity pass. |
 | PERF-A084 | Double the batch-one Q5_K output-row cohort while each lane decodes eight adjacent weights. | Native Metal GGUF Q5_K matrix-vector kernel and guarded common quantized-matmul dispatch | Retained; second Q5 kernel win | Reversed-order matched served windows improve `128+32` mean **7.1342 -> 7.1646 tok/s** and `128+128` median **7.456 -> 7.500 tok/s**. The 1,024-row K/V projections retain the prior mapping; direct candidate, tail, alignment, fallback, and full-model behavior gates pass. |
 | PERF-A085 | Reuse each Q6_K row across all four verifier activations and produce sixteen rows per threadgroup. | Native Metal GGUF Q6_K exact-batch-four kernel and guarded common quantized-matmul dispatch | Retained; first served NEXTN verifier-kernel win | Matched head/QKV medians improve **29.166000 -> 6.121375 ms** and **1.442333 -> 0.588500 ms**. Five sampled same-GGUF NEXTN requests improve **3.3384 -> 3.7028 tok/s** while disabled-control acceptance is slightly higher. Candidate, 17-row tail, batch-three fallback, and batch-eight preservation checks pass. The unchanged three-step same-GGUF NEXTN configuration remains below target-only serving; see PERF-FA115. |
+| PERF-A086 | Establish exact 131K capacity and residency behavior for the derived Q5 target. | M1 Max unified memory, 21.37 GB derived model, one FP32 Mamba slot, and exact 131,072-token BF16 KV pool | Capacity passed; unchanged residency rejected | Server startup, warmup, health, language-only metadata, and exact request pass. The 8.00 GB KV allocation leaves no reported headroom and one sampled `128+32` request falls to **0.102 tok/s** with active paging; see PERF-FA116. |
+| PERF-A087 | Screen the existing FP8 KV configuration before native implementation. | PyTorch 2.10.0 MPS float8 storage/conversion and generic SGLang KV pool dtype | Framework route unavailable | Direct `torch.float8_e4m3fn` conversion raises the unsupported-MPS-dtype `TypeError` before pool allocation. A native uint8-backed owner is required; see PERF-FA117. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -4415,3 +4418,22 @@ tree throughput can be ranked for production.
   known PIDs, port 30000, compiler workers, and matching workloads were clear,
   memory returned to 94% free with zero throttled pages, and reported thermal
   state was normal.
+
+### 2026-09-01 10:39 PDT - PERF-A086/A087 exact 131K residency boundary
+
+- The derived 21.37 GB target successfully allocated one 0.29 GB FP32 Mamba
+  slot and an exact 131,072-token BF16 KV pool at 4.00 GB K plus 4.00 GB V.
+  Startup, warmup, health, model length, and language-only metadata passed.
+- One ordinary sampled exact `128+32` request completed with preserved
+  reasoning at **5.271 prompt tok/s**, **24.284058 s TTFT**,
+  **0.102 generation tok/s**, and **329.689187 s E2E**. Unified-memory
+  pressure reached 28--50% free and swap traffic rose. This is a capacity pass
+  and a residency-performance rejection under PERF-FA116.
+- A direct `torch.float8_e4m3fn` MPS conversion/allocation screen failed at
+  the framework dtype boundary before a cache tensor existed. PERF-FA117
+  closes the unchanged generic FP8 route.
+- The verified server tree exited cleanly. Port 30000, all known PIDs,
+  matching workloads, and compiler work were absent; memory returned to 94%
+  free with zero throttled pages and normal reported thermal state. The next
+  resident-byte lever is the immutable source artifact's Q5_K token embedding,
+  followed by a native uint8-backed compressed KV cache.

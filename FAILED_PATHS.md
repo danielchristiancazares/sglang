@@ -3235,3 +3235,52 @@ option, or serving dispatch was added.
   the complete-path economics.
 - Related commit or revert: PERF-A085 retains the independent Q6_K exact-batch-
   four kernel win; the same-GGUF NEXTN launch remains unselected.
+
+## PERF-FA116 - Exact 131K BF16 KV beside the derived Q5 artifact
+
+- Hypothesis: the 32 GB unified-memory machine can retain the 21.37 GB derived
+  model, exact 131,072-token BF16 attention cache, and runtime working set at
+  interactive throughput.
+- Scope: M1 Max 32 GB, derived Q5_K_S/F16-embedding artifact, float32 compute,
+  exact 131,072 context and token pool, one request, one FP32 Mamba slot,
+  page size one, and ordinary sampled `128+32` serving.
+- Attempted change: launched the existing target-only server with exact
+  `context_length=max_total_tokens=131072` and BF16 KV.
+- Benchmark evidence: startup and warmup passed with 21.37 GB model residency,
+  a 0.29 GB Mamba slot, and 4.00 GB each for K and V. One exact request reached
+  **5.271 prompt tok/s**, **24.284058 s TTFT**, **0.102 generation tok/s**,
+  and **329.689187 s E2E**. Memory pressure fell to 28--50% free and swap
+  traffic rose materially.
+- Correctness evidence: health, model-list length 131,072, language-only model
+  metadata, exact 160-token length completion, and 32 preserved reasoning
+  fragments all passed.
+- Failure mode: model, cache, and transient working-set residency exceed the
+  practical unified-memory budget and generation becomes page-fault bound.
+- Why not to retry unchanged: the exact configuration is already capacity-
+  functional and **98.576%** slower than the selected 1K-pool Q5 mean.
+- Reopen only if: model or KV residency shrinks materially, the memory budget
+  changes, or a measured residency control eliminates the paging boundary.
+- Related commit or revert: PERF-A086 records this capacity result; no source
+  change was made.
+
+## PERF-FA117 - Stock float8 KV tensors on MPS
+
+- Hypothesis: existing `--kv-cache-dtype fp8_e4m3` support can halve the exact
+  Q5 attention-cache residency without source changes.
+- Scope: PyTorch 2.10.0 MPS, `torch.float8_e4m3fn`, allocation, FP32
+  conversion, indexed write, gather, and conversion back to FP32.
+- Attempted change: ran an isolated capability probe before another server
+  launch.
+- Benchmark evidence: the first FP32-to-FP8 MPS conversion immediately raised
+  `TypeError: Trying to convert Float8_e4m3fn to the MPS backend but it does
+  not have support for that dtype.` No timing sample was admitted.
+- Correctness evidence: the failure occurs before a float8 value or cache
+  tensor exists; the process exited cleanly and left no Metal/server work.
+- Failure mode: the generic KV pool maps `fp8_e4m3` to a torch float8 dtype
+  that the active MPS backend cannot materialize.
+- Why not to retry unchanged: every generic pool allocation reaches the same
+  framework dtype boundary.
+- Reopen only if: PyTorch MPS adds float8 storage/conversion or SGLang gains a
+  native uint8-backed compressed-cache method with native quantize/read paths.
+- Related commit or revert: PERF-A087 records this capability screen; no
+  source change was made.
