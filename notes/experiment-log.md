@@ -18201,3 +18201,72 @@ mean 13.929045  17.125658 446.051        39.730
   (`feat(mps): add native DFlash2 runtime`). The EDDSA signature verifies as
   good. `main` is now 34 commits ahead of `origin/main`; only the recovery and
   performance records remain modified for the follow-up evidence commit.
+
+### 2026-09-01 02:17 PDT - M8 K-split QMM improves the DFlash cycle by 20.8%
+
+- Began from clean signed HEAD
+  `98d4aa596ff0bf30b2bb63ae933a96a8f5cfd260` on `main`, 35 commits ahead of
+  `origin/main`. Port 30000 and matching SGLang, benchmark, and compiler
+  processes were absent. System memory was 94% free, and macOS reported no
+  thermal or performance warning.
+- Added `affine_qmm_m8_ksplit` behind the new process switch
+  `SGLANG_MLX_NATIVE_M8_KSPLIT_QMM`. It requires the existing small-batch-QMM
+  switch, exact M=8 BF16 activation rows, affine W4/G64 weights, K divisible
+  by 256, and N divisible by 16. Every other shape retains the selected
+  implementation. Eight 32-thread SIMD groups each own one eighth of K,
+  dequantize a private 32x16 BF16 tile, accumulate an 8x16 FP32 partial, then
+  reduce the eight partials once to BF16 output.
+- Built `/private/tmp/libsglang_qwen38_m8_ksplit.dylib` through the checked-in
+  `build.sh`; the established macOS 26.0 / MLX 26.2 linker warning remained.
+  The temporary C++ microbenchmark loaded exact checkpoint tensors and timed
+  ten warmed evaluations of stock MLX, the prior output-tiled product, and the
+  K-split product.
+- Draft-artifact results, in stock/prior/K-split milliseconds:
+  - gate/up `K=5120,N=17408`: **1.733475 / 1.198400 / 0.978217**,
+    K-split maximum difference 0.03125;
+  - down `17408,5120`: **1.707825 / 1.550488 / 1.026783**,
+    maximum difference 0.125;
+  - q `5120,4096`: **0.939500 / 1.079846 / 0.626283**,
+    maximum difference 0.0625;
+  - o `4096,5120`: **1.197017 / 1.100367 / 0.649871**,
+    maximum difference 0.03125;
+  - attention-conv projection `5120,1280`:
+    **0.607971 / 1.259121 / 0.378050**, maximum difference 0.015625;
+  - target-capture FC `25600,5120`:
+    **2.027963 / 2.332121 / 1.407288**, maximum difference 0.125;
+  - selector `5120,256`: **0.313808 / 0.771321 / 0.297050**,
+    maximum difference 0.001953.
+- Full-target tensors retained the local result. Gate/up measured
+  **1.706962 / 1.185346 / 1.039687 ms** with maximum difference 0.001953;
+  down measured **1.782333 / 1.643600 / 1.019617 ms** with maximum difference
+  0.0625.
+- The exact whole-model candidate command added only
+  `SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1` to the restored-source direct command
+  recorded at 02:03. The first candidate measured **11.241518417 tok/s** over
+  128 timed output tokens in 11.386362167 seconds, with 44 refills, mean
+  emitted width **2.909090909**, digest `13442dfecdbbbcda`, and last token
+  4973. Steady cycles were about **257--263 ms**, with draft
+  **28.5--33.5 ms**, verify **225.5--226.7 ms**, sampling about 0.7 ms, and
+  commit about 2--4.4 ms.
+- An adjacent control from the same library with the new switch absent
+  reproduced **9.304875518 tok/s**, 40 refills, mean emitted width **3.175**,
+  digest `41bf022415fb9842`, and last token 21. Its cycle retained about
+  **34--37 ms** draft and **305--306 ms** verify.
+- The independent second candidate measured **11.243767395 tok/s** in
+  11.384084667 seconds and reproduced all acceptance, digest, and terminal
+  fields. The candidate mean is **11.242642906 tok/s**, a repeatable
+  **1.937767388 tok/s / 20.825291%** above the adjacent control despite the
+  candidate's lower sampled acceptance.
+- Extended the permanent affine C++ parity test. W2/W4 rows 2, 7, and 8 pass;
+  M8 cases cover K/N `256/256`, `5120/64`, and `256/6144`; unsupported group
+  size fails closed. Maximum observed M8 difference from MLX is 0.0625.
+  `clang-format --dry-run --Werror` passes. A strict engine build with
+  `-Wall -Wextra -Werror` passes with only the external linker warning. The
+  focused native engine suite passes **8 tests** with 16 existing warnings,
+  and `git diff --check` passes.
+- Committed the kernel, narrow dispatch, and expanded parity test as signed
+  commit `b853514b5c8e18fe073a30d54103b2149e70257d`
+  (`perf(mps): split DFlash verify QMM across K`). Its EDDSA signature verifies
+  as good. `main` is now 36 commits ahead of `origin/main`. The worktree then
+  contains only this recovery-record update. The next gate is a clean real
+  131K-configured Codex xhigh tool turn with the K-split switch enabled.
