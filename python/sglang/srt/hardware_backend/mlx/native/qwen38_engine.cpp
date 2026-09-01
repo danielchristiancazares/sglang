@@ -1289,6 +1289,27 @@ array dspark_yarn_rope(const array& x, int offset) {
   return rotated * array(attention_factor, rotated.dtype());
 }
 
+array dspark_confidence(
+    const array& hidden,
+    const array& markov_embeddings,
+    const array& weight,
+    const array& bias) {
+  if (hidden.ndim() != 3 || markov_embeddings.ndim() != 3 ||
+      hidden.shape()[0] != markov_embeddings.shape()[0] ||
+      hidden.shape()[1] != markov_embeddings.shape()[1] ||
+      hidden.dtype() != mx::bfloat16 ||
+      markov_embeddings.dtype() != mx::bfloat16 ||
+      weight.dtype() != mx::bfloat16 || bias.dtype() != mx::bfloat16 ||
+      weight.shape() != mx::Shape{
+          1, hidden.shape()[2] + markov_embeddings.shape()[2]} ||
+      bias.shape() != mx::Shape{1}) {
+    throw std::runtime_error("invalid DSpark confidence inputs");
+  }
+  array features = concatenate({hidden, markov_embeddings}, -1);
+  array raw = mx::matmul(features, transpose(weight)) + bias;
+  return squeeze(sigmoid(astype(raw, mx::float32)), -1);
+}
+
 array QLinear::operator()(const array& x) const {
   if (!valid) {
     throw std::runtime_error("QLinear used before load");
@@ -2447,9 +2468,9 @@ void Engine::load_dspark(
       "markov_head.markov_w1.weight", {cfg_.vocab_size, kMarkovRank});
   dspark_markov_w2_ =
       linear("markov_head.markov_w2", cfg_.vocab_size, kMarkovRank);
-  (void)dense(
+  dspark_confidence_weight_ = dense(
       "confidence_head.proj.weight", {1, kHiddenSize + kMarkovRank});
-  (void)dense("confidence_head.proj.bias", {1});
+  dspark_confidence_bias_ = dense("confidence_head.proj.bias", {1});
 
   dspark_layers_.clear();
   dspark_layers_.resize(kDraftLayers);
@@ -3151,6 +3172,7 @@ void Engine::verify_speculative_block(
     const array& draft_tokens,
     const array& proposal_indices,
     const array& proposal_probs,
+    const array& confidence,
     bool dense_proposal,
     bool greedy,
     const char* trace_tag) {
@@ -3161,15 +3183,29 @@ void Engine::verify_speculative_block(
       draft_tokens.dtype() != mx::int32) {
     throw std::runtime_error("invalid speculative draft token block");
   }
+  const bool has_confidence = confidence.ndim() != 0;
+  if (has_confidence &&
+      (confidence.shape() != mx::Shape{1, kDraftTokens} ||
+       confidence.dtype() != mx::float32)) {
+    throw std::runtime_error("invalid speculative confidence block");
+  }
   if (greedy) {
-    eval(draft_tokens);
+    if (has_confidence) {
+      eval(draft_tokens, confidence);
+    } else {
+      eval(draft_tokens);
+    }
   } else if (dense_proposal) {
     if (proposal_probs.shape() !=
             mx::Shape{1, kDraftTokens, cfg_.vocab_size} ||
         proposal_probs.dtype() != mx::float32) {
       throw std::runtime_error("invalid dense speculative proposal");
     }
-    eval(draft_tokens, proposal_probs);
+    if (has_confidence) {
+      eval(draft_tokens, proposal_probs, confidence);
+    } else {
+      eval(draft_tokens, proposal_probs);
+    }
   } else {
     if (proposal_indices.shape() != proposal_probs.shape() ||
         proposal_indices.ndim() != 3 || proposal_indices.shape()[0] != 1 ||
@@ -3178,9 +3214,26 @@ void Engine::verify_speculative_block(
         proposal_probs.dtype() != mx::float32) {
       throw std::runtime_error("invalid sparse speculative proposal");
     }
-    eval(draft_tokens, proposal_indices, proposal_probs);
+    if (has_confidence) {
+      eval(draft_tokens, proposal_indices, proposal_probs, confidence);
+    } else {
+      eval(draft_tokens, proposal_indices, proposal_probs);
+    }
   }
   const auto draft_done = std::chrono::steady_clock::now();
+  if (trace && has_confidence) {
+    const float* const values = confidence.data<float>();
+    std::fprintf(
+        stderr,
+        "qwen38_dspark confidence=%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+        values[0],
+        values[1],
+        values[2],
+        values[3],
+        values[4],
+        values[5],
+        values[6]);
+  }
   const int32_t* const drafted = draft_tokens.data<int32_t>();
   int32_t input[kDraftTokens + 1];
   input[0] = token;
@@ -3380,6 +3433,7 @@ void Engine::dflash_spec_refill(int32_t token) {
       draft_tokens,
       draft_indices,
       draft_probs,
+      array(0),
       /*dense_proposal=*/false,
       /*greedy=*/false,
       "dflash");
@@ -3409,11 +3463,28 @@ void Engine::dspark_spec_refill(int32_t token) {
   array draft_hidden = dspark_forward(token);
   auto [draft_tokens, draft_probs] =
       dspark_propose(draft_hidden, token, sampled);
+  array confidence(0);
+  if (native_spec_trace_enabled()) {
+    array anchor(&token, {1, 1}, mx::int32);
+    array previous = concatenate(
+        {
+            anchor,
+            slice(draft_tokens, {0, 0}, {1, kDraftTokens - 1}),
+        },
+        1);
+    array markov_embeddings = take(dspark_markov_w1_, previous, 0);
+    confidence = dspark_confidence(
+        draft_hidden,
+        markov_embeddings,
+        dspark_confidence_weight_,
+        dspark_confidence_bias_);
+  }
   verify_speculative_block(
       token,
       draft_tokens,
       array(0),
       draft_probs,
+      confidence,
       /*dense_proposal=*/sampled,
       /*greedy=*/!sampled,
       "dspark");

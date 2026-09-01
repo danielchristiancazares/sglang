@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native DSpark trained-confidence telemetry, sampled direct `128 / 1 warm / 32 timed` | affine-W4 **10.050625 tok/s**, width **2.428571** | trace-enabled confidence **10.071235 tok/s**, width **2.428571** | exact digest/last token retained; steady draft **36.58--36.88 ms** includes confidence; timing movement is diagnostic noise | PERF-A071 candidate dylib with the existing trace flag and otherwise exact PERF-A068 environment | 2026-09-01 04:11 PDT |
 | M1 Max native Qwen3.8 DSpark v2, sampled served `6237+128`, real 131K pools | selected DFlash2 **15.328 tok/s** | first affine-W4 DSpark **11.242 tok/s** | **-4.086 / -26.657%**; DSpark live draft **42--45 ms**, verify **212--213 ms**; exact tokens/reasoning retained | exact PERF-A065 server/client contract, changing only `SGLANG_MLX_MTP_DIR` to the DSpark affine-W4 artifact | 2026-09-01 03:48 PDT |
 | M1 Max native Qwen3.8 DSpark v2, sampled direct `128 / 1 warm / 32 timed` | official BF16 **5.746863 tok/s**, width **2.285714**, steady draft **44.54--44.75 ms** | affine-W4 **10.050625 tok/s**, width **2.428571**, steady draft **36.55--40.07 ms** | first functional screen; trajectories differ, so throughput is admission evidence rather than a precision ranking; both remain below 20 | PERF-A068 direct command with the same target, seed, sampler, verifier, and only the draft directory changed | 2026-09-01 03:44 PDT |
 | M1 Max DFlash2 proposal policy, sampled served `6237+128`, real 131K pools | learned selector **15.328 tok/s** | greedy target-head proposal **9.512 tok/s** | **-5.816 / -37.944%**; synthetic direct mean **37.518731 tok/s** was nonrepresentative | PERF-A065 server/control with temporary `SGLANG_MLX_NATIVE_DFLASH_GREEDY_DRAFT=1` | 2026-09-01 03:17 PDT |
@@ -787,6 +788,7 @@ tree throughput can be ranked for production.
 | PERF-A068 | Integrate the official Qwen3.8 DSpark v2 draft into the native MLX C++ lane. | Immutable draft artifact, native full-attention backbone, rank-256 Markov proposal, target verifier, and accepted-state commit | Native BF16/affine-W4 execution and correctness gates pass; sampled fidelity optimization active | The exact loaders, five-layer full-attention YaRN draft, sequential Markov proposal, exact dense-q verifier, and accepted-state commit run end to end. Affine-W4 reaches **10.050625 tok/s** direct and **11.242 tok/s** on the exact sampled served `6237+128` admission screen. |
 | PERF-A069 | Apply the target top-k/top-p policy independently to every DSpark proposal row. | Native DSpark proposal distribution and exact dense-q verifier | Rejected and removed | Direct throughput fell **10.050625 -> 6.997461 tok/s** and width **2.428571 -> 1.6** because the independently filtered draft and target supports differ. See PERF-FA098. |
 | PERF-A070 | Preserve DSpark `markov_w2` in BF16 inside the affine-W4 draft artifact. | C++ checkpoint converter, exact native linear loader, and immutable derived artifact | Rejected and removed | Direct throughput fell **10.050625 -> 7.044992 tok/s**, width **2.428571 -> 1.65**. Served throughput moved **11.242 -> 11.294 tok/s** on a different trajectory while artifact size rose **87.148 MiB**; this supplies no robust promotion signal. See PERF-FA099. |
+| PERF-A071 | Execute the official trained DSpark confidence head and expose exact per-position survival telemetry. | Native DSpark loader, BF16 hidden/Markov feature projection, FP32 sigmoid, and existing speculative trace | Retained; cost-based scheduler work active | Direct trace preserves width **2.428571**, digest `5a38c7070d7badeb`, and last token 16 at **10.071235 tok/s**. The natural served request preserves exact baseline reasoning SHA-256 at **11.303 tok/s**. Confidence spans useful regimes and remains probabilistic under exact p/q sampling. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -3727,3 +3729,40 @@ tree throughput can be ranked for production.
   residency, and sub-percent trajectory-level served movement do not support
   promotion. The derived artifact was deleted; immutable source and selected
   affine artifacts remain intact. PERF-FA099 records the closed route.
+
+### 2026-09-01 04:11 PDT - PERF-A071 native DSpark confidence telemetry
+
+- Retained the official BF16 confidence projection and bias in the native
+  DSpark owner. The checked helper concatenates final draft hidden state with
+  the previous-token rank-256 Markov embedding, applies the checkpoint's
+  5,376-to-1 projection, and converts its raw score through an FP32 sigmoid,
+  matching upstream survival semantics.
+- Confidence executes only under the existing speculative trace flag. It is
+  materialized in the same draft evaluation barrier as proposal tokens and q,
+  preserving `draft_ms` meaning and keeping the ordinary untraced path free of
+  projection work. Trace output reports all seven per-position probabilities
+  immediately before the corresponding accepted-width record.
+- Final exact direct `128 / 1 warm / 32 timed` evidence reaches
+  **10.071235235 tok/s**, 14 refills, mean width **2.428571429**, digest
+  `5a38c7070d7badeb`, and last token 16. The PERF-A068 control was
+  **10.050624654 tok/s** with the same trajectory. Steady draft stages remain
+  **36.58--36.88 ms** and verify remains about **186 ms**; the small throughput
+  movement is diagnostic noise.
+- The exact natural sampled `6237+128` request with real 131K pools completed
+  all 6,365 tokens at **11.303 tok/s**, **109.711 prompt tok/s**, **56.849497 s
+  TTFT**, and **68.085129 s** end to end. It reproduced the all-affine baseline
+  reasoning/output SHA-256
+  `555ba1da1dc6fc0f7969f2a67261a05b33c41136d8fdbfa607e8653a05a88fe2`.
+- Natural-prompt confidence ranged from about **0.1895 to 0.9998**. Several
+  near-one blocks accepted all seven tokens, while exact stochastic p/q also
+  rejected some high-confidence blocks. Scheduling must maximize expected
+  cumulative survival against measured per-width cost; a deterministic cutoff
+  would misclassify observed blocks.
+- Strict warning-as-error library and standalone-test builds pass. The C++
+  test covers exact confidence values, FP32 output shape/dtype, and invalid
+  shape rejection alongside YaRN parity. Focused native pytest passes **8
+  tests** with 16 existing warnings. The real server passed health and
+  language-only gates, then its verified process tree exited cleanly.
+- Decision: retain as the measured input to native dynamic scheduling. Next,
+  generalize the shared verifier to bounded widths and profile its M1 Max cost
+  curve before selecting a survival budget.

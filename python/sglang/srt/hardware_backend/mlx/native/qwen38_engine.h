@@ -31,6 +31,11 @@ mlx::core::array affine_qmm_m8_ksplit(
     const QLinear& linear, const mlx::core::array& x);
 mlx::core::array dspark_yarn_rope(
     const mlx::core::array& x, int offset);
+mlx::core::array dspark_confidence(
+    const mlx::core::array& hidden,
+    const mlx::core::array& markov_embeddings,
+    const mlx::core::array& weight,
+    const mlx::core::array& bias);
 
 struct FullAttn {
   QLinear q_proj;
@@ -255,6 +260,7 @@ class Engine {
       const mlx::core::array& draft_tokens,
       const mlx::core::array& proposal_indices,
       const mlx::core::array& proposal_probs,
+      const mlx::core::array& confidence,
       bool dense_proposal,
       bool greedy,
       const char* trace_tag);
@@ -312,6 +318,8 @@ class Engine {
   mlx::core::array dspark_norm_{0};
   mlx::core::array dspark_markov_w1_{0};
   QLinear dspark_markov_w2_;
+  mlx::core::array dspark_confidence_weight_{0};
+  mlx::core::array dspark_confidence_bias_{0};
   std::vector<DSparkLayer> dspark_layers_;
   std::vector<LayerSnap> snap_;
   int32_t spec_buf_[8]{};
