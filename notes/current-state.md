@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-02:09 PDT.
+02:17 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -196,15 +196,19 @@ shape that previously exhausted Metal residency. A real 131K-configured Codex
 0.151.0 `xhigh` turn then issued exactly one requested shell tool and returned
 the exact final marker. The first prompt reached **90.75 prompt tok/s**.
 
-Generation remains the active gap. Real Codex telemetry settled around
-**7.6--11.85 tok/s** and reached **15.20 tok/s** on a high-acceptance tool
-continuation. A current direct `128 / 32 warm / 128 timed` sample measured
-**9.300145 tok/s** at mean emitted width **3.175**. Steady full-Q4 DFlash
-cycles spend about **34--37 ms** drafting and **305--306 ms** verifying;
-accepted-prefix replay now costs about **2--6 ms**. The next kernel candidate
-is a verify-specialized M=8 affine-W4 product that partitions K across SIMD
-groups. The hard admission gate remains a real served Codex workload at or
-above **20 tok/s** with exact tools and 131K capacity.
+Generation remains the active gap. Real Codex telemetry from the first runtime
+settled around **7.6--11.85 tok/s** and reached **15.20 tok/s** on a
+high-acceptance tool continuation. Signed commit `b853514b5c`
+(`perf(mps): split DFlash verify QMM across K`) adds an opt-in M=8 affine-W4
+kernel that assigns one eighth of K to each SIMD group. Two current direct
+`128 / 32 warm / 128 timed` samples measure **11.241518 / 11.243767 tok/s**,
+mean **11.242643**, versus an adjacent **9.304876 tok/s** control. Steady
+full-Q4 DFlash cycles now spend about **28.5--33.5 ms** drafting and
+**225.5--226.7 ms** verifying; accepted-prefix replay remains about
+**2--4.4 ms**. The next gate is the real 131K-configured Codex xhigh workload,
+followed by further verification scheduling and acceptance work. The hard
+admission gate remains real served generation at or above **20 tok/s** with
+exact tools and 131K capacity.
 
 ## Native backend roadmap handoff
 
