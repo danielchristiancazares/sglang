@@ -4,7 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
-| M1 Max mixed 4.951-bpw Q5-class target, sampled direct `128 / 32 warm / 128 timed` | generic MLX QMM **18.121698566 tok/s** | aligned-word A100 ten-sample mean **19.134907634 tok/s** | **+1.013209068 tok/s / +5.591%** over generic and **+0.122277858 / +0.643%** over paired A094 **19.012629776**; exact digest stable; **0.865092366 tok/s / 4.521%** remains to the floor | pinned mixed revision `596b8067...8340`, seed 42, selected command-buffer controls, `SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1`, Q4 QMV unset | 2026-09-01 15:39 PDT |
+| M1 Max mixed 4.951-bpw Q5-class target, sampled direct `128 / 32 warm / 128 timed` | generic MLX QMM **18.121698566 tok/s** | A100 Q5 plus stock-exact A111 Q4 ten-sample mean **19.241981332 tok/s** | **+1.120282766 tok/s / +6.182%** over generic and **+0.128045244 / +0.670%** over paired A100-only **19.113936088**; exact digest stable; **0.758018668 tok/s / 3.939%** remains to the floor | pinned mixed revision `596b8067...8340`, seed 42, selected command-buffer controls, `SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1`, `SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1` | 2026-09-01 16:21 PDT |
 | M1 Max affine-Q5/G64 target-only batch-one decode, sampled direct `128 / 32 warm / 128 timed` | native affine-Q5 target **16.322505765 tok/s** | opt-in direct Q5 QMV **17.823163930 tok/s** | **+1.500658165 tok/s / +9.194%** in the first complete screen; representative parity passes; **2.176836070 tok/s** remains to the floor and a repeated matched window is pending | pinned Q5 target, selected command-buffer controls, and `SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1`; PERF-A094/FA122/FA123/FA124 | 2026-09-01 12:43 PDT |
 | M1 Max affine-Q5 plus matched 5-bit MTP, deterministic direct `128 / 32 warm / 128 timed` | three-token block **17.919995235 tok/s**, width **3.0** | opt-in eight-token block **31.380317186 tok/s**, width **8.0**; exact sampled p/q arms peak at **6.380162135 tok/s**, width **2.285714286** | **+13.460321951 tok/s / +75.113%** for the deterministic execution-cost probe, clearing 20 by **11.380317186 tok/s**; native sampling preserves its configured distribution and rejects this proposal route for production | pinned Q5 target/MTP snapshots plus `SGLANG_MLX_NATIVE_MTP_BLOCK_SIZE=8`; PERF-A093/FA120/FA121 | 2026-09-01 12:08 PDT |
 | M1 Max affine-Q5 target plus DFlash2, sampled direct `128 / 32 warm / 128 timed` | generic affine-Q5 verifier **11.506669050 tok/s**, M=8 about **363--368 ms** | native Q5 M=8 K-split **13.721235888 tok/s**, M=8 about **228--229 ms** | **+2.214566838 tok/s / +19.246%**; representative five-bit unpack parity passes; target-only remains faster at **16.322505765 tok/s** | PERF-A092 candidate dylib with the exact PERF-A091 DFlash command | 2026-09-01 11:49 PDT |
@@ -848,6 +848,8 @@ tree throughput can be ranked for production.
 | PERF-A107 | Fetch each lane's sixteen BF16 activations through two aligned 128-bit vectors while retaining four `bfloat4` conversions. | Selected A094 affine-Q5 batch-one kernel input owner; A106 transaction-width comparison | Runtime-correct and rejected | Representative parity and all production-shape digests match A094. Gate/up and down regress in both directions, attention-output is mixed, and value is slower; no full-model admission remains. See PERF-FA129. |
 | PERF-A108 | Let one lane in each four-lane quantization group load BF16 scale/bias and broadcast the pair. | Selected A094 affine-Q5 batch-one parameter owner; group-64 four-lane sharing | Runtime-correct and rejected | Representative parity and all four production-shape digests match A094. Leader branching plus shuffles regress gate/up, down, attention-output, and value latency by roughly **4--22%**. See PERF-FA125. |
 | PERF-A109 | Combine each dense BF16 recurrent b/a projection pair at load and issue one 96-row matmul. | Mixed-Q5 native loader and `Engine::gated_delta` | Runtime-correct and rejected as neutral | Two independent balanced five-versus-five windows aggregate to control **18.993383731** and fusion **18.993221731 tok/s**. All 20 runs reproduce digest `d0193f6d413b68c1`; the **-0.000162000 tok/s** aggregate movement closes the unchanged fusion. See PERF-FA128. |
+| PERF-A110 | Attribute the selected mixed-target decode to concrete Metal shaders. | Selected A100 target under Metal System Trace plus GPU shader counters | Retained diagnostic | A 128-token sampled trace maps **48,156 / 48,831** target-process PCs with zero ambiguity. Stock affine-Q4 QMV owns **43.546%**, custom Q5 QMV owns **48.613%**, and all QMV owns **92.159%**, funding a stock-compatible Q4 kernel. |
+| PERF-A111 | Double the stock affine-Q4/G64 batch-one output cohort while preserving MLX's helper and FP32 expression structure. | Mixed target's 162 Q4 linears, explicit native Q4 switch, and selected A100 Q5 path | Qualified and retained | K/N `512/64`, `5120/128`, and `5120/17408` are bit-exact against MLX. Two balanced five-versus-five windows improve **19.103271206 -> 19.230598293** and **19.124600969 -> 19.253364371 tok/s**; aggregate gain is **+0.128045244 / +0.669905%** with canonical digest `d0193f6d413b68c1`. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -5272,3 +5274,50 @@ tree throughput can be ranked for production.
   instruction count is outweighed by masked leadership and shuffle cost;
   A107's wider transactions do not improve the high-byte projections. A100
   remains selected. PERF-FA129 records the reopening condition.
+
+### 2026-09-01 16:21 PDT - PERF-A110/A111 mixed shader attribution and exact Q4 QMV
+
+- A selected-A100 Metal System Trace with GPU shader counters completed at
+  **19.171907764 tok/s** under instrumentation with digest
+  `d0193f6d413b68c1`. A strict C++20 analyzer maps **48,156 / 48,831**
+  target-process shader PCs, with zero ambiguous mappings. Stock
+  `affine_qmv_fast_bfloat16_t_gs_64_b_4_batch_0` owns **43.546%**; custom Q5
+  owns **48.613%** across K=17,408/5,120/6,144; all QMV owns **92.159%**.
+- PERF-A111 starts from official MLX tag `v0.32.2`, commit
+  `1f8e74e3f12f31365464a6867c6579f0e9b29d85`. It retains MLX's Q4 load and
+  dot helper expression structure, changes only the batch-one output cohort
+  from two to four SIMD groups, specializes K, and remains behind
+  `SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV`.
+- Strict full-dylib and focused-test builds pass. Direct parity against MLX
+  is bit-exact at K/N **512/64**, **5120/128**, and **5120/17408**; the
+  unsupported K=256 shape fails closed. The selected dylib/test/benchmark
+  SHA-256 values are `9b4452d6...b01e`, `2101c61d...9609`, and
+  `c105e7d3...8ef`.
+- A hand-inlined precursor reduced gate/up QMV from paired stock
+  **0.464814646 ms** to **0.434910417 ms**, and one full-model screen reached
+  **19.413641543 tok/s**. It produced up to **0.0078125** BF16 error and
+  changed the seeded target digest, so PERF-FA130 rejects that arithmetic
+  form. Restoring MLX's helper/expression structure makes all measured output
+  bit-exact; its isolated gate/up timing is flat, while halving threadgroup
+  count still wins end to end.
+- First balanced five-versus-five full-model window:
+  - A100-only control **19.129950306, 19.114006087, 19.107881382,
+    19.132208843, 19.032309413**, mean **19.103271206 tok/s**;
+  - A100+A111 **19.311764663, 19.201559289, 19.158388459,
+    19.223084040, 19.258195016**, mean **19.230598293 tok/s**;
+  - gain **+0.127327087 / +0.666520%**.
+  The first listed control used the precursor dylib with its Q4 switch unset;
+  the reachable A100 path and canonical output are identical. All remaining
+  controls and every candidate use the selected exact-source dylib.
+- Independent reversed window:
+  - A100-only control **19.140532994, 19.126232751, 19.097367169,
+    19.153648409, 19.105223523**, mean **19.124600969 tok/s**;
+  - A100+A111 **19.231720441, 19.263637787, 19.256509432,
+    19.256183163, 19.258771030**, mean **19.253364371 tok/s**;
+  - gain **+0.128763401 / +0.673287%**.
+- All 20 qualified outputs reproduce digest `d0193f6d413b68c1` and last token
+  11406. Aggregate control/candidate means are **19.113936088 / 19.241981332
+  tok/s**, a **+0.128045244 / +0.669905%** win. Promote A111 beside A100.
+  The direct gap is now **0.758018668 tok/s / 3.939400%**; exact 131K serving
+  and Codex `xhigh` qualification remain pending until the direct floor is
+  cleared with margin.

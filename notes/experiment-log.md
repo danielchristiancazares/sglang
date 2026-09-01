@@ -22389,3 +22389,100 @@ mean 13.929045  17.125658 446.051        39.730
   `agent thread limit reached`; this environment still exposes only the
   primary collaboration slot. Profiling and candidate reconciliation remain
   with the primary agent.
+
+### 2026-09-01 16:21 PDT - Mixed-target shader attribution promotes a stock-exact Q4 cohort
+
+- Continued from signed `a40cc783db485f9a8bdcc755b2536a8141c6bd65`, 82
+  commits ahead of `origin/main`. The main index was empty; Daniel's existing
+  engine/header/small-batch-test working-copy changes remained user-owned and
+  unstaged. Port 30000 had no listener. No SGLang, benchmark, xctrace, clang,
+  or command-line Metal workload was active. Launchd-owned
+  `MTLCompilerService` PIDs 548/932/933 remained ordinary services. Memory
+  pressure reported 94% free and `pmset -g therm` reported no thermal or
+  performance warning.
+- Captured selected A100 with this exact attribution command:
+
+  ```text
+  xctrace record --template 'Metal System Trace' --instrument 'Metal GPU Counters' --time-limit 2m --window 16s --output /Users/dcazares/.cache/sglang-qwen38/artifacts/qwen38-mixed-a100-shaders.trace --no-prompt --target-stdout - --env MLX_SDPA_BLOCKS=64 --env MLX_MAX_MB_PER_BUFFER=256 --env MLX_MAX_OPS_PER_BUFFER=100 --env MLX_METAL_FAST_SYNCH=1 --env SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 --env SGLANG_MLX_NATIVE_SAMPLING=1 --env SGLANG_MLX_NATIVE_SAMPLING_SEED=42 --env SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 --env SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 --launch -- /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a100_dense.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128
+  ```
+
+  The instrumented target exited zero at **19.171907764 tok/s**, digest
+  `d0193f6d413b68c1`, last token 11406. Exported shader-list and shader-sample
+  XML live beside the trace. The strict C++20 analyzer source/binary are
+  `/Users/dcazares/.cache/sglang-qwen38/artifacts/analyze_metal_shader_trace.cpp`
+  and `analyze_metal_shader_trace`; the binary SHA-256 is
+  `b970aab64eb21b7769deb1a3705089eb72c28361202768b9ab77903e0f06bc40`.
+- The analyzer maps **48,156 / 48,831** target shader PCs across 85 shaders,
+  with zero ambiguity and 675 unmapped samples. Collapsed distribution is:
+  stock Q4 QMV **43.546%**, Q5 K=17,408 **22.052%**, Q5 K=5,120
+  **17.120%**, Q5 K=6,144 **9.441%**, gated-delta step **2.388%**,
+  gated-delta norm/gate **0.674%**, SDPA **0.635%**, and dense BF16 GEMV
+  **0.485%**. Custom Q5 totals **48.613%** and all QMV totals **92.159%**.
+- Checked out official MLX tag v0.32.2 at exact commit
+  `1f8e74e3f12f31365464a6867c6579f0e9b29d85` under
+  `/Users/dcazares/.cache/sglang-qwen38/mlx-v0.32.2`; its worktree is clean.
+  `mlx/backend/metal/kernels/quantized.h` proves stock Q4/G64 uses two SIMD
+  groups, four results per SIMD group, two packs per lane, FP32 activation
+  fragments, and eight output rows per threadgroup.
+- Created detached candidate worktree
+  `/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-4x4` at signed
+  `a40cc783db`. PERF-A111 adds an explicit
+  `SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV` dispatch for BF16 batch one,
+  bits-four/group-64, K divisible by 512, and N divisible by 16. The Metal
+  path preserves MLX's load/dot helper expression structure and doubles only
+  the output cohort to four SIMD groups by four rows.
+- The selected strict dylib build was:
+
+  ```text
+  clang++ -std=c++20 -O3 -fPIC -shared -Wall -Wextra -Werror -isystem /Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/include -I/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-4x4/python/sglang/srt/hardware_backend/mlx/native -L/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -Wl,-rpath,/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_q4_4x4_exact_a100.dylib /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-4x4/python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-4x4/python/sglang/srt/hardware_backend/mlx/native/qwen38_c_api.cpp
+  ```
+
+  The full dylib, focused test, and deterministic Q4 benchmark compile under
+  strict C++20/O3 warnings-as-errors. Their SHA-256 values are respectively
+  `9b4452d6f635355f77cecb60e6281c08d71478e1892f66ef85006540aa00b01e`,
+  `2101c61d61ec2d09b1a933fc4e29379a5b65a6a51497b64d22a52e164c719609`,
+  and `c105e7d38daf45515616a6ab152368432a3914eee75ec42bde962485e5d6b8ef`.
+  Candidate `git diff --check` passes.
+- The focused test reports exact stock/custom equality: K/N `512/64`,
+  `5120/128`, and `5120/17408` all have maximum error zero and zero
+  mismatches. K=256 fails closed with the expected unsupported-shape error.
+  A hand-inlined precursor instead reported **0 / 0.00195312 / 0.0078125**
+  maximum error. Its gate/up order/reverse means were stock
+  **0.464814646 ms** and custom **0.434910417 ms**; one full target screen
+  reached **19.413641543 tok/s** but changed digest to `70b8328e7074a21e`
+  and last token to 12. PERF-FA130 closes that numerically drifting form.
+- Every selected candidate and nine of ten listed controls used:
+
+  ```text
+  env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 [SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1] /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 240s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_q4_4x4_exact_a100.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128
+  ```
+
+  The first-window **19.129950306 tok/s** control used the precursor dylib
+  with `SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV` unset. Its reachable A100 path,
+  digest, and last token are identical; all remaining controls and every
+  candidate use the selected exact-source dylib.
+
+- First balanced five-versus-five window:
+  - A100-only **19.129950306, 19.114006087, 19.107881382, 19.132208843,
+    19.032309413**, mean **19.103271206 tok/s**;
+  - A100+A111 **19.311764663, 19.201559289, 19.158388459,
+    19.223084040, 19.258195016**, mean **19.230598293 tok/s**;
+  - gain **+0.127327087 / +0.666520%**.
+- Independent reversed five-versus-five window:
+  - A100-only **19.140532994, 19.126232751, 19.097367169, 19.153648409,
+    19.105223523**, mean **19.124600969 tok/s**;
+  - A100+A111 **19.231720441, 19.263637787, 19.256509432,
+    19.256183163, 19.258771030**, mean **19.253364371 tok/s**;
+  - gain **+0.128763401 / +0.673287%**.
+- All 20 qualified samples preserve digest `d0193f6d413b68c1` and last token
+  11406. Aggregate A100-only/A100+A111 means are **19.113936088 /
+  19.241981332 tok/s**, a **+0.128045244 / +0.669905%** selected win. A
+  post-window A100-only diagnostic returned **18.313654382 tok/s** while a
+  fresh `mdworker_shared` cohort appeared; it is retained as externally
+  contended and excluded from both already completed balanced windows. Memory
+  remained 94% free and no thermal/performance warning was recorded.
+- Promote the candidate engine/header and focused C++ test without touching
+  Daniel's main working-copy bytes. The selected direct gap is now
+  **0.758018668 tok/s / 3.939400%**. Exact 131K serving, sampled behavior, and
+  Codex `xhigh` remain pending until another direct candidate clears 20 with
+  margin. Port 30000 remains free and every benchmark process exited.

@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-15:39 PDT.
+16:21 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -171,24 +171,29 @@ experiment-log entries.
 
 The current speed target is the immutable 4.951-bpw mixed-Q5 checkpoint at
 revision `596b8067f7cf429007bb668874ffee7e917c8340`, with the A100 aligned-word
-affine-Q5 batch-one Metal kernel explicitly enabled and the Q4 custom kernel
-disabled. Two independent balanced five-sample windows give a selected mean
-of **19.134907634 tok/s** on sampled direct
-`128 / 32 warm / 128 timed`, with digest `d0193f6d413b68c1`. Paired A094 is
-**19.012629776 tok/s**, so A100 contributes **+0.122277858 / +0.643140%**.
-The direct gap is **0.865092366 tok/s / 4.521017%**. The generic mixed target
-reaches **18.121698566 tok/s**.
+affine-Q5 batch-one Metal kernel and the stock-exact A111 affine-Q4 batch-one
+kernel explicitly enabled. Two independent balanced five-versus-five windows
+give a selected A100+A111 aggregate mean of **19.241981332 tok/s** on sampled
+direct `128 / 32 warm / 128 timed`, with digest `d0193f6d413b68c1` and last
+token 11406. Paired A100-only is **19.113936088 tok/s**, so A111 contributes
+**+0.128045244 / +0.669905%**. The direct gap is **0.758018668 tok/s /
+3.939400%**. The generic mixed target reaches **18.121698566 tok/s**.
 
-The fresh-session candidate matrix is resolved through A109. A100 is promoted:
+The fresh-session candidate matrix is resolved through A111. A100 is promoted:
 five aligned 16-bit loads reconstruct the same three bit windows and retain the
-original sixteen sequential FP32 FMAs. A095 packed-byte loads are correct and
-neutral. A103 aligned overlapping loads, A104 vector
+original sixteen sequential FP32 FMAs. A111 follows official MLX v0.32.2's
+Q4 load/dot helper structure exactly while doubling the output cohort from two
+to four SIMD groups. Representative parity is bit-exact, and two independent
+full-model windows qualify the 0.670% increment. A095 packed-byte loads are
+correct and neutral. A103 aligned overlapping loads, A104 vector
 dots, A106 vector input reads, A108 parameter broadcast, alternate threadgroup
-geometry, mixed-target Q4 custom execution, and the published Q4 MTP head are
-closed by current measurements. Dense BF16 recurrent b/a row fusion is exact
-and aggregate-flat at **18.993221731 vs 18.993383731 tok/s** across ten samples
-per arm, so its source remains outside `main`. A101 paired-lane word sharing
-and A107 128-bit activation reads are exact and slower across the production-
+geometry, the older two-SIMD/two-result mixed-target Q4 custom execution, and
+the published Q4 MTP head are closed by current measurements. The faster
+hand-inlined Q4 precursor is also closed because its small BF16 differences
+changed the seeded target trajectory. Dense BF16 recurrent b/a row fusion is
+exact and aggregate-flat at **18.993221731 vs 18.993383731 tok/s** across ten
+samples per arm, so its source remains outside `main`. A101 paired-lane word
+sharing and A107 128-bit activation reads are exact and slower across the production-
 shape matrix; both are closed. Exact 131K serving, sampled behavior, and Codex
 `xhigh` qualification follow only after a direct candidate clears 20 with
 margin.

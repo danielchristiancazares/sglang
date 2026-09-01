@@ -3618,3 +3618,31 @@ option, or serving dispatch was added.
   with a separate input consumer.
 - Related commit or revert: selected A100 remains in signed commit
   `59a50653c4`; A101/A107 artifacts remain outside `main`.
+
+## PERF-FA130 - Hand-inlined affine-Q4 helper arithmetic
+
+- Hypothesis: an aggressively inlined Q4/G64 dot body can combine the new
+  four-SIMD output cohort with compiler scheduling that beats stock MLX.
+- Scope: mixed 4.951-bpw target, its 162 Q4 linears, selected A100 Q5 kernel,
+  seed 42, and exact `128 / 32 warm / 128 timed` direct generation.
+- Attempted change: loaded each four-nibble word into a local `ushort`, kept
+  input and dot loops directly inside the dynamic Metal kernel body, and
+  accumulated four output rows per each of four SIMD groups.
+- Benchmark evidence: paired gate/up timing improved from stock
+  **0.464814646 ms** to **0.434910417 ms**. One full-model candidate reached
+  **19.413641543 tok/s** against **19.129950306** with the Q4 switch unset.
+- Correctness evidence: the candidate completed all shapes, while parity
+  reported **0 / 0.00195312 / 0.0078125** maximum BF16 error at K/N
+  `512/64`, `5120/128`, and `5120/17408`. The full-model digest changed from
+  `d0193f6d413b68c1` with last token 11406 to `70b8328e7074a21e` with last
+  token 12.
+- Failure mode: Apple Metal reassociates the hand-inlined FP32 expression
+  enough to cross BF16 rounding boundaries. The resulting sampled trajectory
+  violates the fixed-work digest gate.
+- Why not to retry unchanged: the apparent speedup depends on arithmetic
+  lowering that changes observable model output.
+- Reopen only if: generated-code evidence identifies a load or scheduling
+  change that retains MLX's helper/expression structure and bit-exact BF16
+  output. PERF-A111 demonstrates that exact boundary.
+- Related commit or revert: the hand-inlined source was replaced in the
+  detached candidate worktree before promotion; no revert is required.
