@@ -95,6 +95,49 @@ bool RejectsInvalidWidth() {
   return false;
 }
 
+bool CheckConfidence() {
+  const std::vector<float> hidden_values = {1.0f, 2.0f, 3.0f, 4.0f};
+  const std::vector<float> markov_values = {0.5f, -0.5f};
+  const std::vector<float> weight_values = {0.25f, -0.5f, 1.0f};
+  const std::vector<float> bias_values = {0.125f};
+  mx::array hidden = mx::astype(
+      mx::array(hidden_values.data(), {1, 2, 2}, mx::float32), mx::bfloat16);
+  mx::array markov = mx::astype(
+      mx::array(markov_values.data(), {1, 2, 1}, mx::float32), mx::bfloat16);
+  mx::array weight = mx::astype(
+      mx::array(weight_values.data(), {1, 3}, mx::float32), mx::bfloat16);
+  mx::array bias =
+      mx::astype(mx::array(bias_values.data(), {1}, mx::float32), mx::bfloat16);
+  mx::array confidence =
+      sglang::mlx_qwen38::dspark_confidence(hidden, markov, weight, bias);
+  mx::eval(confidence);
+
+  const float kExpected[] = {
+      1.0f / (1.0f + std::exp(0.125f)),
+      1.0f / (1.0f + std::exp(1.625f)),
+  };
+  if (confidence.shape() != mx::Shape{1, 2} ||
+      confidence.dtype() != mx::float32) {
+    return false;
+  }
+  const float *const actual = confidence.data<float>();
+  return std::abs(actual[0] - kExpected[0]) <= 1e-6f &&
+         std::abs(actual[1] - kExpected[1]) <= 1e-6f;
+}
+
+bool RejectsInvalidConfidenceShape() {
+  mx::array hidden = mx::zeros({1, 2, 2}, mx::bfloat16);
+  mx::array markov = mx::zeros({1, 1, 1}, mx::bfloat16);
+  mx::array weight = mx::zeros({1, 3}, mx::bfloat16);
+  mx::array bias = mx::zeros({1}, mx::bfloat16);
+  try {
+    (void)sglang::mlx_qwen38::dspark_confidence(hidden, markov, weight, bias);
+  } catch (const std::runtime_error &error) {
+    return std::string_view(error.what()) == "invalid DSpark confidence inputs";
+  }
+  return false;
+}
+
 } // namespace
 
 int main() {
@@ -103,13 +146,14 @@ int main() {
     const bool yarn_range_matches = CheckOffset(9000, 2e-4f);
     const bool context_limit_matches = CheckOffset(131071, 3e-3f);
     if (!origin_matches || !yarn_range_matches || !context_limit_matches ||
-        !RejectsInvalidWidth()) {
+        !RejectsInvalidWidth() || !CheckConfidence() ||
+        !RejectsInvalidConfidenceShape()) {
       return 1;
     }
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
     return 1;
   }
-  std::cout << "qwen38 DSpark YaRN parity passed\n";
+  std::cout << "qwen38 DSpark YaRN/confidence parity passed\n";
   return 0;
 }

@@ -19014,3 +19014,62 @@ mean 13.929045  17.125658 446.051        39.730
 - Next: reduce the DSpark verifier cycle or use its trained confidence signal
   to avoid verifying low-value tail positions, with exact p/q behavior and the
   real sampled request as the first admission screen.
+
+### 2026-09-01 04:11 PDT - native DSpark trained-confidence telemetry
+
+- Continued from clean signed `976d90bb5fe6edbf767924f61fddb3a7c66b6d06`,
+  51 commits ahead of `origin/main`. Port 30000 and matching server/compiler
+  processes were clear, memory was 93% free with zero throttled pages, and
+  thermal/performance status was normal.
+- The official checkpoint already carries a trained BF16
+  `confidence_head.proj` over 5,120 draft-hidden plus 256 previous-token Markov
+  features. The native loader had validated and discarded those tensors.
+  Retained them and added a checked C++ helper matching upstream semantics:
+  BF16 concatenation/projection followed by an FP32 sigmoid. Invalid rank,
+  batch/length, feature, shape, and dtype contracts fail closed.
+- Under the existing `SGLANG_MLX_NATIVE_TRACE_SPEC=1` flag, DSpark now builds
+  previous-token features as `[anchor, draft[0:6]]`, evaluates all seven
+  confidence values with tokens/q inside the draft barrier, and prints them
+  immediately before the matching accepted-width line. The first temporary
+  placement evaluated confidence before entering the common verifier and made
+  its `draft_ms` field exclude the real draft. Moved the lazy confidence into
+  the verifier evaluation set before retaining the change; final trace timing
+  again covers the complete draft stage. Untraced execution performs no
+  confidence projection.
+- Strict warning-as-error candidate library and standalone-test builds passed
+  with the known macOS 26.0 / MLX 26.2 linker warning. The extended C++ test
+  passes YaRN offsets 0/9,000/131,071 plus exact confidence values, FP32
+  shape/dtype, and invalid-shape rejection. Its final output is
+  `qwen38 DSpark YaRN/confidence parity passed`. The focused native suite
+  passes **8 tests** with 16 existing warnings.
+- Final direct command retained the exact PERF-A068 environment and changed
+  only the candidate dylib. Exact `128 / 1 warm / 32 timed` result was
+  **10.071235235 tok/s**, 14 refills, mean width **2.428571429**, digest
+  `5a38c7070d7badeb`, and last token 16. The recorded control was
+  **10.050624654 tok/s** with the same width/digest/token. Steady candidate
+  draft stages were **36.58--36.88 ms**, verify about **186 ms**, sampling
+  **0.64--0.72 ms**, and ordinary commit about **2.02--4.43 ms**.
+- Rebuilt the repository dylib with the explicit active MLX prefix and launched
+  the exact real-131K PERF-A068 server contract. Resolved arguments retained
+  131,072 context/token pools, one request, five auxiliary slots, 8,192-token
+  chunks, seed 42, both parsers, incremental output, language-only mode, and
+  disabled radix/graphs.
+- The exact sampled `6237+128` request completed exact 6,365 tokens with
+  `finish_reason=length`, **11.303 generation tok/s**, **109.711 observed
+  prompt tok/s**, **56.849497 s TTFT**, and **68.085129 s** end to end. It
+  reproduced the all-affine baseline reasoning/output SHA-256
+  `555ba1da1dc6fc0f7969f2a67261a05b33c41136d8fdbfa607e8653a05a88fe2`.
+  This independent diagnostic sample does not establish a throughput change.
+- Natural-prompt confidence covered about **0.1895--0.9998**. Near-one blocks
+  often accepted all seven proposals, and exact stochastic p/q sometimes
+  rejected high-confidence blocks. This validates the trained signal as an
+  expected-survival input and rejects treating it as a deterministic accept
+  label.
+- Post-request health passed. Foreground server PID 12220 and children
+  12223--12225 exited through `Ctrl+C`; port 30000 and matching processes are
+  clear. Memory returned to 93% free with zero throttled pages and normal
+  thermal/performance status.
+- Next: generalize the common verifier from fixed seven-draft geometry to a
+  checked 1--7 prefix, measure each M1 Max target cost tier, and select the
+  native confidence budget from cumulative survival divided by complete cycle
+  cost.

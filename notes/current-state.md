@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-03:58 PDT.
+04:11 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -243,6 +243,14 @@ verifier/accepted-state commit owner with DFlash2. The affine artifact reaches
 **10.050625 tok/s** in the first direct sampled screen and **11.242 tok/s** on
 the exact real-131K-pool sampled `6237+128` request. Full reasoning, exact token
 counts, health, and the language-only model surface pass.
+
+The native DSpark lane now also evaluates the checkpoint's trained confidence
+head under the existing trace flag. It combines each final draft hidden row
+with its previous-token Markov embedding and emits the exact seven FP32-sigmoid
+survival probabilities while preserving proposal width and the direct/served
+baseline digests. The natural prompt spans roughly **0.1895--0.9998** and
+confirms the signal is probabilistic. Bounded-width verifier profiling and a
+cost-based cumulative-survival budget are the active follow-up.
 
 Two DSpark proposal-fidelity candidates are closed. Independently applying
 target top-k/top-p filtering to each draft row fell to **6.997461 tok/s** and
