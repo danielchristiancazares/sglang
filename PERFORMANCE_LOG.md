@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max native Qwen3.8 DSpark v2, sampled direct `128 / 1 warm / 32 timed` | official BF16 **5.746863 tok/s**, width **2.285714**, steady draft **44.54--44.75 ms** | affine-W4 **10.050625 tok/s**, width **2.428571**, steady draft **36.55--40.07 ms** | first functional screen; trajectories differ, so throughput is admission evidence rather than a precision ranking; both remain below 20 | PERF-A068 direct command with the same target, seed, sampler, verifier, and only the draft directory changed | 2026-09-01 03:44 PDT |
 | M1 Max DFlash2 proposal policy, sampled served `6237+128`, real 131K pools | learned selector **15.328 tok/s** | greedy target-head proposal **9.512 tok/s** | **-5.816 / -37.944%**; synthetic direct mean **37.518731 tok/s** was nonrepresentative | PERF-A065 server/control with temporary `SGLANG_MLX_NATIVE_DFLASH_GREEDY_DRAFT=1` | 2026-09-01 03:17 PDT |
 | M1 Max native DFlash2 draft precision, sampled direct `128 / 32 warm / 128 timed` | affine-W4 **30.992508 tok/s**, width **6.684211** | official dense BF16 **9.044043 tok/s**, width **2.114754** | **-21.948464 / -70.819%**; dense loader retained for compatibility, BF16 production selection rejected | PERF-A062 direct command, one candidate dylib, changing only the final draft directory | 2026-09-01 03:10 PDT |
 | M1 Max native full-Q4 plus affine-W4 DFlash2, sampled direct `128 / 32 warm / 128 timed` | SG16/B16 mean **17.651701 tok/s**, mean emitted width **4.3** | SG16/B32 **31.347246 / 31.354397 / 31.268351 / 31.330814 / 31.335863 tok/s**, mean **31.327334**, mean emitted width **6.684211** | **+13.675633 / +77.475%**; direct throughput clears 20 by **11.327334 tok/s**; steady cycle is about **214--217 ms** | add `SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1` to the signed PERF-A059 command; SG16/B32 is in `3bae8a5e67` | 2026-09-01 02:54 PDT |
@@ -782,7 +783,7 @@ tree throughput can be ranked for production.
 | PERF-A065 | Qualify SG16/B32 through sampled serving and a Codex `xhigh` tool turn with real 131K pools. | Native DFlash server, OpenAI streaming endpoint, Responses API, and Codex client | Behavior qualified; acceptance optimization active | Exact `6237+128` completes at **15.328 tok/s**, **109.106 prompt tok/s**, and exact 6,365 total tokens. Codex thread `01a05c69-215f-7fb0-a7f8-1425c9b2ae5a` executes one command, returns the exact final marker, and exits zero. |
 | PERF-A066 | Load the official 81-tensor BF16 DFlash2 checkpoint directly. | Shared native QLinear execution and exact DFlash checkpoint loader | Compatibility retained in signed `6cf95442cc`; BF16 performance choice rejected | Dense BF16 loads and completes exact direct decoding. It reaches **9.044043 tok/s** versus adjacent affine-W4 **30.992508**, with width **2.114754** versus **6.684211** and about **42 ms** versus **26--32 ms** draft work. |
 | PERF-A067 | Replace learned selector sampling with the official worker's greedy LM-head proposal rule. | Native DFlash proposal and exact rejection/residual sampler | Rejected and removed | Five direct samples misleadingly average **37.518731 tok/s** and width **7.9375**. The representative real `6237+128` request reaches only **9.512 tok/s**, **37.944%** below the learned selector. |
-| PERF-A068 | Integrate the official Qwen3.8 DSpark v2 draft into the native MLX C++ lane. | Immutable draft artifact, native full-attention backbone, rank-256 Markov proposal, target verifier, and accepted-state commit | BF16 and affine-W4 artifacts ready; native runtime active | Revision `b9a5dbdf03bc999c6c73c426b19c2d9041cea393` is pinned. A checked C++ converter produced a distinct 136-tensor, 1,136,258,326-byte affine-W4 derivative with embedded source identity; native execution follows. |
+| PERF-A068 | Integrate the official Qwen3.8 DSpark v2 draft into the native MLX C++ lane. | Immutable draft artifact, native full-attention backbone, rank-256 Markov proposal, target verifier, and accepted-state commit | Native BF16/affine-W4 execution and correctness gates pass; sampled fidelity optimization active | The exact loaders, five-layer full-attention YaRN draft, sequential Markov proposal, exact dense-q verifier, and accepted-state commit run end to end. Affine-W4 reaches **10.050625 tok/s** on the first matched `128/1/32` screen; greedy reaches **35.825160 tok/s**; representative sampled serving remains next. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -3634,3 +3635,34 @@ tree throughput can be ranked for production.
 - Next: add exact native loading and DSpark full-attention/Markov execution,
   reusing the already-qualified target verification and recurrent commit
   owners.
+
+### 2026-09-01 03:44 PDT - PERF-A068 native DSpark execution
+
+- Added exact native loading for the official 62-tensor BF16 and derived
+  136-tensor affine-W4 DSpark contracts. The five full-attention draft layers
+  use their shared target-hidden projection, full-context per-layer K/V,
+  Qwen3 RMS normalization, and the checkpoint's YaRN parameters. Seven
+  semi-autoregressive rows use the shared target embedding/head and sequential
+  rank-256 vanilla Markov correction.
+- Generalized the existing exact target verifier and accepted-prefix commit
+  owner across DFlash2 sparse proposals and DSpark dense proposals. The
+  established DFlash sampled regression reproduced **31.283141 tok/s**, 19
+  refills, mean width **6.684211**, digest `46bd4bb035b72c2b`, and last token
+  20, matching the selected trajectory exactly.
+- The first matched sampled `128 / 1 warm / 32 timed` DSpark screens reached
+  **10.050625 tok/s**, width **2.428571**, with affine-W4 and **5.746863
+  tok/s**, width **2.285714**, with BF16. Steady target verification remained
+  about **186 ms**; affine-W4 draft work was generally **36.55--40.07 ms**
+  and BF16 was **44.54--44.75 ms**. Different generated trajectories make
+  this a functional admission screen. The affine-W4 greedy control reached
+  **35.825160 tok/s**, width **8.0**, after warmup.
+- The independent C++ YaRN reference passes at offsets 0, 9,000, and 131,071;
+  maximum absolute errors are `5.96046e-08`, `0.000168275`, and `0.0015974`.
+  Affine QMM, recurrent commit lengths 1--7, q/k normalization and RoPE,
+  recurrent norm/gate, residual RMSNorm, and causal-convolution parity all
+  pass. Strict warning-as-error library/tests, test formatting, the focused
+  native suite (**8 passed**, 16 existing warnings), and `git diff --check`
+  pass.
+- Decision: retain native execution as the DSpark optimization base. The
+  representative sampled serving and exact 131K capacity gates remain open;
+  proposal-distribution fidelity is the immediate performance owner.
