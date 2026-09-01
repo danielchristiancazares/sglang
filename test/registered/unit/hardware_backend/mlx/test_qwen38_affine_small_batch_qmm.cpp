@@ -120,21 +120,19 @@ bool RejectsInvalidShape() {
   return false;
 }
 
-bool RejectsUnsupportedM8Shape() {
+bool RejectsUnsupportedM8Shape(int input_features, int output_features) {
   constexpr int kRows = 8;
-  constexpr int kInputFeatures = 256;
-  constexpr int kOutputFeatures = 256;
   const auto input_values = MakeValues(
-      static_cast<std::size_t>(kRows) * kInputFeatures, 0.017f, 0.25f);
+      static_cast<std::size_t>(kRows) * input_features, 0.017f, 0.25f);
   const auto weight_values =
-      MakeValues(static_cast<std::size_t>(kOutputFeatures) * kInputFeatures,
+      MakeValues(static_cast<std::size_t>(output_features) * input_features,
                  0.013f, 0.125f);
   mx::array input = mx::astype(
-      mx::array(input_values.data(), {1, kRows, kInputFeatures}, mx::float32),
+      mx::array(input_values.data(), {1, kRows, input_features}, mx::float32),
       mx::bfloat16);
   mx::array dense_weight =
       mx::astype(mx::array(weight_values.data(),
-                           {kOutputFeatures, kInputFeatures}, mx::float32),
+                           {output_features, input_features}, mx::float32),
                  mx::bfloat16);
   std::vector<mx::array> quantized =
       mx::quantize(dense_weight, 64, 4, "affine");
@@ -161,7 +159,8 @@ int main() {
   }
   if (!CheckParity(8, 512, 256, 4) || !CheckParity(8, 5120, 64, 4) ||
       !CheckParity(8, 512, 6144, 4) || !CheckParity(6, 64, 6144, 4) ||
-      !RejectsInvalidShape() || !RejectsUnsupportedM8Shape()) {
+      !RejectsInvalidShape() || !RejectsUnsupportedM8Shape(256, 256) ||
+      !RejectsUnsupportedM8Shape(512, 16)) {
     return 1;
   }
   std::cout << "qwen38 affine small-batch QMM parity passed\n";
