@@ -3260,8 +3260,10 @@ option, or serving dispatch was added.
   functional and **98.576%** slower than the selected 1K-pool Q5 mean.
 - Reopen only if: model or KV residency shrinks materially, the memory budget
   changes, or a measured residency control eliminates the paging boundary.
-- Related commit or revert: PERF-A086 records this capacity result; no source
-  change was made.
+- Related commit or revert: PERF-A086 records this capacity result. PERF-A088
+  changes only the token embedding to Q4_K, recovers 1.37 GB of runtime
+  residency, and improves the matched exact-pool result to **0.315 tok/s**;
+  the unchanged BF16 cache still pages heavily.
 
 ## PERF-FA117 - Stock float8 KV tensors on MPS
 

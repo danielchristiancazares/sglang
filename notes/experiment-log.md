@@ -20860,3 +20860,83 @@ mean 13.929045  17.125658 446.051        39.730
   reducing resident bytes. The next candidate is native Q5_K token embedding
   support for the immutable 19.68 GB source artifact; a uint8-backed native
   compressed-KV owner remains the larger subsequent lever.
+
+### 2026-09-01 10:55 PDT - Q4_K token embedding recovers 1.37 GB and triples 131K decode
+
+- Continued from signed record commit
+  `6aa23bdbdb28f9dae1ab1ad8a90790e8161b038f`
+  (`docs(perf): record Q5 131K residency boundary`) with the same three
+  pre-existing user-owned native-engine paths left untouched. Port 30000,
+  server/client/converter/compiler work, memory, and thermals were clear before
+  conversion and each launch.
+- The pinned llama.cpp build 10547 dry run used:
+
+  ```bash
+  /private/tmp/llama.cpp-q5/build-q5/bin/llama-quantize --dry-run \
+    --allow-requantize --token-embedding-type Q4_K \
+    /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-Q5_K_S.gguf \
+    COPY 4
+  ```
+
+  It enumerated all 866 tensors and changed exactly `token_embd.weight` from
+  Q5_K **833.59 MiB** to Q4_K **682.03 MiB**. All other 865 tensors retained
+  COPY. Predicted model size moved from **18,758.73 MiB** to
+  **18,607.16 MiB**.
+- Materialized the distinct artifact with the same arguments plus output path
+  `/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenQ4_K.gguf`.
+  It is exactly **19,522,020,960 bytes**, **1,827,635,200 bytes / 1.702118
+  GiB** smaller than the F16-embedding derivative, and verifies as SHA-256
+  `8ed3117aff80d105a302da708221364579d483964c4c07d56eb6091a774b06ae`.
+  The immutable source remained untouched.
+- Existing actual-file native-MPS parity at 16 rows and batch one passed:
+
+  | Family | Tensor | Maximum absolute / relative error |
+  |---|---|---:|
+  | Q4_0 | `blk.64.attn_k.weight` | `4.76837e-07 / 2.05552e-07` |
+  | Q4_K | `token_embd.weight` | `4.17233e-07 / 2.00909e-07` |
+  | Q5_K | `blk.0.attn_gate.weight` | `7.15256e-07 / 2.01677e-07` |
+  | Q6_K | `output.weight` | `3.8743e-07 / 1.97655e-07` |
+
+  The focused token-id gather comparison also passed exact Q4_K embedding
+  parity at the established `rtol=atol=1e-6` gate.
+- A 1,024-token server used the established conservative target-only command
+  with only the model path changed. Weight loading took **42.93 s**, runtime
+  residency fell from 21.37 GB to **20.00 GB**, and available memory after
+  load rose from 10.62 GB to **11.99 GB**. Root/listener 23155 owned resource
+  tracker, scheduler, and detokenizer 23161/23162/23163. Health and language-
+  only metadata passed.
+- One ordinary sampled exact `128+32` request completed at **7.086 generation
+  tok/s**, **5.809 prompt tok/s**, **22.033405 s TTFT**, and
+  **26.408174 s E2E**, with exact token counts, 32 reasoning-only fragments,
+  `finish_reason=length`, and output SHA-256
+  `5b44247f4cd0cf0f67e64e7eac9c286c31a8aed489628eeac318efb2e1e254c3`.
+  A greedy arithmetic request returned final answer **703** with preserved
+  reasoning. The tool gate returned exactly one
+  `multiply({"a":37,"b":19})` call with `finish_reason=tool_calls`.
+- After a verified foreground shutdown and full cleanup, the exact-capacity
+  launch changed only `context_length=max_total_tokens=131072`, chunked
+  prefill 2,048, and maximum prefill 8,192. Weight loading took **69.68 s** at
+  **20.00 GB**, leaving **11.99 GB**. One FP32 Mamba slot and the exact
+  **4.00 GB K + 4.00 GB V** BF16 pool left **0.99 GB** available. Resolved
+  `max_req_input_len` remained 131,066. Root/listener 23315 owned
+  23318/23319/23320; health, maximum model length 131,072, and language-only
+  metadata passed.
+- The matched exact sampled `128+32` diagnostic completed at **0.315
+  generation tok/s**, **5.616 prompt tok/s**, **22.790664 s TTFT**, and
+  **121.240667 s E2E** with exact length, 32 reasoning fragments, and output
+  SHA-256
+  `bfb3adf4f22acceef24d683fb88b59ec615001306b576e7e922720aff74ad125`.
+  This is **3.088235x / +208.823529%** over the otherwise matched F16-
+  embedding 131K result of 0.102 tok/s. During the request memory pressure
+  reached **27--36% free** and swap grew as high as **1,819.81 MiB used**;
+  pages throttled remained zero and thermals stayed normal.
+- Foreground `Ctrl+C` completed both shutdowns. All eight known PIDs, port
+  30000, matching server/client/converter/compiler processes, and listeners
+  were clear after final cleanup. Memory recovered to **95% free**, pages
+  throttled remained zero, and reported thermal/performance state was normal.
+- Decision: retain the Q4_K token-embedding derivative as the smaller exact-
+  capacity Q5 artifact. It preserves the model's 865 other source tensors,
+  arithmetic, reasoning, and parsed tools while delivering a material 131K
+  residency win. The exact BF16 cache still drives paging and remains far
+  below the requested floor. Next: implement and qualify a native uint8-backed
+  attention-cache owner that removes another 4 GB from the 131K allocation.
