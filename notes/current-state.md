@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-07:41 PDT.
+08:22 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -168,6 +168,17 @@ the one explicitly retained stochastic Codex narration retry are in the latest
 experiment-log entries.
 
 ## Active Apple handoff
+
+The requested Q5 lane now has an immutable local target. Bartowski's
+`Qwen3.8-27B-Q5_K_M.gguf` is pinned at revision
+`f0eec4a4bb4975114a030d048952d83c0a53c034`, occupies exactly
+20,752,787,040 bytes, and verifies as SHA-256
+`e731e180460b906f373294a4e2de10541e80ee676af7f8c949a84dbb6ed3caa8`.
+Actual-file native-MPS batch-one parity passes for the checkpoint's Q4_0,
+Q5_K, and Q6_K tensor families. A served Q5 baseline, real 131K pool, 20 tok/s
+admission window, and Codex `xhigh` work gate remain due. The affine-Q4 lane
+below is retained optimization substrate and comparison evidence; it does not
+by itself satisfy the Q5 target.
 
 The native M1 Max Qwen3.8 lane now clears the requested 20 tok/s served floor
 in two independent real-131K five-sample windows when recurrent QKV
