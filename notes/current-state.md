@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-03:10 PDT.
+03:17 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -227,6 +227,13 @@ issues one exact command, observes exact stdout, returns exact
 cycle win is production-reachable; this prompt's sampled proposal acceptance
 leaves **4.672 tok/s** to the sustained admission requirement. Proposal
 precision/selection and further verifier work are the next active branch.
+
+The official worker's greedy LM-head proposal rule is closed for sampled
+production. It reached a misleading five-sample direct mean of **37.518731
+tok/s** and width **7.9375** on the repeated-token harness, then only **9.512
+tok/s** on the exact natural `6237+128` request, **37.944%** below the learned
+selector. The temporary switch was removed. Proposal-policy candidates now
+require the real 6.2K request as their admission screen.
 
 ## Native backend roadmap handoff
 

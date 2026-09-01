@@ -2652,3 +2652,35 @@ option, or serving dispatch was added.
 - Related commit or revert: signed `6cf95442cc` retains dense loading as
   official-checkpoint compatibility; production continues to select the
   affine-W4 artifact.
+
+## PERF-FA097 - Greedy DFlash2 proposals for sampled xhigh serving
+
+- Hypothesis: matching the official SGLang DFlash worker's greedy target-head
+  proposal rule would eliminate selector work and raise acceptance by choosing
+  each draft position's most likely token.
+- Scope: affine-W4 DFlash2 with the selected SG16/B32 verifier, exact
+  temperature-1/top-p-0.95/top-k-20 target distribution, exact deterministic-q
+  rejection, and unchanged real 131K pools.
+- Attempted change: added an experimental C++ environment switch that replaced
+  the learned top-16 selector distribution with LM-head argmax proposals. The
+  residual sampler used a one-token proposal support with probability one.
+- Benchmark evidence: five synthetic direct samples reached **37.537356,
+  37.505550, 37.500870, 37.532174, and 37.517706 tok/s**, mean
+  **37.518731**, with mean width **7.9375**. The exact real `6237+128` sampled
+  request then fell to **9.512 tok/s**, versus learned-selector **15.328
+  tok/s**, and took **70.236581 s** end to end.
+- Correctness evidence: both direct and served runs completed exact requested
+  token counts. The real request ended with `finish_reason=length` and output
+  SHA-256 `62bc27d075d3d68fd4eb9fbbf8d4db312390c505bd36ddfe578086720c2b656e`.
+- Failure mode: the synthetic repeated-token prompt makes later block tokens
+  nearly deterministic and overstates greedy acceptance. Natural sampled
+  reasoning frequently accepts zero or one greedy token, reducing real
+  throughput by **5.816 tok/s / 37.943633%** from the selected learned
+  selector.
+- Why not to retry unchanged: the production-shaped request directly rejects
+  the candidate, and its apparent **19.763562%** direct gain is a benchmark
+  artifact.
+- Reopen only if: the production contract changes to greedy target sampling,
+  or a representative prompt corpus shows a matched learned-selector loss.
+- Related commit or revert: the experimental switch was removed with
+  `apply_patch`; no repository commit contains the candidate.
