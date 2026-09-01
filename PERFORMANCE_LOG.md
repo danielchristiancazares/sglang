@@ -4,7 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
-| M1 Max mixed 4.951-bpw Q5-class target, sampled direct `128 / 32 warm / 128 timed` | generic MLX QMM **18.121698566 tok/s** | Q5 batch-one QMV only **19.032187257 tok/s** | **+0.910488691 tok/s / +5.024%**; dense mixed projections now load; A094 **19.010697650**, A095 **19.032187257** with the same digest, so A095 is neutral; **0.967812743 tok/s** remains to the floor | pinned mixed revision `596b8067...8340`, seed 42, selected command-buffer controls, `SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1`, Q4 QMV unset | 2026-09-01 15:05 PDT |
+| M1 Max mixed 4.951-bpw Q5-class target, sampled direct `128 / 32 warm / 128 timed` | generic MLX QMM **18.121698566 tok/s** | selected A094 Q5 QMV ten-sample mean **18.993383731 tok/s**; first A095 screen **19.032187257** | selected gain **+0.871685165 tok/s / +4.811%**; exact digest stable; BF16 b/a fusion ten-sample mean **18.993221731** is flat; **1.006616269 tok/s** remains to the floor | pinned mixed revision `596b8067...8340`, seed 42, selected command-buffer controls, `SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1`, Q4 QMV unset | 2026-09-01 15:23 PDT |
 | M1 Max affine-Q5/G64 target-only batch-one decode, sampled direct `128 / 32 warm / 128 timed` | native affine-Q5 target **16.322505765 tok/s** | opt-in direct Q5 QMV **17.823163930 tok/s** | **+1.500658165 tok/s / +9.194%** in the first complete screen; representative parity passes; **2.176836070 tok/s** remains to the floor and a repeated matched window is pending | pinned Q5 target, selected command-buffer controls, and `SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1`; PERF-A094/FA122/FA123/FA124 | 2026-09-01 12:43 PDT |
 | M1 Max affine-Q5 plus matched 5-bit MTP, deterministic direct `128 / 32 warm / 128 timed` | three-token block **17.919995235 tok/s**, width **3.0** | opt-in eight-token block **31.380317186 tok/s**, width **8.0**; exact sampled p/q arms peak at **6.380162135 tok/s**, width **2.285714286** | **+13.460321951 tok/s / +75.113%** for the deterministic execution-cost probe, clearing 20 by **11.380317186 tok/s**; native sampling preserves its configured distribution and rejects this proposal route for production | pinned Q5 target/MTP snapshots plus `SGLANG_MLX_NATIVE_MTP_BLOCK_SIZE=8`; PERF-A093/FA120/FA121 | 2026-09-01 12:08 PDT |
 | M1 Max affine-Q5 target plus DFlash2, sampled direct `128 / 32 warm / 128 timed` | generic affine-Q5 verifier **11.506669050 tok/s**, M=8 about **363--368 ms** | native Q5 M=8 K-split **13.721235888 tok/s**, M=8 about **228--229 ms** | **+2.214566838 tok/s / +19.246%**; representative five-bit unpack parity passes; target-only remains faster at **16.322505765 tok/s** | PERF-A092 candidate dylib with the exact PERF-A091 DFlash command | 2026-09-01 11:49 PDT |
@@ -834,19 +834,20 @@ tree throughput can be ranked for production.
 | PERF-A092 | Decode affine five-bit weights inside the shared M=8 K-split verifier. | Native Metal SG16/B32 target QMM, affine Q5/G64 bitstream, and exact p/q DFlash decode | Retained opt-in verifier win; target-only remains selected | Representative K/N parity passes at maximum error **0.03125 / 0.0625 / 0.107422**. M=8 falls from about **363--368 to 228--229 ms** and direct throughput rises **11.506669050 -> 13.721235888 tok/s** (**+19.246%**). The unchanged full-Q4 path preserves exact digest/width and improves in the adjacent sample. |
 | PERF-A093 | Align the official five-bit MTP head with the selected M=8 verifier and preserve native sampling through exact p/q rejection. | Pinned Q5 MTP sidecar, recurrent one-layer draft, configurable two-through-eight-token block, and shared verifier | Exact sampled semantics retained; deterministic M=8 is an execution-cost probe | Matched deterministic blocks three/eight reach **17.919995235 / 31.380317186 tok/s** at widths **3 / 8**, preserving the target digest. Exact sampling completes through dense-q rejection, while the best calibrated screen reaches **6.380162135 tok/s**, width **2.285714286**. The existing Q5 target-only **16.322505765 tok/s** remains production-selected. See PERF-FA120/121. |
 | PERF-A094 | Decode affine-five-bit batch-one target projections directly and reuse each activation fragment across output rows. | Native MLX Metal custom kernel, affine Q5/G64 packed weights, and guarded `QLinear` dispatch | Retained opt-in; repeated matched and production gates active | K/N `512/64`, `5120/128`, and `17408/32` parity pass at maximum error **0.03125 / 0.03125 / 0.0234375**. The selected four-SIMD/four-row/two-pack K-specialized kernel reaches **17.823163930 tok/s**, **+9.194%** over the original Q5 target result. It remains **2.176836070 tok/s** below the floor. See PERF-FA122/123/124. |
-| PERF-A095 | Collapse each lane's two five-byte Q5 packs from four weight-load instructions to three exact packed loads. | Selected affine-Q5 batch-one Metal kernel only | Implemented locally; GPU gate waiting on a fresh custom-Metal session | The candidate reads bytes `0..3`, `4..7`, and `8..9` as `packed_uchar4`, `packed_uchar4`, and `packed_uchar2`, then performs the same 16 FP32 FMAs. Strict host dylib/test compilation passes. A bounded parity run exits 124 after 45 seconds in the inherited custom-event wait; no process survives. |
-| PERF-A096 | Reduce the aggregate Q5 weight stream with a quality-oriented mixed affine-Q4/Q5 policy. | Immutable `maglun/Qwen3.8-27B-MLX-Mixed-4.95bpw` text shards and the existing native per-tensor bit-width inference | Downloaded and structurally qualified; fresh Metal session required | Revision `596b8067...c8340` contains exactly **16,645,209,088** text tensor bytes at **4.9510 aggregate BPW**, **9.999%** below the uniform-Q5 tensor payload. All four shard hashes match the release manifest. The native inventory audit finds all 1,655 required language tensors, 162 Q4 plus 240 Q5 affine matrices at group 64, zero extra/missing language keys, and zero packed-shape errors. Native-baseline and pure-stock-MLX smokes both hit bounded current-session event waits, so no throughput value is attributed. |
-| PERF-A097 | Restore the Qwen3.8 MTP hidden-state contract and screen the published smaller draft head. | Native target/MTP handoff, matched one-layer sidecar, exact p/q sampling, and accepted-cache lifecycle | Loader and opt-in seed correction committed; fresh-session ablation required | Native drafting seeded from the raw target residual even though upstream Qwen3.5 and the pinned MTPLX contract use the post-final-norm hidden. Native concat and recurrent post-norm match. Signed `0da5c5a135` accepts the head's `mtp.` namespace; signed `1b328149c7` routes sampled and greedy drafting through an opt-in post-norm seed. The exact INT4/G64 head is **238,934,249 bytes**, preserves all seven BF16 norms bit-for-bit, and records depth-three acceptance **0.958763 / 0.872852 / 0.759450**. Strict compilation passes; runtime remains gated on restart. |
+| PERF-A095 | Collapse each lane's two five-byte Q5 packs from four weight-load instructions to three exact packed loads. | Selected affine-Q5 batch-one Metal kernel only | Runtime-correct and neutral; unselected | Fresh-session parity passes at maximum error **0.03125 / 0.03125 / 0.0234375**. Representative A094/A095 microbenchmarks converge, and mixed full-model screens reach **19.010697650 / 19.032187257 tok/s** with identical digest `d0193f6d413b68c1`; the **0.113%** movement carries no promotion claim. |
+| PERF-A096 | Reduce the aggregate Q5 weight stream with a quality-oriented mixed affine-Q4/Q5 policy. | Immutable `maglun/Qwen3.8-27B-MLX-Mixed-4.95bpw` text shards and the existing native per-tensor bit-width inference | Active Q5-class target; speed floor still open | Revision `596b8067...c8340` contains **16,645,209,088** text tensor bytes at **4.9510 aggregate BPW**, with 162 Q4 plus 240 Q5 affine matrices. The dense BF16 loader fix admits all recurrent b/a projections. Selected A094 Q5 QMV reaches a ten-sample mean **18.993383731 tok/s** with stable digest, leaving **1.006616269 tok/s** to 20. |
+| PERF-A097 | Restore the Qwen3.8 MTP hidden-state contract and screen the published smaller draft head. | Native target/MTP handoff, matched one-layer sidecar, exact p/q sampling, and accepted-cache lifecycle | Loader retained; published Q4 head rejected for throughput | Signed `0da5c5a135` accepts the head's `mtp.` namespace and signed `1b328149c7` provides the post-norm seed. Mixed-target block-three sampled screens reach **9.122242179 tok/s**, post-norm **9.507655940**, and Q4 QMV **11.341033334**, all below target-only. See PERF-FA127. |
 | PERF-A098 | Replace ten scalarized Q5 weight-byte loads with five aligned 16-bit loads. | Selected PERF-A095 Metal Q5 batch-one kernel | Offline AIR candidate; evaluate after PERF-A095 | Apple Metal 32023.883 lowers the three packed-byte ranges to ten `i8` loads. A `packed_ushort4` plus scalar `ushort` form lowers to five aligned-two `i16` loads. K-multiple-512 row strides and ten-byte lane offsets prove two-byte alignment. Runtime parity and throughput remain pending. |
 | PERF-A100 | Reconstruct each Q5 lane as three continuous bit windows after the aligned 16-bit loads. | Selected PERF-A095 Metal Q5 batch-one kernel | Strict full-source candidate prebuilt; fresh-session runtime pending | A two-kernel Metal 3.2 comparison confirms the byte-window form emits ten aligned-one `i8` loads and ten byte extensions, while the continuous-bitstream form emits five aligned-two `i16` loads and five word extensions. The latter builds two 32-bit windows plus one 16-bit tail and has only two five-bit fields crossing a window boundary. The full native dylib and standalone parity executable compile with warnings as errors from current HEAD. Runtime parity and matched throughput remain pending. |
 | PERF-A101 | Pair adjacent SIMD lanes so one lane loads both ten-byte Q5 packs through aligned 32-bit words. | Selected affine-Q5 batch-one Metal kernel | Strict full-source candidate prebuilt; fresh-session Metal gate pending | Each even lane loads five aligned `i32` words covering its 20-byte pair; three `simd_shuffle_up` operations supply the odd lane. Dynamic weight-load operations per 32-lane SIMD group fall from 160 five-word 16-bit loads to 80 five-word 32-bit loads while preserving the same 320 bytes. Apple AIR retains the masked even-lane branch, five aligned-four loads, and three native shuffles. A deterministic C++ pack/unpack harness passes **1,001,026** cases; the full dylib and standalone Metal parity executable compile strictly from current HEAD. |
 | PERF-A102 | Preserve committed decode-only MTP attention history across sampled speculative cycles. | Native Qwen3.8 MTP cache lifecycle, target-hidden pairing, and exact p/q verification | Opt-in source candidate prebuilt; fresh-session acceptance and throughput pending | The candidate retains the current pending-token entry, discards later provisional entries, and appends accepted draft tokens paired with the verifier's committed hidden prefix. Absolute target/MTP offset checks reset history after a target-only fallback. Prompt history and position-origin changes stay outside this arm. Strict C++20/O3 compilation and `git diff --check` pass from signed `711214b27c`; the candidate dylib is `b4f3b222...a5d`. |
-| PERF-A103 | Replace each lane's five aligned 16-bit Q5 loads with three overlapping aligned 32-bit loads. | Selected affine-Q5 batch-one Metal kernel and unchanged 320-byte standard packing | Strict full-source candidate prebuilt; fresh-session Metal gate pending | Adjacent lanes read one common 32-bit word, yielding 96 dynamic loads per SIMD group versus PERF-A100's 160 and PERF-A101's 80 plus 96 shuffles. The union of addresses stays exactly 320 bytes. AIR emits three aligned-four loads, two funnel shifts, and selects per lane. A C++ pack/unpack harness passes **1,016,386** cases; strict full dylib and Metal parity-executable builds pass from signed `92a979bce7`. |
-| PERF-A104 | Replace sixteen scalar FP32 weight/input FMAs with four `float4` dot products. | PERF-A103 aligned-overlap Q5 load geometry and per-lane FP32 reduction | Strict full-source candidate prebuilt; fresh-session numeric and behavior gates pending | An explicit isolated Metal control lowers to sixteen `air.fma.f32` calls. The candidate lowers to four `air.dot.v4f32` calls plus three FP32 adds. It changes reduction grouping, so no equivalence or throughput is attributed before Metal parity, deterministic digest, sampled semantics, and matched timing. The full dylib and parity executable compile strictly from signed `6e181e68d2`. |
+| PERF-A103 | Replace each lane's five aligned 16-bit Q5 loads with three overlapping aligned 32-bit loads. | Selected affine-Q5 batch-one Metal kernel and unchanged 320-byte standard packing | Runtime-correct and rejected | Production-shape digests match A094. Order/reverse `100 / 1000` screens are consistently slower across gate/up, down, attention-output, and value shapes. See PERF-FA125. |
+| PERF-A104 | Replace sixteen scalar FP32 weight/input FMAs with four `float4` dot products. | PERF-A103 aligned-overlap Q5 load geometry and per-lane FP32 reduction | Runtime-correct and rejected | Representative parity and all four production-shape digests match A094. Order/reverse timings are neutral and do not fund changed FP32 reduction grouping. See PERF-FA125. |
 | PERF-A105 | Measure every prebuilt affine-Q5 batch-one kernel through one deterministic source-identical harness. | Direct native Q5/G64 QMV at representative Qwen3.8 gate/up, down, attention-output, and value-projection shapes | Retained benchmark; fresh-session measurements pending | The C++20 harness generates fixed packed weights, scale/bias, and input data; synchronizes each timed launch; and reports mean latency, effective streamed GB/s, first output, and an FNV-1a digest over the complete BF16 result. Strict, formatted builds are pinned for A094/A095/A100/A101/A103/A104/A106/A107/A108. Matching digests gate load-only arms; A104 additionally requires numeric and full-model behavior qualification. |
-| PERF-A106 | Read each lane's sixteen BF16 activations through four aligned 64-bit words and convert them four at a time. | Selected A094 affine-Q5 batch-one kernel input owner; weight loads and FP32 order unchanged | Strict full-source candidate prebuilt; fresh-session parity and timing pending | Isolated Metal AIR changes sixteen dynamic scalar BF16 reads/conversions into four aligned-eight `<4 x bfloat>` reads and four `air.convert.f.v4f32.f.v4bf16` calls. Sequential input summation and all sixteen per-row FP32 FMAs retain their order. Lane and K-block offsets are 32 and 1,024 bytes, so an eight-byte-aligned input base remains aligned; live parity gates that premise. Dylib, parity, and shared benchmark executables compile strictly from signed `83c2731a3d`. |
+| PERF-A106 | Read each lane's sixteen BF16 activations through four aligned 64-bit words and convert them four at a time. | Selected A094 affine-Q5 batch-one kernel input owner; weight loads and FP32 order unchanged | Runtime-correct and rejected | Representative parity and every production-shape digest match A094. Order/reverse timings are neutral across the four exact shapes, with no durable margin. See PERF-FA125. |
 | PERF-A107 | Fetch each lane's sixteen BF16 activations through two aligned 128-bit vectors while retaining four `bfloat4` conversions. | Selected A094 affine-Q5 batch-one kernel input owner; A106 transaction-width comparison | Strict full-source candidate prebuilt; fresh-session parity and timing pending | AIR emits two aligned-sixteen `<2 x i64>` reads and the same four vector BF16-to-FP32 conversions as A106. Sequential input summation, weight reads, unpack, and all FP32 FMAs remain ordered identically. The 32-byte lane and 1,024-byte block offsets preserve a sixteen-byte-aligned base; live parity gates the premise. Dylib, parity, and shared benchmark builds pass from signed `414198a15c`. |
-| PERF-A108 | Let one lane in each four-lane quantization group load BF16 scale/bias and broadcast the pair. | Selected A094 affine-Q5 batch-one parameter owner; group-64 four-lane sharing | Strict full-source candidate prebuilt; fresh-session parity and timing pending | AIR preserves a leader-only branch with two BF16 loads/conversions and one `air.simd_shuffle.v2f32`; across a SIMD/output row it reduces scale/bias loads and conversions from 32+32 to 8+8 while keeping each lane's affine expression unchanged. Hardware coalescing versus shuffle cost remains a runtime question. Dylib, parity, and shared benchmark builds pass from signed `b1eeaf9f11`. |
+| PERF-A108 | Let one lane in each four-lane quantization group load BF16 scale/bias and broadcast the pair. | Selected A094 affine-Q5 batch-one parameter owner; group-64 four-lane sharing | Runtime-correct and rejected | Representative parity and all four production-shape digests match A094. Leader branching plus shuffles regress gate/up, down, attention-output, and value latency by roughly **4--22%**. See PERF-FA125. |
+| PERF-A109 | Combine each dense BF16 recurrent b/a projection pair at load and issue one 96-row matmul. | Mixed-Q5 native loader and `Engine::gated_delta` | Runtime-correct and rejected as neutral | Two independent balanced five-versus-five windows aggregate to control **18.993383731** and fusion **18.993221731 tok/s**. All 20 runs reproduce digest `d0193f6d413b68c1`; the **-0.000162000 tok/s** aggregate movement closes the unchanged fusion. See PERF-FA128. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -5101,3 +5102,88 @@ tree throughput can be ranked for production.
   A094 digest equality and matched A094/A108 timing decide whether explicit
   broadcast beats the hardware's ordinary duplicate-address coalescing. Only
   a measured win proceeds to combination with input/weight load candidates.
+
+### 2026-09-01 15:17 PDT - PERF-A103/A104/A106/A108 fresh-session resolution
+
+- Change: rebuilt the detached Q5 load, vector-input, dot-product, parameter-
+  broadcast, and geometry candidates from the signed post-rewrite source line.
+  No candidate source entered `main`.
+- Correctness evidence: A103, A104, A106, and A108 pass K/N `512/64`,
+  `5120/128`, and `17408/32` parity with maximum errors
+  **0.03125 / 0.03125 / 0.0234375**. Their complete gate/up, down,
+  attention-output, and value-projection digests match A094:
+  `245b954f045f18cc`, `d05378cc8066dc41`, `46a6c240b685fce9`, and
+  `2e6fc0972644b8d2`.
+- Benchmark evidence: process-isolated order/reverse `100 / 1000` mean
+  latencies in milliseconds were:
+  - A103 versus A094: gate/up **0.48196/0.43744 vs 0.47755/0.43195**;
+    down **0.44199/0.43844 vs 0.43641/0.42623**; attention-output
+    **0.33037/0.33116 vs 0.32052/0.32444**; value
+    **0.30889/0.30264 vs 0.29867/0.30034**.
+  - A106 versus A094: gate/up **0.47823/0.42967 vs 0.48474/0.42895**;
+    down **0.43564/0.44247 vs 0.44257/0.43328**; attention-output
+    **0.33184/0.33994 vs 0.33382/0.33134**; value
+    **0.29964/0.29922 vs 0.30004/0.30191**.
+  - A104 versus A094: gate/up **0.48029/0.43486 vs 0.48825/0.43295**;
+    down **0.44167/0.43766 vs 0.43445/0.43707**; attention-output
+    **0.32671/0.32127 vs 0.32530/0.32782**; value
+    **0.29846/0.29838 vs 0.29339/0.30381**.
+  - A108 versus A094: gate/up **0.53967/0.49802 vs 0.48134/0.42829**;
+    down **0.50928/0.51664 vs 0.42254/0.42942**; attention-output
+    **0.36516/0.36891 vs 0.32969/0.32940**; value
+    **0.30812/0.31230 vs 0.29600/0.29582**.
+- A shape-specific `2/4/2` and `8/4/2` geometry check converged with A094 in
+  order/reverse timing and supplied no durable five-percent route. The earlier
+  complete full-model geometry sweep already rejects global selection.
+- Decision: close A103, A104, A106, and A108 under the current compiler/GPU
+  topology. A107 remains a distinct unmeasured 128-bit activation-load arm.
+  PERF-FA125 records the shared reopening condition.
+
+### 2026-09-01 15:18 PDT - PERF-A096 mixed-target Q4 and MTP ablations
+
+- Change: varied only the existing Q4 batch-one QMV switch, Q5 batch-one QMV
+  switch, published Q4 MTP head, and post-norm seed around the pinned mixed
+  target. No source changed.
+- Benchmark evidence: exact direct `128 / 32 warm / 128 timed` results were
+  generic **18.121698566**, Q5 QMV only **19.032187257**, Q4 QMV only
+  **17.221199280**, and both QMV paths **17.987099210 tok/s**. Q4 custom
+  execution is therefore excluded from the selected mixed lane.
+- Published Q4 MTP block-three sampled smokes reached **9.122242179 tok/s**
+  at width **1.882352941**; post-norm seed reached **9.507655940** at width
+  **1.764705882**; Q4 QMV with the original seed reached **11.341033334** at
+  width **2.285714286**. All completed exact requested token counts.
+- Decision: retain the compatibility loader and opt-in seed correction. Close
+  the unchanged Q4 QMV and published-Q4-MTP compositions through
+  PERF-FA126/127.
+
+### 2026-09-01 15:23 PDT - PERF-A109 dense recurrent b/a fusion
+
+- Change: for the mixed artifact's 48 dense BF16 recurrent layers, materialized
+  each `[48,5120]` b/a weight pair as one `[96,5120]` tensor during load,
+  replaced two dense matmuls with one, split its result at row 48, and released
+  the original array references. Quantized checkpoints retain their existing
+  separate path.
+- Build evidence: the detached candidate dylib builds under C++20/O3 with
+  `-Wall -Wextra -Werror`; `git diff --check` passes. Candidate dylib SHA-256
+  is `5980d553005547de38564c640076df414baec1e717c1b1d123143439a10329d3`.
+- Benchmark contract: pinned mixed revision `596b8067...8340`, A094 Q5 QMV,
+  seed 42, `MLX_SDPA_BLOCKS=64`, 256 MiB/100-op command-buffer limits,
+  `MLX_METAL_FAST_SYNCH=1`, and exact `128 / 32 warm / 128 timed`. Every
+  process loaded the model independently.
+- First balanced window raw tok/s:
+  - control: **19.008018889, 19.018764842, 18.967816850, 18.975859871,
+    18.968574033**, mean **18.987806897**;
+  - fusion: **19.053691587, 18.981565248, 18.988260834, 19.011803229,
+    19.007743799**, mean **19.008612939**.
+- Independent balanced window raw tok/s:
+  - control: **18.998121449, 19.026949772, 18.971042050, 18.988260834,
+    19.010428720**, mean **18.998960565**;
+  - fusion: **18.982331387, 18.966904100, 18.995294950, 18.931278663,
+    19.013343509**, mean **18.977830522**.
+- Aggregate control is **18.993383731 tok/s** and fusion is
+  **18.993221731 tok/s**, a **-0.000162000 tok/s / -0.000853%** movement.
+  Every run produced digest `d0193f6d413b68c1` and last token `11406`.
+- Decision: reject and keep the candidate outside `main`. The second window
+  cancels the first window's small apparent gain; the dispatch reduction has
+  no measurable end-to-end value on this dense shape. PERF-FA128 records the
+  closure.
