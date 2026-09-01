@@ -124,6 +124,25 @@ int native_target_only_prefill_chunk_size() {
   return chunk_size;
 }
 
+int native_mtp_block_size() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_MTP_BLOCK_SIZE");
+  if (value == nullptr || *value == '\0') {
+    return 3;
+  }
+  int block_size = 0;
+  const std::string_view text(value);
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), block_size);
+  if (error != std::errc() || end != text.data() + text.size() ||
+      block_size < 2 || block_size > 8) {
+    throw std::runtime_error(
+        "SGLANG_MLX_NATIVE_MTP_BLOCK_SIZE must be an integer from 2 through "
+        "8");
+  }
+  return block_size;
+}
+
 float native_dflash_selector_temperature() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE");
@@ -2972,6 +2991,9 @@ void Engine::draft_append_context(
     dflash_append_context(captured, token_count);
     return;
   }
+  if (mtp_valid_) {
+    return;
+  }
   throw std::runtime_error("speculative draft context is unavailable");
 }
 
@@ -3903,6 +3925,51 @@ void Engine::spec_refill(int32_t token) {
   spec_buf_pos_ = 0;
   decode_scheduled_ = false;
   const int n_draft = mtp_block_ - 1;
+  if (sampling_enabled_) {
+    if (reasoning_open_ && max_reasoning_tokens_ > 0 &&
+        selected_reasoning_tokens_ + n_draft + 1 >=
+            max_reasoning_tokens_) {
+      target_only_spec_refill(token);
+      return;
+    }
+
+    mtp_reset();
+    array hidden = last_hidden_;
+    if (hidden.ndim() == 1) {
+      hidden = reshape(hidden, {1, 1, hidden.shape()[0]});
+    } else if (hidden.ndim() == 2) {
+      hidden = expand_dims(hidden, 1);
+    }
+    int32_t proposed = token;
+    std::vector<array> path;
+    std::vector<array> probabilities;
+    path.reserve(static_cast<size_t>(n_draft));
+    probabilities.reserve(static_cast<size_t>(n_draft));
+    for (int index = 0; index < n_draft; ++index) {
+      array ids(&proposed, {1, 1}, mx::int32);
+      hidden = mtp_forward(embed(ids), hidden);
+      array proposal = sampling_probabilities(lm_head_(hidden));
+      array next = astype(
+          mx::random::categorical(mx::log(proposal), -1), mx::int32);
+      eval(next);
+      proposed = next.item<int32_t>();
+      path.push_back(reshape(next, {1}));
+      probabilities.push_back(
+          reshape(proposal, {1, cfg_.vocab_size}));
+    }
+    verify_speculative_block(
+        token,
+        astype(mx::stack(path, 1), mx::int32),
+        array(0),
+        mx::stack(probabilities, 1),
+        array(0),
+        /*dense_proposal=*/true,
+        /*greedy=*/false,
+        /*confidence_cost_ratio=*/0.0f,
+        /*sparse_mean_q_threshold=*/0.0f,
+        "mtp");
+    return;
+  }
   int32_t drafts[8];
   mtp_draft(token, drafts, n_draft);
   snapshot();
@@ -3977,7 +4044,7 @@ void Engine::load_mtp(const std::string& mtp_dir) {
   mtp_layer_.attn.o_proj = load_qlinear(weights, "layers.0.self_attn.o_proj");
   mtp_layer_.attn.q_norm = require(weights, "layers.0.self_attn.q_norm.weight");
   mtp_layer_.attn.k_norm = require(weights, "layers.0.self_attn.k_norm.weight");
-  mtp_block_ = 3;
+  mtp_block_ = native_mtp_block_size();
   dflash_valid_ = false;
   dspark_valid_ = false;
   mtp_valid_ = true;
