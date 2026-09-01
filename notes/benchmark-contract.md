@@ -9,6 +9,8 @@ resolved launcher arguments.
 
 **Apple M1 Max Q2 addendum reconciled through:** 2026-08-30 20:46 PDT.
 
+**Apple M1 Max affine-Q5 addendum reconciled through:** 2026-09-01 14:33 PDT.
+
 ## Primary performance scoreboard
 
 The user-selected headline workload is exact uncached `6213+512` under ordinary
@@ -599,6 +601,42 @@ preceding rung; it may not exceed eight minutes without a separately recorded
 calibration. A missed deadline, lost process/listener, throttled pages, or a
 thermal/performance warning triggers verified leaf-first cleanup. The client
 timeout is only the terminal request bound. It never substitutes for polling.
+
+## Apple M1 Max affine-Q5 screening addendum
+
+The active Apple Q5 objective is sampled Qwen3.8-27B generation at least
+**20 tok/s**, a real **131,072-token** context/pool, Codex `xhigh` reasoning,
+and preserved arithmetic, tool-call, reasoning-content, and workspace behavior.
+Kernel microbenchmarks rank implementation candidates; only full-model and
+served-client gates establish objective progress.
+
+`benchmark/mac/bench_qwen38_affine_q5_qmv.cpp` is the shared direct-kernel
+screen for native affine-Q5/G64 batch-one decode. Build one executable from
+each candidate's `qwen38_engine.cpp`, then invoke it as:
+
+```text
+bench_qwen38_affine_q5_qmv K N WARMUP ITERATIONS
+```
+
+Use at least eight warm launches and fifty timed launches for each of these
+production shapes: gate/up `(5120, 17408)`, down `(17408, 5120)`, attention
+output `(6144, 5120)`, and value projection `(5120, 1024)`. Each launch is
+evaluated and synchronized, so the measured mean is dependent decode latency.
+Record every raw mean, effective streamed GB/s, first BF16 result, complete
+BF16 FNV-1a digest, candidate source identity, binary hash, boot, thermals,
+memory, process state, and ordering. Run at least five randomized candidate
+orders, then five reversed orders per shape.
+
+Standalone Metal parity runs before timing. Candidates that preserve FP32
+accumulation order must match the selected control's complete output digest.
+A candidate that deliberately regroups FP32 arithmetic requires bounded
+numeric parity plus deterministic full-target digest, sampled semantics, and
+served behavior. Rank only repeatable matched windows; preserve the uniform-Q5
+control and follow the kernel screen with full uniform-Q5 and mixed-Q5 target
+measurements. The final promotion still requires the real 131K pool, sampled
+20 tok/s floor, arithmetic `703`, exactly one `multiply({"a":37,"b":19})`
+tool call, reasoning continuity, language-only metadata, restart-default
+launch, and Codex 0.151.0 `xhigh` integration.
 
 ## Tree and SWOR experiments
 
