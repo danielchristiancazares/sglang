@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-02:17 PDT.
+02:28 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -192,23 +192,25 @@ the existing opt-in draft path.
 The native prefill owner divides DFlash target/capture work into internal
 2,048-token units while preserving one external SGLang prefill call. This
 completed 4,096- and 6,237-token direct prompts and the real 6.2K-token Codex
-shape that previously exhausted Metal residency. A real 131K-configured Codex
-0.151.0 `xhigh` turn then issued exactly one requested shell tool and returned
-the exact final marker. The first prompt reached **90.75 prompt tok/s**.
+shape that previously exhausted Metal residency. Two real 131K-configured
+Codex 0.151.0 `xhigh` turns have each issued exactly one requested shell tool
+and returned the exact final marker.
 
-Generation remains the active gap. Real Codex telemetry from the first runtime
-settled around **7.6--11.85 tok/s** and reached **15.20 tok/s** on a
-high-acceptance tool continuation. Signed commit `b853514b5c`
+Generation remains the active gap. Signed commit `b853514b5c`
 (`perf(mps): split DFlash verify QMM across K`) adds an opt-in M=8 affine-W4
 kernel that assigns one eighth of K to each SIMD group. Two current direct
 `128 / 32 warm / 128 timed` samples measure **11.241518 / 11.243767 tok/s**,
-mean **11.242643**, versus an adjacent **9.304876 tok/s** control. Steady
-full-Q4 DFlash cycles now spend about **28.5--33.5 ms** drafting and
-**225.5--226.7 ms** verifying; accepted-prefix replay remains about
-**2--4.4 ms**. The next gate is the real 131K-configured Codex xhigh workload,
-followed by further verification scheduling and acceptance work. The hard
-admission gate remains real served generation at or above **20 tok/s** with
-exact tools and 131K capacity.
+mean **11.242643**, versus an adjacent **9.304876 tok/s** control. The
+M8-backed real Codex turn prefetched its first 6,228 tokens at **95.05 prompt
+tok/s**, sustained reported generation intervals of **10.54--17.20 tok/s**
+after the initial interval, and prefetched the 6,594-token tool continuation at
+**80.48 prompt tok/s**. It completed one exact tool call and exact final
+marker with exit zero. At this 6.2K history, live cycles spend about
+**30.7--35.9 ms** drafting and **251.2--253.5 ms** verifying; the same kernel
+measures **28.5--33.5 / 225.5--226.7 ms** in the short direct harness.
+Further verification scheduling, quantized-product geometry, and acceptance
+work follow. The hard admission gate remains real served generation at or
+above **20 tok/s** with exact tools and 131K capacity.
 
 ## Native backend roadmap handoff
 
