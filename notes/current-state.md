@@ -284,6 +284,18 @@ kernel. Representative parity passes, M=8 verification falls to about
 **16.322505765 tok/s**; proposal quality and target-cycle bytes own the next
 gap.
 
+The pinned matching five-bit MTP head at revision
+`1faa5a803c972c57cfc1beed606184e726ad3d85` establishes a high execution-cost
+ceiling. Its default three-token deterministic path reaches
+**17.919995235 tok/s**;
+an opt-in eight-token block aligns with the Q5 M=8 kernel and reaches
+**31.380317186 tok/s**, mean width **8**, with the target digest preserved.
+Native sampling now uses the head's dense proposal probabilities through exact
+p/q rejection. The best calibration screen reaches only **6.380162135 tok/s**
+at mean width **2.285714286**, so this MTP head remains an experimental probe.
+Target-only affine Q5 stays selected and batch-one target weight traversal owns
+the active speed gap.
+
 The unchanged Q5_K_M artifact is closed on this loader because mixed merged
 weights contain Q8_0 shards unsupported by the native Metal merge path. The
 unchanged Q5_K_S artifact loads its 20.00 GB weights and then reaches the

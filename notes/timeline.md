@@ -977,6 +977,19 @@ code changes, or process state matter.
   full-Q4 regression gate intact. Target-only remains the active route before
   exact-131K serving and Codex qualification.
 
+### Matched five-bit MTP exposes a 31.4 tok/s ceiling and a sampled-overlap gap
+
+- Pinned the 292,018,299-byte five-bit MTP sidecar at revision
+  `1faa5a803c972c57cfc1beed606184e726ad3d85` and verified its SHA-256.
+- An opt-in eight-token block aligns verification with the native Q5 M=8
+  kernel, reaches **31.380317186 tok/s**, mean width **8**, and preserves the
+  deterministic target digest. This establishes sufficient execution
+  capacity for the requested floor.
+- Exact dense-q sampling and residual rejection complete, while the best
+  calibrated arm reaches **6.380162135 tok/s** at width **2.285714286**.
+  The matched head therefore remains a deterministic execution-cost probe;
+  target-only Q5 and its batch-one weight traversal own production work.
+
 ### 03:07–06:18 — DSpark-v2 crosses 150 tok/s and becomes the Windows default
 
 - The trained Qwen3.8-27B DSpark-v2 draft was integrated with online-FP8

@@ -3343,3 +3343,57 @@ option, or serving dispatch was added.
   request.
 - Related commit or revert: PERF-A091 retains the checkpoint and baseline;
   no source change was made by this failed composition.
+
+## PERF-FA120 - Five-bit MTP as a sampled production accelerator
+
+- Hypothesis: the official affine-five-bit MTP head can preserve native
+  top-k/top-p sampling and lift the affine-Q5 target above 20 tok/s.
+- Scope: pinned target revision `2568951b...c2f05`, pinned MTP revision
+  `1faa5a80...3d85`, exact dense-q rejection sampling, blocks two through
+  eight, and direct seed-42 decode.
+- Attempted change: made the standard MTP block size opt-in through two to
+  eight tokens, sampled every recurrent proposal from its recorded dense q,
+  and reused the common exact p/q verifier.
+- Benchmark evidence: matched deterministic block three reaches
+  **17.919995235 tok/s** at width **3**; M=8 reaches
+  **31.380317186 tok/s** at width **8**. Exact sampled calibration at
+  temperatures 0.25/1.15/1.5/2.0
+  reaches **3.990054799 / 4.821419896 / 6.380162135 / 5.062826830 tok/s**;
+  the best width is **2.285714286**. Top-k four at temperature 1.5 reaches
+  **3.780318328 tok/s** and width **1.26**.
+- Correctness evidence: dense q flows into the established rejection sampler,
+  target p/q acceptance and residual sampling complete, exact output counts
+  return, and both deterministic probes preserve target digest
+  `e446d211f2e2ff25` and last token 15.
+- Failure mode: the trained head aligns strongly at argmax while its sampled
+  distribution overlaps the target too weakly to amortize the roughly
+  228--230 ms M=8 verification cycle.
+- Why not to retry unchanged: the best sampled arm trails target-only
+  **16.322505765 tok/s** by **9.942343630 tok/s** and the floor by
+  **13.619837865 tok/s**.
+- Reopen only if: a matched draft distribution materially increases exact
+  sampled overlap or target verification cost falls enough for a mean width
+  near 2.3 to win.
+- Related commit or revert: PERF-A093 retains exact sampled semantics and the
+  block-size probe; calibration-only temperature/top-k controls were removed.
+
+## PERF-FA121 - Existing 64-column small-batch kernel for affine Q5 M=3
+
+- Hypothesis: exact five-bit unpacking in the retained small-batch QMM can
+  accelerate the default three-token MTP verification batch.
+- Scope: native affine-Q5 target, matched MTP head, greedy block three, and
+  the existing RowTile-8/OutputTile-64 Metal geometry.
+- Attempted change: added exact eight-value/five-byte unpacking and admitted
+  Q5 M=2 through M=8 to the small-batch kernel.
+- Benchmark evidence: the adjacent greedy block-three result changes from
+  **17.472384559 to 10.679521956 tok/s**, a **38.877%** regression.
+- Correctness evidence: M=3 and M=4 K/N `512/256` parity both pass with
+  maximum absolute error **0.03125**.
+- Failure mode: the 64-column threadgroup staging geometry loses occupancy and
+  scheduling efficiency at the three-row target batch.
+- Why not to retry unchanged: full-model evidence is decisive even though the
+  arithmetic is correct.
+- Reopen only if: a measured M=3-specific geometry changes weight staging or
+  split-K economics.
+- Related commit or revert: the Q5 small-batch branch and its temporary tests
+  were removed before PERF-A093.

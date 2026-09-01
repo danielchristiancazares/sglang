@@ -21200,3 +21200,64 @@ mean 13.929045  17.125658 446.051        39.730
   DFlash composition remains below the **16.322505765 tok/s** Q5 target-only
   result, so the next branch evaluates a Q5-matched MTP proposal and the
   memory-bandwidth-bound target cycle.
+
+### 2026-09-01 12:04 PDT - Matched five-bit MTP clears 20 only as a greedy cost probe
+
+- Continued from signed `a34906e9cb124ae3eaf2285b95261ee8012c225d`, 73
+  commits ahead of `origin/main`. Its signature verified and the worktree
+  returned to the three user-owned native QMV paths. Port 30000, server,
+  benchmark, compiler, and download process searches were clear. Memory
+  pressure reported 95% free capacity, zero throttled pages, and thermals
+  reported no warning. Idle GPU clients were ordinary desktop owners.
+- Downloaded `lukaskremla/Qwen3.8-27B-MTP-5bit-MLX` at exact revision
+  `1faa5a803c972c57cfc1beed606184e726ad3d85` into the Hub cache. The single
+  safetensor is **292,018,299 bytes**, SHA-256
+  `f63dd5c230035c032037d7215195cad41e7cc936cd7a1cbff14f5fc590632e6e`.
+  Its index declares 292,015,104 tensor bytes; config selects affine bits five,
+  group size 64, one full-attention MTP layer, block size three, and the same
+  5,120 hidden/248,320 vocabulary target contract.
+- With exact PERF-A092 target controls, the hard-coded three-token greedy MTP
+  path reached **17.472384559 tok/s** in **7.325846084 s**, 43 refills, mean
+  width 3, digest `e446d211f2e2ff25`, and last token 15. Block four reached
+  **16.969662795 tok/s**, width **3.969696970**. The new opt-in block eight
+  uses the native Q5 M=8 verifier and reached **29.818370889 tok/s** in
+  **4.292655708 s**, 16 refills, mean width **7.75**, the same digest, and the
+  same final token.
+- After exact sampled semantics landed, a matched sampling-disabled recheck on
+  the final source measured block three at **17.919995235 tok/s** in
+  **7.142859042 s**, 42 refills, and width **3**. Block eight reached
+  **31.380317186 tok/s** in **4.078990000 s**, 16 refills, and width **8**.
+  Both reproduce digest `e446d211f2e2ff25` and last token 15. The current
+  deterministic topology win is therefore **+13.460321951 tok/s / +75.113%**
+  and clears the floor by **11.380317186 tok/s**.
+- The standard MTP path previously used argmax even when native sampling was
+  selected. Added a sampled branch that records every recurrent head's dense q
+  and invokes the common exact p/q acceptance plus residual sampler. Standard
+  MTP requires no persistent DFlash/DSpark target-context projection, so the
+  shared context append owner explicitly treats this drafter as a no-op. The
+  reasoning cap falls back to one-token target sampling before a block crosses
+  the bound. Greedy behavior remains unchanged when sampling is disabled.
+- A trace-enabled default-sampling smoke completed 16 timed tokens at
+  **4.413231913 tok/s**, ten refills, and mean width **1.6**. Target p/q and
+  residual sampling completed; steady M=8 target verification was about
+  **228--230 ms**. Calibration screens at proposal temperatures
+  0.25/1.15/1.5/2.0 reached respectively
+  **3.990054799 / 4.821419896 / 6.380162135 / 5.062826830 tok/s**, with mean
+  widths **1.28 / 1.702702703 / 2.285714286 / 1.8**. Temperature 1.5 plus
+  top-k four reached **3.780318328 tok/s**, width **1.26**. Those calibration
+  controls were removed after the screen. A strict final-source default-q
+  recheck completed 64 timed tokens at **4.397922404 tok/s**, 42 refills,
+  width **1.523809524**, digest `bc79dff9f9761cd8`, and last token 20.
+- A separate Q5 extension of the existing RowTile-8/OutputTile-64 small-batch
+  kernel passed M=3/M=4 K/N `512/256` parity at maximum error **0.03125**.
+  The full greedy block-three result regressed to **10.679521956 tok/s**, so
+  the kernel and temporary test additions were removed. PERF-FA120/121 close
+  sampled matched-MTP production and this small-batch geometry. PERF-A093
+  retains the immutable artifact, the greedy block-size cost probe, and exact
+  sampled semantics while batch-one Q5 target execution becomes active.
+- Strict `-Wall -Wextra -Werror` dylib compilation passed with the established
+  macOS 26.0/MLX 26.2 link warning. The first focused pytest invocation omitted
+  `MLX_PREFIX`, entered the known stale `.venv-mps` auto-build default, and
+  reported six build-driven failures plus two passes. The corrected command
+  `env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx PYTHONPATH=python .venv/bin/python -m pytest -q test/registered/unit/hardware_backend/mlx/test_native_qwen38_engine.py`
+  passed **8 tests** with 16 established warnings.

@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max affine-Q5 plus matched 5-bit MTP, deterministic direct `128 / 32 warm / 128 timed` | three-token block **17.919995235 tok/s**, width **3.0** | opt-in eight-token block **31.380317186 tok/s**, width **8.0**; exact sampled p/q arms peak at **6.380162135 tok/s**, width **2.285714286** | **+13.460321951 tok/s / +75.113%** for the deterministic execution-cost probe, clearing 20 by **11.380317186 tok/s**; native sampling preserves its configured distribution and rejects this proposal route for production | pinned Q5 target/MTP snapshots plus `SGLANG_MLX_NATIVE_MTP_BLOCK_SIZE=8`; PERF-A093/FA120/FA121 | 2026-09-01 12:08 PDT |
 | M1 Max affine-Q5 target plus DFlash2, sampled direct `128 / 32 warm / 128 timed` | generic affine-Q5 verifier **11.506669050 tok/s**, M=8 about **363--368 ms** | native Q5 M=8 K-split **13.721235888 tok/s**, M=8 about **228--229 ms** | **+2.214566838 tok/s / +19.246%**; representative five-bit unpack parity passes; target-only remains faster at **16.322505765 tok/s** | PERF-A092 candidate dylib with the exact PERF-A091 DFlash command | 2026-09-01 11:49 PDT |
 | M1 Max Qwen3.8-27B affine-Q5/G64 native target, sampled direct `128 / 32 warm / 128 timed` | GGUF Q5 1K-FP8 five-run mean **7.2614 tok/s** | first native affine-Q5 sample **16.322505765 tok/s** | **+9.061105765 tok/s / +124.781%**; immutable 18.51 GB five-bit target loads without source changes; served 131K and behavior gates pending | `bench_qwen38_native` with native sampling seed 42 and the pinned affine-Q5 snapshot | 2026-09-01 11:43 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S, Q4_K token embedding, exact 131K FP8 KV pool, sampled served `128+32` | same-artifact BF16: **0.315 tok/s**, **5.616 prompt tok/s**, **22.790664 s TTFT**, **121.240667 s E2E** | FP8 five-run mean **3.237 tok/s**, **5.8974 prompt tok/s**, **21.705304 s TTFT**, **31.286811 s E2E** | cache **8.00 -> 4.00 GB**, reported headroom **0.99 -> 6.99 GB**; **10.276x / +927.619%** generation; exact capacity, reasoning, arithmetic, and tools pass | exact PERF-A090 server contract; five cache-flushed ordinary sampled requests | 2026-09-01 11:29 PDT |
@@ -829,6 +830,7 @@ tree throughput can be ranked for production.
 | PERF-A090 | Qualify the native FP8 conversion at the requested exact token pool. | Q4_K-embedding Q5 artifact, one FP32 Mamba slot, 131,072-token byte-backed FP8 K/V pool, sampled behavior | Retained exact-capacity selection; additional residency reduction active | Exact K/V allocation falls **8.00 -> 4.00 GB** and reported headroom rises **0.99 -> 6.99 GB**. Five sampled requests average **3.237 tok/s**, **10.276x** the matched BF16 result, while the full pool remains **55.42%** below the 1K FP8 mean. See PERF-FA118. |
 | PERF-A091 | Move the Q5 target onto the compiled native MLX engine with a genuine affine five-bit checkpoint. | Pinned text-only Qwen3.8-27B affine-Q5/G64 snapshot, native target loader, and sampled direct decode | Artifact retained; native five-bit verifier optimization active | Revision `2568951b...c2f05` contains 498 U32 packed tensors, 1,349 BF16 tensors, and no vision tensors. Direct `128 / 32 / 128` reaches **16.322505765 tok/s**, **2.248x** the GGUF Q5 1K-FP8 mean. The unchanged Q4-tuned DFlash path reaches only **11.506669050 tok/s** because affine-Q5 M=8 falls through the generic verifier; see PERF-FA119. |
 | PERF-A092 | Decode affine five-bit weights inside the shared M=8 K-split verifier. | Native Metal SG16/B32 target QMM, affine Q5/G64 bitstream, and exact p/q DFlash decode | Retained opt-in verifier win; target-only remains selected | Representative K/N parity passes at maximum error **0.03125 / 0.0625 / 0.107422**. M=8 falls from about **363--368 to 228--229 ms** and direct throughput rises **11.506669050 -> 13.721235888 tok/s** (**+19.246%**). The unchanged full-Q4 path preserves exact digest/width and improves in the adjacent sample. |
+| PERF-A093 | Align the official five-bit MTP head with the selected M=8 verifier and preserve native sampling through exact p/q rejection. | Pinned Q5 MTP sidecar, recurrent one-layer draft, configurable two-through-eight-token block, and shared verifier | Exact sampled semantics retained; deterministic M=8 is an execution-cost probe | Matched deterministic blocks three/eight reach **17.919995235 / 31.380317186 tok/s** at widths **3 / 8**, preserving the target digest. Exact sampling completes through dense-q rejection, while the best calibrated screen reaches **6.380162135 tok/s**, width **2.285714286**. The existing Q5 target-only **16.322505765 tok/s** remains production-selected. See PERF-FA120/121. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -4604,3 +4606,33 @@ tree throughput can be ranked for production.
   sample at **20.581517098 tok/s**. Retain the Q5 verifier under the existing
   opt-in QMM controls. Target-only affine Q5 at **16.322505765 tok/s** remains
   faster, so proposal quality and target-cycle bytes remain active.
+
+### 2026-09-01 12:04 PDT - PERF-A093 matched five-bit MTP topology
+
+- Downloaded `lukaskremla/Qwen3.8-27B-MTP-5bit-MLX` at immutable revision
+  `1faa5a803c972c57cfc1beed606184e726ad3d85`. Its single safetensor is
+  **292,018,299 bytes**, SHA-256
+  `f63dd5c230035c032037d7215195cad41e7cc936cd7a1cbff14f5fc590632e6e`,
+  and config declares affine five-bit/group-64 with one full-attention MTP
+  layer.
+- Matched deterministic three/eight-token blocks reach
+  **17.919995235 / 31.380317186 tok/s** in
+  **7.142859042 / 4.078990000 s**, with mean widths **3 / 8** and identical
+  digest `e446d211f2e2ff25`/last token 15. This is a
+  **+13.460321951 tok/s / +75.113%** execution-cost win. The earlier
+  sampling-enabled legacy-greedy M=8 probe reached **29.818370889 tok/s** at
+  width **7.75**; block four reached **16.969662795 tok/s** at width
+  **3.969696970**.
+- Native sampling now draws every MTP proposal from its recorded dense q and
+  routes the block through the common exact p/q rejection sampler. Default
+  sampling completed, and temperature screens at 0.25/1.15/1.5/2.0 reached
+  **3.990054799 / 4.821419896 / 6.380162135 / 5.062826830 tok/s** with mean
+  widths **1.28 / 1.702703 / 2.285714 / 1.8**. Temperature 1.5 plus proposal
+  top-k four reached **3.780318328 tok/s**, width **1.26**. Calibration-only
+  controls were removed. The final default-q source recheck reached
+  **4.397922404 tok/s**, 42 refills, and width **1.523809524**.
+- Extending the existing 64-column small-batch affine kernel to Q5 passed M=3
+  and M=4 parity at maximum error **0.03125**, yet the greedy block-three
+  full-model result fell to **10.679521956 tok/s**. That kernel branch was
+  removed. Retain the block-size experiment and exact sampled semantics; move
+  the production optimization owner to batch-one target Q5.
