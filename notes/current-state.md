@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-07:28 PDT.
+07:41 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -354,6 +354,16 @@ reached **7.773375044 tok/s**, against stock MLX **20.339874670 tok/s** on the
 same short full-Q4 target-only shape. Every experimental source and test
 change was removed. Future batch-one affine work requires matrix tiling,
 dependency-level evidence, or fusion with a downstream consumer.
+
+Metal GPU Counters now attribute the representative long-history target-only
+decode. Of 48,343 sampled shader PCs, 47,676 map to the target process:
+**88.470%** land in MLX's affine-W4 `qmv_fast`, **3.904%** in the two SDPA
+passes, **2.358%** in the recurrent state update, and **1.405%** in the fused
+full-attention q/k norm plus RoPE kernel. The trace-instrumented run reaches
+**19.144319346 tok/s** with its stable 128-token completion. Installed MLX is
+0.32.2 at official tag `1f8e74e3`; official HEAD `117188cd` contains no later
+QMV change. A stock-compatible multi-output SIMD tile or dependency-level QMV
+change owns the next measured branch.
 
 Two DSpark proposal-fidelity candidates are closed. Independently applying
 target top-k/top-p filtering to each draft row fell to **6.997461 tok/s** and
