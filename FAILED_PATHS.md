@@ -2817,3 +2817,59 @@ option, or serving dispatch was added.
 - Related commit or revert: the generic budget mechanism is retained; the
   selected opt-in ratio is **1.75**, which averages **13.6058 tok/s** across
   five consecutive representative samples.
+
+## PERF-FA102 - Accepted-width-triggered DSpark cooldown
+
+- Hypothesis: scheduling target-only cooldown from the last block's actual
+  emitted width would identify low-value M=8 verifications that the trained
+  confidence budget misclassified.
+- Scope: native affine-W4 DSpark, ratio 1.75, 16 bypass refills, exact sampled
+  `128 / 32 warm / 256 timed`, selected full-Q4 target, and seed 42.
+- Attempted change: temporarily triggered cooldown when the preceding block
+  emitted fewer than three, five, or six tokens, independent of whether the
+  confidence scheduler had selected M=2 or M=8.
+- Benchmark evidence: minimum widths three/five/six reached respectively
+  **16.160295443 / 19.319338815 / 18.686185376 tok/s**. The retained
+  confidence-tier trigger reaches **24.332648695 tok/s** at the same cooldown
+  and workload; its no-cooldown control reaches **24.494388127 tok/s**.
+- Correctness evidence: every candidate completed exact sampled decoding.
+  Width five and six shared digest `104b9dd15cebf891`; width three produced
+  `8f2080982a3e9adb`. Strict warning-as-error builds passed throughout.
+- Failure mode: actual sampled acceptance changes the following target token
+  and random stream. Treating a low realized width as a stable predictor
+  repeatedly enters cooldown on the resulting low-yield trajectory.
+- Why not to retry unchanged: every threshold trails the confidence-tier
+  trigger by at least **5.01331088 tok/s** on the admission screen.
+- Reopen only if: a teacher-forced corpus demonstrates accepted-width
+  autocorrelation under a fixed target-token trajectory, with a policy that
+  does not feed its own sampling changes back into the predictor.
+- Related commit or revert: the accepted-width trigger and its threshold
+  control were removed; PERF-A074 retains only the trained-confidence M=2
+  trigger.
+
+## PERF-FA103 - Alternate fixed DSpark cooldown lengths
+
+- Hypothesis: a shorter or longer target-only interval after each M=2 choice
+  would find high-confidence regions sooner or amortize low-value probes more
+  effectively than sixteen refills.
+- Scope: native affine-W4 DSpark, ratio 1.75, exact sampled
+  `128 / 32 warm / 256 timed`, selected full-Q4 target, and seed 42.
+- Attempted change: screened fixed cooldowns **4, 8, 16, and 32** through the
+  checked runtime control while preserving every other direct setting.
+- Benchmark evidence: the four settings reached **19.198827552 /
+  17.781301933 / 24.332648695 / 19.215717015 tok/s**. Their respective
+  refill counts were **151 / 175 / 104 / 173**, and every setting followed a
+  different exact sampled trajectory. The no-cooldown ratio-1.75 control was
+  **24.494388127 tok/s**.
+- Correctness evidence: all settings completed exact 256-token sampling with
+  finite nonempty output; strict warning-as-error candidate builds passed.
+- Failure mode: fixed cooldown changes target sampling and therefore the
+  future confidence/acceptance trajectory. Four and eight probe too often;
+  thirty-two misses useful high-confidence regions on this screen.
+- Why not to retry unchanged: 4/8/32 trail the selected 16-refill screen by
+  **5.116931143 / 6.551346762 / 5.116931680 tok/s** respectively.
+- Reopen only if: a representative teacher-forced trace supplies a stable
+  counterfactual trajectory or a cheap current-token predictor replaces
+  periodic probing.
+- Related commit or revert: the generic checked cooldown remains; PERF-A074
+  selects **16** only as an opt-in measured setting.
