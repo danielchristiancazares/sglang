@@ -3199,3 +3199,39 @@ option, or serving dispatch was added.
 - Related commit or revert: PERF-A084 retains the four-lane mapping only for
   output sizes at least 5,120, the smallest measured winning shape, and
   preserves the prior 1,024-row owner.
+
+## PERF-FA115 - Same-GGUF three-step NEXTN as the complete Q5 serving lane
+
+- Hypothesis: the Qwen3.8 checkpoint's bundled NEXTN block, three speculative
+  steps, four verify tokens, and a faster Q6_K batch-four target verifier would
+  raise the derived Q5 lane above target-only throughput.
+- Scope: the existing synchronous EAGLE/NEXTN worker v2, the same derived Q5
+  GGUF as target and draft source, top-k-one linear proposals, and a 1K
+  conservative MPS server pool.
+- Attempted change: first launched the same GGUF draft without an explicit
+  draft quantizer, then corrected the retained ordering boundary with
+  `--speculative-draft-model-quantization gguf`; measured the retained
+  batch-four kernel against `SGLANG_MPS_Q6_K_BATCH4_ROWS16=0`.
+- Benchmark evidence: explicit GGUF draft loading reduced draft residency from
+  all **10.62 GB** remaining memory to **1.00 GB** and served successfully.
+  Five candidate `128+128` generation samples were
+  `3.643,3.799,3.711,3.699,3.662 tok/s`, mean **3.7028**. The selected
+  target-only median is **7.500 tok/s**. The batch-four kernel itself remains
+  a win: its matched disabled mean was **3.3384 tok/s**.
+- Correctness evidence: all ten matched served requests completed exact
+  256-token length responses with reasoning preserved. Candidate/control mean
+  accepted lengths were **2.960/3.024**. Direct candidate, tail, batch-three
+  fallback, and existing batch-eight arithmetic checks pass.
+- Failure mode: repeated draft forwards plus multi-token target verification
+  consume more time than the accepted-token yield saves on this M1 Max
+  topology. The first missing-quantizer attempt also exhausted memory before
+  KV allocation because configuration propagation preceded target GGUF
+  detection.
+- Why not to retry unchanged: corrected same-GGUF NEXTN is **50.629%** below
+  target-only serving and remains **16.2972 tok/s / 5.4013x** from the
+  requested floor.
+- Reopen only if: a materially smaller/faster trained draft, a lower-cost
+  target verification topology, or measured acceptance/cycle evidence changes
+  the complete-path economics.
+- Related commit or revert: PERF-A085 retains the independent Q6_K exact-batch-
+  four kernel win; the same-GGUF NEXTN launch remains unselected.

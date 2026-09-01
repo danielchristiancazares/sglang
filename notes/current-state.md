@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-09:45 PDT.
+10:20 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -199,6 +199,27 @@ serving moves the `128+32` five-run mean **7.1342 -> 7.1646 tok/s**
 **7.456 -> 7.500 tok/s** (**+0.590%**). Direct candidate, tail, alignment,
 fallback, and complete served-behavior gates pass;
 `SGLANG_MPS_Q5_K_BATCH1_ROWS32=0` selects the matched control.
+
+The first retained NEXTN prerequisite specializes exact-batch-four Q6_K. Each
+eight-lane cohort dequantizes one row once, reuses it across all four verifier
+activations, and four SIMD groups produce sixteen output rows. Matched final-
+source medians move `output.weight` **29.166000 -> 6.121375 ms** and the
+representative QKV projection **1.442333 -> 0.588500 ms**. In the real
+synchronous NEXTN path, five sampled `128+128` requests improve from the
+environment-disabled mean **3.3384** to **3.7028 tok/s** (**+10.915%**) even
+though control mean accepted length is slightly higher (**3.024 vs 2.960**).
+Direct batch-four, 17-row tail, batch-three fallback, and batch-eight
+preservation checks pass; `SGLANG_MPS_Q6_K_BATCH4_ROWS16=0` selects the
+matched generic route.
+
+The complete same-GGUF three-step NEXTN configuration remains below the Q5
+target-only lane. Explicit `--speculative-draft-model-quantization gguf` is
+required because draft propagation precedes target GGUF inference; with it,
+the trained draft occupies **1.00 GB** and leaves **8.50 GB** after the 1K
+state/cache allocation. Its **3.7028 tok/s** mean trails the selected
+target-only `128+128` median **7.500 tok/s** by **50.629%**, leaving
+**16.2972 tok/s / 5.4013x** to the floor. PERF-FA115 closes this unchanged
+full configuration while retaining the independent verifier-kernel gain.
 
 Five ordinary sampled exact `128+32` requests reach
 **6.993 / 7.214 / 7.206 / 7.218 / 7.192 generation tok/s**, mean **7.1646**

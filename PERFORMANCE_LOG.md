@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max Qwen3.8-27B Q5_K_S-derived, Q6_K exact-batch-four verifier projections | matched `SGLANG_MPS_Q6_K_BATCH4_ROWS16=0`: head **29.166000 ms**, QKV **1.442333 ms** | 16-row/eight-lane cohort: head **6.121375 ms**, QKV **0.588500 ms** | **-79.012% / -59.198%** latency; sampled same-GGUF NEXTN `128+128` improves **3.3384 -> 3.7028 tok/s** (**+10.915%**) even though control acceptance is higher | `.venv/bin/python benchmark/mac/bench_mps_gguf_quant.py $Q5_DERIVED --tensor {output.weight,blk.0.attn_qkv.weight} --batch-size 4 --warmup 8 --iterations 25`; matched sampled server window | 2026-09-01 10:20 PDT |
 | M1 Max Qwen3.8-27B Q5_K_S-derived target, sampled served `128+32`, 1K pool | generic Q6_K batch-one path: **5.746 tok/s**, **5.8 prompt tok/s**, **22.070851 s TTFT**, **27.466190 s E2E** | Q6_K two-row plus Q5_K 32-row reuse: five-run **7.1646 tok/s** mean, warmed-four **7.2075**; five-run **5.809 prompt tok/s**, **22.035143 s TTFT**, **26.362669 s E2E** | **+1.4186 / +24.688%** generation from the original baseline; Q5_K change adds **+0.426%** against its matched disabled mean; exact 160 tokens and reasoning preserved; **12.8354 tok/s / 2.7915x** remains to the floor | `bench_openai_stream.py --model qwen3.8-27b-q5 --input-tokens 128 --output-tokens 32 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup --timeout 600` | 2026-09-01 09:45 PDT |
 | M1 Max Q5_K batch-one 32-row cohort, sampled served `128+128`, 1K pool | matched `SGLANG_MPS_Q5_K_BATCH1_ROWS32=0`: **7.456 tok/s median**, **7.41675** first-four mean | default candidate: **7.500 tok/s median**, **7.44675** first-four mean, **7.5065** warmed-four mean | **+0.044 / +0.590%** median and **+0.404%** first-four mean; every request exact at 256 tokens; one control tail sample is retained as externally contended | same sampled command with `--output-tokens 128` | 2026-09-01 09:45 PDT |
 | M1 Max full-Q4 target-only long-history GPU shader attribution, sampled `6237 / 1 warm / 128 timed` | prior Metal System Trace exposed command-buffer cadence without Shader Timeline labels | **88.470%** affine-W4 `qmv_fast`; **3.904%** two-pass SDPA; **2.358%** recurrent state update; **1.405%** full-attention q/k norm plus RoPE | 47,676 of 48,343 sampled shader PCs map to the target process; the remaining throughput branch is the stock-compatible matrix-tiled QMV/dependency owner | `xctrace record --template 'Metal System Trace' --instrument 'Metal GPU Counters' ...` plus exported shader-PC attribution | 2026-09-01 07:41 PDT |
@@ -814,6 +815,7 @@ tree throughput can be ranked for production.
 | PERF-A082 | Establish a runnable provenance-pinned Q5 checkpoint and served baseline. | Bartowski Q5_K_M/Q5_K_S source artifacts, pinned llama.cpp COPY conversion, native Metal GGUF execution, and sampled OpenAI serving | Derived Q5_K_S base retained; throughput optimization active | Converting only the unsupported 833.59 MiB Q5_K token embedding to F16 yields a 21,349,656,160-byte artifact with SHA-256 `c05a7778...fcfb`. It loads at 21.37 GB, warms, and completes exact sampled `128+32` at **5.746 tok/s** with reasoning preserved. Unchanged Q5_K_M and Q5_K_S fail at distinct current native boundaries; see PERF-FA112/113. |
 | PERF-A083 | Reuse one activation fragment across two Q6_K output rows during batch-one decode. | Native Metal GGUF Q6_K matrix-vector kernel and guarded common quantized-matmul dispatch | Retained; first Q5 kernel win | Matched QKV/head medians improve **0.748917 -> 0.448125 ms** and **12.009166 -> 3.324625 ms**. Five sampled served requests average **7.052 tok/s**, **22.732%** above the 5.746 baseline; warmed-four average **7.144**. Actual-file optimized, odd-row fallback, and batch-eight parity pass. |
 | PERF-A084 | Double the batch-one Q5_K output-row cohort while each lane decodes eight adjacent weights. | Native Metal GGUF Q5_K matrix-vector kernel and guarded common quantized-matmul dispatch | Retained; second Q5 kernel win | Reversed-order matched served windows improve `128+32` mean **7.1342 -> 7.1646 tok/s** and `128+128` median **7.456 -> 7.500 tok/s**. The 1,024-row K/V projections retain the prior mapping; direct candidate, tail, alignment, fallback, and full-model behavior gates pass. |
+| PERF-A085 | Reuse each Q6_K row across all four verifier activations and produce sixteen rows per threadgroup. | Native Metal GGUF Q6_K exact-batch-four kernel and guarded common quantized-matmul dispatch | Retained; first served NEXTN verifier-kernel win | Matched head/QKV medians improve **29.166000 -> 6.121375 ms** and **1.442333 -> 0.588500 ms**. Five sampled same-GGUF NEXTN requests improve **3.3384 -> 3.7028 tok/s** while disabled-control acceptance is slightly higher. Candidate, 17-row tail, batch-three fallback, and batch-eight preservation checks pass. The unchanged three-step same-GGUF NEXTN configuration remains below target-only serving; see PERF-FA115. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -4367,3 +4369,49 @@ tree throughput can be ranked for production.
   21640/21644--21646, 21785/21793--21795, and 21884/21889--21891 were each
   resolved before foreground shutdown; every PID, matching workload, and port
   30000 was clear afterward, with normal reported thermal state.
+
+### 2026-09-01 10:20 PDT - PERF-A085 Q6_K exact-batch-four 16-row cohorts
+
+- Change: added an exact-batch-four Q6_K Metal kernel in which each eight-lane
+  cohort owns one output row, vector-decodes four adjacent weights per lane,
+  reuses the row across all four activations, and produces sixteen rows per
+  128-thread group. The common native quantized-matmul owner selects it only
+  for aligned Q6_K batch four with a 32-wide pipeline and 128-thread capacity.
+  `SGLANG_MPS_Q6_K_BATCH4_ROWS16=0` preserves the matched generic route.
+- Eight-warmup/25-timed synchronized head samples moved from disabled-control
+  median **29.166000 ms / 33.433 GiB/s** to candidate
+  **6.121375 ms / 159.293 GiB/s**, a **79.012%** latency reduction. The
+  representative `blk.0.attn_qkv.weight` projection moved
+  **1.442333 ms / 27.929 GiB/s -> 0.588500 ms / 68.451 GiB/s**, a
+  **59.198%** reduction. These are matched final-source processes.
+- Direct derived-artifact correctness at 17 rows and exact batch four passed
+  Q4_0/Q5_K/Q6_K with maximum absolute/relative errors
+  `1.90735e-06/6.27034e-07`, `2.6226e-06/7.75595e-07`, and
+  `1.66893e-06/8.06965e-07`. Q6_K batch-three fallback passed at
+  `1.54972e-06/4.32145e-07`; batch eight passed at
+  `1.90735e-06/5.17281e-07` through its established specialization.
+- The first same-GGUF NEXTN launch omitted explicit draft quantization. The
+  draft resolved as BF16, consumed the remaining **10.62 GB**, and exited
+  before KV allocation. Adding
+  `--speculative-draft-model-quantization gguf` resolved the trained draft as
+  GGUF, loaded it in **1.00 GB**, and left **8.50 GB** after target/draft
+  state and 1K KV allocation. This ordering requirement matches the retained
+  earlier Qwen GGUF provenance.
+- Five exact sampled `128+128` candidate requests produced generation samples
+  **3.643 / 3.799 / 3.711 / 3.699 / 3.662 tok/s**, mean **3.7028**. The
+  matched environment-disabled restart produced
+  **3.215 / 3.619 / 3.269 / 3.373 / 3.216 tok/s**, mean **3.3384**. The
+  kernel improves served generation by **0.3644 tok/s / 10.915%**. Candidate
+  accepted-length telemetry averaged **2.960** versus control **3.024**, so
+  the measured speedup is independent of proposal-window favorability. Every
+  request returned exact 256-token length output as preserved reasoning.
+- Decision: retain the narrow default-on kernel. The complete same-GGUF
+  three-step NEXTN lane remains an experimental control at **3.7028 tok/s**,
+  **50.629%** below the selected target-only `128+128` median and
+  **16.2972 tok/s / 5.4013x** from the requested floor. A smaller or faster
+  draft topology owns any reopening of that complete configuration. Candidate
+  root/listener 22210 owned 22213--22215; disabled-control root/listener 22332
+  owned 22341--22343. Both trees exited through foreground `Ctrl+C`; all
+  known PIDs, port 30000, compiler workers, and matching workloads were clear,
+  memory returned to 94% free with zero throttled pages, and reported thermal
+  state was normal.
