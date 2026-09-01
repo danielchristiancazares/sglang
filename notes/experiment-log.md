@@ -18525,3 +18525,78 @@ mean 13.929045  17.125658 446.051        39.730
   verifies as good. `main` is now 42 commits ahead of `origin/main`; only the
   performance/recovery records remain modified. The next gate is the exact
   real 131K-pool sampled server and Codex xhigh turn.
+
+### 2026-09-01 03:03 PDT - SG16/B32 real 131K serving and Codex gate
+
+- Began from clean signed HEAD
+  `96bc05a6a2aa1ea06c23c7da6e38ae7a9bf1180f`, 43 commits ahead of
+  `origin/main`. Its EDDSA signature verified as good. Port 30000 and matching
+  server/benchmark/direct-harness processes were absent, memory was 94% free,
+  and macOS reported normal thermal/performance status. The repository native
+  dylib was newer than its SG16/B32 source.
+- Launched the foreground server with exact environment and arguments:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER -u MLX_METAL_FAST_SYNCH \
+    MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    PYTHONPATH=/Users/dcazares/sglang/python \
+    SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 \
+    SGLANG_MLX_CLEAR_CACHE_STEPS=0 SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_MTP_DIR=/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-MLX-AffineQ4 \
+    SGLANG_MLX_NATIVE_SMALL_BATCH_QMM=1 \
+    SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1 \
+    SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT=1 \
+    SGLANG_MLX_NATIVE_TRACE_SPEC=1 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    --served-model-name qwen3.8-27b --language-model-only \
+    --context-length 131072 --max-total-tokens 131072 \
+    --max-running-requests 1 --max-mamba-cache-size 5 \
+    --chunked-prefill-size 8192 --max-prefill-tokens 8192 \
+    --disable-radix-cache --mlx-enable-sampling --sampling-defaults model \
+    --random-seed 42 --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --stream-interval 4 --scheduler-recv-interval 4 \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+- Resolved `server_args` contained `context_length=131072`,
+  `max_total_tokens=131072`, `max_running_requests=1`, and
+  `max_mamba_cache_size=5`. `/health`, `/v1/models`, and `/model_info` passed;
+  the model list reported `qwen3.8-27b` with maximum length 131,072 and model
+  info reported image/audio understanding disabled.
+- Ran the exact sampled command:
+
+  ```bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b --input-tokens 6237 --output-tokens 128 \
+    --temperature 1.0 --top-p 0.95 --top-k 20 \
+    --presence-penalty 1.5 --skip-warmup --timeout 600
+  ```
+
+  It completed exact 6,365 total tokens with `finish_reason=length`, **15.328
+  generation tok/s**, **109.106 observed prompt tok/s**, **57.164599 s TTFT**,
+  and **65.450058 s** end to end. Output/reasoning SHA-256 was
+  `51bb9afea1e151fccdd1a6b2fd39ef1be4c9062e7d6065b247cb1a7993161d66`.
+  Live cycles generally used **28--32 ms** draft and **211--214 ms** verify;
+  the preceding SG16/B16 live verifier used **236--239 ms**. Natural accepted
+  counts ranged from zero through seven. The different sampled trajectory
+  keeps this single result **4.672 tok/s** below the required served floor.
+- Ran the pinned bounded Codex 0.151.0 command with isolated
+  `CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home`, strict config,
+  ephemeral state, `model_context_window=131072`, compaction limit 117,964,
+  and `model_reasoning_effort=xhigh`. Thread
+  `01a05c69-215f-7fb0-a7f8-1425c9b2ae5a` executed exactly one
+  `/bin/zsh -c '/usr/bin/printf QWEN38_DFLASH2_TOOL=passed'`, observed exact
+  stdout and exit zero, then returned exact `QWEN38_DFLASH2_READY`. Codex
+  exited zero with 12,769 input, 317 output, and 264 reasoning-output tokens.
+- Post-turn `/health` passed. Foreground server PID 10684 and verified children
+  10687, 10688, and 10689 exited through `Ctrl+C`. Port 30000 and matching
+  server/benchmark processes are clear, memory returned to 94% free, and
+  macOS thermal/performance status is normal. SG16/B32 is behaviorally sound
+  and production-reachable; proposal acceptance or roughly 55--60 ms of
+  further live-cycle reduction is required for this observed trajectory to
+  reach 20.

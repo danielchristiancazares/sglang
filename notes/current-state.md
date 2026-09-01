@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-02:54 PDT.
+03:03 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -210,15 +210,16 @@ about **26.0--26.4 ms** drafting and **185.4--186.7 ms** verifying. The shape
 owner requires K divisible by 512 and N divisible by 32, covering every
 reachable projection and failing closed elsewhere.
 
-SG16 also passes the real server and Codex behavior gates. The exact sampled
-`6237+128` control reaches **15.336 generation tok/s**, **109.087 prompt
-tok/s**, **57.174631 s TTFT**, and exact `6365` total tokens. Live 6.2K-history
-verification falls from SG8's roughly **251--253 ms** to **236--239 ms**. The
-pinned Codex `xhigh` turn issues one exact command, observes exact stdout,
-returns exact `QWEN38_DFLASH2_READY`, and exits zero with 294 reasoning tokens;
-one live interval reaches **20.85 tok/s**. The new SG16/B32 real-server speed,
-tool, and 131K-pool gate follows immediately. Sustained real serving at or
-above 20 tok/s remains the admission requirement.
+SG16/B32 also passes the real server and Codex behavior gates. The exact
+sampled `6237+128` control reaches **15.328 generation tok/s**, **109.106
+prompt tok/s**, **57.164599 s TTFT**, and exact `6365` total tokens. Live
+6.2K-history verification falls from SG16/B16's roughly **236--239 ms** to
+**211--214 ms**. Codex thread `01a05c69-215f-7fb0-a7f8-1425c9b2ae5a`
+issues one exact command, observes exact stdout, returns exact
+`QWEN38_DFLASH2_READY`, and exits zero with 264 reasoning tokens. The fixed
+cycle win is production-reachable; this prompt's sampled proposal acceptance
+leaves **4.672 tok/s** to the sustained admission requirement. Proposal
+precision/selection and further verifier work are the next active branch.
 
 ## Native backend roadmap handoff
 
