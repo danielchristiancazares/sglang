@@ -1029,54 +1029,82 @@ constexpr const char* kAffineQ5BatchOneQmvSource = R"(
                 static_cast<float>(bias_ptr[row * GroupsPerRow]);
             float quantized_dot = 0.0f;
 
-#pragma unroll
-            for (ushort pack = 0; pack < PacksPerThread; ++pack) {
-              const device uchar* bytes = packed + pack * 5;
-              const packed_uchar4 first_four =
-                  *reinterpret_cast<const device packed_uchar4*>(bytes);
-              const uint byte0 = first_four[0];
-              const uint byte1 = first_four[1];
-              const uint byte2 = first_four[2];
-              const uint byte3 = first_four[3];
-              const uint byte4 = bytes[4];
-              const ushort input_index = pack * ValuesPerPack;
-              quantized_dot = fma(
-                  input_values[input_index],
-                  static_cast<float>(byte0 & 0x1fu),
-                  quantized_dot);
-              quantized_dot = fma(
-                  input_values[input_index + 1],
-                  static_cast<float>(
-                      (byte0 >> 5) | ((byte1 & 0x03u) << 3)),
-                  quantized_dot);
-              quantized_dot = fma(
-                  input_values[input_index + 2],
-                  static_cast<float>((byte1 >> 2) & 0x1fu),
-                  quantized_dot);
-              quantized_dot = fma(
-                  input_values[input_index + 3],
-                  static_cast<float>(
-                      (byte1 >> 7) | ((byte2 & 0x0fu) << 1)),
-                  quantized_dot);
-              quantized_dot = fma(
-                  input_values[input_index + 4],
-                  static_cast<float>(
-                      (byte2 >> 4) | ((byte3 & 0x01u) << 4)),
-                  quantized_dot);
-              quantized_dot = fma(
-                  input_values[input_index + 5],
-                  static_cast<float>((byte3 >> 1) & 0x1fu),
-                  quantized_dot);
-              quantized_dot = fma(
-                  input_values[input_index + 6],
-                  static_cast<float>(
-                      (byte3 >> 6) | ((byte4 & 0x07u) << 2)),
-                  quantized_dot);
-              quantized_dot = fma(
-                  input_values[input_index + 7],
-                  static_cast<float>(byte4 >> 3),
-                  quantized_dot);
-            }
+            const packed_ushort4 words =
+                *reinterpret_cast<const device packed_ushort4*>(packed);
+            const uint trailing =
+                *reinterpret_cast<const device ushort*>(packed + 8);
+            const uint window0 =
+                static_cast<uint>(words[0]) |
+                (static_cast<uint>(words[1]) << 16);
+            const uint window1 =
+                static_cast<uint>(words[2]) |
+                (static_cast<uint>(words[3]) << 16);
+            quantized_dot = fma(
+                input_values[0],
+                static_cast<float>(window0 & 0x1fu),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[1],
+                static_cast<float>((window0 >> 5) & 0x1fu),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[2],
+                static_cast<float>((window0 >> 10) & 0x1fu),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[3],
+                static_cast<float>((window0 >> 15) & 0x1fu),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[4],
+                static_cast<float>((window0 >> 20) & 0x1fu),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[5],
+                static_cast<float>((window0 >> 25) & 0x1fu),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[6],
+                static_cast<float>(
+                    (window0 >> 30) | ((window1 & 0x07u) << 2)),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[7],
+                static_cast<float>((window1 >> 3) & 0x1fu),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[8],
+                static_cast<float>((window1 >> 8) & 0x1fu),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[9],
+                static_cast<float>((window1 >> 13) & 0x1fu),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[10],
+                static_cast<float>((window1 >> 18) & 0x1fu),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[11],
+                static_cast<float>((window1 >> 23) & 0x1fu),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[12],
+                static_cast<float>(
+                    (window1 >> 28) | ((trailing & 0x01u) << 4)),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[13],
+                static_cast<float>((trailing >> 1) & 0x1fu),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[14],
+                static_cast<float>((trailing >> 6) & 0x1fu),
+                quantized_dot);
+            quantized_dot = fma(
+                input_values[15],
+                static_cast<float>(trailing >> 11),
+                quantized_dot);
             results[row] += scale * quantized_dot + bias * input_sum;
           }
 

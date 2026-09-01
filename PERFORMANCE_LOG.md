@@ -4,7 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
-| M1 Max mixed 4.951-bpw Q5-class target, sampled direct `128 / 32 warm / 128 timed` | generic MLX QMM **18.121698566 tok/s** | selected A094 Q5 QMV ten-sample mean **18.993383731 tok/s**; first A095 screen **19.032187257** | selected gain **+0.871685165 tok/s / +4.811%**; exact digest stable; BF16 b/a fusion ten-sample mean **18.993221731** is flat; **1.006616269 tok/s** remains to the floor | pinned mixed revision `596b8067...8340`, seed 42, selected command-buffer controls, `SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1`, Q4 QMV unset | 2026-09-01 15:23 PDT |
+| M1 Max mixed 4.951-bpw Q5-class target, sampled direct `128 / 32 warm / 128 timed` | generic MLX QMM **18.121698566 tok/s** | aligned-word A100 ten-sample mean **19.134907634 tok/s** | **+1.013209068 tok/s / +5.591%** over generic and **+0.122277858 / +0.643%** over paired A094 **19.012629776**; exact digest stable; **0.865092366 tok/s / 4.521%** remains to the floor | pinned mixed revision `596b8067...8340`, seed 42, selected command-buffer controls, `SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1`, Q4 QMV unset | 2026-09-01 15:39 PDT |
 | M1 Max affine-Q5/G64 target-only batch-one decode, sampled direct `128 / 32 warm / 128 timed` | native affine-Q5 target **16.322505765 tok/s** | opt-in direct Q5 QMV **17.823163930 tok/s** | **+1.500658165 tok/s / +9.194%** in the first complete screen; representative parity passes; **2.176836070 tok/s** remains to the floor and a repeated matched window is pending | pinned Q5 target, selected command-buffer controls, and `SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1`; PERF-A094/FA122/FA123/FA124 | 2026-09-01 12:43 PDT |
 | M1 Max affine-Q5 plus matched 5-bit MTP, deterministic direct `128 / 32 warm / 128 timed` | three-token block **17.919995235 tok/s**, width **3.0** | opt-in eight-token block **31.380317186 tok/s**, width **8.0**; exact sampled p/q arms peak at **6.380162135 tok/s**, width **2.285714286** | **+13.460321951 tok/s / +75.113%** for the deterministic execution-cost probe, clearing 20 by **11.380317186 tok/s**; native sampling preserves its configured distribution and rejects this proposal route for production | pinned Q5 target/MTP snapshots plus `SGLANG_MLX_NATIVE_MTP_BLOCK_SIZE=8`; PERF-A093/FA120/FA121 | 2026-09-01 12:08 PDT |
 | M1 Max affine-Q5 target plus DFlash2, sampled direct `128 / 32 warm / 128 timed` | generic affine-Q5 verifier **11.506669050 tok/s**, M=8 about **363--368 ms** | native Q5 M=8 K-split **13.721235888 tok/s**, M=8 about **228--229 ms** | **+2.214566838 tok/s / +19.246%**; representative five-bit unpack parity passes; target-only remains faster at **16.322505765 tok/s** | PERF-A092 candidate dylib with the exact PERF-A091 DFlash command | 2026-09-01 11:49 PDT |
@@ -838,7 +838,7 @@ tree throughput can be ranked for production.
 | PERF-A096 | Reduce the aggregate Q5 weight stream with a quality-oriented mixed affine-Q4/Q5 policy. | Immutable `maglun/Qwen3.8-27B-MLX-Mixed-4.95bpw` text shards and the existing native per-tensor bit-width inference | Active Q5-class target; speed floor still open | Revision `596b8067...c8340` contains **16,645,209,088** text tensor bytes at **4.9510 aggregate BPW**, with 162 Q4 plus 240 Q5 affine matrices. The dense BF16 loader fix admits all recurrent b/a projections. Selected A094 Q5 QMV reaches a ten-sample mean **18.993383731 tok/s** with stable digest, leaving **1.006616269 tok/s** to 20. |
 | PERF-A097 | Restore the Qwen3.8 MTP hidden-state contract and screen the published smaller draft head. | Native target/MTP handoff, matched one-layer sidecar, exact p/q sampling, and accepted-cache lifecycle | Loader retained; published Q4 head rejected for throughput | Signed `0da5c5a135` accepts the head's `mtp.` namespace and signed `1b328149c7` provides the post-norm seed. Mixed-target block-three sampled screens reach **9.122242179 tok/s**, post-norm **9.507655940**, and Q4 QMV **11.341033334**, all below target-only. See PERF-FA127. |
 | PERF-A098 | Replace ten scalarized Q5 weight-byte loads with five aligned 16-bit loads. | Selected PERF-A095 Metal Q5 batch-one kernel | Offline AIR candidate; evaluate after PERF-A095 | Apple Metal 32023.883 lowers the three packed-byte ranges to ten `i8` loads. A `packed_ushort4` plus scalar `ushort` form lowers to five aligned-two `i16` loads. K-multiple-512 row strides and ten-byte lane offsets prove two-byte alignment. Runtime parity and throughput remain pending. |
-| PERF-A100 | Reconstruct each Q5 lane as three continuous bit windows after the aligned 16-bit loads. | Selected PERF-A095 Metal Q5 batch-one kernel | Strict full-source candidate prebuilt; fresh-session runtime pending | A two-kernel Metal 3.2 comparison confirms the byte-window form emits ten aligned-one `i8` loads and ten byte extensions, while the continuous-bitstream form emits five aligned-two `i16` loads and five word extensions. The latter builds two 32-bit windows plus one 16-bit tail and has only two five-bit fields crossing a window boundary. The full native dylib and standalone parity executable compile with warnings as errors from current HEAD. Runtime parity and matched throughput remain pending. |
+| PERF-A100 | Reconstruct each Q5 lane as three continuous bit windows after five aligned 16-bit loads. | Selected affine-Q5 batch-one Metal kernel | Qualified and retained | Representative parity passes at maximum error **0.03125 / 0.03125 / 0.0234375** and every production-shape digest matches A094. Two independent balanced full-model windows improve **19.004038228 -> 19.122257628** and **19.021221323 -> 19.147557640 tok/s**; aggregate gain is **+0.122277858 / +0.643%**. |
 | PERF-A101 | Pair adjacent SIMD lanes so one lane loads both ten-byte Q5 packs through aligned 32-bit words. | Selected affine-Q5 batch-one Metal kernel | Strict full-source candidate prebuilt; fresh-session Metal gate pending | Each even lane loads five aligned `i32` words covering its 20-byte pair; three `simd_shuffle_up` operations supply the odd lane. Dynamic weight-load operations per 32-lane SIMD group fall from 160 five-word 16-bit loads to 80 five-word 32-bit loads while preserving the same 320 bytes. Apple AIR retains the masked even-lane branch, five aligned-four loads, and three native shuffles. A deterministic C++ pack/unpack harness passes **1,001,026** cases; the full dylib and standalone Metal parity executable compile strictly from current HEAD. |
 | PERF-A102 | Preserve committed decode-only MTP attention history across sampled speculative cycles. | Native Qwen3.8 MTP cache lifecycle, target-hidden pairing, and exact p/q verification | Opt-in source candidate prebuilt; fresh-session acceptance and throughput pending | The candidate retains the current pending-token entry, discards later provisional entries, and appends accepted draft tokens paired with the verifier's committed hidden prefix. Absolute target/MTP offset checks reset history after a target-only fallback. Prompt history and position-origin changes stay outside this arm. Strict C++20/O3 compilation and `git diff --check` pass from signed `711214b27c`; the candidate dylib is `b4f3b222...a5d`. |
 | PERF-A103 | Replace each lane's five aligned 16-bit Q5 loads with three overlapping aligned 32-bit loads. | Selected affine-Q5 batch-one Metal kernel and unchanged 320-byte standard packing | Runtime-correct and rejected | Production-shape digests match A094. Order/reverse `100 / 1000` screens are consistently slower across gate/up, down, attention-output, and value shapes. See PERF-FA125. |
@@ -5187,3 +5187,62 @@ tree throughput can be ranked for production.
   cancels the first window's small apparent gain; the dispatch reduction has
   no measurable end-to-end value on this dense shape. PERF-FA128 records the
   closure.
+
+### 2026-09-01 15:39 PDT - PERF-A100 aligned Q5 word loads
+
+- Change: replaced ten scalarized byte loads for each lane's two Q5 packs with
+  one aligned `packed_ushort4` plus one aligned trailing `ushort`. Two 32-bit
+  windows and one 16-bit tail feed the original sixteen sequential FP32 FMAs;
+  only five-bit fields 6 and 12 cross a window boundary. The guard already
+  requires K divisible by 512, so every ten-byte lane segment and 320-byte
+  block step is two-byte aligned.
+- Correctness evidence: standalone K/N `512/64`, `5120/128`, and `17408/32`
+  parity passes at maximum absolute error
+  **0.03125 / 0.03125 / 0.0234375**. Gate/up, down, attention-output, and
+  value-projection digests match A094 exactly:
+  `245b954f045f18cc`, `d05378cc8066dc41`, `46a6c240b685fce9`, and
+  `2e6fc0972644b8d2`. Every full-model run preserves token digest
+  `d0193f6d413b68c1` and last token 11406.
+- Balanced production-shape `100 / 1000` microbenchmarks keep gate/up and down
+  effectively flat while improving the compact shapes. Order/reverse means in
+  milliseconds were A094/A100 gate/up **0.477073/0.478874** and
+  **0.428166/0.426401**; down **0.428398/0.429761** and
+  **0.434184/0.431101**; attention-output **0.333244/0.321322** and
+  **0.335367/0.333845**; value **0.305514/0.300372** and
+  **0.309724/0.304864**.
+- Full-model contract: pinned mixed revision `596b8067...8340`, native
+  sampling seed 42, A094/A100 Q5 QMV, Q4 QMV unset, exact
+  `128 / 32 warm / 128 timed`, and the selected command-buffer controls.
+- First balanced five-versus-five window:
+  - A094 **18.979970071, 18.964319729, 19.010746827, 19.036241095,
+    19.028913416**, mean **19.004038228 tok/s**;
+  - A100 **19.110513585, 19.128907179, 19.081414615, 19.116677570,
+    19.173775190**, mean **19.122257628 tok/s**;
+  - gain **+0.118219400 tok/s / +0.622075%**.
+- A first independent attempt became externally contended after two clean
+  pairs. The discarded tail was control **15.322072049**, A100
+  **19.164288188 / 18.566956374**, control **14.285164044 / 14.438592893**,
+  and A100 **14.382498251 tok/s**. Immediate diagnostics found Spotlight
+  `mds_stores`/`mdworker_shared` and `fileproviderd` processing the newly
+  materialized worktree, with no thermal warning, model process, or listener.
+  This tail carries no candidate attribution.
+- After the host returned to its ordinary idle state, the independent clean
+  window was:
+  - A094 **18.963286862, 19.023466393, 19.047192232, 19.026645144,
+    19.045515986**, mean **19.021221323 tok/s**;
+  - A100 **19.087183885, 19.161381911, 19.185076409, 19.145774023,
+    19.158371971**, mean **19.147557640 tok/s**;
+  - gain **+0.126336316 tok/s / +0.664186%**.
+- Aggregate clean means are A094 **19.012629776** and A100
+  **19.134907634 tok/s**, a **+0.122277858 / +0.643140%** gain. Against the
+  generic mixed target, A100 is **+1.013209068 tok/s / +5.591137%**.
+- Build evidence: candidate full dylib, standalone parity, and deterministic
+  microbenchmark compile under C++20/O3 with `-Wall -Wextra -Werror`.
+  Their SHA-256 values are
+  `ce1229795f806a0ffd6bc66225e06e77a14f23baf2e13405b179723d36e07b36`,
+  `ce589315db40dd79508a0a2fd4bddf04c8948cbb92c71e37695bdb0141168119`,
+  and `45e6e6f2116d66139bc77a2bd8f51fc18af679426b5cc9caaf670f864efe792e`.
+  Candidate `git diff --check` passes.
+- Decision: promote A100. The change preserves arithmetic order and output,
+  repeats across independent process-isolated windows, and lowers the direct
+  gap to **0.865092366 tok/s / 4.521017%**.

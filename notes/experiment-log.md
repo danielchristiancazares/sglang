@@ -22274,3 +22274,68 @@ mean 13.929045  17.125658 446.051        39.730
   now **18.993383731 tok/s**, leaving **1.006616269 tok/s / 5.299825%** to
   the direct floor. Exact 131K serving and Codex gates remain pending until a
   direct candidate clears 20 with margin.
+
+### 2026-09-01 15:39 PDT - A100 aligned-word Q5 loads add a repeated 0.643% win
+
+- Continued on signed `e418ca44ef18e10429e25d05821af83b855a37c1`, 80
+  commits ahead of `origin/main`; its EDDSA signature verified good. The index
+  was empty and the only main-worktree modifications were Daniel's existing
+  engine/header/test paths. The required analysis-only subagent batch again
+  returned `agent thread limit reached` because this environment exposes one
+  total collaboration slot.
+- Added persistent detached worktree
+  `/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-a100` at signed
+  `b07fb3c00f`. Reconstructed PERF-A100 by reading each lane's exact ten Q5
+  bytes through one aligned `packed_ushort4` and one trailing `ushort`, forming
+  two 32-bit windows and a 16-bit tail, then executing the original sixteen
+  sequential FP32 FMAs. K-divisible-by-512 dispatch makes the ten-byte lane
+  stride and 320-byte block step two-byte aligned.
+- Strict C++20/O3 warning-as-error builds passed for the full dylib,
+  standalone parity executable, and deterministic microbenchmark. Candidate
+  `git diff --check` passed. Persistent artifact SHA-256 values are:
+
+  | Artifact | SHA-256 |
+  |---|---|
+  | `libqwen38_a100_dense.dylib` | `ce1229795f806a0ffd6bc66225e06e77a14f23baf2e13405b179723d36e07b36` |
+  | `test_qwen38_affine_q5_a100` | `ce589315db40dd79508a0a2fd4bddf04c8948cbb92c71e37695bdb0141168119` |
+  | `bench_qwen38_affine_q5_a100` | `45e6e6f2116d66139bc77a2bd8f51fc18af679426b5cc9caaf670f864efe792e` |
+
+- Standalone parity returned maximum absolute errors
+  **0.03125 / 0.03125 / 0.0234375** for K/N `512/64`, `5120/128`, and
+  `17408/32`. Balanced `100 / 1000` microbenchmarks reproduced A094's exact
+  four digests. A100 was flat at gate/up and down, while compact
+  attention-output/value shapes improved by roughly 1.6--2.0% across the
+  paired order/reverse means. Exact timings are in `PERFORMANCE_LOG.md`.
+- Full-model runs used the pinned mixed revision
+  `596b8067f7cf429007bb668874ffee7e917c8340` and the same command recorded for
+  PERF-A109, changing only the A094/A100 dylib. The first clean balanced window
+  was:
+  - A094 **18.979970071, 18.964319729, 19.010746827, 19.036241095,
+    19.028913416**, mean **19.004038228 tok/s**;
+  - A100 **19.110513585, 19.128907179, 19.081414615, 19.116677570,
+    19.173775190**, mean **19.122257628 tok/s**;
+  - gain **+0.118219400 / +0.622075%**.
+- A first independent attempt developed a host-wide slowdown after two clean
+  pairs. The retained discarded tail was control **15.322072049**, A100
+  **19.164288188 / 18.566956374**, control **14.285164044 / 14.438592893**,
+  and A100 **14.382498251 tok/s**. Immediate inspection found
+  `mds_stores`, several `mdworker_shared` processes, and `fileproviderd`
+  processing the newly added worktree. CPU returned to 96% idle; memory stayed
+  95% free; swap I/O stopped; `pmset -g therm` showed no warning; port 30000
+  and model/compiler workloads were clear. This contaminated tail is excluded
+  from candidate attribution.
+- After host activity settled, the independent clean window completed:
+  - A094 **18.963286862, 19.023466393, 19.047192232, 19.026645144,
+    19.045515986**, mean **19.021221323 tok/s**;
+  - A100 **19.087183885, 19.161381911, 19.185076409, 19.145774023,
+    19.158371971**, mean **19.147557640 tok/s**;
+  - gain **+0.126336316 / +0.664186%**.
+- All clean and contaminated runs reproduced digest `d0193f6d413b68c1`
+  and last token 11406. Aggregate clean A094 is **19.012629776** and A100 is
+  **19.134907634 tok/s**, a repeated **+0.122277858 / +0.643140%** win.
+  A100 improves generic mixed execution by **1.013209068 / 5.591137%** and
+  leaves **0.865092366 tok/s / 4.521017%** to 20.
+- Promote only the A100 engine blob relative to signed HEAD. The main working
+  copy contains Daniel's A095/Q4 changes; stage the validated candidate blob
+  directly into the index so those bytes remain untouched in the working
+  tree. Exact 131K and Codex gates remain pending.
