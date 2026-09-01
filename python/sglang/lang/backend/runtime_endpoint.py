@@ -439,7 +439,8 @@ class Runtime:
         from sglang.srt.utils import kill_process_tree
 
         if self.pid is not None:
-            kill_process_tree(self.pid)
+            # __del__ routes here, so waiting would block the thread running GC.
+            kill_process_tree(self.pid, wait_timeout=None)
             self.pid = None
 
     def start_profile(self):
