@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-07:09 PDT.
+07:28 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -346,6 +346,14 @@ single-chunk sampled decode retains its exact digest above 20. DFlash2 and
 DSpark retain their existing capture chunks, ordinary MTP is unchanged, and
 the default target-only path remains one-shot. The target-only served gap is
 now **0.700 tok/s**.
+
+A dedicated affine-W4 batch-one Metal QMV is closed at its scalar-output
+geometry. Standalone BF16 parity passed, while the one-SIMD-per-output form
+reached **10.456143330 tok/s** and an eight-lane quant-parameter broadcast
+reached **7.773375044 tok/s**, against stock MLX **20.339874670 tok/s** on the
+same short full-Q4 target-only shape. Every experimental source and test
+change was removed. Future batch-one affine work requires matrix tiling,
+dependency-level evidence, or fusion with a downstream consumer.
 
 Two DSpark proposal-fidelity candidates are closed. Independently applying
 target top-k/top-p filtering to each draft row fell to **6.997461 tok/s** and
