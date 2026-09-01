@@ -24,13 +24,14 @@ class TestCheckTreeCacheGate(CustomTestCase):
             envs.SGLANG_ENABLE_TREE_CACHE_SANITY_CHECK.clear()
             yield
 
-    def _make_checker(self):
+    def _make_checker(self, *, hybrid_swa=True):
         tree_cache = MagicMock()
         tree_cache.is_tree_cache.return_value = True
         tree_cache.supports_swa.return_value = True
+        tree_cache.supports_mamba.return_value = True
         return SchedulerInvariantChecker(
-            is_hybrid_swa=True,
-            is_hybrid_ssm=False,
+            is_hybrid_swa=hybrid_swa,
+            is_hybrid_ssm=not hybrid_swa,
             disaggregation_mode=DisaggregationMode.NULL,
             page_size=1,
             full_tokens_per_layer=None,
@@ -54,6 +55,7 @@ class TestCheckTreeCacheGate(CustomTestCase):
 
             checker._check_tree_cache()
 
+            checker.tree_cache.is_tree_cache.assert_not_called()
             checker.tree_cache.sanity_check.assert_not_called()
 
     def test_enabled_by_default_in_ci(self):
@@ -65,7 +67,7 @@ class TestCheckTreeCacheGate(CustomTestCase):
 
             checker._check_tree_cache()
 
-            checker.tree_cache.sanity_check.assert_called_once()
+            checker.tree_cache.sanity_check.assert_called_once_with()
 
     def test_explicitly_disabled_in_ci(self):
         with envs.SGLANG_IS_IN_CI.override(True):
@@ -76,14 +78,16 @@ class TestCheckTreeCacheGate(CustomTestCase):
 
             checker.tree_cache.sanity_check.assert_not_called()
 
-    def test_runs_when_enabled(self):
+    def test_runs_when_enabled_for_hybrid_caches(self):
         with envs.SGLANG_IS_IN_CI.override(False):
-            checker = self._make_checker()
+            for hybrid_swa in (True, False):
+                with self.subTest(hybrid_swa=hybrid_swa):
+                    checker = self._make_checker(hybrid_swa=hybrid_swa)
 
-            with envs.SGLANG_ENABLE_TREE_CACHE_SANITY_CHECK.override(True):
-                checker._check_tree_cache()
+                    with envs.SGLANG_ENABLE_TREE_CACHE_SANITY_CHECK.override(True):
+                        checker._check_tree_cache()
 
-            checker.tree_cache.sanity_check.assert_called_once()
+                    checker.tree_cache.sanity_check.assert_called_once_with()
 
 
 if __name__ == "__main__":
