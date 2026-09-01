@@ -10,6 +10,7 @@
 #include <dirent.h>
 #include <functional>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
@@ -1230,6 +1231,64 @@ array softplus(const array& x) {
   return logaddexp(x, array(0.0f));
 }
 
+array dspark_yarn_rope(const array& x, int offset) {
+  constexpr int kHeadDim = 128;
+  constexpr int kFrequencyCount = kHeadDim / 2;
+  constexpr double kBase = 10000000.0;
+  constexpr double kFactor = 32.0;
+  constexpr double kOriginalPositions = 8192.0;
+  constexpr double kBetaFast = 32.0;
+  constexpr double kBetaSlow = 1.0;
+  if (x.ndim() == 0 || x.shape().back() != kHeadDim || offset < 0) {
+    throw std::runtime_error("invalid DSpark YaRN RoPE input");
+  }
+
+  static const array frequencies = [] {
+    const auto correction_dimension = [](double rotations) {
+      return kHeadDim *
+          std::log(kOriginalPositions / (rotations * 2.0 * std::numbers::pi)) /
+          (2.0 * std::log(kBase));
+    };
+    const int low = std::max(
+        static_cast<int>(std::floor(correction_dimension(kBetaFast))), 0);
+    const int high = std::min(
+        static_cast<int>(std::ceil(correction_dimension(kBetaSlow))),
+        kHeadDim - 1);
+    std::vector<float> values(kFrequencyCount);
+    for (int index = 0; index < kFrequencyCount; ++index) {
+      const double position_frequency =
+          std::pow(kBase, (2.0 * index) / kHeadDim);
+      const double extrapolated = 1.0 / position_frequency;
+      const double interpolated = extrapolated / kFactor;
+      const double ramp = std::clamp(
+          (static_cast<double>(index) - low) /
+              static_cast<double>(high - low),
+          0.0,
+          1.0);
+      const double extrapolation_mask = 1.0 - ramp;
+      const double inverse_frequency =
+          interpolated * (1.0 - extrapolation_mask) +
+          extrapolated * extrapolation_mask;
+      values[static_cast<size_t>(index)] =
+          static_cast<float>(1.0 / inverse_frequency);
+    }
+    array result(values.begin(), {kFrequencyCount}, mx::float32);
+    eval(result);
+    return result;
+  }();
+  static const float attention_factor =
+      static_cast<float>(0.1 * std::log(kFactor) + 1.0);
+  array rotated = mx::fast::rope(
+      x,
+      kHeadDim,
+      /*traditional=*/false,
+      std::nullopt,
+      1.0f,
+      offset,
+      frequencies);
+  return rotated * array(attention_factor, rotated.dtype());
+}
+
 array QLinear::operator()(const array& x) const {
   if (!valid) {
     throw std::runtime_error("QLinear used before load");
@@ -1543,6 +1602,9 @@ void Engine::reset() {
   }
   if (dflash_valid_) {
     dflash_reset();
+  }
+  if (dspark_valid_) {
+    dspark_reset();
   }
 }
 
@@ -1954,7 +2016,7 @@ TargetForward Engine::forward_hidden_captured(
       capture_commit_tape ? &result.linear_tapes : nullptr);
   if (result.captured.size() != 5) {
     throw std::runtime_error(
-        "DFlash2 target capture requires layers 5, 19, 33, 47, and 61");
+        "speculative draft capture requires layers 5, 19, 33, 47, and 61");
   }
   return result;
 }
@@ -2318,7 +2380,226 @@ void Engine::load_dflash2(
 
   mtp_valid_ = false;
   dflash_valid_ = true;
+  dspark_valid_ = false;
   dflash_reset();
+}
+
+void Engine::load_dspark(
+    const std::unordered_map<std::string, array>& weights) {
+  constexpr size_t kDenseTensorCount = 62;
+  constexpr size_t kAffineTensorCount = 136;
+  constexpr int kHiddenSize = 5120;
+  constexpr int kIntermediateSize = 17408;
+  constexpr int kDraftLayers = 5;
+  constexpr int kDraftHeads = 32;
+  constexpr int kDraftKvHeads = 8;
+  constexpr int kHeadDim = 128;
+  constexpr int kMarkovRank = 256;
+  const bool affine = weights.size() == kAffineTensorCount;
+  if (!affine && weights.size() != kDenseTensorCount) {
+    throw std::runtime_error(
+        "DSpark checkpoint contains " + std::to_string(weights.size()) +
+        " tensors; expected 62 dense or 136 affine tensors");
+  }
+  if (cfg_.hidden_size != kHiddenSize || cfg_.num_hidden_layers != 64 ||
+      cfg_.vocab_size != 248320) {
+    throw std::runtime_error(
+        "Qwen3.8-27B DSpark requires target shape 64x5120x248320");
+  }
+
+  const auto dense = [this, &weights](
+                         const std::string& name,
+                         const mx::Shape& shape) -> array {
+    array value = require(weights, name);
+    if (value.shape() != shape || value.dtype() != mx::bfloat16) {
+      throw std::runtime_error("invalid DSpark tensor " + name);
+    }
+    return value;
+  };
+  const auto linear = [this, &weights, &dense, affine](
+                          const std::string& prefix,
+                          int output_features,
+                          int input_features) -> QLinear {
+    if (!affine) {
+      QLinear value;
+      value.w = dense(
+          prefix + ".weight", {output_features, input_features});
+      value.valid = true;
+      return value;
+    }
+    QLinear value = load_qlinear(weights, prefix);
+    if (value.bits != 4 || value.group_size != 64 ||
+        value.w.dtype() != mx::uint32 ||
+        value.scales.dtype() != mx::bfloat16 ||
+        value.biases.dtype() != mx::bfloat16 ||
+        value.w.shape()[0] != output_features ||
+        value.scales.shape()[0] != output_features ||
+        value.scales.shape().back() * value.group_size != input_features) {
+      throw std::runtime_error("invalid DSpark affine linear " + prefix);
+    }
+    return value;
+  };
+
+  dspark_fc_ = linear("fc", kHiddenSize, kDraftLayers * kHiddenSize);
+  dspark_hidden_norm_ = dense("hidden_norm.weight", {kHiddenSize});
+  dspark_norm_ = dense("norm.weight", {kHiddenSize});
+  dspark_markov_w1_ = dense(
+      "markov_head.markov_w1.weight", {cfg_.vocab_size, kMarkovRank});
+  dspark_markov_w2_ =
+      linear("markov_head.markov_w2", cfg_.vocab_size, kMarkovRank);
+  (void)dense(
+      "confidence_head.proj.weight", {1, kHiddenSize + kMarkovRank});
+  (void)dense("confidence_head.proj.bias", {1});
+
+  dspark_layers_.clear();
+  dspark_layers_.resize(kDraftLayers);
+  for (int index = 0; index < kDraftLayers; ++index) {
+    DSparkLayer& layer = dspark_layers_[static_cast<size_t>(index)];
+    const std::string prefix = "layers." + std::to_string(index);
+    layer.input_norm =
+        dense(prefix + ".input_layernorm.weight", {kHiddenSize});
+    layer.post_norm =
+        dense(prefix + ".post_attention_layernorm.weight", {kHiddenSize});
+    layer.gate_proj =
+        linear(prefix + ".mlp.gate_proj", kIntermediateSize, kHiddenSize);
+    layer.up_proj =
+        linear(prefix + ".mlp.up_proj", kIntermediateSize, kHiddenSize);
+    layer.down_proj =
+        linear(prefix + ".mlp.down_proj", kHiddenSize, kIntermediateSize);
+    layer.attn.q_proj = linear(
+        prefix + ".self_attn.q_proj", kDraftHeads * kHeadDim, kHiddenSize);
+    layer.attn.k_proj = linear(
+        prefix + ".self_attn.k_proj", kDraftKvHeads * kHeadDim, kHiddenSize);
+    layer.attn.v_proj = linear(
+        prefix + ".self_attn.v_proj", kDraftKvHeads * kHeadDim, kHiddenSize);
+    layer.attn.o_proj = linear(
+        prefix + ".self_attn.o_proj", kHiddenSize, kDraftHeads * kHeadDim);
+    layer.attn.q_norm =
+        dense(prefix + ".self_attn.q_norm.weight", {kHeadDim});
+    layer.attn.k_norm =
+        dense(prefix + ".self_attn.k_norm.weight", {kHeadDim});
+  }
+
+  mtp_valid_ = false;
+  dflash_valid_ = false;
+  dspark_valid_ = true;
+  dspark_reset();
+}
+
+void Engine::dspark_reset() {
+  dspark_context_offset_ = 0;
+  for (DSparkLayer& layer : dspark_layers_) {
+    layer.attn.keys = array(0);
+    layer.attn.values = array(0);
+    layer.attn.cache_length = 0;
+    layer.attn.cache_capacity = 0;
+  }
+}
+
+void Engine::dspark_append_layer_context(
+    DSparkAttention& attn,
+    const array& projected,
+    int position_offset) {
+  constexpr int kKvHeads = 8;
+  constexpr int kHeadDim = 128;
+  const int batch = static_cast<int>(projected.shape()[0]);
+  const int length = static_cast<int>(projected.shape()[1]);
+  if (length <= 0) {
+    return;
+  }
+  if (attn.cache_length != position_offset) {
+    throw std::runtime_error("noncontiguous DSpark context append");
+  }
+
+  array keys = reshape(
+      attn.k_proj(projected), {batch, length, kKvHeads, kHeadDim});
+  keys = mx::fast::rms_norm(keys, attn.k_norm, cfg_.rms_norm_eps);
+  keys = dspark_yarn_rope(transpose(keys, {0, 2, 1, 3}), position_offset);
+  array values = transpose(
+      reshape(
+          attn.v_proj(projected),
+          {batch, length, kKvHeads, kHeadDim}),
+      {0, 2, 1, 3});
+
+  const int needed = attn.cache_length + length;
+  if (attn.cache_capacity < needed) {
+    int capacity = std::max(256, attn.cache_capacity);
+    while (capacity < needed) {
+      capacity *= 2;
+    }
+    array new_keys =
+        zeros({batch, kKvHeads, capacity, kHeadDim}, keys.dtype());
+    array new_values =
+        zeros({batch, kKvHeads, capacity, kHeadDim}, values.dtype());
+    if (attn.cache_length > 0) {
+      array active_keys = slice(
+          attn.keys,
+          {0, 0, 0, 0},
+          {batch, kKvHeads, attn.cache_length, kHeadDim});
+      array active_values = slice(
+          attn.values,
+          {0, 0, 0, 0},
+          {batch, kKvHeads, attn.cache_length, kHeadDim});
+      new_keys = slice_update(
+          new_keys,
+          active_keys,
+          {0, 0, 0, 0},
+          {batch, kKvHeads, attn.cache_length, kHeadDim});
+      new_values = slice_update(
+          new_values,
+          active_values,
+          {0, 0, 0, 0},
+          {batch, kKvHeads, attn.cache_length, kHeadDim});
+      eval(new_keys, new_values);
+    }
+    attn.keys = new_keys;
+    attn.values = new_values;
+    attn.cache_capacity = capacity;
+  }
+  attn.keys = slice_update(
+      attn.keys,
+      keys,
+      {0, 0, attn.cache_length, 0},
+      {batch, kKvHeads, needed, kHeadDim});
+  attn.values = slice_update(
+      attn.values,
+      values,
+      {0, 0, attn.cache_length, 0},
+      {batch, kKvHeads, needed, kHeadDim});
+  attn.cache_length = needed;
+  async_eval(attn.keys, attn.values);
+}
+
+void Engine::dspark_append_context(
+    const std::vector<array>& captured, int token_count) {
+  if (captured.size() != 5 || token_count <= 0) {
+    throw std::runtime_error("invalid DSpark target context capture");
+  }
+  const int available = static_cast<int>(captured.front().shape()[1]);
+  if (token_count > available) {
+    throw std::runtime_error("DSpark committed context exceeds target capture");
+  }
+  std::vector<array> selected;
+  selected.reserve(captured.size());
+  for (const array& value : captured) {
+    if (value.ndim() != 3 || value.shape()[0] != 1 ||
+        value.shape()[1] != available || value.shape()[2] != cfg_.hidden_size) {
+      throw std::runtime_error("inconsistent DSpark target capture shape");
+    }
+    selected.push_back(slice(
+        value,
+        {0, 0, 0},
+        {1, token_count, cfg_.hidden_size}));
+  }
+  array projected = mx::fast::rms_norm(
+      dspark_fc_(concatenate(selected, -1)),
+      dspark_hidden_norm_,
+      cfg_.rms_norm_eps);
+  for (DSparkLayer& layer : dspark_layers_) {
+    dspark_append_layer_context(
+        layer.attn, projected, dspark_context_offset_);
+  }
+  dspark_context_offset_ += token_count;
 }
 
 void Engine::dflash_reset() {
@@ -2451,6 +2732,19 @@ void Engine::dflash_append_context(
     }
   }
   dflash_context_offset_ += token_count;
+}
+
+void Engine::draft_append_context(
+    const std::vector<array>& captured, int token_count) {
+  if (dspark_valid_) {
+    dspark_append_context(captured, token_count);
+    return;
+  }
+  if (dflash_valid_) {
+    dflash_append_context(captured, token_count);
+    return;
+  }
+  throw std::runtime_error("speculative draft context is unavailable");
 }
 
 array Engine::dflash_grouped_convolve(
@@ -2612,6 +2906,120 @@ array Engine::dflash_forward(int32_t anchor) {
       hidden, {0, 1, 0}, {1, kBlockSize, cfg_.hidden_size});
 }
 
+array Engine::dspark_attention(
+    DSparkAttention& attn, const array& hidden) {
+  constexpr int kHeads = 32;
+  constexpr int kKvHeads = 8;
+  constexpr int kHeadDim = 128;
+  const int batch = static_cast<int>(hidden.shape()[0]);
+  const int length = static_cast<int>(hidden.shape()[1]);
+  if (attn.cache_length <= 0 ||
+      attn.cache_length != dspark_context_offset_ ||
+      attn.cache_capacity < attn.cache_length) {
+    throw std::runtime_error("invalid DSpark draft context cache");
+  }
+
+  array queries = reshape(
+      attn.q_proj(hidden), {batch, length, kHeads, kHeadDim});
+  queries = mx::fast::rms_norm(queries, attn.q_norm, cfg_.rms_norm_eps);
+  queries = dspark_yarn_rope(
+      transpose(queries, {0, 2, 1, 3}), dspark_context_offset_);
+
+  array noise_keys = reshape(
+      attn.k_proj(hidden), {batch, length, kKvHeads, kHeadDim});
+  noise_keys =
+      mx::fast::rms_norm(noise_keys, attn.k_norm, cfg_.rms_norm_eps);
+  noise_keys = dspark_yarn_rope(
+      transpose(noise_keys, {0, 2, 1, 3}), dspark_context_offset_);
+  array noise_values = transpose(
+      reshape(
+          attn.v_proj(hidden),
+          {batch, length, kKvHeads, kHeadDim}),
+      {0, 2, 1, 3});
+
+  array context_keys = slice(
+      attn.keys,
+      {0, 0, 0, 0},
+      {batch, kKvHeads, attn.cache_length, kHeadDim});
+  array context_values = slice(
+      attn.values,
+      {0, 0, 0, 0},
+      {batch, kKvHeads, attn.cache_length, kHeadDim});
+  array keys = concatenate({context_keys, noise_keys}, 2);
+  array values = concatenate({context_values, noise_values}, 2);
+  array output = mx::fast::scaled_dot_product_attention(
+      queries,
+      keys,
+      values,
+      1.0f / std::sqrt(static_cast<float>(kHeadDim)));
+  output = reshape(
+      transpose(output, {0, 2, 1, 3}),
+      {batch, length, kHeads * kHeadDim});
+  return attn.o_proj(output);
+}
+
+array Engine::dspark_forward(int32_t anchor) {
+  constexpr int kBlockSize = 7;
+  constexpr int32_t kMaskToken = 248070;
+  int32_t tokens[kBlockSize];
+  tokens[0] = anchor;
+  std::fill(tokens + 1, tokens + kBlockSize, kMaskToken);
+  array ids(tokens, {1, kBlockSize}, mx::int32);
+  array hidden = embed(ids);
+  for (DSparkLayer& layer : dspark_layers_) {
+    array residual = hidden;
+    array normalized = mx::fast::rms_norm(
+        hidden, layer.input_norm, cfg_.rms_norm_eps);
+    hidden = residual + dspark_attention(layer.attn, normalized);
+
+    residual = hidden;
+    normalized = mx::fast::rms_norm(
+        hidden, layer.post_norm, cfg_.rms_norm_eps);
+    hidden = residual + layer.down_proj(
+        silu(layer.gate_proj(normalized)) * layer.up_proj(normalized));
+  }
+  return mx::fast::rms_norm(hidden, dspark_norm_, cfg_.rms_norm_eps);
+}
+
+std::pair<array, array> Engine::dspark_propose(
+    const array& hidden, int32_t anchor, bool sampled) {
+  constexpr int kBlockSize = 7;
+  constexpr int kMarkovRank = 256;
+  if (hidden.shape() != mx::Shape{1, kBlockSize, cfg_.hidden_size}) {
+    throw std::runtime_error("invalid DSpark proposal hidden state");
+  }
+  array base_logits = lm_head_(hidden);
+  array previous(&anchor, {1}, mx::int32);
+  std::vector<array> path;
+  std::vector<array> probabilities;
+  path.reserve(kBlockSize);
+  probabilities.reserve(kBlockSize);
+  for (int position = 0; position < kBlockSize; ++position) {
+    array base_row = reshape(
+        slice(
+            base_logits,
+            {0, position, 0},
+            {1, position + 1, cfg_.vocab_size}),
+        {1, cfg_.vocab_size});
+    array markov_embedding = reshape(
+        take(dspark_markov_w1_, previous, 0), {1, kMarkovRank});
+    array corrected = astype(base_row, mx::float32) +
+        astype(dspark_markov_w2_(markov_embedding), mx::float32);
+    if (sampled) {
+      array probs = mx::softmax(corrected, -1, true);
+      previous = astype(
+          mx::random::categorical(mx::log(probs), -1), mx::int32);
+      probabilities.push_back(probs);
+    } else {
+      previous = astype(mx::argmax(corrected, -1), mx::int32);
+    }
+    path.push_back(previous);
+  }
+  return {
+      astype(mx::stack(path, 1), mx::int32),
+      sampled ? mx::stack(probabilities, 1) : array(0)};
+}
+
 std::tuple<array, array, array> Engine::dflash_select(
     const array& hidden, const array& draft_logits, int32_t anchor) {
   constexpr int kTopK = 16;
@@ -2669,13 +3077,13 @@ std::tuple<array, array, array> Engine::dflash_select(
       mx::stack(probabilities, 1)};
 }
 
-void Engine::dflash_commit_verified_prefix(
+void Engine::draft_commit_verified_prefix(
     const TargetForward& verified, int token_count) {
   if (token_count <= 0 || verified.hidden.ndim() != 3 ||
       token_count > verified.hidden.shape()[1] ||
       verified.linear_tapes.size() != layers_.size() ||
       snap_.size() != layers_.size()) {
-    throw std::runtime_error("invalid DFlash2 verified-prefix commit");
+    throw std::runtime_error("invalid speculative verified-prefix commit");
   }
 
   std::vector<array> committed_states;
@@ -2691,7 +3099,7 @@ void Engine::dflash_commit_verified_prefix(
           snapshot_state.conv.shape()[0] != tape.conv_tokens.shape()[0] ||
           snapshot_state.conv.shape()[2] != tape.conv_tokens.shape()[2] ||
           token_count > tape.conv_tokens.shape()[1]) {
-        throw std::runtime_error("invalid DFlash2 linear commit tape");
+        throw std::runtime_error("invalid speculative linear commit tape");
       }
       const int batch = static_cast<int>(snapshot_state.conv.shape()[0]);
       const int window = static_cast<int>(snapshot_state.conv.shape()[1]);
@@ -2721,7 +3129,7 @@ void Engine::dflash_commit_verified_prefix(
     const int committed_length = snapshot_state.cache_length + token_count;
     if (layer.attn.cache_length < committed_length ||
         layer.attn.offset < snapshot_state.offset + token_count) {
-      throw std::runtime_error("invalid DFlash2 attention commit state");
+      throw std::runtime_error("invalid speculative attention commit state");
     }
     layer.attn.cache_length = committed_length;
     layer.attn.offset = snapshot_state.offset + token_count;
@@ -2734,42 +3142,45 @@ void Engine::dflash_commit_verified_prefix(
           {0, token_count - 1, 0},
           {1, token_count, hidden_size}),
       {1, hidden_size});
-  dflash_append_context(verified.captured, token_count);
+  draft_append_context(verified.captured, token_count);
   async_eval(std::move(committed_states));
 }
 
-void Engine::dflash_spec_refill(int32_t token) {
+void Engine::verify_speculative_block(
+    int32_t token,
+    const array& draft_tokens,
+    const array& proposal_indices,
+    const array& proposal_probs,
+    bool dense_proposal,
+    bool greedy,
+    const char* trace_tag) {
   constexpr int kDraftTokens = 7;
   const bool trace = native_spec_trace_enabled();
   const auto started = std::chrono::steady_clock::now();
-  auto draft_done = started;
-  auto verify_done = started;
-  auto sample_done = started;
-  spec_buf_n_ = 0;
-  spec_buf_pos_ = 0;
-  decode_scheduled_ = false;
-
-  if (reasoning_open_ && max_reasoning_tokens_ > 0 &&
-      selected_reasoning_tokens_ + kDraftTokens + 1 >=
-          max_reasoning_tokens_) {
-    int32_t input[1] = {token};
-    TargetForward target = forward_hidden_captured(
-        array(input, {1, 1}, mx::int32));
-    last_hidden_ = last_token(target.hidden);
-    dflash_append_context(target.captured, 1);
-    array next = select_token(target.hidden);
-    eval(next);
-    spec_buf_[0] = next.item<int32_t>();
-    spec_buf_n_ = 1;
-    return;
+  if (draft_tokens.shape() != mx::Shape{1, kDraftTokens} ||
+      draft_tokens.dtype() != mx::int32) {
+    throw std::runtime_error("invalid speculative draft token block");
   }
-
-  array draft_hidden = dflash_forward(token);
-  array draft_logits = lm_head_(draft_hidden);
-  auto [draft_tokens, draft_indices, draft_probs] =
-      dflash_select(draft_hidden, draft_logits, token);
-  eval(draft_tokens, draft_indices, draft_probs);
-  draft_done = std::chrono::steady_clock::now();
+  if (greedy) {
+    eval(draft_tokens);
+  } else if (dense_proposal) {
+    if (proposal_probs.shape() !=
+            mx::Shape{1, kDraftTokens, cfg_.vocab_size} ||
+        proposal_probs.dtype() != mx::float32) {
+      throw std::runtime_error("invalid dense speculative proposal");
+    }
+    eval(draft_tokens, proposal_probs);
+  } else {
+    if (proposal_indices.shape() != proposal_probs.shape() ||
+        proposal_indices.ndim() != 3 || proposal_indices.shape()[0] != 1 ||
+        proposal_indices.shape()[1] != kDraftTokens ||
+        proposal_indices.dtype() != mx::int32 ||
+        proposal_probs.dtype() != mx::float32) {
+      throw std::runtime_error("invalid sparse speculative proposal");
+    }
+    eval(draft_tokens, proposal_indices, proposal_probs);
+  }
+  const auto draft_done = std::chrono::steady_clock::now();
   const int32_t* const drafted = draft_tokens.data<int32_t>();
   int32_t input[kDraftTokens + 1];
   input[0] = token;
@@ -2782,83 +3193,124 @@ void Engine::dflash_spec_refill(int32_t token) {
   TargetForward verified = forward_hidden_captured(
       array(input, {1, kDraftTokens + 1}, mx::int32), tape_commit);
   last_hidden_ = last_token(verified.hidden);
-  array target_probs = sampling_probabilities(logits(verified.hidden));
-  array proposal = reshape(draft_tokens, {1, kDraftTokens});
-  array proposal_column = expand_dims(proposal, -1);
-  array target_rows = slice(
-      target_probs,
-      {0, 0, 0},
-      {1, kDraftTokens, cfg_.vocab_size});
-  array p = squeeze(
-      mx::take_along_axis(target_rows, proposal_column, -1), -1);
-  array q = sum(
-      draft_probs * mx::equal(draft_indices, proposal_column), -1);
-  array accepted_flags = astype(
-      mx::less(
-          mx::random::uniform(q.shape(), mx::float32) * q,
-          p),
-      mx::int32);
-  array accepted_array = sum(mx::cumprod(accepted_flags, -1), -1);
-  eval(accepted_array);
-  verify_done = std::chrono::steady_clock::now();
-  int accepted = accepted_array.item<int32_t>();
-  accepted = std::clamp(accepted, 0, kDraftTokens);
-
-  array next_probs(0);
-  if (accepted == kDraftTokens) {
-    next_probs = reshape(
+  array target_logits = logits(verified.hidden);
+  int accepted = 0;
+  array next(0);
+  auto verify_done = draft_done;
+  if (greedy) {
+    array target_tokens = astype(mx::argmax(target_logits, -1), mx::int32);
+    array target_rows = slice(
+        target_tokens, {0, 0}, {1, kDraftTokens});
+    array accepted_flags = astype(
+        mx::equal(target_rows, draft_tokens), mx::int32);
+    array accepted_array = sum(mx::cumprod(accepted_flags, -1), -1);
+    eval(target_tokens, accepted_array);
+    verify_done = std::chrono::steady_clock::now();
+    accepted = std::clamp(
+        accepted_array.item<int32_t>(), 0, kDraftTokens);
+    next = reshape(
         slice(
-            target_probs,
-            {0, kDraftTokens, 0},
-            {1, kDraftTokens + 1, cfg_.vocab_size}),
-        {1, cfg_.vocab_size});
+            target_tokens,
+            {0, accepted},
+            {1, accepted + 1}),
+        {1});
   } else {
-    array target_row = reshape(
-        slice(
-            target_probs,
-            {0, accepted, 0},
-            {1, accepted + 1, cfg_.vocab_size}),
-        {1, cfg_.vocab_size});
-    array indices = reshape(
-        slice(
-            draft_indices,
-            {0, accepted, 0},
-            {1, accepted + 1, 16}),
-        {1, 16});
-    array proposal_values = reshape(
-        slice(
-            draft_probs,
-            {0, accepted, 0},
-            {1, accepted + 1, 16}),
-        {1, 16});
-    array residual_values =
-        mx::take_along_axis(target_row, indices, -1) - proposal_values;
-    array residual = mx::put_along_axis(
-        target_row, indices, residual_values, -1);
-    residual = mx::maximum(residual, array(0.0f, mx::float32));
-    array total = sum(residual, -1, true);
-    next_probs = mx::where(
-        mx::greater(total, array(0.0f, mx::float32)),
-        residual / mx::maximum(total, array(1e-30f, mx::float32)),
-        target_row);
+    array target_probs = sampling_probabilities(target_logits);
+    array proposal_column = expand_dims(draft_tokens, -1);
+    array target_rows = slice(
+        target_probs,
+        {0, 0, 0},
+        {1, kDraftTokens, cfg_.vocab_size});
+    array p = squeeze(
+        mx::take_along_axis(target_rows, proposal_column, -1), -1);
+    array q = dense_proposal
+        ? squeeze(
+              mx::take_along_axis(
+                  proposal_probs, proposal_column, -1),
+              -1)
+        : sum(
+              proposal_probs *
+                  mx::equal(proposal_indices, proposal_column),
+              -1);
+    array accepted_flags = astype(
+        mx::less(
+            mx::random::uniform(q.shape(), mx::float32) * q,
+            p),
+        mx::int32);
+    array accepted_array = sum(mx::cumprod(accepted_flags, -1), -1);
+    eval(accepted_array);
+    verify_done = std::chrono::steady_clock::now();
+    accepted = std::clamp(
+        accepted_array.item<int32_t>(), 0, kDraftTokens);
+
+    array next_probs(0);
+    if (accepted == kDraftTokens) {
+      next_probs = reshape(
+          slice(
+              target_probs,
+              {0, kDraftTokens, 0},
+              {1, kDraftTokens + 1, cfg_.vocab_size}),
+          {1, cfg_.vocab_size});
+    } else {
+      array target_row = reshape(
+          slice(
+              target_probs,
+              {0, accepted, 0},
+              {1, accepted + 1, cfg_.vocab_size}),
+          {1, cfg_.vocab_size});
+      array residual(0);
+      if (dense_proposal) {
+        array proposal_row = reshape(
+            slice(
+                proposal_probs,
+                {0, accepted, 0},
+                {1, accepted + 1, cfg_.vocab_size}),
+            {1, cfg_.vocab_size});
+        residual = target_row - proposal_row;
+      } else {
+        const int support = static_cast<int>(proposal_probs.shape()[2]);
+        array indices = reshape(
+            slice(
+                proposal_indices,
+                {0, accepted, 0},
+                {1, accepted + 1, support}),
+            {1, support});
+        array proposal_values = reshape(
+            slice(
+                proposal_probs,
+                {0, accepted, 0},
+                {1, accepted + 1, support}),
+            {1, support});
+        array residual_values =
+            mx::take_along_axis(target_row, indices, -1) - proposal_values;
+        residual = mx::put_along_axis(
+            target_row, indices, residual_values, -1);
+      }
+      residual = mx::maximum(residual, array(0.0f, mx::float32));
+      array total = sum(residual, -1, true);
+      next_probs = mx::where(
+          mx::greater(total, array(0.0f, mx::float32)),
+          residual / mx::maximum(total, array(1e-30f, mx::float32)),
+          target_row);
+    }
+    next = astype(
+        mx::random::categorical(mx::log(next_probs), -1), mx::int32);
   }
-  array next = astype(
-      mx::random::categorical(mx::log(next_probs), -1), mx::int32);
   eval(next);
-  sample_done = std::chrono::steady_clock::now();
+  const auto sample_done = std::chrono::steady_clock::now();
 
   if (accepted < kDraftTokens) {
     if (tape_commit) {
-      dflash_commit_verified_prefix(verified, accepted + 1);
+      draft_commit_verified_prefix(verified, accepted + 1);
     } else {
       restore();
       TargetForward committed = forward_hidden_captured(
           array(input, {1, accepted + 1}, mx::int32));
       last_hidden_ = last_token(committed.hidden);
-      dflash_append_context(committed.captured, accepted + 1);
+      draft_append_context(committed.captured, accepted + 1);
     }
   } else {
-    dflash_append_context(verified.captured, kDraftTokens + 1);
+    draft_append_context(verified.captured, kDraftTokens + 1);
   }
 
   for (int index = 0; index < accepted; ++index) {
@@ -2866,6 +3318,8 @@ void Engine::dflash_spec_refill(int32_t token) {
   }
   spec_buf_[accepted] = next.item<int32_t>();
   spec_buf_n_ = accepted + 1;
+  spec_buf_pos_ = 0;
+  decode_scheduled_ = false;
 
   if (reasoning_open_) {
     for (int index = 0; index < spec_buf_n_; ++index) {
@@ -2884,8 +3338,9 @@ void Engine::dflash_spec_refill(int32_t token) {
     };
     std::fprintf(
         stderr,
-        "qwen38_dflash accepted=%d width=%d draft_ms=%.3f verify_ms=%.3f "
+        "qwen38_%s accepted=%d width=%d draft_ms=%.3f verify_ms=%.3f "
         "sample_ms=%.3f commit_ms=%.3f total_ms=%.3f\n",
+        trace_tag,
         accepted,
         spec_buf_n_,
         elapsed_ms(started, draft_done),
@@ -2896,8 +3351,80 @@ void Engine::dflash_spec_refill(int32_t token) {
   }
 }
 
+void Engine::dflash_spec_refill(int32_t token) {
+  constexpr int kDraftTokens = 7;
+  spec_buf_n_ = 0;
+  spec_buf_pos_ = 0;
+  decode_scheduled_ = false;
+  if (reasoning_open_ && max_reasoning_tokens_ > 0 &&
+      selected_reasoning_tokens_ + kDraftTokens + 1 >=
+          max_reasoning_tokens_) {
+    int32_t input[1] = {token};
+    TargetForward target = forward_hidden_captured(
+        array(input, {1, 1}, mx::int32));
+    last_hidden_ = last_token(target.hidden);
+    draft_append_context(target.captured, 1);
+    array next = select_token(target.hidden);
+    eval(next);
+    spec_buf_[0] = next.item<int32_t>();
+    spec_buf_n_ = 1;
+    return;
+  }
+
+  array draft_hidden = dflash_forward(token);
+  array draft_logits = lm_head_(draft_hidden);
+  auto [draft_tokens, draft_indices, draft_probs] =
+      dflash_select(draft_hidden, draft_logits, token);
+  verify_speculative_block(
+      token,
+      draft_tokens,
+      draft_indices,
+      draft_probs,
+      /*dense_proposal=*/false,
+      /*greedy=*/false,
+      "dflash");
+}
+
+void Engine::dspark_spec_refill(int32_t token) {
+  constexpr int kDraftTokens = 7;
+  spec_buf_n_ = 0;
+  spec_buf_pos_ = 0;
+  decode_scheduled_ = false;
+  if (reasoning_open_ && max_reasoning_tokens_ > 0 &&
+      selected_reasoning_tokens_ + kDraftTokens + 1 >=
+          max_reasoning_tokens_) {
+    int32_t input[1] = {token};
+    TargetForward target = forward_hidden_captured(
+        array(input, {1, 1}, mx::int32));
+    last_hidden_ = last_token(target.hidden);
+    draft_append_context(target.captured, 1);
+    array next = select_token(target.hidden);
+    eval(next);
+    spec_buf_[0] = next.item<int32_t>();
+    spec_buf_n_ = 1;
+    return;
+  }
+
+  const bool sampled = sampling_enabled_;
+  array draft_hidden = dspark_forward(token);
+  auto [draft_tokens, draft_probs] =
+      dspark_propose(draft_hidden, token, sampled);
+  verify_speculative_block(
+      token,
+      draft_tokens,
+      array(0),
+      draft_probs,
+      /*dense_proposal=*/sampled,
+      /*greedy=*/!sampled,
+      "dspark");
+}
+
 void Engine::spec_refill(int32_t token) {
   if (spec_buf_pos_ < spec_buf_n_ && token == last_emitted_) {
+    return;
+  }
+  if (dspark_valid_) {
+    dspark_spec_refill(token);
     return;
   }
   if (dflash_valid_) {
@@ -2958,6 +3485,10 @@ void Engine::load_mtp(const std::string& mtp_dir) {
   if (weights.empty()) {
     throw std::runtime_error("no MTP safetensors in " + mtp_dir);
   }
+  if (weights.contains("markov_head.markov_w1.weight")) {
+    load_dspark(weights);
+    return;
+  }
   if (weights.contains("candidate_selector.predecessor_codebook")) {
     load_dflash2(weights);
     return;
@@ -2980,6 +3511,7 @@ void Engine::load_mtp(const std::string& mtp_dir) {
   mtp_layer_.attn.k_norm = require(weights, "layers.0.self_attn.k_norm.weight");
   mtp_block_ = 3;
   dflash_valid_ = false;
+  dspark_valid_ = false;
   mtp_valid_ = true;
   mtp_reset();
 }
@@ -3084,17 +3616,17 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
   token_history_.insert(
       token_history_.end(), new_tokens, new_tokens + new_token_count);
   array hidden(0);
-  if (dflash_valid_) {
-    constexpr int kDFlashPrefillChunkSize = 2048;
+  if (dflash_valid_ || dspark_valid_) {
+    constexpr int kDraftPrefillChunkSize = 2048;
     for (int offset = 0; offset < new_token_count;
-         offset += kDFlashPrefillChunkSize) {
+         offset += kDraftPrefillChunkSize) {
       const int chunk_size = std::min(
-          kDFlashPrefillChunkSize, new_token_count - offset);
+          kDraftPrefillChunkSize, new_token_count - offset);
       array chunk_ids(
           new_tokens + offset, {1, chunk_size}, mx::int32);
       TargetForward target = forward_hidden_captured(chunk_ids);
       hidden = target.hidden;
-      dflash_append_context(target.captured, chunk_size);
+      draft_append_context(target.captured, chunk_size);
       mx::synchronize();
     }
   } else {

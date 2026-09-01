@@ -18776,3 +18776,89 @@ mean 13.929045  17.125658 446.051        39.730
 - `clang-format --dry-run --Werror` and `git diff --check` passed. Native
   loader/backbone/Markov integration is next; neither downloaded checkpoint
   was modified.
+
+### 2026-09-01 03:44 PDT - native DSpark v2 completes end-to-end execution
+
+- Continued from signed `f7012812e8d0656e8d2dfa64720cc7f954afa6ac`, 49
+  commits ahead of `origin/main`. The worktree contained only the active
+  native DSpark implementation and its new C++ test. Preflight found port
+  30000 free, no SGLang/direct-benchmark/compiler owner, 94% free system
+  memory, zero throttled pages, and no reported thermal warning.
+- Added exact native dispatch for DSpark checkpoints through `Engine::load_mtp`.
+  The loader accepts only the official 62-tensor BF16 or derived 136-tensor
+  affine-W4 contracts and validates target shape, every dense norm/table, and
+  every linear shape/quantization field. Loading DSpark disables the other
+  draft modes and resets five full-context draft K/V caches.
+- Implemented the checkpoint's five-layer full-attention backbone, shared
+  25,600-to-5,120 target-hidden projection, target embedding/lm-head reuse,
+  gamma-seven `[anchor, MASK x6]` block, and sequential rank-256 vanilla
+  Markov proposal. Context K/V uses exact committed target captures; rejected
+  noise rows remain ephemeral. The common verifier now owns both DFlash2's
+  sparse proposal and DSpark's dense proposal, including exact rejection,
+  residual sampling, recurrent tape commit, full-attention logical commit,
+  and target-hidden injection into the selected draft cache.
+- The first YaRN test failed at offset zero with maximum error `0.674429` and
+  exposed the MLX RoPE frequency contract: its custom `freqs` input is
+  interpreted as position frequencies and reciprocated internally. Correcting
+  the native table to pass reciprocal inverse frequencies produced independent
+  reference errors `5.96046e-08` at offset 0, `0.000168275` at 9,000, and
+  `0.0015974` at 131,071. The invalid-width contract fails closed.
+- Strict candidate build command was:
+
+  ```bash
+  clang++ -std=c++20 -O3 -fPIC -shared -Wall -Wextra -Werror \
+    -isystem .venv/lib/python3.11/site-packages/mlx/include \
+    -Ipython/sglang/srt/hardware_backend/mlx/native \
+    -L.venv/lib/python3.11/site-packages/mlx/lib \
+    -Wl,-rpath,.venv/lib/python3.11/site-packages/mlx/lib -lmlx \
+    -o /private/tmp/libqwen38_dspark_candidate.dylib \
+    python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp \
+    python/sglang/srt/hardware_backend/mlx/native/qwen38_c_api.cpp
+  ```
+
+  It passed with only the established macOS 26.0 / MLX 26.2 linker warning.
+  Standalone C++ tests passed for DSpark YaRN, affine small-batch/M8 QMM,
+  gated-delta commit prefixes 1--7, q/k normalization and RoPE, recurrent
+  norm/gate, residual RMSNorm, and causal-convolution decode. The repository
+  dylib rebuilt through `native/build.sh`; the focused native pytest command
+  passed **8 tests** with 16 existing warnings.
+- The first affine-W4 functional command was:
+
+  ```bash
+  env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=128 \
+    SGLANG_MLX_NATIVE_SAMPLING=1 \
+    SGLANG_MLX_NATIVE_SAMPLING_SEED=42 \
+    SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 \
+    SGLANG_MLX_NATIVE_SMALL_BATCH_QMM=1 \
+    SGLANG_MLX_NATIVE_M8_KSPLIT_QMM=1 \
+    SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT=1 \
+    SGLANG_MLX_NATIVE_TRACE_SPEC=1 \
+    /private/tmp/bench_qwen38_native \
+    /private/tmp/libqwen38_dspark_candidate.dylib \
+    /Users/dcazares/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/3e6447f082e89cc7f0bc6e5441afd38dfce760ff \
+    128 1 32 \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DSpark-MLX-AffineQ4
+  ```
+
+  It reached **10.050624654 tok/s**, 14 refills, mean width
+  **2.428571429**, digest `5a38c7070d7badeb`, and last token 16. After
+  compilation, draft stages were generally **36.55--40.07 ms**, verify
+  **185.92--187.06 ms**, sample **0.63--0.71 ms**, and ordinary commit
+  **2.03--4.39 ms**. A greedy control reached **35.825159786 tok/s**, four
+  refills, width 8.0, digest `4ba237b577ed5a25`, and last token 15.
+- The matched BF16 command changed only the final draft directory. It reached
+  **5.746863331 tok/s**, 14 refills, mean width **2.285714286**, digest
+  `8e959bd189f7f4a7`, and last token 24. Its steady draft stage was
+  **44.54--44.75 ms** with the same roughly 186-ms target verifier. The two
+  stochastic trajectories establish functional dense and affine execution;
+  they do not rank precision from one sample.
+- The established DFlash regression command with the same candidate library
+  reproduced **31.283141273 tok/s**, 19 refills, mean width
+  **6.684210526**, digest `46bd4bb035b72c2b`, and last token 20. This is the
+  exact selected trajectory and confirms the common verifier refactor
+  preserves DFlash behavior.
+- Handoff: commit the functional native DSpark unit. Then measure proposal
+  fidelity improvements, beginning with the upstream CUDA lane's deliberate
+  BF16 Markov-output projection and draft-side sampling-distribution alignment,
+  before the representative `6237+128` served admission and exact 131K
+  capacity gates.

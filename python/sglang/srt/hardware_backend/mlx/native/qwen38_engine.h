@@ -29,6 +29,8 @@ mlx::core::array affine_qmm_small_batch(
     const QLinear& linear, const mlx::core::array& x);
 mlx::core::array affine_qmm_m8_ksplit(
     const QLinear& linear, const mlx::core::array& x);
+mlx::core::array dspark_yarn_rope(
+    const mlx::core::array& x, int offset);
 
 struct FullAttn {
   QLinear q_proj;
@@ -99,6 +101,28 @@ struct DFlashLayer {
   DFlashDynamicConv mlp_conv;
 };
 
+struct DSparkAttention {
+  QLinear q_proj;
+  QLinear k_proj;
+  QLinear v_proj;
+  QLinear o_proj;
+  mlx::core::array q_norm{0};
+  mlx::core::array k_norm{0};
+  mlx::core::array keys{0};
+  mlx::core::array values{0};
+  int cache_length = 0;
+  int cache_capacity = 0;
+};
+
+struct DSparkLayer {
+  mlx::core::array input_norm{0};
+  mlx::core::array post_norm{0};
+  QLinear gate_proj;
+  QLinear up_proj;
+  QLinear down_proj;
+  DSparkAttention attn;
+};
+
 struct LinearCommitTape {
   mlx::core::array conv_tokens{0};
   mlx::core::array keys{0};
@@ -134,7 +158,9 @@ class Engine {
   int32_t prefill(const int32_t* tokens, int n, bool schedule_decode);
   int32_t decode(int32_t token);
   void load_mtp(const std::string& mtp_dir);
-  bool has_mtp() const { return mtp_valid_ || dflash_valid_; }
+  bool has_mtp() const {
+    return mtp_valid_ || dflash_valid_ || dspark_valid_;
+  }
   int last_spec_width() const { return spec_buf_n_; }
 
   const MlxQwen38Config& config() const { return cfg_; }
@@ -199,9 +225,39 @@ class Engine {
       const mlx::core::array& hidden,
       const mlx::core::array& draft_logits,
       int32_t anchor);
-  void dflash_commit_verified_prefix(
+  void draft_commit_verified_prefix(
       const TargetForward& verified, int token_count);
   void dflash_spec_refill(int32_t token);
+  void load_dspark(
+      const std::unordered_map<std::string, mlx::core::array>& weights);
+  void dspark_reset();
+  void dspark_append_context(
+      const std::vector<mlx::core::array>& captured,
+      int token_count);
+  void dspark_append_layer_context(
+      DSparkAttention& attn,
+      const mlx::core::array& projected,
+      int position_offset);
+  mlx::core::array dspark_attention(
+      DSparkAttention& attn,
+      const mlx::core::array& hidden);
+  mlx::core::array dspark_forward(int32_t anchor);
+  std::pair<mlx::core::array, mlx::core::array> dspark_propose(
+      const mlx::core::array& hidden,
+      int32_t anchor,
+      bool sampled);
+  void dspark_spec_refill(int32_t token);
+  void draft_append_context(
+      const std::vector<mlx::core::array>& captured,
+      int token_count);
+  void verify_speculative_block(
+      int32_t token,
+      const mlx::core::array& draft_tokens,
+      const mlx::core::array& proposal_indices,
+      const mlx::core::array& proposal_probs,
+      bool dense_proposal,
+      bool greedy,
+      const char* trace_tag);
 
   void load_weights(const std::string& model_dir);
   QLinear load_qlinear(
@@ -249,6 +305,14 @@ class Engine {
   mlx::core::array dflash_predecessor_{0};
   mlx::core::array dflash_successor_{0};
   std::vector<DFlashLayer> dflash_layers_;
+  bool dspark_valid_ = false;
+  int dspark_context_offset_ = 0;
+  QLinear dspark_fc_;
+  mlx::core::array dspark_hidden_norm_{0};
+  mlx::core::array dspark_norm_{0};
+  mlx::core::array dspark_markov_w1_{0};
+  QLinear dspark_markov_w2_;
+  std::vector<DSparkLayer> dspark_layers_;
   std::vector<LayerSnap> snap_;
   int32_t spec_buf_[8]{};
   int spec_buf_n_ = 0;
