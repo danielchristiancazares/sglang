@@ -20316,3 +20316,122 @@ mean 13.929045  17.125658 446.051        39.730
   workload scans were clear, memory returned to 95% free with zero throttled
   pages, and thermal/performance status remained normal. Profiling the live
   Q5_K/Q6_K single-token projection path is next.
+
+### 2026-09-01 09:04 PDT - Q6_K two-row Metal kernel lifts served Q5 decode 22.7%
+
+- Continued from signed `18f49448aba6b93ed0b2841968085212246bf318`, 64
+  commits ahead of `origin/main`. Its EDDSA signature verified good. The
+  pre-existing modified `qwen38_engine.cpp`, `qwen38_engine.h`, and
+  `test_qwen38_affine_small_batch_qmm.cpp` paths remained user-owned and
+  untouched. Port 30000 was clear; no SGLang, launcher, CUDA/Metal build, or
+  benchmark workload was active. Memory pressure reported 95% free with zero
+  throttled pages, and macOS reported no thermal or performance warning. The
+  required analysis-only subagent batch remained unavailable because this
+  root occupied the single configured agent slot; source inspection continued
+  locally without granting another process access.
+- The reachable Q6_K batch-one dispatch in
+  `python/sglang/kernels/aot/csrc/metal/gguf_q4_0.mm` selected the generic
+  one-row-per-SIMD scalar dequantizer. Adapted
+  `kernel_mul_mv_q6_K_f32_impl` from pinned llama.cpp build 10547, commit
+  `749f688fcaa4c472ec034b08cb8a907c45cfaa02`. Two 32-thread SIMD groups now
+  each load a sixteen-value activation fragment and reuse it across two
+  contiguous Q6_K output rows. The checked host route requires batch one,
+  output rows divisible by four, ushort/float-aligned compact views, 32-wide
+  execution, and at least 64 supported threads. Every failed guard retains the
+  generic path. `SGLANG_MPS_Q6_K_BATCH1_ROWS2=0` is the process-scoped matched
+  control. No Python source changed.
+- The first compile and optimized-domain actual-file gate was:
+
+  ```bash
+  .venv/bin/python benchmark/mac/test_mps_gguf_quant.py \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenF16.gguf \
+    --rows 16 --batch-size 1
+  ```
+
+  It passed Q4_0 at `4.76837e-07/2.05552e-07` maximum absolute/relative
+  error, Q5_K at `9.53674e-07/4.60024e-07`, and the new Q6_K route at
+  `2.98023e-07/1.84679e-07`. The same command at 17 rows selected the generic
+  boundary and passed Q6_K at `4.76837e-07/2.95486e-07`. A final 17-row,
+  batch-eight run passed the unaffected Q6_K path at
+  `1.90735e-06/5.17281e-07`; Q4_0 and Q5_K also passed every run.
+- Matched QKV microbench commands were:
+
+  ```bash
+  .venv/bin/python benchmark/mac/bench_mps_gguf_quant.py \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenF16.gguf \
+    blk.0.attn_qkv.weight --batch-size 1 --warmup 8 --iterations 25
+  env SGLANG_MPS_Q6_K_BATCH1_ROWS2=0 \
+    .venv/bin/python benchmark/mac/bench_mps_gguf_quant.py \
+    /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenF16.gguf \
+    blk.0.attn_qkv.weight --batch-size 1 --warmup 8 --iterations 25
+  ```
+
+  On shape `(10240,5120)`, candidate/control medians were
+  **0.448125 / 0.748917 ms**, effective **89.510 / 53.559 GiB/s**. The full
+  `output.weight` shape `(248320,5120)` used the same two commands with the
+  tensor name changed. Candidate/control medians were
+  **3.324625 / 12.009166 ms**, effective **292.442 / 80.960 GiB/s**. The
+  corresponding 25-sample raw windows are preserved under PERF-A083 in root
+  `PERFORMANCE_LOG.md`.
+- After confirming the listener, process tree, memory, and thermals again, the
+  full-model gate used exactly:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=0 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenF16.gguf \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-Q5_K_S.gguf \
+    --served-model-name qwen3.8-27b-q5 --load-format gguf --dtype float32 \
+    --kv-cache-dtype bfloat16 --context-length 1024 --max-total-tokens 1024 \
+    --max-running-requests 1 --chunked-prefill-size 256 \
+    --max-prefill-tokens 512 --disable-radix-cache \
+    --disable-overlap-schedule --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder --incremental-streaming-output \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Weight loading completed in **87.92 s** at **21.37 GB** residency with
+  **10.62 GB** available. One 0.29 GB Mamba slot and 1,024-token BF16 KV left
+  **10.50 GB** available. Live source compilation, automatic warmup, and
+  readiness completed. `/v1/models` exposed `qwen3.8-27b-q5` at length 1,024;
+  `/model_info` reported Qwen3.5 text with image/audio understanding disabled.
+- Five sequential cache-flushed requests each used:
+
+  ```bash
+  .venv/bin/python scripts/windows/bench_openai_stream.py \
+    --model qwen3.8-27b-q5 --input-tokens 128 --output-tokens 32 \
+    --temperature 1.0 --top-p 0.95 --top-k 20 \
+    --presence-penalty 1.5 --skip-warmup --timeout 600
+  ```
+
+  Individual generation/prompt/TTFT/E2E results were:
+
+  1. **6.685 / 5.336 tok/s**, **23.985920 / 28.622898 s**, reasoning/output
+     SHA-256 `8302855ad881ad5d7bec17a2c87ab679d5ad8ef44549a9730c74e7874d089b95`;
+  2. **7.176 / 5.822 tok/s**, **21.984879 / 26.304740 s**, SHA-256
+     `2fd793aaee35d1c96cb35463f8b8fad67abfd97049d70305dd8ec7ae9c320f17`;
+  3. **7.134 / 5.794 tok/s**, **22.092834 / 26.438155 s**, SHA-256
+     `937d607052ac0d025c6b21c4e1dfd6f17d6cfabcb6ca23f790160b31211abcef`;
+  4. **7.135 / 5.806 tok/s**, **22.046234 / 26.391247 s**, SHA-256
+     `8302855ad881ad5d7bec17a2c87ab679d5ad8ef44549a9730c74e7874d089b95`;
+  5. **7.131 / 5.805 tok/s**, **22.048684 / 26.395664 s**, SHA-256
+     `eb5027c14969eaeb73c3302f1986f4957bf2e557f671da9f6a6a2413e91e17f4`.
+
+  Every result completed exact `128+32=160` tokens with
+  `finish_reason=length`, 32 nonempty streamed deltas, and all output retained
+  in `reasoning_content`. The five-run generation mean is **7.0522 tok/s**;
+  warmed-four mean is **7.1440 tok/s**. Five-run prompt, TTFT, and E2E means
+  are **5.7126 tok/s**, **22.431710 s**, and **26.830541 s**; warmed-four
+  means are **5.8068 tok/s**, **22.043158 s**, and **26.382452 s**. Against
+  the committed **5.746 tok/s** baseline, generation improves
+  **1.3062 tok/s / 22.732%**. The active floor gap becomes
+  **12.9478 tok/s / 2.8360x**.
+- Root/listener PID 20985 parented resource tracker 20992, scheduler 20993,
+  and detokenizer 20994. Foreground `Ctrl+C` completed application shutdown.
+  All four PIDs, matching workloads, and port 30000 were absent afterward.
+  Memory returned to 94% free with zero throttled pages, and thermals remained
+  normal. `git diff --check` was clean before record reconciliation. Next:
+  profile the remaining Q5_K/Q6_K layer mix on this faster path, then measure
+  the real 131,072-token pool and bundled NEXTN economics under the retained
+  sequential-request contract.
