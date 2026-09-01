@@ -105,6 +105,25 @@ bool native_dflash_tape_commit_enabled() {
       std::string_view(value) != "false";
 }
 
+int native_dspark_verify_draft_tokens() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_DSPARK_VERIFY_DRAFT_TOKENS");
+  if (value == nullptr || *value == '\0') {
+    return 7;
+  }
+  int count = 0;
+  const std::string_view text(value);
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), count);
+  if (error != std::errc() || end != text.data() + text.size() || count < 1 ||
+      count > 7) {
+    throw std::runtime_error(
+        "SGLANG_MLX_NATIVE_DSPARK_VERIFY_DRAFT_TOKENS must be an integer "
+        "from 1 through 7");
+  }
+  return count;
+}
+
 enum class LinearAttnOverrideScope {
   kOutProjection,
   kQkvProjection,
@@ -2471,6 +2490,7 @@ void Engine::load_dspark(
   dspark_confidence_weight_ = dense(
       "confidence_head.proj.weight", {1, kHiddenSize + kMarkovRank});
   dspark_confidence_bias_ = dense("confidence_head.proj.bias", {1});
+  dspark_verify_draft_tokens_ = native_dspark_verify_draft_tokens();
 
   dspark_layers_.clear();
   dspark_layers_.resize(kDraftLayers);
@@ -3176,16 +3196,19 @@ void Engine::verify_speculative_block(
     bool dense_proposal,
     bool greedy,
     const char* trace_tag) {
-  constexpr int kDraftTokens = 7;
+  constexpr int kMaxDraftTokens = 7;
   const bool trace = native_spec_trace_enabled();
   const auto started = std::chrono::steady_clock::now();
-  if (draft_tokens.shape() != mx::Shape{1, kDraftTokens} ||
+  if (draft_tokens.ndim() != 2 || draft_tokens.shape()[0] != 1 ||
+      draft_tokens.shape()[1] < 1 ||
+      draft_tokens.shape()[1] > kMaxDraftTokens ||
       draft_tokens.dtype() != mx::int32) {
     throw std::runtime_error("invalid speculative draft token block");
   }
+  const int draft_token_count = static_cast<int>(draft_tokens.shape()[1]);
   const bool has_confidence = confidence.ndim() != 0;
   if (has_confidence &&
-      (confidence.shape() != mx::Shape{1, kDraftTokens} ||
+      (confidence.shape() != mx::Shape{1, draft_token_count} ||
        confidence.dtype() != mx::float32)) {
     throw std::runtime_error("invalid speculative confidence block");
   }
@@ -3197,7 +3220,7 @@ void Engine::verify_speculative_block(
     }
   } else if (dense_proposal) {
     if (proposal_probs.shape() !=
-            mx::Shape{1, kDraftTokens, cfg_.vocab_size} ||
+            mx::Shape{1, draft_token_count, cfg_.vocab_size} ||
         proposal_probs.dtype() != mx::float32) {
       throw std::runtime_error("invalid dense speculative proposal");
     }
@@ -3209,7 +3232,7 @@ void Engine::verify_speculative_block(
   } else {
     if (proposal_indices.shape() != proposal_probs.shape() ||
         proposal_indices.ndim() != 3 || proposal_indices.shape()[0] != 1 ||
-        proposal_indices.shape()[1] != kDraftTokens ||
+        proposal_indices.shape()[1] != draft_token_count ||
         proposal_indices.dtype() != mx::int32 ||
         proposal_probs.dtype() != mx::float32) {
       throw std::runtime_error("invalid sparse speculative proposal");
@@ -3223,28 +3246,23 @@ void Engine::verify_speculative_block(
   const auto draft_done = std::chrono::steady_clock::now();
   if (trace && has_confidence) {
     const float* const values = confidence.data<float>();
-    std::fprintf(
-        stderr,
-        "qwen38_dspark confidence=%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
-        values[0],
-        values[1],
-        values[2],
-        values[3],
-        values[4],
-        values[5],
-        values[6]);
+    std::fprintf(stderr, "qwen38_%s confidence=", trace_tag);
+    for (int index = 0; index < draft_token_count; ++index) {
+      std::fprintf(stderr, "%s%.6f", index == 0 ? "" : ",", values[index]);
+    }
+    std::fprintf(stderr, "\n");
   }
   const int32_t* const drafted = draft_tokens.data<int32_t>();
-  int32_t input[kDraftTokens + 1];
+  int32_t input[kMaxDraftTokens + 1];
   input[0] = token;
-  for (int index = 0; index < kDraftTokens; ++index) {
+  for (int index = 0; index < draft_token_count; ++index) {
     input[index + 1] = drafted[index];
   }
 
   snapshot();
   const bool tape_commit = native_dflash_tape_commit_enabled();
   TargetForward verified = forward_hidden_captured(
-      array(input, {1, kDraftTokens + 1}, mx::int32), tape_commit);
+      array(input, {1, draft_token_count + 1}, mx::int32), tape_commit);
   last_hidden_ = last_token(verified.hidden);
   array target_logits = logits(verified.hidden);
   int accepted = 0;
@@ -3253,14 +3271,14 @@ void Engine::verify_speculative_block(
   if (greedy) {
     array target_tokens = astype(mx::argmax(target_logits, -1), mx::int32);
     array target_rows = slice(
-        target_tokens, {0, 0}, {1, kDraftTokens});
+        target_tokens, {0, 0}, {1, draft_token_count});
     array accepted_flags = astype(
         mx::equal(target_rows, draft_tokens), mx::int32);
     array accepted_array = sum(mx::cumprod(accepted_flags, -1), -1);
     eval(target_tokens, accepted_array);
     verify_done = std::chrono::steady_clock::now();
     accepted = std::clamp(
-        accepted_array.item<int32_t>(), 0, kDraftTokens);
+        accepted_array.item<int32_t>(), 0, draft_token_count);
     next = reshape(
         slice(
             target_tokens,
@@ -3273,7 +3291,7 @@ void Engine::verify_speculative_block(
     array target_rows = slice(
         target_probs,
         {0, 0, 0},
-        {1, kDraftTokens, cfg_.vocab_size});
+        {1, draft_token_count, cfg_.vocab_size});
     array p = squeeze(
         mx::take_along_axis(target_rows, proposal_column, -1), -1);
     array q = dense_proposal
@@ -3294,15 +3312,15 @@ void Engine::verify_speculative_block(
     eval(accepted_array);
     verify_done = std::chrono::steady_clock::now();
     accepted = std::clamp(
-        accepted_array.item<int32_t>(), 0, kDraftTokens);
+        accepted_array.item<int32_t>(), 0, draft_token_count);
 
     array next_probs(0);
-    if (accepted == kDraftTokens) {
+    if (accepted == draft_token_count) {
       next_probs = reshape(
           slice(
               target_probs,
-              {0, kDraftTokens, 0},
-              {1, kDraftTokens + 1, cfg_.vocab_size}),
+              {0, draft_token_count, 0},
+              {1, draft_token_count + 1, cfg_.vocab_size}),
           {1, cfg_.vocab_size});
     } else {
       array target_row = reshape(
@@ -3352,7 +3370,7 @@ void Engine::verify_speculative_block(
   eval(next);
   const auto sample_done = std::chrono::steady_clock::now();
 
-  if (accepted < kDraftTokens) {
+  if (accepted < draft_token_count) {
     if (tape_commit) {
       draft_commit_verified_prefix(verified, accepted + 1);
     } else {
@@ -3363,7 +3381,7 @@ void Engine::verify_speculative_block(
       draft_append_context(committed.captured, accepted + 1);
     }
   } else {
-    draft_append_context(verified.captured, kDraftTokens + 1);
+    draft_append_context(verified.captured, draft_token_count + 1);
   }
 
   for (int index = 0; index < accepted; ++index) {
@@ -3391,11 +3409,13 @@ void Engine::verify_speculative_block(
     };
     std::fprintf(
         stderr,
-        "qwen38_%s accepted=%d width=%d draft_ms=%.3f verify_ms=%.3f "
+        "qwen38_%s accepted=%d width=%d drafts=%d draft_ms=%.3f "
+        "verify_ms=%.3f "
         "sample_ms=%.3f commit_ms=%.3f total_ms=%.3f\n",
         trace_tag,
         accepted,
         spec_buf_n_,
+        draft_token_count,
         elapsed_ms(started, draft_done),
         elapsed_ms(draft_done, verify_done),
         elapsed_ms(verify_done, sample_done),
@@ -3440,12 +3460,13 @@ void Engine::dflash_spec_refill(int32_t token) {
 }
 
 void Engine::dspark_spec_refill(int32_t token) {
-  constexpr int kDraftTokens = 7;
+  constexpr int kMaxDraftTokens = 7;
+  const int draft_token_count = dspark_verify_draft_tokens_;
   spec_buf_n_ = 0;
   spec_buf_pos_ = 0;
   decode_scheduled_ = false;
   if (reasoning_open_ && max_reasoning_tokens_ > 0 &&
-      selected_reasoning_tokens_ + kDraftTokens + 1 >=
+      selected_reasoning_tokens_ + draft_token_count + 1 >=
           max_reasoning_tokens_) {
     int32_t input[1] = {token};
     TargetForward target = forward_hidden_captured(
@@ -3463,15 +3484,34 @@ void Engine::dspark_spec_refill(int32_t token) {
   array draft_hidden = dspark_forward(token);
   auto [draft_tokens, draft_probs] =
       dspark_propose(draft_hidden, token, sampled);
+  // Keep the seven-position proposal fixed while profiling target verifier
+  // prefixes, so acceptance and target geometry are the only changed inputs.
+  if (draft_token_count < kMaxDraftTokens) {
+    draft_tokens = slice(
+        draft_tokens, {0, 0}, {1, draft_token_count});
+    if (sampled) {
+      draft_probs = slice(
+          draft_probs,
+          {0, 0, 0},
+          {1, draft_token_count, cfg_.vocab_size});
+    }
+    draft_hidden = slice(
+        draft_hidden,
+        {0, 0, 0},
+        {1, draft_token_count, cfg_.hidden_size});
+  }
   array confidence(0);
   if (native_spec_trace_enabled()) {
     array anchor(&token, {1, 1}, mx::int32);
-    array previous = concatenate(
-        {
-            anchor,
-            slice(draft_tokens, {0, 0}, {1, kDraftTokens - 1}),
-        },
-        1);
+    array previous = anchor;
+    if (draft_token_count > 1) {
+      previous = concatenate(
+          {
+              anchor,
+              slice(draft_tokens, {0, 0}, {1, draft_token_count - 1}),
+          },
+          1);
+    }
     array markov_embeddings = take(dspark_markov_w1_, previous, 0);
     confidence = dspark_confidence(
         draft_hidden,
