@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-10:55 PDT.
+11:17 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -245,11 +245,20 @@ heavy paging. The Q4_K-embedding artifact occupies **20.00 GB**, leaves
 **0.99 GB** after the same cache, and improves the matched exact-capacity
 result to **0.315 tok/s / 121.240667 s E2E**, a **3.088235x** residency win.
 Its 1K-pool smoke reaches **7.086 tok/s**, returns arithmetic answer **703**,
-and emits exactly one parsed `multiply({"a":37,"b":19})` call. The stock
-`fp8_e4m3` route stops before allocation because this PyTorch MPS runtime
-rejects float8 tensors. The active capacity work is a uint8-backed native
-compressed-KV owner. The sustained 20 tok/s admission window and Codex
-`xhigh` work gate remain due.
+and emits exactly one parsed `multiply({"a":37,"b":19})` call.
+
+PERF-A089 supplies PyTorch 2.11.0's missing MPS E4M3FN value conversion in
+the existing C++/Metal extension. SGLang's generic pool already stores float8
+pages in `uint8`; the native path encodes FP32 cache writes and decodes both
+contiguous and moved-dimension gathers while every other `_to_copy` case uses
+PyTorch's original composite implementation. **400,006** reference encodes,
+all **256** raw decodes, offsets, strides, empty tensors, and BF16 fallback
+pass. A 1K FP8 server completes warmup and five sampled `128+32` requests at
+**7.248 / 7.277 / 7.268 / 7.251 / 7.263 tok/s**, mean **7.2614**, with
+arithmetic and parsed tools preserved. The exact 131K FP8 pool is the next
+capacity gate, followed by a fused native FP8 attention owner for long-history
+decode. The sustained 20 tok/s admission window and Codex `xhigh` work gate
+remain due.
 
 The unchanged Q5_K_M artifact is closed on this loader because mixed merged
 weights contain Q8_0 shards unsupported by the native Metal merge path. The

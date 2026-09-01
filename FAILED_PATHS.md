@@ -3269,20 +3269,23 @@ option, or serving dispatch was added.
 
 - Hypothesis: existing `--kv-cache-dtype fp8_e4m3` support can halve the exact
   Q5 attention-cache residency without source changes.
-- Scope: PyTorch 2.10.0 MPS, `torch.float8_e4m3fn`, allocation, FP32
+- Scope: PyTorch 2.11.0 MPS, `torch.float8_e4m3fn`, allocation, FP32
   conversion, indexed write, gather, and conversion back to FP32.
 - Attempted change: ran an isolated capability probe before another server
   launch.
 - Benchmark evidence: the first FP32-to-FP8 MPS conversion immediately raised
   `TypeError: Trying to convert Float8_e4m3fn to the MPS backend but it does
   not have support for that dtype.` No timing sample was admitted.
-- Correctness evidence: the failure occurs before a float8 value or cache
-  tensor exists; the process exited cleanly and left no Metal/server work.
+- Correctness evidence: byte-backed float8 views and indexed gathers were
+  subsequently proven functional. The unchanged framework conversion itself
+  still fails, and the isolated process exited cleanly.
 - Failure mode: the generic KV pool maps `fp8_e4m3` to a torch float8 dtype
-  that the active MPS backend cannot materialize.
+  whose value conversion is absent from the active stock MPS backend.
 - Why not to retry unchanged: every generic pool allocation reaches the same
   framework dtype boundary.
-- Reopen only if: PyTorch MPS adds float8 storage/conversion or SGLang gains a
-  native uint8-backed compressed-cache method with native quantize/read paths.
-- Related commit or revert: PERF-A087 records this capability screen; no
-  source change was made.
+- Reopen only if: PyTorch MPS adds native float8 conversion or a later runtime
+  changes this exact boundary.
+- Related commit or revert: PERF-A087 records the unchanged-framework screen.
+  PERF-A089 retains an SGLang native Metal conversion over the already
+  byte-backed pool and therefore changes the premise without changing the
+  stock result.

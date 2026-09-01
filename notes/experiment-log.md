@@ -20849,7 +20849,7 @@ mean 13.929045  17.125658 446.051        39.730
   `pmset -g therm` reported no thermal or performance warning.
 - A direct stock-FP8 capability probe then attempted an MPS
   `torch.float8_e4m3fn` allocation, FP32-to-FP8 conversion, indexed pool
-  write, gather, and FP32 conversion. PyTorch 2.10.0 rejected the first
+  write, gather, and FP32 conversion. PyTorch 2.11.0 rejected the first
   conversion with `TypeError: Trying to convert Float8_e4m3fn to the MPS
   backend but it does not have support for that dtype.` The existing
   `--kv-cache-dtype fp8_e4m3` route therefore cannot allocate its generic MHA
@@ -20940,3 +20940,93 @@ mean 13.929045  17.125658 446.051        39.730
   residency win. The exact BF16 cache still drives paging and remains far
   below the requested floor. Next: implement and qualify a native uint8-backed
   attention-cache owner that removes another 4 GB from the 131K allocation.
+
+### 2026-09-01 11:17 PDT - Native E4M3FN conversion opens the FP8 Q5 lane
+
+- Continued from signed commit
+  `f9d4ddc22f980f12b14f58f253448fb092bccbc8`
+  (`docs(perf): retain smaller Q5 capacity artifact`). The three modified
+  native-engine paths remained pre-existing user-owned work and stayed outside
+  this change. Port 30000, matching server/client/compiler processes, memory,
+  and thermals were clear before each build and launch. The configured single
+  agent slot continued to leave the skill-required analysis-only subagent
+  batch unavailable while this root was active.
+- Corrected the runtime provenance to PyTorch **2.11.0**. Direct probes showed
+  that an MPS `uint8` tensor can be viewed as `float8_e4m3fn`, indexed, and
+  gathered with exact underlying bytes. Stock `.to(torch.float8_e4m3fn)`
+  still raises the unsupported-MPS-dtype error. SGLang's generic KV pool
+  already allocates float8 pools as `uint8`, so allocation and indexing were
+  usable and value conversion was the first true boundary.
+- A stock FP8 server using the Q4_K-embedding artifact allocated its
+  1,024-token **0.02 GB K + 0.02 GB V** pool and then failed during the first
+  six-token warmup at `cache_k.to(self.dtype)`. Root 23700 exited its own
+  tracker/scheduler/detokenizer tree and left port, matching workloads, and
+  compiler processes clear.
+- Added C++/Metal-only E4M3FN encode/decode to the existing native extension.
+  A narrow MPS `aten::_to_copy` implementation handles same-device strided
+  FP32/E4M3FN pairs and calls `at::native::_to_copy` for every other case.
+  Encoding follows PyTorch's exact finite-only E4M3 round-to-nearest-even bit
+  algorithm. Byte-backed output preserves the pool's established storage
+  layout. No Python source changed.
+- The first native launch, root 24054, moved past the contiguous key-cache
+  write and exposed a non-contiguous value view at the next conversion. It
+  failed with `RuntimeError: Undefined type Float8_e4m3fn` at
+  `cache_v.to(self.dtype)` and exited its own tree. A fixed-size native shape/
+  stride descriptor now maps up to eight positive-stride dimensions for both
+  encode and decode. This also covers moved-dimension cache gathers before
+  generic SDPA.
+- Focused validation after the final rebuild passed **400,006** CPU-reference
+  FP32 encodes byte-exactly, all **256** raw E4M3FN decodes at the FP32 bit
+  level, storage offsets, contiguous and strided shapes, empty tensors, and
+  unaffected FP32/BF16 MPS conversion. The extension compiled cleanly and
+  `git diff --check` passed.
+- The successful server used exactly:
+
+  ```bash
+  env -u SGLANG_RUST_SERVER SGLANG_USE_MLX=0 \
+    .venv/bin/python -m sglang.launch_server \
+    --model-path /Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-Q5_K_S-TokenQ4_K.gguf \
+    --tokenizer-path /Users/dcazares/.cache/huggingface/hub/models--bartowski--Qwen3.8-27B-GGUF/snapshots/f0eec4a4bb4975114a030d048952d83c0a53c034/Qwen3.8-27B-Q5_K_S.gguf \
+    --served-model-name qwen3.8-27b-q5 --load-format gguf --dtype float32 \
+    --kv-cache-dtype fp8_e4m3 --context-length 1024 \
+    --max-total-tokens 1024 --max-running-requests 1 \
+    --chunked-prefill-size 256 --max-prefill-tokens 512 \
+    --disable-radix-cache --disable-overlap-schedule \
+    --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
+    --incremental-streaming-output \
+    --cuda-graph-backend-decode disabled \
+    --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Weight loading took **76.38 s** at **20.00 GB**. One FP32 Mamba slot used
+  0.29 GB; the FP8 pool used **0.02 GB K + 0.02 GB V** and left 11.99 GB by
+  the server accounting. Automatic six-token warmup passed. `/health`, model
+  length 1,024, and language-only `/model_info` passed. Root/listener 24186
+  owned tracker/scheduler/detokenizer 24198/24199/24200.
+- The ordinary sampled command was the established `128+32`, temperature
+  1.0, top-p 0.95, top-k 20, presence-penalty 1.5 contract. An initial smoke
+  reached **7.044 tok/s**. Five subsequent cache-flushed samples were:
+
+  | Sample | Gen tok/s | Prompt tok/s | TTFT s | E2E s | Output SHA-256 |
+  |---:|---:|---:|---:|---:|---|
+  | 1 | 7.248 | 5.835 | 21.936345 | 26.213522 | `6d4a3bf8...6ef163` |
+  | 2 | 7.277 | 5.866 | 21.821836 | 26.081793 | `8302855a...89b95` |
+  | 3 | 7.268 | 5.886 | 21.747952 | 26.013376 | `2fd793aa...20f17` |
+  | 4 | 7.251 | 5.865 | 21.824945 | 26.100347 | `8302855a...89b95` |
+  | 5 | 7.263 | 5.882 | 21.762332 | 26.030825 | `2fd793aa...20f17` |
+
+  Means are **7.2614 generation tok/s**, **5.8668 prompt tok/s**,
+  **21.818682 s TTFT**, and **26.087973 s E2E**. Every request returned exact
+  `128+32=160` usage, `finish_reason=length`, and 32 streamed reasoning
+  fragments. Against the prior same-artifact BF16 smoke at 7.086 tok/s, the
+  five-run FP8 mean is **+0.1754 tok/s / +2.475%**.
+- Deterministic arithmetic returned visible final answer **703** with coherent
+  separate reasoning. The tool probe returned exactly one parsed `multiply`
+  call with `{"a": 37, "b": 19}` and `finish_reason=tool_calls`.
+  Foreground `Ctrl+C` stopped the verified tree. All four PIDs, port 30000,
+  matching workloads, and compiler processes were absent afterward; memory
+  recovered with zero throttled pages and reported thermal/performance state
+  remained normal.
+- Decision: retain the native conversion as the first compressed-KV win. Next
+  run the exact 131K FP8 capacity and paging gate, then add a fused native FP8
+  attention owner so long-history decode avoids materializing FP32 K/V copies.
