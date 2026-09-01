@@ -150,6 +150,13 @@ int native_mtp_block_size() {
   return block_size;
 }
 
+bool native_mtp_post_norm_seed_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_MTP_POST_NORM_SEED");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 float native_dflash_selector_temperature() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE");
@@ -2642,6 +2649,14 @@ void Engine::forward_argmax(const int32_t* tokens, int n, int32_t* out) {
   }
 }
 
+array Engine::mtp_seed_hidden() const {
+  if (!native_mtp_post_norm_seed_enabled()) {
+    return last_hidden_;
+  }
+  return mx::fast::rms_norm(
+      last_hidden_, final_norm_, cfg_.rms_norm_eps);
+}
+
 void Engine::mtp_reset() {
   mtp_layer_.attn.cache_length = 0;
   int seq = 0;
@@ -2668,7 +2683,7 @@ array Engine::mtp_forward(const array& token_embed, const array& hidden) {
 
 int Engine::mtp_draft(int32_t bonus, int32_t* drafts, int n_draft) {
   mtp_reset();
-  array hid = last_hidden_;
+  array hid = mtp_seed_hidden();
   if (hid.ndim() == 1) {
     hid = reshape(hid, {1, 1, hid.shape()[0]});
   } else if (hid.ndim() == 2) {
@@ -4132,7 +4147,7 @@ void Engine::spec_refill(int32_t token) {
     }
 
     mtp_reset();
-    array hidden = last_hidden_;
+    array hidden = mtp_seed_hidden();
     if (hidden.ndim() == 1) {
       hidden = reshape(hidden, {1, 1, hidden.shape()[0]});
     } else if (hidden.ndim() == 2) {
