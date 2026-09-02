@@ -283,6 +283,16 @@ PERF-A130 now owns fixed-memory native Metal attention integration. Exact 131K
 capacity, steady sampled serving, and Codex `xhigh` remain gates before default
 selection.
 
+PERF-A131 retains on-demand quantized embedding behind
+`SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1`. It replaces the eager
+**2,542,796,800-byte** BF16 vocabulary table with **715,161,600 bytes** of
+checkpoint-resident affine weight/scale/bias tensors and dequantizes only
+selected rows, removing **1,827,635,200 bytes / 1.702 GiB**. Focused output is
+bit-exact, matched sampled decode is **19.713595204 -> 19.690129490 tok/s**
+(**-0.119033%**), and canonical full-model output is unchanged. The exact 32K
+request now runs about 180 rather than 66 seconds before the same stock-path
+Metal OOM; this is a qualified residency win, not a capacity pass.
+
 A118 and A119 are closed in their measured forms. Replacing A117's fused-Q4
 packed-word reads with one explicit `packed_ushort4` transaction is exact but
 regresses **0.557832737 -> 0.560992548 ms**. Row-concatenating each affine-Q5

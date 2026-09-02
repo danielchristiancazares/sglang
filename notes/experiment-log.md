@@ -23767,3 +23767,78 @@ mean 13.929045  17.125658 446.051        39.730
   131,072 keys. Unlike the earlier Torch backend, the C++ MLX engine now
   exposes a direct native dispatch owner. PERF-A130 will integrate that
   fixed-memory mechanism; PERF-FA143 closes A129 as a capacity solution.
+
+### 2026-09-01 21:36 PDT - A131 removes the eager BF16 embedding table
+
+- Main began at signed `706c0af00aa6230bb105313d3503bc7c8810ad0a`,
+  102 commits ahead of `origin/main`, with an empty index and Daniel's three
+  user-owned working blobs unchanged at
+  `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. The detached A128 worktree was
+  the only code-edit surface and no server or model process was active.
+- Source inspection found that `Engine::load_weights` always dequantized the
+  complete token embedding to BF16. The immutable checkpoint shapes and bytes
+  are:
+
+  ```text
+  weight  [248320,640] uint32    635,699,200 bytes
+  scales  [248320,80]  bfloat16   39,731,200 bytes
+  biases  [248320,80]  bfloat16   39,731,200 bytes
+  packed total                     715,161,600 bytes
+  BF16 [248320,5120]             2,542,796,800 bytes
+  eager duplicate removed        1,827,635,200 bytes / 1.702 GiB
+  ```
+
+  MLX 0.32.2's own `QuantizedEmbedding` gathers weight, scale, and bias rows
+  before dequantization. A131 implements that same operation in C++ behind
+  `SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1`; the eager table remains the
+  fail-safe default. Input shape/dtype/quantization validation is explicit.
+- The final focused test was compiled with C++20/O3, `-Wall -Wextra -Werror`,
+  installed MLX headers/library, the candidate engine, and no Python source
+  change. It reports `selected_rows=6 bit_mismatches=0` against gather from
+  the fully dequantized table and passes the invalid-token-type rejection.
+  The established macOS 26.0 / MLX 26.2 linker warning was the only diagnostic.
+  Final hashes are:
+
+  ```text
+  61835394c146cf07aed22c009077fc16ffa8bb6c  qwen38_engine.cpp Git blob
+  2d8bc95a9befea131e1f782267c8c532b857c4fe  qwen38_engine.h Git blob
+  5756e708894fcc42f7e62821471c1bb2d8ec7f46  focused test Git blob
+  3a301beeb62a216d5dcd267477eafd2b48da8a4dc25165ffd397d001f12560b1  libqwen38_a131_quantized_embedding.dylib
+  aa6f896ccfee104b83d342820124f35246468f555a4299b86243d18df5026960  test_qwen38_a131_quantized_embedding
+  ```
+
+- Same-dylib direct qualification used the pinned mixed checkpoint, selected
+  A128 environment, `128 / 32 warm / 128 timed`, and changed only
+  `SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=0/1`. Forward eager/on-demand was
+  **19.738484991 / 19.693877900 tok/s**. After a 60-second idle interval,
+  reversed on-demand/eager was **19.686381080 / 19.688705416**. Aggregate is
+  **19.713595204 / 19.690129490**, a **0.023465714 tok/s / 0.119033%**
+  candidate reduction. Every arm emits 128 timed tokens, digest
+  `d0193f6d413b68c1`, and last token 11406.
+- Rebuilt the hard-coded candidate server dylib, then launched the exact A129
+  131,072-context server with the one-GiB MLX cache, 1,024-token native chunks,
+  3,600-second watchdog, and only A131 added. Root/listener PID 15680 owned
+  resource tracker 15683, scheduler 15684, and detokenizer 15685. Readiness,
+  six-token warmup, model metadata, and language-only startup all passed.
+  The identical exact command was:
+
+  ```text
+  /Users/dcazares/.cache/sglang-qwen38/artifacts/sglang_context_probe 32768 16 127.0.0.1:30000
+  ```
+
+  The request survived well past the eager table's about-66-second failure and
+  ran about 180 seconds before scheduler PID 15684 reached the same Metal
+  `kIOGPUCommandBufferCallbackErrorOutOfMemory` inside native prefill. The
+  crash handler removed the complete tree before HTTP headers were emitted.
+  Port 30000 and all four PIDs were absent afterward; memory recovered to 93%,
+  throttled pages remained zero, and macOS reported no thermal or performance
+  warning. This materially smaller model still rejects stock SDPA at exact
+  32K, so PERF-A130 remains active.
+- Candidate blobs and the new focused test were inserted directly into the
+  main index without replacing Daniel's overlapping working files. Signed
+  commit `2a65daf1cc4a928645a7a4bec9b8005e59a519e4`
+  (`perf(mlx): dequantize embedding rows on demand`) contains only A131. The
+  working blobs remain byte-for-byte unchanged, the index is empty, and main
+  is 103 commits ahead of `origin/main` before this evidence update.

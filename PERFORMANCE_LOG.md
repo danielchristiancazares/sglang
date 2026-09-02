@@ -4,7 +4,8 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
-| M1 Max mixed-Q5 A128 native serving, long-prefill residency | uncapped MLX recycled buffers: real `8192+16` prefill OOMs at both 2,048- and 1,024-token internal chunks | one-GiB MLX cache cap plus 1,024-token internal chunks: exact `8192+16` passes at **108.664 prompt tok/s**, **75.388639 s TTFT**, **76.231461 s E2E**, but exact-ID `32768+16` OOMs after about **66 s** | the cache cap moves the failure boundary past 8K but does not make stock shape-growing BF16 KV plus dense SDPA viable at 32K, much less 131K; fixed-memory native attention is now the capacity owner | real `context_length=max_total_tokens=131072`, exact `/generate` token IDs, one request, `SGLANG_MLX_CACHE_LIMIT_GB=1`, internal chunk 1,024; PERF-A129/FA142/FA143 | 2026-09-01 21:19 PDT |
+| M1 Max mixed-Q5 A128 native serving, long-prefill residency | eager BF16 embedding: exact-ID `32768+16` OOM after about **66 s** | on-demand quantized embedding: the same request reaches about **180 s** before the unchanged Metal OOM; exact `8192+16` remains qualified | removing **1,827,635,200 bytes / 1.702 GiB** materially shifts the failure boundary but stock shape-growing BF16 KV plus dense SDPA still cannot complete 32K; fixed-memory native attention remains the capacity owner | real `context_length=max_total_tokens=131072`, exact `/generate` token IDs, one request, one-GiB MLX cache, internal chunk 1,024; PERF-A129/A131/FA143 | 2026-09-01 21:36 PDT |
+| M1 Max mixed-Q5 on-demand quantized embedding, sampled direct `128 / 32 warm / 128 timed` | eager BF16 table **19.713595204 tok/s** | gathered-row dequantization **19.690129490 tok/s** | **-0.023465714 tok/s / -0.119033%**, canonical in both order directions; eager duplicate falls from **2,542,796,800** to **715,161,600 bytes** | same A128 dylib and selected environment, changing only `SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=0/1`; PERF-A131 | 2026-09-01 21:36 PDT |
 | M1 Max fused affine-Q4 gate/up/SwiGLU combined raw parameters, production micro and sampled direct model | A117 four independent BF16 parameter planes: micro **0.5601321469 ms**, matched model **19.4469075097 tok/s** | A128 two aligned gate/up four-row bundles: micro **0.5542401462 ms**, model **19.6253709751 tok/s** | micro **-0.0058920007 ms / -1.051895%**, all ten pairs; two model windows **+1.027929% / +0.807546%**, aggregate **+0.1784634654 tok/s / +0.917696%**; all 20 clean outputs canonical; 680 MiB duplicate stream; committed opt-in, capacity pending | `regular|raw 5120 17408 1000 10000`; same-dylib direct `128 / 32 warm / 128 timed`, seed 42, order/reverse | 2026-09-01 20:50 PDT |
 | M1 Max affine-Q5 raw four-row parameter interleave, production micros and sampled full model | selected A100 separate BF16 scale/bias arrays; full-model mean **19.4281991915 tok/s** | A126 raw interleave: K=17,408 **0.4295822229 ms**, K=5,120 **0.3624250267 ms**, K=6,144 **0.3407608625 ms**; A127 K=17,408-only full-model mean **19.3109191455 tok/s** | isolated K=17,408 improves **0.446284%**, but K=5,120/K=6,144 regress **1.032193% / 7.512710%** and shape-gated full-model throughput regresses **0.117280046 tok/s / 0.603659%**; all outputs exact; restored | dedicated candidate binary plus same-dylib direct `128 / 32 warm / 128 timed` order/reverse controls; PERF-FA141 | 2026-09-01 20:12 PDT |
 | M1 Max affine-Q5 lossless 20-bit scale/bias packing, production K=17,408/N=5,120 micro | selected A100 regular BF16 parameters **0.434799063 ms** | A125 dense four-row 20-bit bundles **0.460042653 ms** | **+0.025243590 ms / +5.805806%** regression; both order directions retain exact digest `4c08a11e47576b08`; entropy scan proves the representation but decode cost rejects this kernel | dedicated candidate binary, alternating `200 / 3000` process-isolated arms; PERF-FA140 | 2026-09-01 19:56 PDT |
@@ -878,6 +879,7 @@ tree throughput can be ranked for production.
 | PERF-A128 | Combine each fused Q4 MLP pair's unchanged gate/up scale/bias bits into two aligned four-row parameter bundles. | All 64 fused Q4 gate/up/SwiGLU decode kernels; original planes retained for prefill; explicit opt-in | Qualified and retained; capacity pending | Ten micro pairs improve **0.5601321469 -> 0.5542401462 ms**, **1.051895%**, with every pair exact and faster. Forward/reversed full-model windows improve **19.439523730 -> 19.639348219** and **19.454291289 -> 19.611393731 tok/s**; aggregate **+0.178463465 / +0.917696%**, all outputs canonical. Signed `f2fcce0c73`; 680 MiB duplicate residency requires the exact 131K gate before default selection. |
 | PERF-A129 | Bound recycled MLX buffers and halve target-only internal prefill chunks so A128's duplicate parameter stream can serve long prompts. | Native mixed-Q5 A128 SGLang server, real 131,072 admission metadata, one outer request | 8K-only control; rejected as a capacity solution | Uncapped 2,048- and 1,024-token forms both OOM on `8192+16`. A one-GiB cache cap plus 1,024-token chunks makes exact `8192+16` pass, but an exact-ID `32768+16` request still reaches Metal insufficient memory after about 66 seconds. See PERF-FA143. |
 | PERF-A130 | Replace stock dense prefill SDPA with the already-qualified fixed-memory native Metal GQA mechanism inside the C++ MLX engine. | Sixteen Qwen3.8 full-attention layers, contiguous BF16 KV, batch one, query chunks through 1,024, head shape 24/4/256 | Active | PERF-A017 already proves the matching Q8/C64 Apple7+ kernel at `E=17,L=131072`: **137.906625 ms**, 0 MiB measured residency growth, maximum error `4.3120235e-07`. The C++ native engine provides a direct dispatch owner without the previously blocked Python seam. |
+| PERF-A131 | Gather quantized token-embedding rows before dequantization instead of materializing the entire BF16 vocabulary table. | Native Qwen3.8 C++ load/embed path; opt-in | Qualified and retained | Removes **1,827,635,200 bytes / 1.702 GiB** of eager duplicate storage. Focused output is bit-exact; all four full-model arms are canonical; matched decode moves only **-0.119033%**. Exact 32K runtime before OOM rises from about 66 to about 180 seconds, proving material capacity reachability. Signed `2a65daf1cc`. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -5828,3 +5830,29 @@ tree throughput can be ranked for production.
   for every 1,024-token query chunk. PERF-A130 will integrate the already
   qualified fixed-memory Metal GQA mechanism at the native C++ owner; merely
   shrinking chunks again is diagnostic rather than a 131K design.
+
+### 2026-09-01 21:36 PDT - PERF-A131 on-demand quantized embedding win
+
+- Change: added opt-in `SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1`. The native
+  C++ engine keeps the checkpoint's packed affine embedding and gathers only
+  requested weight/scale/bias rows before calling MLX dequantization. The
+  eager BF16 vocabulary table remains the fallback.
+- Benchmark evidence: the immutable embedding owns **715,161,600 bytes** in
+  packed weight/scale/bias tensors versus **2,542,796,800 bytes** for the
+  eager BF16 table, so the candidate removes **1,827,635,200 bytes / 1.702
+  GiB**. Forward control/candidate decode is
+  **19.738484991 / 19.693877900 tok/s**; reversed candidate/control is
+  **19.686381080 / 19.688705416**. Aggregate eager/on-demand is
+  **19.713595204 / 19.690129490**, a **0.119033%** candidate reduction. The
+  exact-ID `32768+16` server gate advances from an OOM after about 66 seconds
+  to the same Metal OOM after about 180 seconds, but still does not complete.
+- Correctness evidence: all four full-model arms emit exactly 128 timed tokens,
+  digest `d0193f6d413b68c1`, and last token 11406. The focused C++ test compares
+  selected-row dequantization with gather from the complete dequantized table
+  and reports `bit_mismatches=0`; it also verifies fail-closed token dtype
+  validation. Strict C++20/O3 warnings-as-errors test and dylib builds pass
+  with only the established macOS 26.0 / MLX 26.2 linker warning.
+- Decision: retain the opt-in residency win in signed `2a65daf1cc`. It is
+  decode-neutral within the measured noise scale and materially moves the
+  capacity boundary, but it does not displace PERF-A130: stock attention still
+  fails exact 32K and cannot support the required 131K contract.
