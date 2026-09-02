@@ -4548,3 +4548,177 @@ the stock full-attention mechanism a 32K or 131K solution.
   standalone source-at-measurement evolved into the A149/A150 harness; its
   current SHA-256 is
   `225db31626fb18ebe27ec68f5b6b149ff9a5d8e54576fb8903f6c2c0b97b2b7d`.
+
+## PERF-FA160 - One packed Q4 word per verifier lane
+
+- Hypothesis: reducing each lane's Q4 work and register state could improve
+  occupancy in the shared two-row fused MLP.
+- Scope: A150 fused affine-Q4 gate/up/SwiGLU at `K=5120,N=17408,M=2`.
+- Attempted change: halved packed words per lane while preserving scalar
+  arithmetic and the selected result geometry.
+- Benchmark evidence: **0.593897 ms** versus A150 **0.574944 ms**, a
+  **3.30%** regression.
+- Correctness evidence: representative output remained within the established
+  A150 BF16 parity bound.
+- Failure mode: extra lane/grid work costs more than the reduced local state.
+- Why not to retry unchanged: the adjacent production micro is materially
+  slower.
+- Reopen only if: a different device/compiler shows occupancy pressure in the
+  selected two-pack kernel.
+- Related commit or revert: experimental source was restored; no commit.
+
+## PERF-FA161 - Four-SIMD shared-Q4 verifier geometry
+
+- Hypothesis: fewer SIMD groups could reduce threadgroup overhead without
+  reducing useful output reuse.
+- Scope: the same A150 production fused-Q4 M=2 kernel.
+- Attempted change: reduced the selected SIMD-group count to four.
+- Benchmark evidence: **0.583183 ms**, **1.43%** slower than **0.574944 ms**.
+- Correctness evidence: output retained the established finite BF16 bound.
+- Failure mode: reduced grid parallelism outweighs any scheduling reduction.
+- Why not to retry unchanged: the production micro directly rejects it.
+- Reopen only if: output tiling changes enough to restore parallel occupancy.
+- Related commit or revert: experimental source was restored; no commit.
+
+## PERF-FA162 - Sixteen-SIMD shared-Q4 verifier geometry
+
+- Hypothesis: a larger output cohort could amortize each input load across more
+  result rows.
+- Scope: M1 Max custom Metal threadgroup geometry.
+- Attempted change: expanded the fused-Q4 verifier to sixteen SIMD groups.
+- Benchmark evidence: the geometry requires 512 threads per threadgroup.
+- Correctness evidence: no kernel ran; Metal rejected the geometry before
+  useful execution because this device permits at most 384 threads.
+- Failure mode: hard device threadgroup limit.
+- Why not to retry unchanged: the requested launch cannot execute on the target
+  M1 Max.
+- Reopen only if: the cohort is split across legal threadgroups or the target
+  GPU exposes at least 512 threads.
+- Related commit or revert: no source retained and no artifact promoted.
+
+## PERF-FA163 - Two-SIMD/two-result shared-Q4 verifier geometry
+
+- Hypothesis: fewer result registers per SIMD group could improve occupancy.
+- Scope: A150 production fused-Q4 M=2 verifier.
+- Attempted change: assigned two result rows to each of two SIMD groups.
+- Benchmark evidence: **0.640386 ms**, **11.38%** slower than A150
+  **0.574944 ms**.
+- Correctness evidence: representative output remained finite and within the
+  existing parity bound.
+- Failure mode: severe loss of output-side parallelism.
+- Why not to retry unchanged: the regression is far outside timing noise.
+- Reopen only if: a fused downstream consumer removes enough additional work
+  to fund the lost parallelism.
+- Related commit or revert: experimental source was restored; no commit.
+
+## PERF-FA164 - Eight-SIMD affine-Q5 two-row verifier
+
+- Hypothesis: doubling Q5 output parallelism could improve the A149 shared-load
+  verifier.
+- Scope: production Q5/G64 M=2 projections.
+- Attempted change: expanded the selected four-SIMD Q5 kernel to eight SIMD
+  groups.
+- Benchmark evidence: **0.471944 ms** versus **0.469182 ms**, a **0.59%**
+  regression.
+- Correctness evidence: representative Q5 output retained the established
+  parity tolerance.
+- Failure mode: larger threadgroups and register pressure erase the added
+  output parallelism.
+- Why not to retry unchanged: the adjacent production micro is slower.
+- Reopen only if: compiler register allocation or projection geometry changes.
+- Related commit or revert: experimental source was restored; no commit.
+
+## PERF-FA165 - Explicit affine-Q5 unpack arithmetic
+
+- Hypothesis: inlining the packed-code extraction expressions could remove
+  helper overhead while preserving scalar accumulation order.
+- Scope: A149 shared-load Q5 verifier production shapes and complete sampled
+  block-two model.
+- Attempted change: replaced the selected helper structure with explicit
+  unpack/extraction expressions.
+- Benchmark evidence: production micros regress **2.6--4.0%**. Full sampled
+  throughput is approximately **19.767 tok/s** versus A150 **19.796 tok/s**.
+- Correctness evidence: full-model digest, last token, refill count, and width
+  are unchanged.
+- Failure mode: generated extraction code is more expensive despite semantic
+  equivalence.
+- Why not to retry unchanged: both micro and full-model gates lose.
+- Reopen only if: generated Metal instructions demonstrably change under a new
+  compiler.
+- Related commit or revert: experimental source was restored; no commit.
+
+## PERF-FA166 - Explicit affine-Q4 dot arithmetic
+
+- Hypothesis: directly spelling the Q4 dot expression could reduce helper
+  overhead in A150.
+- Scope: production fused-Q4 two-row verifier.
+- Attempted change: replaced the selected dot helper with explicit scalar
+  expressions.
+- Benchmark evidence: **0.583195 ms**, **1.43%** slower than A150.
+- Correctness evidence: representative output remains exact or within the
+  established A150 parity bound.
+- Failure mode: the compiler already lowers the helper more efficiently.
+- Why not to retry unchanged: the production micro regresses.
+- Reopen only if: new shared work or compiler evidence changes generated code.
+- Related commit or revert: experimental source was restored; no commit.
+
+## PERF-FA167 - Lower-temperature MTP proposal sampling
+
+- Hypothesis: proposal temperature 0.8 could improve accepted width while exact
+  p/q rejection preserves the official target distribution.
+- Scope: selected mixed-Q5 target, official five-bit MTP, seeds 42--44.
+- Attempted change: changed only internal proposal temperature from identity to
+  0.8; target temperature/top-p/top-k remained **1.0/0.95/20**.
+- Benchmark evidence: seed 42 reaches approximately **23.35 tok/s**, while
+  seeds 43 and 44 reach only **15.57 / 15.14 tok/s**.
+- Correctness evidence: exact p/q rejection remains distributionally valid,
+  but each seed follows its corresponding stochastic proposal path.
+- Failure mode: the apparent threshold win is strongly seed-dependent and does
+  not generalize.
+- Why not to retry unchanged: two of three seeds materially regress below the
+  selected exact verifier.
+- Reopen only if: a multi-seed policy with an official or measured robust
+  criterion beats identity in repeated production windows.
+- Related commit or revert: the override remains outside selected source; no
+  commit. Qwen publishes no recommendation for internal proposal temperature.
+
+## PERF-FA168 - Maximum-proposal-probability depth signal
+
+- Hypothesis: maximum draft probability could cheaply predict accepted width
+  and choose a profitable verifier depth.
+- Scope: natural standard-MTP traces at seeds 42 and 43.
+- Attempted change: related each cycle's maximum proposal probability to later
+  exact accepted width and screened a fixed threshold.
+- Benchmark evidence: the direction of the relationship reverses between the
+  two seeds; no shared threshold separates profitable depths.
+- Correctness evidence: trace-only collection did not change generated output.
+- Failure mode: maximum probability is not a stable acceptance predictor across
+  the sampled trajectories.
+- Why not to retry unchanged: a fixed threshold overfits one seed.
+- Reopen only if: a pre-draft signal predicts cross-seed target/draft agreement
+  under held-out repeated windows.
+- Related commit or revert: trace control removed; no commit.
+
+## PERF-FA169 - Vector arithmetic in the shared Q4 vocabulary head
+
+- Hypothesis: one `float2` accumulator could share each packed Q4 head word
+  across both verifier rows and close the remaining A150 gap.
+- Scope: standard-MTP affine-Q4/G64 `K=5120,N=248320,M=2` vocabulary head.
+- Attempted change: loaded each packed word once and accumulated both input
+  rows through vector input/result locals.
+- Benchmark evidence: stock is approximately **4.167805 ms** and the vector
+  kernel **2.673959 ms**. Full sampled execution reaches only
+  **19.561130627 tok/s**, 76 refills, and width **1.684210526**.
+- Correctness evidence: production output has maximum absolute error
+  **0.0078125** and 10,703 mismatches; sampled digest and acceptance path change.
+- Failure mode: vector expression lowering changes floating-point operation
+  order relative to stock MLX.
+- Why not to retry unchanged: the arithmetic difference invalidates attribution
+  and regresses full sampled throughput despite the faster micro.
+- Reopen only if: vector lowering can be proven bit-exact on all production
+  shapes and repeated full-model trajectories.
+- Related commit or revert: rejected A162 dylib/benchmark SHA-256 values are
+  `302e551be114bd137e98177555a67cec9b205f087eaaba00fadaf47e07a1e56d` and
+  `a2004cec2482853a1e855c79a4985c7bc426aeaa58a9df8667cc853e496c21cb`.
+  A163 replaced it with independent scalar row arithmetic in signed
+  `94ca4ff7fa`.

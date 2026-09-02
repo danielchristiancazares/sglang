@@ -4,7 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
-| M1 Max mixed-Q5 plus 5-bit MTP block-two, shared M=2 verifier kernels, sampled direct `128 / 32 warm / 128 timed` | same-binary generic M=2 **15.204721403 tok/s**, width **1.802816901**, digest `b10401e93371a45e` | shared-Q5 A149 **16.497732109 tok/s**; shared-Q5 plus fused-Q4 A150 **19.795886878 tok/s**, width **1.706666667**, digest `6bd687fb75c4f5a9`; committed-source rebuild **19.785495602 tok/s** with the same metadata | A149 improves the full window **8.504008%** despite lower acceptance; A150 reaches **30.195657%** over control and cuts warm verify **102--104 -> 66.7--67.7 ms**, but the best durable full window remains **0.204113122 tok/s / 1.031089%** below 20 | signed `6b6d0d15ea`, selected mixed-Q5 environment, official five-bit MTP, ordinary p/q rejection sampling; PERF-A148--A150/A161 | 2026-09-02 02:20 PDT |
+| M1 Max mixed-Q5 plus 5-bit MTP block-two, shared M=2 verifier kernels, sampled direct `128 / 32 warm / 128 timed` | same-binary generic M=2 **15.204721403 tok/s**, width **1.802816901**, digest `b10401e93371a45e`; A150 best **19.795886878 tok/s** | A163 independent five-sample means **20.109963672 / 20.107849480 tok/s**; combined **20.108906576**, range **20.075602549--20.132668649**, width **1.706666667**, digest `6bd687fb75c4f5a9` | all ten qualification samples exceed 20 and preserve identical output/acceptance; **+0.313019698 tok/s / +1.581236%** over A150 and **+32.254357%** over generic M=2 | signed `94ca4ff7fa`, selected mixed-Q5 environment, official five-bit MTP, ordinary p/q rejection sampling; PERF-A162/A163 | 2026-09-02 02:45 PDT |
 | M1 Max mixed-Q5 plus 5-bit MTP block-two sparse-q proposals, sampled direct `128 / 32 warm / 128 timed` | dense q **15.230953312 tok/s**, width **1.802816901**, digest `b10401e93371a45e` | unordered sparse CDF **6.983233096 tok/s**, width **1.196261682**; vocabulary-ordered exact sparse CDF **15.222551699 tok/s**, width **1.802816901** | unordered support changes seeded CDF order and regresses **54.151044%**; vocabulary order restores exact digest/acceptance but remains **0.055161%** slower, so dense proposal storage is not the cycle owner | A146/A147 strict opt-in dylibs, official 5-bit MTP revision, selected mixed-Q5 environment; PERF-A146/A147 | 2026-09-02 01:17 PDT |
 | M1 Max real-checkpoint Q5 entropy and selective-Q4 ceiling | 5.000000 stored bits/code across 240 Q5 tensors | **4.722514 Shannon / 4.748775 ideal static-Huffman bits/code**; top-15 coverage **73.562622%** | even a zero-cost ideal decoder removes only about **5.0%** of Q5 bytes, or roughly **2.5%** end to end at the measured **49.061847%** Q5 owner; actual block range/palette/sparse-high opportunities are **0.000000% / 0.000726% / 0.091079%**; Q4 helps only the down shape enough to project about **1.67%** end to end | strict CPU-only C++ checkpoint analyzer, four separated 4,096-group windows per tensor; fresh Q5/Q4 production-shape micros; PERF-A145 | 2026-09-02 01:04 PDT |
 | M1 Max affine-Q5 exact representation/layout follow-ups, production `K=17408, N=5120` micro | selected A100 continuous row stream | A141 nibble/high-plane **+5.800641%**; A142 16-row block layout **+1.508948%**; A143 four-row block layout **+0.515803%**; A144 combined weight/parameter stream **+3.662772%** | all four regress while preserving digest `d05378cc8066dc41`; A143's six-per-arm window is **0.432163523 / 0.434392635 ms** and wins only one pair | strict standalone C++/Metal candidate binaries; `regular|CANDIDATE 17408 5120 1000 10000`; PERF-A141--A144 | 2026-09-02 00:55 PDT |
@@ -189,6 +189,61 @@ tree throughput can be ranked for production.
 - Median: `32.953 TPS`; median wall time `7.769 s`.
 
 ## Deltas
+
+### 2026-09-02 02:45 PDT - PERF-A162/A163 exact shared-load Q4 vocabulary head
+
+- Change: A162 shared each packed affine-Q4 vocabulary-head word across both
+  verifier rows with `float2` inputs and accumulators. A163 retained the shared
+  word load but restored the established scalar load, FMA, reduction, and BF16
+  conversion order independently for each row. The public `QLinear` owner
+  dispatches only opt-in `[1,2,K]` BF16 affine-Q4/G64 shapes with K divisible
+  by 512 and N divisible by 16; all other shapes retain existing MLX dispatch.
+- Microbenchmark evidence: A162 reduced the production `K=5120,N=248320`
+  head from approximately **4.167805 ms to 2.673959 ms**, but produced maximum
+  absolute error **0.0078125** and 10,703 mismatches. A163 is bit-exact and the
+  final-source artifact measures **4.195437500 -> 3.440243000 ms**, an
+  **18.000375%** reduction, with digest `4c39efa4fe19a88a` in both arms. Its
+  first production window reached **3.332995625 ms**.
+- Full-model evidence: A162 changed the sampled acceptance path and reached only
+  **19.561130627 tok/s**, 76 refills, width **1.684210526**, and a different
+  digest; it is rejected. Two independent five-process A163 windows are
+  **20.097217280 / 20.122611948 / 20.125047691 / 20.111538909 /
+  20.093402533** and **20.125666970 / 20.120359570 / 20.132668649 /
+  20.075602549 / 20.084949662 tok/s**. Their means are **20.109963672** and
+  **20.107849480**; every sample preserves 75 refills, width **1.706666667**,
+  digest `6bd687fb75c4f5a9`, and last token 1467.
+- Correctness evidence: the focused strict C++ test is exact at `512x64` and
+  `5120x128`, including `QLinear` dispatch and invalid/unsupported contracts.
+  Existing Q5 batch-one, Q4 batch-one, fused-Q4, exhaustive BF16-domain, and
+  batch-two tests pass. Strict shared-library and benchmark builds pass with
+  only the established macOS 26.0 versus MLX 26.2 linker warning.
+- Decision: reject A162 and retain A163 behind
+  `SGLANG_MLX_NATIVE_Q4_BATCH_TWO_QMV=1`. Signed commit `94ca4ff7fa` is the
+  first direct standard-MTP composition to clear 20 tok/s in two independent
+  windows. Long-history actual-work, exact served 131K, and Responses/Codex
+  `xhigh` remain separate qualification gates.
+
+### 2026-09-02 02:27 PDT - PERF-A151--A159 verifier follow-up screens
+
+- Change: screened smaller scalar packing, alternate SIMD/result geometry,
+  explicit Q4/Q5 unpack arithmetic, a lower draft proposal temperature, and a
+  proposal-confidence depth signal against the selected A149/A150 verifier.
+- Benchmark evidence: Q4 one-pack-per-lane reaches **0.593897 ms** versus
+  A150 **0.574944 ms** (**+3.30%**); four-SIMD Q4 reaches **0.583183 ms**
+  (**+1.43%**); two-result/two-SIMD reaches **0.640386 ms** (**+11.38%**).
+  Sixteen-SIMD requires 512 threads, exceeding the M1 Max limit of 384. Q5
+  eight-SIMD reaches **0.471944 ms** versus **0.469182 ms** (**+0.59%**).
+  Explicit Q5 unpack is **2.6--4.0%** slower in micros and reaches
+  **19.767 tok/s** versus A150 **19.796** with identical output; explicit Q4
+  dot reaches **0.583195 ms**, **+1.43%**.
+- Sampling evidence: proposal temperature 0.8 reaches **23.35 tok/s** only at
+  seed 42, then falls to **15.57 / 15.14 tok/s** at seeds 43/44. Maximum draft
+  probability reverses its relationship to accepted width between seeds 42
+  and 43, invalidating a fixed confidence threshold.
+- Decision: reject every form unchanged. None produces a repeatable exact win,
+  and Qwen publishes no coding recommendation for internal MTP proposal
+  temperature. See PERF-FA160--168.
+
 
 ### 2026-09-02 02:20 PDT - PERF-A161 commit shared M=2 verifier kernels
 
@@ -1350,8 +1405,19 @@ tree throughput can be ranked for production.
 | PERF-A148 | Execute stock M=2 target projections as two selected batch-one QMV rows or through the existing generic small-batch kernel. | Mixed-Q5 block-two verifier and production Q4/Q5 projection shapes | Runtime-correct and rejected | Rowwise Q5 is faster but rereads every weight; rowwise Q4 head is neutral/slower, and the existing small-batch Q4 kernel takes **1.111526333 ms** versus **0.584932708 ms** stock. See PERF-FA159. |
 | PERF-A149 | Decode each affine-Q5 weight once while accumulating both M=2 verifier rows in vector registers. | Every Q5/G64 projection reached by standard MTP block two | Material opt-in win; committed in `6b6d0d15ea` | Production Q5 shapes improve **19.8--29.3%**; full sampled throughput improves **15.204721403 -> 16.497732109 tok/s** despite lower acceptance. Small parity is exact and production error is at most **0.015625**. |
 | PERF-A150 | Fuse Q4 gate/up/SwiGLU for M=2 and share each packed weight/parameter load across both verifier rows. | Every Q4/G64 MLP gate/up pair under standard MTP block two | Material opt-in win; committed in `6b6d0d15ea` | Production fused MLP improves **0.868540187 -> 0.574944375 ms**; A149+A150 reaches **19.795886878 tok/s** over 128 tokens and **20.104683630** in the traced 16-token smoke. Durable floor remains open. |
+| PERF-A151 | Reduce the A150 fused-Q4 M=2 kernel to one packed word per lane. | Production `K=5120,N=17408` fused verifier MLP | Runtime-correct and rejected | **0.593897 ms** versus selected **0.574944 ms**, **3.30%** slower; see PERF-FA160. |
+| PERF-A152 | Halve A150 fused-Q4 geometry to four SIMD groups. | Production fused verifier MLP | Runtime-correct and rejected | **0.583183 ms**, **1.43%** slower than A150; see PERF-FA161. |
+| PERF-A153 | Expand fused-Q4 geometry to sixteen SIMD groups. | M1 Max Metal threadgroup limit | Build-time invalid and rejected | Requires 512 threads while the device permits 384; see PERF-FA162. |
+| PERF-A154 | Use two SIMD groups with two result rows each. | Production fused verifier MLP | Runtime-correct and rejected | **0.640386 ms**, **11.38%** slower than A150; see PERF-FA163. |
+| PERF-A155 | Expand the A149 affine-Q5 two-row kernel to eight SIMD groups. | Production Q5 verifier projections | Runtime-correct and rejected | **0.471944 ms** versus **0.469182 ms**, **0.59%** slower; see PERF-FA164. |
+| PERF-A156 | Hand-expand affine-Q5 unpack expressions while preserving scalar order. | A149 shared-load Q5 verifier | Exact and rejected | Micros regress **2.6--4.0%** and full sampled throughput is **19.767** versus **19.796 tok/s** with identical output; see PERF-FA165. |
+| PERF-A157 | Hand-expand affine-Q4 dot expressions in the fused verifier. | A150 shared-load Q4 verifier | Exact and rejected | **0.583195 ms**, **1.43%** slower; see PERF-FA166. |
+| PERF-A158 | Lower only MTP proposal temperature to 0.8 under exact p/q rejection. | Seeds 42--44, official target sampler unchanged | Distribution-valid and rejected | Seed 42 reaches **23.35 tok/s**, but seeds 43/44 collapse to **15.57 / 15.14**; Qwen provides no recommendation for this internal knob. See PERF-FA167. |
+| PERF-A159 | Use maximum proposal probability as a cheap M=2/M=8 confidence signal. | Natural standard-MTP traces at seeds 42/43 | Diagnostic rejected | Confidence versus accepted width reverses across the two seeds, so one threshold cannot generalize; see PERF-FA168. |
 | PERF-A160 | Align coding/thinking request knobs with the pinned upstream Qwen3.8 profile. | Benchmark contract, native/served sampling interpretation, and bounded client probes | Contract corrected; requalification active | Official target sampling is temperature **1.0**, top-p **0.95**, top-k **20**, min-p **0.0**, presence **0.0**, repetition **1.0**, with `xhigh` and preserved thinking. The direct Mac sampler already matches; historical presence-1.5 served windows need remeasurement. |
 | PERF-A161 | Productize the measured A149/A150 shared M=2 verifier path with focused native coverage. | Direct MLX target verification under block-two standard MTP | Committed opt-in foundation | Clean source reproduces **19.785495602 tok/s**, width **1.706666667**, and canonical A150 digest/last token. New batch-two and existing batch-one tests pass; signed `6b6d0d15ea`. |
+| PERF-A162 | Share Q4 vocabulary-head loads across two rows with `float2` arithmetic. | Standard-MTP `K=5120,N=248320,M=2` target head | Faster micro, arithmetic-invalid and rejected | **4.167805 -> 2.673959 ms**, but maximum error **0.0078125**, 10,703 mismatches, changed acceptance, and only **19.561130627 tok/s**; see PERF-FA169. |
+| PERF-A163 | Share Q4 vocabulary-head loads while preserving independent scalar row arithmetic. | Same standard-MTP target head and complete mixed-Q5 model | Qualified and retained in `94ca4ff7fa` | Final micro **4.195437500 -> 3.440243000 ms** exactly. Two independent five-sample windows mean **20.109963672 / 20.107849480 tok/s**; all ten exceed 20 with identical digest, last token, refill count, and width. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
