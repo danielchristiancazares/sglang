@@ -46,7 +46,7 @@ A production promotion must pass every item below:
 2. Stable fixed-work token count, digest, and last token.
 3. Real `context_length=max_total_tokens=131072` capacity.
 4. Ordinary sampled reasoning at temperature `1.0`, top-p `0.95`, top-k `20`,
-   and presence penalty `1.5`.
+   min-p `0.0`, presence penalty `0.0`, and repetition penalty `1.0`.
 5. Coherent `reasoning_content`, arithmetic answer `703`, and exactly one
    parsed `multiply({"a":37,"b":19})` call with
    `finish_reason=tool_calls`.
