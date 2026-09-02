@@ -4314,3 +4314,102 @@ the stock full-attention mechanism a 32K or 131K solution.
   `2eeb79c17ffa35657dcb706127ced8176163ff4cebf8ac4c54e04af18a18c7af`;
   source-at-measurement hashes to
   `65d9b19993ae921291afec6a67e1f09733c9d64bb92a0d4ca3c2160dd94fba46`.
+
+## PERF-FA152 - Affine-Q5 low-nibble/high-bit-plane representation
+
+- Hypothesis: separating each code's low nibble from one shared high-bit plane
+  would simplify continuous five-bit extraction without increasing bytes.
+- Scope: selected A100 batch-one Q5/G64 QMV and dominant production
+  `K=17408, N=5120` shape.
+- Attempted change: repacked each sixteen-code/ten-byte lane segment as eight
+  low-nibble bytes plus a 16-bit high plane and reconstructed each exact code
+  before the original sixteen FP32 FMAs.
+- Benchmark evidence: the first adjacent control/candidate pair is
+  **0.432100013 / 0.457164583 ms**, a
+  **0.025064570 ms / 5.800641%** regression.
+- Correctness evidence: small deterministic parity is bit-exact. Both
+  production arms emit digest `d05378cc8066dc41` and first output `2.03125`.
+- Failure mode: every code now needs high-plane extraction and merge, which
+  costs more than A100's two cross-window special cases.
+- Why not to retry unchanged: the representation preserves bytes but adds
+  integer work to all sixteen values and loses far beyond run variance.
+- Reopen only if: a native packed-bit expansion instruction eliminates the
+  per-value high-plane work or the representation enables a fused dot primitive.
+- Related commit or revert: no source retained. Executable SHA-256 is
+  `fbd7a7cab21ebc42189bd88112b79aaa4cb4ade69d2a5de396928acee248a0c4`;
+  source-at-measurement is
+  `14826a49a9437ca3f65b253c93be571500e4c08a129908057b3c3013c515b43b`.
+
+## PERF-FA153 - Sixteen-row affine-Q5 K-block interleave
+
+- Hypothesis: placing all sixteen rows owned by a threadgroup contiguously for
+  each 512-value K block would improve locality while retaining A100 exactly.
+- Scope: selected A100 batch-one Q5/G64 QMV and dominant production
+  `K=17408, N=5120` shape.
+- Attempted change: transposed only physical block order across sixteen rows;
+  five aligned 16-bit loads, unpack, FP32 arithmetic, and weight bytes stayed
+  unchanged.
+- Benchmark evidence: order/reverse controls **0.430670796 / 0.427456629 ms**
+  average **0.429063712 ms**. Candidates **0.435351171 / 0.435724954 ms**
+  average **0.435538062 ms**, a **1.508948%** regression.
+- Correctness evidence: small parity and every production arm are bit-exact
+  with digest `d05378cc8066dc41` and first output `2.03125`.
+- Failure mode: threadgroup-wide interleaving increases each SIMD group's
+  next-K-block stride and supplies no reuse for weights consumed once.
+- Why not to retry unchanged: both order directions lose with unchanged work.
+- Reopen only if: multiple SIMD groups demonstrably share a block or a future
+  cache/TLB profile identifies row-major page locality as a material owner.
+- Related commit or revert: the strict build initially rejected one unused
+  C++ constant; removing it produced the clean artifact. Executable SHA-256
+  is `4444c02d3097b8fce03b627ef6fe9c33416191d79f9d5bb1c0a22aacc721d9ca`;
+  source-at-measurement is
+  `b803e08fb27925767aaa4ba667c01822f6b758a2f91d828f953f843a5ec89f7a`.
+
+## PERF-FA154 - Four-row affine-Q5 K-block interleave
+
+- Hypothesis: matching physical interleave to the four rows actually owned by
+  one SIMD group would recover A142's stride loss while improving row locality.
+- Scope: selected A100 batch-one Q5/G64 QMV and dominant production
+  `K=17408, N=5120` shape.
+- Attempted change: interleaved unchanged 320-byte blocks across four rows and
+  retained every selected load, unpack, FMA, reduction, and output boundary.
+- Benchmark evidence: six controls average **0.432163523 ms**; six candidates
+  average **0.434392635 ms**, a **0.002229112 ms / 0.515803%** regression.
+  Only the first candidate wins its adjacent pair.
+- Correctness evidence: small parity and all production outputs are bit-exact
+  with digest `d05378cc8066dc41` and first output `2.03125`.
+- Failure mode: the first **0.426242704 ms** candidate was not repeatable;
+  five later candidates are flat/slower and the balanced aggregate loses.
+- Why not to retry unchanged: six-per-arm evidence resolves the apparent
+  initial win without any byte or instruction reduction.
+- Reopen only if: a production trace proves current row stride causes a cache
+  or TLB bottleneck under a materially different allocation state.
+- Related commit or revert: no source retained. Executable SHA-256 is
+  `1abec2f4d7fdcfe636ce6addb8e2fbb6dc79e44d70d3115b98780639b7382562`;
+  source-at-measurement is
+  `b68f313d7e193b39ea36b68aac6ef32589a9c708c9126697b3e5b0a422b6bac4`.
+
+## PERF-FA155 - Combined affine-Q5 weight and raw-parameter stream
+
+- Hypothesis: co-locating the eight scale/bias pairs with each 320-byte weight
+  block would turn three buffers into one and improve exact stream locality.
+- Scope: selected A100 batch-one Q5/G64 QMV and dominant production
+  `K=17408, N=5120` shape.
+- Attempted change: built a 352-byte row-block stream containing unchanged Q5
+  codes and raw BF16 scale/bias bits. The kernel accepts that buffer plus the
+  activation and executes the original arithmetic.
+- Benchmark evidence: the adjacent control/candidate pair is
+  **0.426560525 / 0.442184463 ms**, a
+  **0.015623938 ms / 3.662772%** regression.
+- Correctness evidence: small parity and both production outputs are bit-exact
+  with digest `d05378cc8066dc41` and first output `2.03125`.
+- Failure mode: the 352-byte stride disrupts the selected 320-byte weight
+  traversal; separate scale/bias traffic was not a material owner.
+- Why not to retry unchanged: the candidate changes no bytes or arithmetic
+  overall and loses well outside timing noise.
+- Reopen only if: parameters can be embedded without padding/stride cost or a
+  downstream consumer shares the combined representation.
+- Related commit or revert: no source retained. Executable SHA-256 is
+  `9546192afc40011d561a62b151a24ceb8e702972d8f21ede85a9790a975df747`;
+  source-at-measurement is
+  `025ff210a0cfe6917fd288dcab7b0ca510f294200a5491357b31c25f0bf5db56`.

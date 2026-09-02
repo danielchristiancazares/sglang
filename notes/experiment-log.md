@@ -24386,3 +24386,51 @@ mean 13.929045  17.125658 446.051        39.730
   dominant Q5 kernel cost. The next distinct candidate will test a
   low-nibble/high-bit-plane representation that changes extraction
   instructions while retaining all five bits and the same weight-byte count.
+
+### 2026-09-02 00:55 PDT - A141--A144 close byte-neutral Q5 representations
+
+- Main advanced only by signed record commit `10413bda83`, 115 commits ahead
+  of `origin/main`, with an empty index and Daniel's three protected working
+  blobs unchanged at Git hashes `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. No port-30000 listener,
+  SGLang/model process, benchmark, trace, or user compiler overlapped the
+  sequential Metal work. Memory retained about 1.49 million free 16-KiB pages,
+  zero throttled pages, and no macOS thermal/performance warning after the
+  batch.
+- Every candidate was a standalone C++/Metal benchmark built against detached
+  A137 engine source with C++20/O3 and `-Wall -Wextra -Werror`. The established
+  macOS 26.0 versus MLX 26.2 linker warning was the only final build output.
+  A142's first strict build correctly rejected an unused C++ constant; it was
+  removed before any runtime work. Small `K=512, N=16` parity preceded the
+  production `regular|candidate 17408 5120 1000 10000` measurements.
+- A141 stores the same ten bytes as eight low-nibble bytes plus a 16-bit high
+  plane and reconstructs every exact code before the original FMA. The first
+  control/candidate pair is **0.432100013 / 0.457164583 ms**, a
+  **5.800641%** regression. Binary/source SHA-256 values are
+  `fbd7a7cab21ebc42189bd88112b79aaa4cb4ade69d2a5de396928acee248a0c4` and
+  `14826a49a9437ca3f65b253c93be571500e4c08a129908057b3c3013c515b43b`.
+- A142 keeps A100's code stream and arithmetic but interleaves 320-byte K
+  blocks across all sixteen threadgroup rows. Order/reverse control means are
+  **0.429063712 ms** versus candidate **0.435538062 ms**, a **1.508948%**
+  regression. Binary/source hashes are
+  `4444c02d3097b8fce03b627ef6fe9c33416191d79f9d5bb1c0a22aacc721d9ca` and
+  `b803e08fb27925767aaa4ba667c01822f6b758a2f91d828f953f843a5ec89f7a`.
+- A143 narrows interleave to the four rows owned by one SIMD group. Six
+  controls are **0.436174317, 0.431511263, 0.432978554, 0.435769900,
+  0.429650179, and 0.426896925 ms**, mean **0.432163523 ms**. Six candidates
+  are **0.426242704, 0.439474333, 0.436109267, 0.437530079, 0.432643296,
+  and 0.434356133 ms**, mean **0.434392635 ms**. The first apparent win does
+  not repeat; aggregate regression is **0.515803%**. Binary/source hashes are
+  `1abec2f4d7fdcfe636ce6addb8e2fbb6dc79e44d70d3115b98780639b7382562` and
+  `b68f313d7e193b39ea36b68aac6ef32589a9c708c9126697b3e5b0a422b6bac4`.
+- A144 makes a 352-byte row block containing 320 unchanged Q5 bytes plus eight
+  raw BF16 scale/bias pairs, reducing kernel inputs from four to two. Its first
+  control/candidate pair is **0.426560525 / 0.442184463 ms**, a
+  **3.662772%** regression. Binary/source hashes are
+  `9546192afc40011d561a62b151a24ceb8e702972d8f21ede85a9790a975df747` and
+  `025ff210a0cfe6917fd288dcab7b0ca510f294200a5491357b31c25f0bf5db56`.
+- Every production arm emits digest `d05378cc8066dc41`, first output `2.03125`,
+  and exits zero. PERF-FA152--155 reject all four exact forms. A100 remains
+  selected. The next candidate begins with real-checkpoint entropy and
+  block-compressibility analysis; another physical layout is not funded.
