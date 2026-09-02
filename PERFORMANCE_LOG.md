@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max mixed-Q5 plus 5-bit MTP block-two sparse-q proposals, sampled direct `128 / 32 warm / 128 timed` | dense q **15.230953312 tok/s**, width **1.802816901**, digest `b10401e93371a45e` | unordered sparse CDF **6.983233096 tok/s**, width **1.196261682**; vocabulary-ordered exact sparse CDF **15.222551699 tok/s**, width **1.802816901** | unordered support changes seeded CDF order and regresses **54.151044%**; vocabulary order restores exact digest/acceptance but remains **0.055161%** slower, so dense proposal storage is not the cycle owner | A146/A147 strict opt-in dylibs, official 5-bit MTP revision, selected mixed-Q5 environment; PERF-A146/A147 | 2026-09-02 01:17 PDT |
 | M1 Max real-checkpoint Q5 entropy and selective-Q4 ceiling | 5.000000 stored bits/code across 240 Q5 tensors | **4.722514 Shannon / 4.748775 ideal static-Huffman bits/code**; top-15 coverage **73.562622%** | even a zero-cost ideal decoder removes only about **5.0%** of Q5 bytes, or roughly **2.5%** end to end at the measured **49.061847%** Q5 owner; actual block range/palette/sparse-high opportunities are **0.000000% / 0.000726% / 0.091079%**; Q4 helps only the down shape enough to project about **1.67%** end to end | strict CPU-only C++ checkpoint analyzer, four separated 4,096-group windows per tensor; fresh Q5/Q4 production-shape micros; PERF-A145 | 2026-09-02 01:04 PDT |
 | M1 Max affine-Q5 exact representation/layout follow-ups, production `K=17408, N=5120` micro | selected A100 continuous row stream | A141 nibble/high-plane **+5.800641%**; A142 16-row block layout **+1.508948%**; A143 four-row block layout **+0.515803%**; A144 combined weight/parameter stream **+3.662772%** | all four regress while preserving digest `d05378cc8066dc41`; A143's six-per-arm window is **0.432163523 / 0.434392635 ms** and wins only one pair | strict standalone C++/Metal candidate binaries; `regular|CANDIDATE 17408 5120 1000 10000`; PERF-A141--A144 | 2026-09-02 00:55 PDT |
 | M1 Max affine-Q5 lossless weight-window layouts, production `K=17408, N=5120` micro | selected A100 continuous 5-bit stream **0.435539514 ms** across six balanced controls | A139 four-row assembled windows **0.441254344 ms**; A140 row-local windows **0.453039271 ms** in its first matched arm | A139 regresses **0.005714830 ms / 1.312127%**; A140 regresses **0.034508500 ms / 8.245152%** against its adjacent **0.418530771 ms** control; all outputs remain exact | standalone strict C++/Metal benchmark, `regular|window 17408 5120 1000 10000`; PERF-A139/A140 | 2026-09-02 00:42 PDT |
@@ -187,6 +188,29 @@ tree throughput can be ranked for production.
 - Median: `32.953 TPS`; median wall time `7.769 s`.
 
 ## Deltas
+
+### 2026-09-02 01:17 PDT - PERF-A146/A147 sparse standard-MTP proposals
+
+- Change: refactored the top-k-20/top-p-0.95 support producer and let the
+  standard MTP path pass only sparse proposal IDs/probabilities to the
+  verifier. A146 sampled the probability-sorted support directly. A147
+  reordered support by ascending vocabulary ID before sampling, matching
+  MLX 0.32.2's dense inverse-CDF order and one-uniform RNG consumption.
+- Benchmark evidence: the new binary with the flag disabled reaches
+  **15.230953312 tok/s**, 71 refills, and mean width **1.802816901**.
+  A146 reaches **6.983233096 tok/s**, 107 refills, and width **1.196261682**,
+  a **54.151044%** regression. Exact A147 reaches **15.222551699 tok/s**,
+  71 refills, and width **1.802816901**, a **0.055161%** regression.
+- Correctness evidence: A146 completes exact p/q and residual sampling but
+  changes the seeded trajectory to digest `2822024397f42e25`. A147 restores
+  baseline digest `b10401e93371a45e`, last token 2466, refill count, width,
+  16-token trace digest `1db9bc7ba5d021ea`, and every traced target-p/
+  acceptance result. The flag-disabled refactor reproduces the baseline.
+- Decision: reject both. Sparse q is semantically valid, and vocabulary order
+  makes it seed-exact, but dense proposal scatter/retention is not measurable
+  at the complete cycle. Restore A137 source and optimize the approximately
+  103 ms two-token target verification pass instead.
+- Commit: no production source retained; see PERF-FA157/158.
 
 ### 2026-09-02 01:04 PDT - PERF-A145 real-checkpoint Q5 entropy ceiling
 
@@ -1238,6 +1262,8 @@ tree throughput can be ranked for production.
 | PERF-A143 | Interleave unchanged Q5 K blocks across the four output rows owned by one SIMD group. | Selected A100 production `K=17408, N=5120` affine-Q5 QMV micro | Runtime-correct and rejected | Six-per-arm means regress **0.432163523 -> 0.434392635 ms**, **0.515803%**, with only one candidate win; see PERF-FA154. |
 | PERF-A144 | Co-locate each unchanged Q5 block with its raw BF16 scale/bias pairs and consume one combined stream. | Selected A100 production `K=17408, N=5120` affine-Q5 QMV micro | Runtime-correct and rejected | The exact adjacent pair regresses **0.426560525 -> 0.442184463 ms**, **3.662772%**; see PERF-FA155. |
 | PERF-A145 | Measure real affine-Q5 code entropy and block compressibility before funding another representation; bound selective Q4 as a fallback. | All 240 Q5 tensors in the immutable mixed checkpoint plus three production projection shapes | Diagnostic complete; both routes rejected | Aggregate entropy is **4.722514 Shannon / 4.748775 Huffman bits/code** and practical block reductions are effectively zero. Q4 improves only the down shape materially and projects to about **1.6658%** end to end while changing precision; see PERF-FA156. |
+| PERF-A146 | Pass probability-sorted top-20 MTP proposal support directly to the existing sparse verifier. | Selected mixed-Q5 target, official 5-bit MTP, sampled block two | Runtime-correct and rejected | Seeded inverse-CDF order changes, width falls **1.802817 -> 1.196262**, and throughput regresses **15.230953312 -> 6.983233096 tok/s**; see PERF-FA157. |
+| PERF-A147 | Sort sparse MTP proposal support by vocabulary ID so MLX's one-uniform inverse CDF reproduces dense seeded sampling. | Same exact block-two MTP contract | Seed-exact and rejected as neutral | Digest, last token, 71 refills, and width are exact; throughput is **15.222551699 tok/s** versus **15.230953312** control, a **0.055161%** regression; see PERF-FA158. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |

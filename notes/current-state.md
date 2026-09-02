@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-02
-01:04 PDT.
+01:17 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -224,6 +224,18 @@ projects to about **1.6658%** and changes precision. Lossless compression and
 selective Q4 are closed as standalone solutions. The active candidate is now
 algorithmic: remove full-vocabulary dense proposal construction and retention
 from the sampled standard-MTP path while preserving exact p/q verification.
+
+PERF-A146/A147 close that proposal-only route. On the selected mixed target
+with the official five-bit MTP head and block two, dense q reaches
+**15.230953312 tok/s** at width **1.802816901**. Sampling probability-sorted
+sparse support changes MLX's seeded inverse-CDF order, collapses width to
+**1.196261682**, and reaches only **6.983233096 tok/s**. Reordering the
+support by vocabulary ID restores the exact digest, last token, width, refill
+count, target probabilities, and acceptance path, but measures
+**15.222551699 tok/s**, a **0.055161%** regression. A traced steady cycle
+spends approximately **103 ms** in two-token target verification; dense q
+construction/retention is not the owner. A137 source is restored. The next
+candidate specializes that M=2 target execution without changing arithmetic.
 
 A128's 680 MiB duplicate parameter stream remains opt-in. A130 plus A131
 completes an independent exact `32768+16` server request at
