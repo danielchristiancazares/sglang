@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max affine-Q5 raw four-row parameter interleave, production micros and sampled full model | selected A100 separate BF16 scale/bias arrays; full-model mean **19.4281991915 tok/s** | A126 raw interleave: K=17,408 **0.4295822229 ms**, K=5,120 **0.3624250267 ms**, K=6,144 **0.3407608625 ms**; A127 K=17,408-only full-model mean **19.3109191455 tok/s** | isolated K=17,408 improves **0.446284%**, but K=5,120/K=6,144 regress **1.032193% / 7.512710%** and shape-gated full-model throughput regresses **0.117280046 tok/s / 0.603659%**; all outputs exact; restored | dedicated candidate binary plus same-dylib direct `128 / 32 warm / 128 timed` order/reverse controls; PERF-FA141 | 2026-09-01 20:12 PDT |
 | M1 Max affine-Q5 lossless 20-bit scale/bias packing, production K=17,408/N=5,120 micro | selected A100 regular BF16 parameters **0.434799063 ms** | A125 dense four-row 20-bit bundles **0.460042653 ms** | **+0.025243590 ms / +5.805806%** regression; both order directions retain exact digest `4c08a11e47576b08`; entropy scan proves the representation but decode cost rejects this kernel | dedicated candidate binary, alternating `200 / 3000` process-isolated arms; PERF-FA140 | 2026-09-01 19:56 PDT |
 | M1 Max mixed 4.951-bpw Q5-class target, sampled direct `128 / 32 warm / 128 timed` | generic MLX QMM **18.121698566 tok/s** | selected A100+A111+A114+A113+A117 ten-sample mean **19.453092367 tok/s** | **+1.331393801 tok/s / +7.347%** over generic and **+0.184616727 / +0.958%** over matched serial-epilogue control **19.268475640**; exact digest stable; **0.546907633 tok/s / 2.811%** remains to the floor | pinned mixed revision `596b8067...8340`, seed 42, selected command-buffer controls, Q5/Q4/fused-MLP switches | 2026-09-01 18:36 PDT |
 | M1 Max affine-Q5 four-row and two-row read-ahead scheduling | selected A100; decisive K=17,408 control **0.428486222 ms** | A123 four-row prefetch regresses K=17,408/K=5,120 **0.431270% / 0.727663%**; A124 two-row decisive K=17,408 **0.429494958 ms** | A124 regresses decisive K=17,408 **0.001008736 ms / 0.235419%** and wins only four of ten long pairs; all shapes exact; both restored | direct Q5 micro, production K families, order/reverse windows; PERF-FA139 | 2026-09-01 19:35 PDT |
@@ -870,6 +871,8 @@ tree throughput can be ranked for production.
 | PERF-A123 | Prefetch all four Q5 result rows' weights and parameters before their unpack/FMA chains. | Selected A100 across profiled K=17,408/5,120/6,144 families | Runtime-correct and rejected | Long order/reverse aggregates regress K=17,408 **0.432488694 -> 0.434353889 ms** and K=5,120 **0.360067748 -> 0.362687827 ms**. K=6,144's **0.140840%** apparent gain reverses by order. See PERF-FA139. |
 | PERF-A124 | Limit Q5 read-ahead to two rows to reduce live register state. | Same selected A100 production families | Runtime-correct and rejected | Short balanced aggregates were noise-sized; the decisive K=17,408 ten-pair window regresses **0.428486222 -> 0.429494958 ms**, **0.235419%**, and wins only four pairs. Exact A100 restored; see PERF-FA139. |
 | PERF-A125 | Losslessly pack each affine-Q5 scale/bias pair into 20 bits and interleave four result rows into one 80-bit parameter bundle. | All 240 Q5 matrices; selected A100 four-row batch-one kernel; originals retained for prefill | Runtime-correct and rejected | Checkpoint analysis proves exact 20-bit coverage and 3.690411% theoretical Q5 stream reduction. Small parity is exact, but alternating production K=17,408/N=5,120 aggregates regress **0.434799063 -> 0.460042653 ms**, **5.805806%**. Bit reconstruction costs more than the saved metadata traffic; see PERF-FA140. |
+| PERF-A126 | Interleave four rows of unchanged raw 32-bit BF16 scale/bias pairs to isolate locality from A125's reconstruction cost. | Selected A100 affine-Q5 kernel across all three profiled K families | Runtime-correct and rejected | K=17,408 improves **0.4315079725 -> 0.4295822229 ms**, only **0.446284%** with five of ten pair wins. K=5,120 and K=6,144 regress **1.032193% / 7.512710%**. The mixed shape result rejects general adoption; see PERF-FA141. |
+| PERF-A127 | Gate raw four-row parameter interleaving to only K=17,408 Q5 projections and measure the complete mixed model. | Sixty-four Q5 gate/up projections, duplicate decode metadata retained beside prefill tensors | Runtime-correct and rejected | Same-dylib order/reverse controls give **19.4281991915** control versus **19.3109191455 tok/s** candidate, a **0.603659%** regression. All four samples preserve digest `d0193f6d413b68c1` and last token 11406. Exact A117/A100 source restored; see PERF-FA141. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -5710,3 +5713,25 @@ tree throughput can be ranked for production.
   the entropy result, but require a representation with materially fewer
   extraction/bitcast instructions. A raw 32-bit four-row interleave is the
   next mechanism-isolation control.
+
+### 2026-09-01 20:12 PDT - PERF-A126/A127 raw affine-Q5 interleave rejection
+
+- Change: A126 retained every original BF16 scale/bias bit and changed only
+  decode layout: four output rows' pairs form one aligned 16-byte bundle. A127
+  then restricted preparation and dispatch to the isolated winning
+  K=17,408 family, leaving K=5,120 and K=6,144 on selected A100.
+- Benchmark evidence: ten-pair K=17,408 control/candidate means are
+  **0.4315079725 / 0.4295822229 ms**, a **0.446284%** candidate reduction but
+  only five candidate pair wins. K=5,120 regresses
+  **0.3587223191 -> 0.3624250267 ms**, **1.032193%**; K=6,144 regresses
+  **0.3169493750 -> 0.3407608625 ms**, **7.512710%**. Same-dylib full-model
+  order/reverse means are **19.4281991915 / 19.3109191455 tok/s**, a
+  **0.117280046 tok/s / 0.603659%** regression.
+- Correctness evidence: every micro arm retains its selected digest. All four
+  full-model arms preserve 128 timed tokens, digest `d0193f6d413b68c1`, and
+  last token 11406.
+- Decision: reject both layouts and restore exact signed A117/A100 engine and
+  header content. Row locality is too small and shape-dependent to fund a
+  duplicate decode parameter stream. Q4 packing remains a distinct candidate
+  only inside the already-fused gate/up owner, where one kernel can consume
+  both parameter planes and the checkpoint scan proves lossless 20-bit width.

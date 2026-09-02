@@ -23439,3 +23439,78 @@ mean 13.929045  17.125658 446.051        39.730
   dylib or model load. Port 30000 remained free. The entropy proof is retained;
   the next control keeps raw 32-bit BF16 pairs while interleaving four rows to
   isolate locality/load-count benefit from reconstruction cost.
+
+### 2026-09-01 20:12 PDT - A126/A127 raw Q5 interleave loses its full-model gate
+
+- Main began at signed `bcd062e3c69fc31a4ffd188e25c935df34c9c5a9`,
+  97 commits ahead of `origin/main`, with an empty index and Daniel's three
+  user-owned blobs unchanged at `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`.
+- A126 replaced A125's dense 20-bit reconstruction with unchanged raw BF16
+  bits. Four output rows' scale/bias pairs were copied into one aligned
+  16-byte bundle; the candidate Metal loop loaded one `uint4` and used the
+  same per-row bitcasts and A100 arithmetic. The dedicated artifact was:
+
+  ```text
+  /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a126_q5_raw_interleaved_params
+  sha256 a6a96cdf99a870e7a1fbbd263de2daf0a93794d66c5bd58092aa3c2382925b03
+  ```
+
+  Every long arm invoked that artifact or its selected A100 control as
+  `<binary> <K> <N> 500 10000`. K=17,408/N=5,120 raw milliseconds were:
+
+  ```text
+  forward A100: 0.423751646,0.433697154,0.441769450,0.431006396,0.426444867
+  forward A126: 0.428095842,0.437219033,0.428002254,0.428670671,0.427881708
+  reverse A126: 0.435219117,0.426342771,0.427292000,0.431336100,0.425762733
+  reverse A100: 0.439525137,0.435879350,0.423912221,0.434920333,0.424173171
+  aggregate A100/A126: 0.4315079725 / 0.4295822229
+  ```
+
+  The candidate improves **0.446284%** but wins only five of ten pairs.
+  K=5,120/N=10,240 used the same window:
+
+  ```text
+  forward A100: 0.352765900,0.363293825,0.354827392,0.360955929,0.355961900
+  forward A126: 0.365849150,0.357510354,0.359175850,0.361053546,0.360167521
+  reverse A126: 0.369260800,0.364980667,0.369053550,0.354789075,0.362409754
+  reverse A100: 0.356290329,0.358209021,0.367706412,0.353435187,0.363777296
+  aggregate A100/A126: 0.3587223191 / 0.3624250267
+  ```
+
+  That shape regresses **1.032193%** with only two candidate wins. A shorter
+  K=6,144/N=5,120 alternating window measures A100
+  **0.320666175 / 0.313232575 ms** and A126
+  **0.342012000 / 0.339509725 ms**; aggregates are
+  **0.3169493750 / 0.3407608625 ms**, a **7.512710%** regression. Every
+  shape retains its exact selected digest.
+- A127 restricted packing and dispatch to `input_features == 17408` and built:
+
+  ```text
+  /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a127_q5_k17408_interleaved_params.dylib
+  sha256 77c7b8e4f559b0ab2ae529cb3cff31c8326eebfb61b8422a4908846953a11844
+  engine blob 70ddff2d028e29e5ebbc0d705563f53e91227aa2
+  header blob 3476925b67c4a65167d5aec7177290108fc74648
+  ```
+
+  The direct command used the pinned mixed checkpoint, `128 / 32 warm / 128
+  timed`, and selected environment:
+
+  ```text
+  MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 SGLANG_MLX_NATIVE_COMPACT_AFFINE_PARAMS={0,1} bench_qwen38_native <dylib> <checkpoint> 128 32 128
+  ```
+
+  Same-dylib forward control/candidate is
+  **19.466808427 / 19.313575897 tok/s**. Reversed candidate/control is
+  **19.308262394 / 19.389589956 tok/s**. Means are control
+  **19.4281991915** and candidate **19.3109191455**, a
+  **0.117280046 tok/s / 0.603659%** regression. Every sample preserves 128
+  timed tokens, digest `d0193f6d413b68c1`, and last token 11406.
+- A126/A127 are rejected. The candidate source was restored only through
+  `apply_patch`; engine/header blobs are exactly
+  `5912bc2fe9b1e8f34bdace0b1a009f8aa1223d04` and
+  `512335f1ae677f48ee76a77d2f097bef720e71ce`, with an empty diff against
+  signed `00d09138ce`. The pre-existing detached Q4 test modification remains
+  untouched. `git diff --check` passes. Port 30000 is free and no model or
+  benchmark process remains.
