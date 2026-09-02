@@ -4,7 +4,8 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
-| M1 Max mixed 4.951-bpw Q5-class target, sampled direct `128 / 32 warm / 128 timed` | generic MLX QMM **18.121698566 tok/s** | selected A100+A111+A114 plus A113 token-eval cleanup ten-sample mean **19.289499778 tok/s** | **+1.167801212 tok/s / +6.444%** over generic and **+0.011118260 / +0.058%** over matched A114 control **19.278381518**; exact digest stable; **0.710500222 tok/s / 3.683%** remains to the floor | pinned mixed revision `596b8067...8340`, seed 42, selected command-buffer controls, Q5/Q4/fused-MLP switches | 2026-09-01 18:10 PDT |
+| M1 Max mixed 4.951-bpw Q5-class target, sampled direct `128 / 32 warm / 128 timed` | generic MLX QMM **18.121698566 tok/s** | selected A100+A111+A114+A113+A117 ten-sample mean **19.453092367 tok/s** | **+1.331393801 tok/s / +7.347%** over generic and **+0.184616727 / +0.958%** over matched serial-epilogue control **19.268475640**; exact digest stable; **0.546907633 tok/s / 2.811%** remains to the floor | pinned mixed revision `596b8067...8340`, seed 42, selected command-buffer controls, Q5/Q4/fused-MLP switches | 2026-09-01 18:36 PDT |
+| M1 Max fused affine-Q4 gate/up/SwiGLU epilogue, sampled direct `128 / 32 warm / 128 timed` | A114+A113 serial four-result epilogue **19.268475640 tok/s** | A117 four-lane register-selected epilogue **19.453092367 tok/s** | forward/reversed windows improve **+0.947541% / +0.968716%**, aggregate **+0.184616727 tok/s / +0.958128%**; all 20 clean runs retain canonical digest/last token; a separate reload-churn window is excluded | same exact direct contract and artifacts differing only in the fused Metal epilogue | 2026-09-01 18:36 PDT |
 | M1 Max mixed-target Q4 gate/up/SwiGLU, sampled direct `128 / 32 warm / 128 timed` | matched A100+A111 control **19.228720305 tok/s** | precise-exp A114 **19.268407916 tok/s** | two independent five-pair windows improve **+0.145685% / +0.267156%**, aggregate **+0.039687612 tok/s / +0.206398%**; all 20 runs retain canonical digest/last token; boundary regression rejects the old fast-exp artifact in all 32 rows | same direct contract with `SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=0/1` as the only variable | 2026-09-01 17:56 PDT |
 | M1 Max affine-Q5/G64 target-only batch-one decode, sampled direct `128 / 32 warm / 128 timed` | native affine-Q5 target **16.322505765 tok/s** | opt-in direct Q5 QMV **17.823163930 tok/s** | **+1.500658165 tok/s / +9.194%** in the first complete screen; representative parity passes; **2.176836070 tok/s** remains to the floor and a repeated matched window is pending | pinned Q5 target, selected command-buffer controls, and `SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1`; PERF-A094/FA122/FA123/FA124 | 2026-09-01 12:43 PDT |
 | M1 Max affine-Q5 plus matched 5-bit MTP, deterministic direct `128 / 32 warm / 128 timed` | three-token block **17.919995235 tok/s**, width **3.0** | opt-in eight-token block **31.380317186 tok/s**, width **8.0**; exact sampled p/q arms peak at **6.380162135 tok/s**, width **2.285714286** | **+13.460321951 tok/s / +75.113%** for the deterministic execution-cost probe, clearing 20 by **11.380317186 tok/s**; native sampling preserves its configured distribution and rejects this proposal route for production | pinned Q5 target/MTP snapshots plus `SGLANG_MLX_NATIVE_MTP_BLOCK_SIZE=8`; PERF-A093/FA120/FA121 | 2026-09-01 12:08 PDT |
@@ -854,6 +855,9 @@ tree throughput can be ranked for production.
 | PERF-A112 | Screen the remaining Q4 output cohorts, load widths, lane work, and compile-time unrolling around A111. | Exact affine-Q4/G64 batch-one Metal kernel and mixed target | Rejected | Exact `8x4`, `4x8`, and `2x8` cohorts are flat or materially slower. A 128-bit weight load moves a five-sample full-model mean only **19.222120223 -> 19.232188501 tok/s**. Four packs per lane changes BF16 output and the seeded digest; forced full unrolling regresses gate/up to **1.799243958 ms**. See PERF-FA131. |
 | PERF-A113 | Remove the explicit scalar `eval()` immediately before `array::item()`. | Native target-only two-token decode pipeline, selected A114, and MLX 0.32.2 scalar completion | Qualified and retained | MLX `array::item()` calls `array::eval()` itself, so output and pipeline ownership remain unchanged. Two independent five-pair windows improve **19.270942164 -> 19.277656005** and **19.285820872 -> 19.301343552 tok/s**; aggregate gain is **+0.011118260 / +0.057672%**, with all 20 outputs canonical. |
 | PERF-A114 | Fuse paired affine-Q4 gate/up projections and SwiGLU while retaining every staged BF16 boundary. | Mixed target's 64 Q4/G64 MLP pairs, selected A100+A111, and an opt-in 8-SIMD/four-pair Metal kernel | Qualified and retained | The original `metal::exp` arm fails one real sigmoid boundary and is closed by PERF-FA132. `metal::precise::exp` is exact across all 64 traced layers and a dedicated `-6.84375` boundary regression rejects the old artifact. Two independent five-pair windows improve **19.236012324 -> 19.264036375** and **19.221428286 -> 19.272779458 tok/s**; aggregate gain is **+0.039687612 / +0.206398%** with canonical digest `d0193f6d413b68c1`. |
+| PERF-A115 | Halve the fused-Q4 threadgroup from eight to four SIMD groups. | A114 fused gate/up/SwiGLU production shape | Rejected | The exact 4-SIMD/four-result form averages **0.567203850 ms** against **0.566040871 ms** for selected 8-SIMD, about **0.205% slower**. See PERF-FA133. |
+| PERF-A116 | Assign each fused-Q4 epilogue row to one lane through dynamically indexed result arrays. | A114 fused gate/up/SwiGLU precise epilogue | Rejected | Focused parity passes, but a reversed 10,000-iteration window averages **0.564099544 ms** against **0.562567529 ms** for the serial control, about **0.272% slower**. See PERF-FA134. |
+| PERF-A117 | Execute the four precise fused-Q4 epilogues on lanes 0--3 with compile-time register selection. | A114+A113 fused gate/up/SwiGLU decode path | Qualified and retained | Exact general-shape and `-6.84375` boundary tests pass. Two clean five-pair windows improve **19.268343602 -> 19.450918961** and **19.268607678 -> 19.455265774 tok/s**; aggregate gain is **+0.184616727 / +0.958128%**, with every output canonical. Signed `00d09138ce` retains the source. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -5496,3 +5500,70 @@ tree throughput can be ranked for production.
 - Strict C++20/O3 compilation and the complete focused A114 exact suite pass.
   Decision: retain the one-line simplification in signed `ad11696f2e`; the
   selected direct gap is now **0.710500222 tok/s / 3.683352%**.
+
+### 2026-09-01 18:36 PDT - PERF-A115/A116/A117 fused-Q4 epilogue search
+
+- A fresh selected A114+A113 Metal System Trace maps **36,768 / 37,168**
+  sampled target-process shader PCs with zero ambiguous mappings. The fused
+  Q4 gate/up/SwiGLU shader owns **42.141%** of all PCs, custom Q5 kernels own
+  **44.533%**, and the remaining ordinary Q4 kernels own **6.804%**. This
+  makes the fused kernel the largest single shader and establishes production
+  reachability for the epilogue candidates.
+- PERF-A115 halves the fused threadgroup from eight to four SIMD groups while
+  preserving four results per group. Its balanced 5,000-iteration means are
+  control **0.566040871 ms** and candidate **0.567203850 ms**, about
+  **0.205% slower**. It is rejected before a full-model run.
+- PERF-A116 computes all four reductions, then assigns rows to lanes 0--3 by
+  dynamically indexing the thread-local result arrays. Exact parity and the
+  precise sigmoid-boundary test pass. A 10,000-iteration reversed window
+  averages candidate **0.564099544 ms** and control **0.562567529 ms**, about
+  **0.272% slower**; dynamic selection is rejected.
+- PERF-A117 retains the selected eight-SIMD geometry and selects each lane's
+  already-reduced gate/up result through compile-time-named ternaries. This
+  keeps the four exact `metal::precise::exp` chains independent without a
+  dynamically indexed local array. An initial timing build accidentally still
+  carried A115's geometry and is excluded. The corrected diff against
+  `ad11696f2e` contains only the epilogue ownership change.
+- Strict C++20/O3 warnings-as-errors builds pass with only the established
+  macOS 26.0 / MLX 26.2 linker warning. Candidate dylib, focused test, and
+  microbenchmark SHA-256 values are
+  `c8ed45122f36a700b588d93f7a227d31003a01f3b4370d9195367ee7c255f36e`,
+  `b1383f99fd2d73ae48753605aee3318652df489d75436da08dc85ae62166f0ef`,
+  and `b7829284af06cf2bc290ec8ab2659b69fbc9c1e0d3f024308b87160dff80fb15`.
+  Q4 QMV `512/64`, `5120/128`, and `5120/17408`, fused SwiGLU `512/64` and
+  `5120/17408`, and the `-6.84375` sigmoid boundary all report zero mismatch.
+- Corrected 10,000-iteration production-shape micro results are candidate
+  **0.556409946, 0.556899100 ms** and serial control
+  **0.566113429, 0.563282721 ms**. Means are
+  **0.556654523 / 0.564698075 ms**, a **1.4243%** candidate latency reduction;
+  every arm reports digest `8a9031349585365a` and first value `0.875`.
+- One full-model screen improves **19.276941020 -> 19.410146375 tok/s** with
+  canonical output. The first five-pair control/candidate window is
+  **19.275163985/19.368736679**,
+  **19.255827337/19.482499777**,
+  **19.315313630/19.464807390**,
+  **19.244643242/19.468935480**, and
+  **19.250769815/19.469615480 tok/s**. Means are
+  **19.268343602 / 19.450918961**, a
+  **+0.182575359 / +0.947541%** gain.
+- An immediately following reverse batch fell outside the valid host band at
+  **11.590838117--14.360129325 tok/s** for both artifacts while disk reads,
+  page-ins, and swapouts surged. It is retained as externally contaminated
+  evidence and excluded. After a 60-second idle interval, a selected-control
+  probe recovered to **19.203472228 tok/s**. The replacement reverse window
+  was split by another 60-second idle interval to preserve residency.
+- Replacement reversed candidate/control pairs are
+  **19.449756511/19.249257165**,
+  **19.457791537/19.284351927**,
+  **19.446175454/19.238727679**,
+  **19.462623411/19.311370484**, and
+  **19.459981955/19.259331137 tok/s**. Control/candidate means are
+  **19.268607678 / 19.455265774**, a
+  **+0.186658095 / +0.968716%** gain. All 20 clean qualification runs preserve
+  128 timed tokens, digest `d0193f6d413b68c1`, and last token 11406.
+- Aggregate clean control/candidate is
+  **19.268475640 / 19.453092367 tok/s**, a
+  **+0.184616727 / +0.958128%** win. The direct gap is now
+  **0.546907633 tok/s / 2.811417%**. Signed commit `00d09138ce`
+  (`perf(mlx): parallelize fused Q4 SwiGLU epilogue`) contains only the Metal
+  epilogue change; user-owned overlapping working-copy hashes remain intact.

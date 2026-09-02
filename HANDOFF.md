@@ -1,6 +1,6 @@
 # Qwen3.8-27B Q5 SGLang performance handoff
 
-**Snapshot:** 2026-09-01 18:10 PDT
+**Snapshot:** 2026-09-01 18:36 PDT
 
 **Repository:** `/Users/dcazares/sglang`
 
@@ -16,20 +16,22 @@ real Codex work with `xhigh` reasoning, a 131K context window, and at least
 
 The current selected Apple lane is the immutable mixed 4.951-bpw checkpoint
 with the A100 Q5, A111 Q4, precise-exp A114 fused Q4 MLP Metal kernels, and
-A113's duplicate token-evaluation cleanup. Its qualified direct result is:
+A113's duplicate token-evaluation cleanup, plus A117's lane-parallel precise
+fused epilogue. Its qualified direct result is:
 
 | Metric | Selected result |
 |---|---:|
 | Generic mixed-checkpoint direct decode | **18.121698566 tok/s** |
-| Selected A100 + A111 + A114 + A113 direct decode | **19.289499778 tok/s** |
-| Gain over generic | **+1.167801212 / +6.444215%** |
-| A113 gain over matched A114 | **+0.011118260 / +0.057672%** |
-| Remaining direct gap | **0.710500222 tok/s / 3.683352%** |
+| Selected A100 + A111 + A114 + A113 + A117 direct decode | **19.453092367 tok/s** |
+| Gain over generic | **+1.331393801 / +7.346959%** |
+| A117 gain over matched serial epilogue | **+0.184616727 / +0.958128%** |
+| Remaining direct gap | **0.546907633 tok/s / 2.811417%** |
 | Fixed-work digest | `d0193f6d413b68c1` |
 | Last token | `11406` |
 
-The selected number is the aggregate of two independent A113 five-pair
-windows, the second in reversed order. Exact 131,072-token serving, sampled
+The selected number is the aggregate of two independent A117 five-pair
+windows, the second in reversed order and split by one deliberate cooldown to
+avoid process-reload churn. Exact 131,072-token serving, sampled
 behavior, and Codex `xhigh`
 qualification for this mixed checkpoint remain pending. An older GGUF Q5 lane
 passed exact 131K capacity at far lower decode speed; that capacity result does
@@ -84,13 +86,13 @@ active; label their performance as externally exposed to contention.
 ### Main checkout
 
 - Branch: `main`
-- HEAD: `ad11696f2e` (`perf(mlx): avoid duplicate token evaluation`), signed
-  with a verified good EDDSA
-  signature.
-- Tracking state at snapshot: `main...origin/main [ahead 89]`.
+- Latest selected code commit: `00d09138ce`
+  (`perf(mlx): parallelize fused Q4 SwiGLU epilogue`), signed with a verified
+  good EDDSA signature. This documentation update follows it.
+- Tracking state at the selected code commit:
+  `main...origin/main [ahead 91]`.
 - Index: empty.
-- Selected code commit: `ad11696f2e`
-  (`perf(mlx): avoid duplicate token evaluation`).
+- Selected code commit: `00d09138ce`.
 
 Daniel owns these three existing main-checkout modifications. Preserve their
 working-copy bytes and keep them outside optimization commits:
@@ -114,13 +116,13 @@ A114 8-SIMD-by-4-paired-row fused Q4 gate/up/SwiGLU source:
 
 | Modified path | Current Git blob |
 |---|---|
-| `python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp` | `a5fce61035004b6a7bf26f3dd5f229ff9325b1b7` |
+| `python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp` | `5912bc2fe9b1e8f34bdace0b1a009f8aa1223d04` |
 | `python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.h` | `512335f1ae677f48ee76a77d2f097bef720e71ce` |
 | `test/registered/unit/hardware_backend/mlx/test_qwen38_affine_q4_batch_one_qmv.cpp` | `a2137fa5f148c2d285ae68bd4852776049ed5aab` |
 
-`git diff --check` passes. The diff adds 370 lines across those three paths.
-The earlier A113 removal of `eval(pending_tok_)` has been restored here, so
-A114 isolates the fusion variable.
+`git diff --check` passes. The diff adds 380 lines and removes three across
+those three paths. It contains selected A114, A113, and A117; compare against
+signed `ad11696f2e` to isolate A117's 18-addition/10-deletion epilogue diff.
 
 ## Selected checkpoint and artifacts
 
@@ -221,24 +223,60 @@ Forward and reversed five-pair windows improve
 
 ## A113 duplicate scalar evaluation experiment
 
-`Engine::emit_scheduled()` currently calls `eval(pending_tok_)` and then
-`pending_tok_.item<int32_t>()`. Installed MLX 0.32.2's `array::item<T>()`
-performs its own evaluation. Removing the explicit free `eval()` preserves
-the two-token scheduling pipeline in completed screens.
+Before signed `ad11696f2e`, `Engine::emit_scheduled()` called
+`eval(pending_tok_)` and then `pending_tok_.item<int32_t>()`. Installed MLX
+0.32.2's `array::item<T>()` performs its own evaluation. Removing the explicit
+free `eval()` preserves the two-token scheduling pipeline.
 
-Evidence retained in the logs:
+Forward and reversed five-pair windows improve
+**19.270942164 -> 19.277656005** and
+**19.285820872 -> 19.301343552 tok/s**. Aggregate matched control/candidate is
+**19.278381518 / 19.289499778**, a **+0.057672%** exact-output win.
 
-- two preliminary reversed pairs: control **19.195765829**, candidate
-  **19.219406606 tok/s**;
-- four clean interleaved pairs: control **19.214768638**, candidate
-  **19.235724277 tok/s**, a **+0.020955640 / +0.109065%** movement;
-- two excluded indexing-contended candidates: **16.599721750** and
-  **10.995856101 tok/s**.
+## A117 lane-parallel precise fused epilogue
 
-The candidate source is currently absent from the detached worktree. Recreate
-it by deleting only `eval(pending_tok_);` in `Engine::emit_scheduled()`. Finish
-one clean replacement pair and an independent reversed five-pair window after
-the host becomes idle. Keep A113 isolated from A114 during qualification.
+A selected A114+A113 Metal System Trace maps 36,768 of 37,168 sampled target
+shader PCs with zero ambiguity. The fused Q4 gate/up/SwiGLU shader owns
+**42.141%**, custom Q5 owns **44.533%**, and remaining ordinary Q4 owns
+**6.804%**. A117 changes the largest single shader: after the unchanged four
+gate/up reductions, lanes 0--3 each execute one precise sigmoid, SiLU, and
+product chain. Compile-time-named ternaries select the lane's reduced values;
+this avoids the dynamically indexed local arrays that regressed under A116.
+
+Artifacts:
+
+| Artifact | SHA-256 |
+|---|---|
+| `/Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a117_q4_fused_swiglu_parallel_select.dylib` | `c8ed45122f36a700b588d93f7a227d31003a01f3b4370d9195367ee7c255f36e` |
+| `/Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a117_q4_fused_swiglu_parallel_select` | `b1383f99fd2d73ae48753605aee3318652df489d75436da08dc85ae62166f0ef` |
+| `/Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a117_q4_fused_swiglu_parallel_select` | `b7829284af06cf2bc290ec8ab2659b69fbc9c1e0d3f024308b87160dff80fb15` |
+
+The focused executable passes all three Q4 QMV shapes, both fused-chain
+shapes, and the precise `-6.84375` sigmoid boundary with zero mismatches.
+Corrected 10,000-iteration candidate/control micro means are
+**0.556654523 / 0.564698075 ms**, a **1.4243%** latency reduction.
+
+Forward control/candidate pairs are
+**19.275163985/19.368736679**,
+**19.255827337/19.482499777**,
+**19.315313630/19.464807390**,
+**19.244643242/19.468935480**, and
+**19.250769815/19.469615480 tok/s**. Means are
+**19.268343602 / 19.450918961**. Replacement reversed candidate/control pairs
+are **19.449756511/19.249257165**,
+**19.457791537/19.284351927**,
+**19.446175454/19.238727679**,
+**19.462623411/19.311370484**, and
+**19.459981955/19.259331137 tok/s**. Control/candidate means are
+**19.268607678 / 19.455265774**. Aggregate matched control/candidate is
+**19.268475640 / 19.453092367 tok/s**, a
+**+0.184616727 / +0.958128%** win. Every clean run is canonical.
+
+An earlier reverse batch at 11--14 tok/s is excluded: repeated 20 GB process
+reloads caused extreme disk reads, page-ins, and swapouts for both artifacts.
+After a 60-second idle interval the selected control recovered to
+**19.203472228 tok/s**. The replacement window used a second 60-second split
+after two pairs. Do not use the contaminated samples as A/B evidence.
 
 ## Important closed paths
 
@@ -248,6 +286,9 @@ families are:
 - A111 post-selection Q4 geometries: single-projection 8x4 is flat; 4x8 and
   2x8 regress; packed `ushort4` is full-model neutral; four packs per lane
   changes output; explicit locals and full unrolling regress.
+- Fused A114 geometry at four SIMD groups regresses the production-shape
+  microbenchmark; dynamically indexed lane-parallel epilogues regress the
+  longer reversed window. PERF-FA133/FA134 close those exact forms.
 - Hand-inlined Q4 dot arithmetic reached 19.413641543 tok/s and changed the
   digest. Its speed depends on unacceptable FP32 reassociation.
 - Dense recurrent b/a fusion is aggregate-flat at 18.993221731 versus
@@ -264,7 +305,7 @@ families are:
 ### Selected direct baseline
 
 ```text
-/usr/bin/env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 240s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_q4_4x4_exact_a100.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128
+/usr/bin/env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 240s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a117_q4_fused_swiglu_parallel_select.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128
 ```
 
 ### A114 focused parity
@@ -302,11 +343,13 @@ The linker emits the known macOS 26.0 versus MLX 26.2 deployment warning.
 4. Treat precise-exp A114 in signed `ca524c3282` as selected; keep the fast-exp
    artifact closed by PERF-FA132.
 5. Treat signed A113 commit `ad11696f2e` as selected.
-6. Profile the latest exact winner and continue native C++/Metal hotspot work
+6. Treat A117 in signed `00d09138ce` as selected; keep four-SIMD and dynamic
+   epilogue variants closed by PERF-FA133/FA134.
+7. Profile the latest exact winner and continue native C++/Metal hotspot work
    until direct performance clears 20 with margin.
-7. Run exact 131K SGLang serving, behavior, Responses API, and Codex `xhigh`
+8. Run exact 131K SGLang serving, behavior, Responses API, and Codex `xhigh`
    gates only after the direct floor is stable.
-8. Update `PERFORMANCE_LOG.md`, `FAILED_PATHS.md`,
+9. Update `PERFORMANCE_LOG.md`, `FAILED_PATHS.md`,
     `notes/experiment-log.md`, and compact state documents after every
     meaningful result. Commit signed, atomic wins and useful rejected-path
     evidence while preserving Daniel's three working-copy files.
@@ -323,6 +366,6 @@ The linker emits the known macOS 26.0 versus MLX 26.2 deployment warning.
 - `FAILED_PATHS.md`: measured rejected candidates and reopen conditions.
 
 The objective remains open. The selected production-quality direct result is
-19.289499778 tok/s; A113 is qualified and committed on precise-exp A114,
-leaving 0.710500222 tok/s / 3.683352% to the direct floor before exact 131K
+19.453092367 tok/s; A117 is qualified and committed on precise-exp A114+A113,
+leaving 0.546907633 tok/s / 2.811417% to the direct floor before exact 131K
 and Codex `xhigh` qualification.
