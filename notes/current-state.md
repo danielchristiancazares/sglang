@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-16:21 PDT.
+17:42 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -197,6 +197,22 @@ sharing and A107 128-bit activation reads are exact and slower across the produc
 shape matrix; both are closed. Exact 131K serving, sampled behavior, and Codex
 `xhigh` qualification follow only after a direct candidate clears 20 with
 margin.
+
+A114 is the current exact candidate. It fuses each batch-one affine-Q4 gate/up
+pair and the SwiGLU chain into one 8-SIMD/four-paired-row Metal dispatch. A
+temporary real-weight/real-hidden trace localized the original trajectory
+failure to layer 62, element 36: gate and up were exact, but `metal::exp`
+rounded sigmoid to BF16 `0x3a8c` rather than MLX's safe-math `0x3a8b`.
+Volatile locals and explicit BF16 bit round trips did not change it. Replacing
+only that operation with `metal::precise::exp` makes gate, up, sigmoid, SiLU,
+and final output exact across all 64 traced layers and restores the canonical
+full-model digest/last token. The corrected production-shape microbenchmark
+moves **0.604255438 -> 0.564201438 ms** (**-6.628659%**). One full-model
+correctness screen under continuing Spotlight/FileProvider activity reaches
+**19.356657788 tok/s**; it is not a qualification result. Balanced and
+independent reversed idle-host windows remain due before promotion. The
+selected result and direct gap therefore remain **19.241981332 tok/s** and
+**0.758018668 tok/s / 3.939400%**.
 
 The requested Q5 lane now serves through a provenance-pinned derived artifact.
 Bartowski's immutable `Qwen3.8-27B-Q5_K_S.gguf` source is pinned at revision
