@@ -24077,3 +24077,53 @@ mean 13.929045  17.125658 446.051        39.730
   next gate is a strict rebuild from the recovered source plus direct engine
   integration coverage, followed by a short full-model control/candidate
   smoke and progressive exact-ID capacity requests.
+
+### 2026-09-01 23:36 PDT - A134 is functional but its first integrated decode is too slow
+
+- The 23:25 recovery baseline was retained in signed `16d493190a`. Main then
+  remained 109 commits ahead of `origin/main`, with an empty index and the
+  three protected working blobs unchanged. No listener or model/compiler
+  process overlapped any measurement; every Metal workload ran sequentially.
+- Rebuilt the recovered candidate directly from engine and C API source with
+  C++20/O3, `-fPIC -shared -Wall -Wextra -Werror`, the qualified `.venv` MLX
+  headers/library, and its absolute rpath. Built the focused test with the same
+  warning policy. Both compile commands exit zero with only the established
+  macOS 26.0 versus MLX 26.2 linker warning. SHA-256 values are:
+
+  ```text
+  bed1d5bf10a0371a7c0be0554be65c30aa193cdbc49bb7310bd833d215ad2bad  libqwen38_a134_q8_cache_rebuild.dylib
+  fca2b079cfe30d75016a1884998595fda248e344236a7be394b0fab4ff56269c  test_qwen38_a134_q8_split_rebuild
+  ```
+
+  The rebuilt focused binary exits zero with the same Q8/BF16 parity, invalid-
+  input, cache-growth, and append/rollback output recorded at 23:25.
+- The first true engine integration used the selected mixed-Q5 environment,
+  1,024-token internal chunks, 16,384 cache reserve, cache bits eight,
+  append-only snapshots, and the strict rebuilt dylib. The bounded command was:
+
+  ```text
+  /usr/bin/env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=1024 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS=1 SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1 SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION=1 SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE=16384 SGLANG_MLX_NATIVE_ATTN_CACHE_BITS=8 SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT=1 /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 600s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a134_q8_cache_rebuild.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 8193 1 8
+  ```
+
+  Prefill and warmup complete without OOM. Eight timed tokens take
+  **2.319024125 s / 3.449726941 tok/s**, digest `4ecfcea7829312e5`, last token
+  95924. Changing only cache bits `8 -> 0` completes the matched BF16 arm in
+  **1.062537208 s / 7.529148099 tok/s**, digest `07847c58a55ea0e5`, last token
+  15. Q8 therefore regresses this long-history screen by
+  **4.079421158 tok/s / 54.181710%**. Different digests are expected from cache
+  quantization and require semantic qualification; exact requested lengths and
+  process exits pass in both arms.
+- The recovered single-layer micro at `active=8192, capacity=16384,
+  iterations=20` reports **2.103212500 ms** Q8 attention,
+  **0.295643750 ms** quantize/append, and **2.115856250 ms** attention after
+  append. The full-model delta is materially larger than these isolated costs
+  predict, so split topology and cache-update dependencies need direct
+  attribution before another capacity gate.
+- A separate short-path configuration screen changed only
+  `MLX_MAX_MB_PER_BUFFER=256 -> 128`. Candidate throughput is
+  **19.422060304 tok/s**. The surrounding 256 MiB controls are
+  **19.738568824 / 19.641604528**, mean **19.690086676**; every arm retains
+  canonical digest `d0193f6d413b68c1` and last token 11406. PERF-FA146 closes
+  the 128 MiB transfer at **-1.361225%**. The next A134 source axis is an
+  explicit one-to-32 split-count control followed by a cache-update composition
+  benchmark.

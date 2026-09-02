@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max mixed-Q5 A134 direct long-history integration, `8193 / 1 warm / 8 timed` | matched BF16 cache **7.529148099 tok/s** in **1.062537208 s** | affine-Q8/G64 cache plus split decode **3.449726941 tok/s** in **2.319024125 s** | **-4.079421158 tok/s / -54.181710%**; both complete exact prefill/warm/decode, so current Q8 composition is functional but performance-ineligible; isolated one-layer Q8 attention/append at 8K are only **2.103212500 / 0.295643750 ms** | strict rebuilt A134 dylib, selected mixed-Q5 environment, 1,024-token chunks, 16,384-slot reserve, append-only snapshots; change only cache bits `0 -> 8` | 2026-09-01 23:36 PDT |
 | M1 Max mixed-Q5 A134 recovery control, sampled direct `128 / 32 warm / 128 timed` | recorded A130 selected short path **19.744722973 tok/s** | fresh A133-artifact control **19.738568824 tok/s** in **6.484766000 s** | **-0.006154149 tok/s / -0.031169%** from the recorded sample; canonical digest `d0193f6d413b68c1`, last token 11406, and exact 128-token output reproduce; **0.261431176 tok/s / 1.324%** remains to the floor | selected mixed-Q5 environment with A100/A111/A114/A113/A117/A128/A130/A131 enabled and both A133 controls disabled; `bench_qwen38_native ... 128 32 128` | 2026-09-01 23:25 PDT |
 | M1 Max mixed-Q5 A133 full BF16 attention-cache reserve | A130 exact `32768+16`: **87.807667 prompt tok/s**, **373.179259 s**, HTTP 200 | reserving all 131,072 BF16 cache slots fails exact `32768+16` after about **16 s** with Metal insufficient memory; append-only snapshot control/candidate is **19.685169420 / 19.672600916 tok/s**, both canonical | metadata-only snapshots pass exact rollback invariants but are throughput-neutral; scheduler RSS is **18,225,056 KiB** before the request and the unchanged BF16 cache needs **8 GiB**, exceeding the M1 Max's approximately 25 GiB recommended Metal working set | A130 server contract plus `SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE=131072` and `SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT=1`; PERF-A133/FA145 | 2026-09-01 22:30 PDT |
 | M1 Max mixed-Q5 A130 fixed-memory long prefill | A131 plus stock SDPA: exact-ID `32768+16` Metal OOM after about **180 s** | A130: exact `8192+16` **107.023 prompt tok/s**, **76.544058 s**; independent clean exact `32768+16` **87.807667 prompt tok/s**, **373.179259 s**, HTTP 200 | removes the dense long-prefill allocation and converts the 32K crash into a complete exact request; short prompts retain stock SDPA and canonical **19.744722973 tok/s** decode; persistent BF16 KV/snapshot residency still owns the 131K gate | real `context_length=max_total_tokens=131072`, literal `/generate` token IDs, one request, 1 GiB MLX cache, 1,024-token native chunks; PERF-A130/A132 | 2026-09-01 22:09 PDT |
@@ -181,6 +182,43 @@ tree throughput can be ranked for production.
 
 ## Deltas
 
+### 2026-09-01 23:36 PDT - PERF-A134 first integrated Q8 cache screen
+
+- Change: recovered and strictly rebuilt the interrupted affine-Q8/G64 cache,
+  fixed-memory prefill, split-key decode, and append-only snapshot candidate.
+  No source was changed during this measurement batch.
+- Benchmark evidence: direct `8193 / 1 warm / 8 timed` completed at
+  **3.449726941 tok/s** with Q8 versus matched BF16
+  **7.529148099 tok/s**, a **-4.079421158 / -54.181710%** regression. An
+  isolated one-layer 8K/16K-capacity micro reports **2.103212500 ms** for Q8
+  split attention, **0.295643750 ms** for quantize/append, and
+  **2.115856250 ms** for attention after append. The end-to-end penalty is
+  therefore compositional rather than explained by the isolated shader alone.
+- Correctness evidence: strict dylib and focused test builds pass C++20/O3
+  `-Wall -Wextra -Werror`; the rebuilt test repeats all Q8/BF16 attention,
+  growth, and append/rollback checks. Both full-model arms complete exact
+  8,193-token prefill, one warm token, and eight timed tokens without OOM.
+- Decision: keep A134 active as the capacity mechanism, but reject the current
+  automatic split/cache-update composition for promotion. Add a controlled
+  split-count axis and attribute full-model cache-update cost before the next
+  capacity launch.
+- Commit: pending evidence checkpoint.
+
+### 2026-09-01 23:36 PDT - PERF-FA146 mixed-Q5 128 MiB command buffers
+
+- Change: changed only process-start `MLX_MAX_MB_PER_BUFFER` from the selected
+  256 MiB to 128 MiB, reusing the recorded A133 dylib and exact short direct
+  workload.
+- Benchmark evidence: 128 MiB reaches **19.422060304 tok/s**. The adjacent
+  forward/reverse 256 MiB controls reach **19.738568824** and
+  **19.641604528 tok/s**, mean **19.690086676**; the candidate is
+  **-0.268026372 tok/s / -1.361225%**.
+- Correctness evidence: every arm emits exact 128-token timed output with
+  canonical digest `d0193f6d413b68c1` and last token 11406.
+- Decision: reject 128 MiB for the mixed-Q5 target. The earlier Q2/full-Q4 win
+  does not transfer to this weight mix and selected fused-Q4/Q5 schedule.
+- Commit: pending evidence checkpoint; see `FAILED_PATHS.md`.
+
 ### 2026-09-01 23:25 PDT - PERF-A134 recovery baseline
 
 - Change: measurement and interrupted-work recovery only; no source changed.
@@ -202,7 +240,7 @@ tree throughput can be ranked for production.
   progressive exact capacity gates. The required analysis-only subagent batch
   could not be scheduled because the harness has a one-thread limit and
   returned `agent thread limit reached`.
-- Commit: pending record checkpoint.
+- Commit: signed `16d493190a` (`docs(perf): checkpoint q8 cache recovery`).
 
 ### 2026-09-01 22:30 PDT - PERF-A133 append-only snapshots and full BF16 reserve
 
@@ -932,7 +970,7 @@ tree throughput can be ranked for production.
 | PERF-A131 | Gather quantized token-embedding rows before dequantization instead of materializing the entire BF16 vocabulary table. | Native Qwen3.8 C++ load/embed path; opt-in | Qualified and retained | Removes **1,827,635,200 bytes / 1.702 GiB** of eager duplicate storage. Focused output is bit-exact; all four full-model arms are canonical; matched decode moves only **-0.119033%**. Exact 32K runtime before OOM rises from about 66 to about 180 seconds, proving material capacity reachability. Signed `2a65daf1cc`. |
 | PERF-A132 | Preserve the embedding gather contract for native sampler output indices. | On-demand quantized embedding and scheduled native decode | Qualified and retained | Prompt IDs enter as MLX `int32`, while the first sampled token is MLX `uint32`. The narrowed A131 validation rejected that valid second forward. Focused signed/unsigned gathers are both bit-exact with floating indices still rejected; same-dylib direct control returns canonical **19.699758875 tok/s**. Signed `e7643c904d`. |
 | PERF-A133 | Reduce persistent full-attention KV and prompt-snapshot residency without perturbing batch-one decode. | Sixteen BF16 K/V caches, geometric growth, and no-MTP prompt snapshots at exact 131K | BF16 reserve rejected; snapshot mechanism retained | Metadata-only append-only snapshots pass exact rollback/overwrite invariants and are neutral in one direct pair (**19.685169420 -> 19.672600916 tok/s**). A final 131,072-slot BF16 reserve fails exact 32K after about 16 seconds: scheduler RSS is **18,225,056 KiB** before the request and final K/V adds 8 GiB against the approximately 25 GiB Metal working set. See PERF-FA145. |
-| PERF-A134 | Store long-context full-attention K/V as affine-Q8/G64 and consume it directly in fixed-memory prefill and split-history decode kernels. | Sixteen full-attention layers above the 8K stock-safe threshold; append-only cache; batch one; 24/4/256 GQA | Active; recovered implementation under integration audit | Final 131K storage is approximately **4.25 GiB** including scale/bias metadata instead of 8 GiB BF16. Recovered focused binaries pass Q8 prefill and `query=1, prefix=8191` split-decode parity, BF16 fallback parity, growth validation, and append/rollback replacement. Full engine cache migration, full-model behavior, and progressive/exact capacity remain unqualified. |
+| PERF-A134 | Store long-context full-attention K/V as affine-Q8/G64 and consume it directly in fixed-memory prefill and split-history decode kernels. | Sixteen full-attention layers above the 8K stock-safe threshold; append-only cache; batch one; 24/4/256 GQA | Functional; active performance repair | Focused Q8 prefill/split parity and full `8193+9` direct execution pass without OOM. Current Q8 decode is **3.449726941 tok/s** versus matched BF16 **7.529148099**, despite isolated 8K attention/append at only **2.103212500 / 0.295643750 ms**. Attribute the composition and tune split count before capacity promotion. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
