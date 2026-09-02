@@ -4256,3 +4256,61 @@ the stock full-attention mechanism a 32K or 131K solution.
 - Related commit or revert: no source retained. PERF-A137 encodes the one
   exceptional result directly, remains complete-domain exact, and wins the
   full-model gate in signed `24d745ff38`.
+
+## PERF-FA150 - Four-row preassembled affine-Q5 weight windows
+
+- Hypothesis: assembling each lane's continuous 80 Q5 bits offline into two
+  32-bit windows and a 16-bit tail would remove cross-load window construction
+  from the selected A100 shader while preserving the exact code stream.
+- Scope: selected affine-Q5/G64 batch-one QMV, four output rows per SIMD group,
+  and the dominant production `K=17408, N=5120` shape.
+- Attempted change: built a standalone C++/Metal candidate with a four-row
+  decode layout. Each lane loads two `uint` windows and one `ushort` tail per
+  row, then executes the original sixteen FP32 FMAs and reductions.
+- Benchmark evidence: six balanced control samples are **0.433717917,
+  0.435563750, 0.432788396, 0.433503229, 0.436652416, and 0.441011375 ms**,
+  mean **0.435539514 ms**. Six candidate samples are **0.442219354,
+  0.434076438, 0.445240729, 0.440354771, 0.439044145, and 0.446590625 ms**,
+  mean **0.441254344 ms**. The candidate regresses
+  **0.005714830 ms / 1.312127%**.
+- Correctness evidence: small deterministic parity is bit-exact. Every
+  production arm emits digest `d05378cc8066dc41` and first output `2.03125`.
+- Failure mode: the alternate row-group address stream and simultaneous live
+  weight vectors cost more than assembling the original aligned 16-bit loads.
+- Why not to retry unchanged: the balanced production window is consistently
+  slower on the trace-dominant Q5 shape and changes neither bytes nor arithmetic.
+- Reopen only if: compiler evidence shows materially different register/load
+  lowering or a new layout shares the assembled values across additional work.
+- Related commit or revert: no source retained. Artifact
+  `bench_qwen38_a139_q5_window_layout` hashes to
+  `c118bca6ad87d624ef553e448242ad8bc6157305f12f127a0b884f8df2ff22f8`;
+  source-at-measurement hashes to
+  `1e43497fdaf05460834dc15eb4147906a796385d6d6b49c3593369b3cf1e9537`.
+
+## PERF-FA151 - Row-local preassembled affine-Q5 weight windows
+
+- Hypothesis: A139 lost to four-row live state, so loading only one row's two
+  32-bit windows and 16-bit tail at a time would retain offline assembly while
+  restoring occupancy.
+- Scope: the same selected affine-Q5/G64 batch-one QMV and dominant production
+  `K=17408, N=5120` shape.
+- Attempted change: rebuilt the standalone C++/Metal candidate with row-local
+  layout addressing and no four-row weight vectors.
+- Benchmark evidence: the first matched control/candidate pair is
+  **0.418530771 / 0.453039271 ms**, a
+  **0.034508500 ms / 8.245152%** regression. This is too large to justify a
+  repeated or full-model gate.
+- Correctness evidence: small deterministic parity is bit-exact. Both
+  production arms emit digest `d05378cc8066dc41` and first output `2.03125`.
+- Failure mode: narrower liveness does not compensate for the alternate
+  layout/addressing and load form; it materially worsens the decisive shape.
+- Why not to retry unchanged: the exact adjacent comparison is an order of
+  magnitude larger than normal run variance and has no compensating resource
+  or behavior benefit.
+- Reopen only if: a materially different representation simplifies Q5
+  extraction rather than merely rearranging identical 32-bit windows.
+- Related commit or revert: no source retained. Artifact
+  `bench_qwen38_a140_q5_row_window_layout` hashes to
+  `2eeb79c17ffa35657dcb706127ced8176163ff4cebf8ac4c54e04af18a18c7af`;
+  source-at-measurement hashes to
+  `65d9b19993ae921291afec6a67e1f09733c9d64bb92a0d4ca3c2160dd94fba46`.

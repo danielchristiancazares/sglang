@@ -24343,3 +24343,46 @@ mean 13.929045  17.125658 446.051        39.730
   streamed weight bytes or unpack/instruction work; prior launch-only fusion,
   activation-load widening, parameter broadcast, row read-ahead, and unchanged
   raw-parameter interleave remain closed.
+
+### 2026-09-02 00:42 PDT - A139/A140 lossless Q5 window layouts regress
+
+- Main remained at signed `018c416bba`, 114 commits ahead of `origin/main`,
+  with an empty index. Daniel's three protected working blobs remained exact
+  at Git hashes `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. The experiments ran in detached
+  worktree `perf-a137-promote` at `24d745ff38`; production engine/header source
+  there stayed clean and only the standalone C++ benchmark was untracked.
+- Built each candidate directly against the qualified MLX headers/library and
+  signed A137 engine source with C++20/O3, `-Wall -Wextra -Werror`, absolute
+  MLX rpath, and no Python additions. Both builds exit zero with only the
+  established macOS 26.0 versus MLX 26.2 linker warning. The benchmark
+  invocation shape was:
+
+  ```text
+  bench_qwen38_a139_q5_window_layout regular|window 17408 5120 1000 10000
+  ```
+
+- A139 stores each lane's sixteen Q5 codes as two assembled 32-bit windows and
+  one 16-bit tail for four result rows. Its six balanced controls are
+  **0.433717917, 0.435563750, 0.432788396, 0.433503229, 0.436652416, and
+  0.441011375 ms**, mean **0.435539514 ms**. Candidate samples are
+  **0.442219354, 0.434076438, 0.445240729, 0.440354771, 0.439044145, and
+  0.446590625 ms**, mean **0.441254344 ms**. The exact layout therefore
+  regresses **0.005714830 ms / 1.312127%**. Its executable SHA-256 is
+  `c118bca6ad87d624ef553e448242ad8bc6157305f12f127a0b884f8df2ff22f8`;
+  source-at-measurement SHA-256 is
+  `1e43497fdaf05460834dc15eb4147906a796385d6d6b49c3593369b3cf1e9537`.
+- A140 narrows the same layout to one row's weight windows at a time. Its
+  first adjacent control/candidate pair is
+  **0.418530771 / 0.453039271 ms**, an **8.245152%** regression, which is too
+  large to fund repeated or full-model timing. Executable SHA-256 is
+  `2eeb79c17ffa35657dcb706127ced8176163ff4cebf8ac4c54e04af18a18c7af`;
+  source SHA-256 is
+  `65d9b19993ae921291afec6a67e1f09733c9d64bb92a0d4ca3c2160dd94fba46`.
+- Both small parity cases are bit-exact. All production arms preserve digest
+  `d05378cc8066dc41` and first output `2.03125`. PERF-FA150/151 reject the
+  layouts: rearranging identical continuous windows does not lower the
+  dominant Q5 kernel cost. The next distinct candidate will test a
+  low-nibble/high-bit-plane representation that changes extraction
+  instructions while retaining all five bits and the same weight-byte count.
