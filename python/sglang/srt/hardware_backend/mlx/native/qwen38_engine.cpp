@@ -105,6 +105,13 @@ bool native_q4_fused_swiglu_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_q4_fused_raw_params_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 bool native_qmm_trace_enabled() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_TRACE_QMM");
@@ -1078,6 +1085,107 @@ constexpr const char* kAffineQ4FusedSwiGluSource = R"(
         }
 )";
 
+constexpr const char* kAffineQ4FusedSwiGluRawParamsSource = R"(
+        constexpr int PacksPerThread = 2;
+        constexpr int SimdGroups = 8;
+        constexpr int ResultsPerSimdgroup = 4;
+        constexpr int ValuesPerThread = 8 * PacksPerThread;
+        constexpr int BlockSize = ValuesPerThread * 32;
+        constexpr int ScaleStep = 64 / ValuesPerThread;
+        constexpr int InputFeatures = KConst;
+        constexpr int WeightRowBytes = InputFeatures / 2;
+        constexpr int GroupsPerRow = InputFeatures / 64;
+        constexpr int ParameterWordsPerBundle = 8;
+
+        thread float input_values[ValuesPerThread];
+        thread float gate_results[ResultsPerSimdgroup] = {0};
+        thread float up_results[ResultsPerSimdgroup] = {0};
+
+        const int lane = thread_index_in_simdgroup;
+        const int output_start =
+            threadgroup_position_in_grid.y *
+                (SimdGroups * ResultsPerSimdgroup) +
+            simdgroup_index_in_threadgroup * ResultsPerSimdgroup;
+        const device uchar* gate_weight_cursor =
+            reinterpret_cast<const device uchar*>(gate_w) +
+            output_start * WeightRowBytes + lane * PacksPerThread * 4;
+        const device uchar* up_weight_cursor =
+            reinterpret_cast<const device uchar*>(up_w) +
+            output_start * WeightRowBytes + lane * PacksPerThread * 4;
+        const device uint* parameter_cursor = params +
+            ((output_start / ResultsPerSimdgroup) * GroupsPerRow +
+             lane / ScaleStep) * ParameterWordsPerBundle;
+        const device bfloat* input_cursor =
+            x + lane * ValuesPerThread;
+
+        for (int k = 0; k < InputFeatures; k += BlockSize) {
+          const float sum =
+              sglang_q4_load_vector<bfloat, float, ValuesPerThread>(
+                  input_cursor, input_values);
+          const uint4 gate_parameters =
+              *reinterpret_cast<const device uint4*>(parameter_cursor);
+          const uint4 up_parameters =
+              *reinterpret_cast<const device uint4*>(parameter_cursor + 4);
+
+          for (int row = 0; row < ResultsPerSimdgroup; ++row) {
+            const uint code = gate_parameters[row];
+            const float scale = static_cast<float>(
+                as_type<bfloat>(static_cast<ushort>(code)));
+            const float bias = static_cast<float>(
+                as_type<bfloat>(static_cast<ushort>(code >> 16)));
+            gate_results[row] += sglang_q4_dot<float, ValuesPerThread>(
+                gate_weight_cursor + row * WeightRowBytes,
+                input_values,
+                scale,
+                bias,
+                sum);
+          }
+
+          for (int row = 0; row < ResultsPerSimdgroup; ++row) {
+            const uint code = up_parameters[row];
+            const float scale = static_cast<float>(
+                as_type<bfloat>(static_cast<ushort>(code)));
+            const float bias = static_cast<float>(
+                as_type<bfloat>(static_cast<ushort>(code >> 16)));
+            up_results[row] += sglang_q4_dot<float, ValuesPerThread>(
+                up_weight_cursor + row * WeightRowBytes,
+                input_values,
+                scale,
+                bias,
+                sum);
+          }
+
+          gate_weight_cursor += BlockSize / 2;
+          up_weight_cursor += BlockSize / 2;
+          parameter_cursor +=
+              (BlockSize / 64) * ParameterWordsPerBundle;
+          input_cursor += BlockSize;
+        }
+
+        for (int row = 0; row < ResultsPerSimdgroup; ++row) {
+          gate_results[row] = simd_sum(gate_results[row]);
+          up_results[row] = simd_sum(up_results[row]);
+        }
+        const int row = lane;
+        if (row < ResultsPerSimdgroup) {
+          const float gate_result = row == 0 ? gate_results[0]
+              : row == 1                 ? gate_results[1]
+              : row == 2                 ? gate_results[2]
+                                         : gate_results[3];
+          const float up_result = row == 0 ? up_results[0]
+              : row == 1               ? up_results[1]
+              : row == 2               ? up_results[2]
+                                       : up_results[3];
+          const bfloat gate_value = static_cast<bfloat>(gate_result);
+          const bfloat up_value = static_cast<bfloat>(up_result);
+          const bfloat sigmoid_value = sglang_q4_sigmoid(gate_value);
+          const bfloat silu_value =
+              static_cast<bfloat>(gate_value * sigmoid_value);
+          y[output_start + row] =
+              static_cast<bfloat>(silu_value * up_value);
+        }
+)";
+
 constexpr const char* kAffineSmallBatchQmmHeader = R"(
 #include <metal_simdgroup>
 )";
@@ -1595,6 +1703,17 @@ const mx::fast::CustomKernelFunction& affine_q4_fused_swiglu_metal() {
   return kernel;
 }
 
+const mx::fast::CustomKernelFunction&
+affine_q4_fused_swiglu_raw_params_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_affine_q4_fused_swiglu_raw_params",
+      {"gate_w", "up_w", "params", "x"},
+      {"y"},
+      kAffineQ4FusedSwiGluRawParamsSource,
+      kAffineQ4BatchOneQmvHeader);
+  return kernel;
+}
+
 const mx::fast::CustomKernelFunction& affine_small_batch_qmm_metal() {
   static const auto kernel = mx::fast::metal_kernel(
       "sglang_affine_small_batch_qmm",
@@ -1626,6 +1745,79 @@ const mx::fast::CustomKernelFunction& affine_q5_batch_one_qmv_metal() {
 }
 
 } // namespace
+
+bool prepare_fused_q4_raw_decode_parameters(
+    QLinear& gate, const QLinear& up) {
+  if (!gate.valid || !up.valid || gate.bits != 4 || up.bits != 4 ||
+      gate.group_size != 64 || up.group_size != 64 ||
+      gate.scales.ndim() != 2 || gate.biases.ndim() != 2 ||
+      up.scales.ndim() != 2 || up.biases.ndim() != 2 ||
+      gate.scales.dtype() != mx::bfloat16 ||
+      gate.biases.dtype() != mx::bfloat16 ||
+      up.scales.dtype() != mx::bfloat16 ||
+      up.biases.dtype() != mx::bfloat16 ||
+      gate.scales.shape() != gate.biases.shape() ||
+      gate.scales.shape() != up.scales.shape() ||
+      gate.scales.shape() != up.biases.shape()) {
+    return false;
+  }
+  const int output_features = gate.scales.shape()[0];
+  const int groups_per_row = gate.scales.shape()[1];
+  if (output_features <= 0 || output_features % 4 != 0 ||
+      groups_per_row <= 0 || groups_per_row % 8 != 0) {
+    return false;
+  }
+
+  mx::eval(gate.scales, gate.biases, up.scales, up.biases);
+  const auto* gate_scales = gate.scales.data<mx::bfloat16_t>();
+  const auto* gate_biases = gate.biases.data<mx::bfloat16_t>();
+  const auto* up_scales = up.scales.data<mx::bfloat16_t>();
+  const auto* up_biases = up.biases.data<mx::bfloat16_t>();
+  const std::uint64_t pair_count = gate.scales.size();
+  if (pair_count >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max() / 2) ||
+      pair_count >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<mx::ShapeElem>::max() / 2)) {
+    return false;
+  }
+  std::vector<std::uint32_t> packed(
+      static_cast<std::size_t>(pair_count) * 2);
+
+  std::size_t destination = 0;
+  for (int output_start = 0; output_start < output_features;
+       output_start += 4) {
+    for (int group = 0; group < groups_per_row; ++group) {
+      for (int row = 0; row < 4; ++row) {
+        const std::size_t source =
+            static_cast<std::size_t>(output_start + row) * groups_per_row +
+            group;
+        packed[destination++] =
+            static_cast<std::uint32_t>(gate_scales[source].bits_) |
+            (static_cast<std::uint32_t>(gate_biases[source].bits_) << 16);
+      }
+      for (int row = 0; row < 4; ++row) {
+        const std::size_t source =
+            static_cast<std::size_t>(output_start + row) * groups_per_row +
+            group;
+        packed[destination++] =
+            static_cast<std::uint32_t>(up_scales[source].bits_) |
+            (static_cast<std::uint32_t>(up_biases[source].bits_) << 16);
+      }
+    }
+  }
+  if (destination != packed.size()) {
+    throw std::runtime_error("fused Q4 parameter count mismatch");
+  }
+  gate.fused_q4_decode_params = array(
+      packed.data(),
+      {static_cast<mx::ShapeElem>(packed.size())},
+      mx::uint32);
+  mx::eval(gate.fused_q4_decode_params);
+  gate.fused_q4_decode_params_valid = true;
+  return true;
+}
 
 int dspark_select_verify_draft_tokens(
     const float* confidence,
@@ -2194,6 +2386,26 @@ array affine_q4_fused_swiglu_batch_one(
   }
 
   constexpr int kThreads = kSimdGroups * 32;
+  if (gate.fused_q4_decode_params_valid) {
+    const std::size_t expected_parameter_words =
+        gate.scales.size() * 2;
+    if (gate.fused_q4_decode_params.ndim() != 1 ||
+        gate.fused_q4_decode_params.dtype() != mx::uint32 ||
+        gate.fused_q4_decode_params.size() != expected_parameter_words) {
+      throw std::runtime_error("invalid raw fused Q4 decode parameters");
+    }
+    auto outputs = affine_q4_fused_swiglu_raw_params_metal()(
+        {gate.w, up.w, gate.fused_q4_decode_params, x},
+        {{1, 1, output_features}},
+        {x.dtype()},
+        {kThreads, output_features / kOutputTile, 1},
+        {kThreads, 1, 1},
+        {{"KConst", mx::fast::TemplateArg{input_features}}},
+        std::nullopt,
+        false,
+        {});
+    return outputs[0];
+  }
   auto outputs = affine_q4_fused_swiglu_metal()(
       {gate.w,
        gate.scales,
@@ -2612,6 +2824,15 @@ void Engine::load_weights(const std::string& model_dir) {
     layer.post_norm = require(weights, layer_key(i, ".post_attention_layernorm.weight"));
     layer.gate_proj = load_qlinear(weights, layer_key(i, ".mlp.gate_proj"));
     layer.up_proj = load_qlinear(weights, layer_key(i, ".mlp.up_proj"));
+    if (native_q4_fused_swiglu_enabled() &&
+        native_q4_fused_raw_params_enabled() &&
+        layer.gate_proj.bits == 4 && layer.up_proj.bits == 4 &&
+        !prepare_fused_q4_raw_decode_parameters(
+            layer.gate_proj, layer.up_proj)) {
+      throw std::runtime_error(
+          "cannot prepare raw fused Q4 decode parameters for layer " +
+          std::to_string(i));
+    }
     layer.down_proj = load_qlinear(weights, layer_key(i, ".mlp.down_proj"));
     if (layer.is_linear) {
       layer.linear.in_proj_qkv =

@@ -163,6 +163,10 @@ bool CheckQ4FusedSwiGluParity(int input_features, int output_features) {
       gate_weights, gate_scales, gate_biases, 64, 4, true};
   sglang::mlx_qwen38::QLinear up{
       up_weights, up_scales, up_biases, 64, 4, true};
+  if (!sglang::mlx_qwen38::prepare_fused_q4_raw_decode_parameters(gate, up)) {
+    std::cerr << "failed to prepare raw fused Q4 parameters\n";
+    return false;
+  }
 
   mx::array expected = mx::astype(
       sglang::mlx_qwen38::silu(
@@ -234,6 +238,10 @@ bool CheckQ4FusedSwiGluSigmoidBoundary() {
       weights, scales, gate_bias, 64, 4, true};
   sglang::mlx_qwen38::QLinear up{
       weights, scales, up_bias, 64, 4, true};
+  if (!sglang::mlx_qwen38::prepare_fused_q4_raw_decode_parameters(gate, up)) {
+    std::cerr << "failed to prepare raw fused Q4 boundary parameters\n";
+    return false;
+  }
 
   mx::array expected = mx::astype(
       sglang::mlx_qwen38::silu(

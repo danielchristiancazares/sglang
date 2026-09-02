@@ -21,9 +21,14 @@ struct QLinear {
   int group_size = 64;
   int bits = 4;
   bool valid = false;
+  mlx::core::array fused_q4_decode_params{0};
+  bool fused_q4_decode_params_valid = false;
 
   mlx::core::array operator()(const mlx::core::array& x) const;
 };
+
+bool prepare_fused_q4_raw_decode_parameters(
+    QLinear& gate, const QLinear& up);
 
 mlx::core::array affine_qmm_small_batch(
     const QLinear& linear, const mlx::core::array& x);
