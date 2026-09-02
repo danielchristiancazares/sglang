@@ -24030,3 +24030,50 @@ mean 13.929045  17.125658 446.051        39.730
   A130-derived fixed-memory prefill and split-history decode kernels, activate
   only above the stock-safe 8K boundary, and then rerun progressive capacity,
   sampled behavior, exact 131K, Responses/Codex `xhigh`, and >=20 tok/s gates.
+
+### 2026-09-01 23:25 PDT - A134 recovery baseline reproduces the selected short path
+
+- Main was signed `98125282a9d1b7eede6eb6a0afbc39ebd7ea6b40`, 108 commits
+  ahead of `origin/main`, with an empty index. Daniel's three user-owned
+  working blobs remained exact at
+  `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. No listener, SGLang/model, or
+  compiler process was active. Memory was about 93% free, throttled pages were
+  zero, Spotlight remained disabled on all three indexed volumes, and macOS
+  reported no thermal or performance warning.
+- The required fresh baseline reused the last recorded A133 dylib rather than
+  the unqualified A134 artifact. The exact command was:
+
+  ```text
+  /usr/bin/env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=1024 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS=1 SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1 SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION=1 SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE=0 SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT=0 /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a133_append_only_snapshot.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128
+  ```
+
+  It completed in **6.484766000 s** at **19.738568824 tok/s**, with exact
+  128-token timed output, canonical FNV-1a digest `d0193f6d413b68c1`, last
+  token 11406, zero speculative refills, and exit zero. This is within
+  **0.031169%** of the recorded A130 selected short result
+  **19.744722973 tok/s** and leaves **0.261431176 tok/s / 1.324%** to the
+  floor.
+- Four unrecorded A134 artifacts built between 22:47 and 23:02 PDT were
+  recovered without changing source. SHA-256 values are:
+
+  ```text
+  087832edd020dba179e7f89426a1ad8de91f7403b7c8e8619892a6793d8f7b54  test_qwen38_a134_q8_attention
+  2bb3853d64d67b251c30479a0d4f92cf6fea369dc5860f8478479a6e96d247ac  test_qwen38_a134_q8_cache
+  4667860f07c821ea791165df5ab9d73d24a0de7d697a3569dfa7a9118957473f  test_qwen38_a134_q8_split
+  0cc32554cde5b6f2c829a9bb4316df04dbe1680e1c35574e6b93f730a6edcb54  libqwen38_a134_q8_cache.dylib
+  ```
+
+  All three focused binaries exit zero. The newest split build adds affine-Q8
+  `query_tokens=1, prefix_length=8191` parity at maximum absolute error
+  `1.19209e-06`; Q8 `17/65` and `1024/0`, all five retained BF16 shapes,
+  cache-growth validation, invalid-input rejection, and append-only prefix/
+  replacement-suffix invariants pass. These binaries do not yet qualify the
+  engine's Q8 cache migration/update path or a full-model request.
+- The performance workflow's required analysis-only subagent survey could not
+  start: this harness exposes one total agent thread and returned exact error
+  `agent thread limit reached`. Primary-agent source review continues. The
+  next gate is a strict rebuild from the recovered source plus direct engine
+  integration coverage, followed by a short full-model control/candidate
+  smoke and progressive exact-ID capacity requests.

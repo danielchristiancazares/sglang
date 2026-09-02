@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max mixed-Q5 A134 recovery control, sampled direct `128 / 32 warm / 128 timed` | recorded A130 selected short path **19.744722973 tok/s** | fresh A133-artifact control **19.738568824 tok/s** in **6.484766000 s** | **-0.006154149 tok/s / -0.031169%** from the recorded sample; canonical digest `d0193f6d413b68c1`, last token 11406, and exact 128-token output reproduce; **0.261431176 tok/s / 1.324%** remains to the floor | selected mixed-Q5 environment with A100/A111/A114/A113/A117/A128/A130/A131 enabled and both A133 controls disabled; `bench_qwen38_native ... 128 32 128` | 2026-09-01 23:25 PDT |
 | M1 Max mixed-Q5 A133 full BF16 attention-cache reserve | A130 exact `32768+16`: **87.807667 prompt tok/s**, **373.179259 s**, HTTP 200 | reserving all 131,072 BF16 cache slots fails exact `32768+16` after about **16 s** with Metal insufficient memory; append-only snapshot control/candidate is **19.685169420 / 19.672600916 tok/s**, both canonical | metadata-only snapshots pass exact rollback invariants but are throughput-neutral; scheduler RSS is **18,225,056 KiB** before the request and the unchanged BF16 cache needs **8 GiB**, exceeding the M1 Max's approximately 25 GiB recommended Metal working set | A130 server contract plus `SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE=131072` and `SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT=1`; PERF-A133/FA145 | 2026-09-01 22:30 PDT |
 | M1 Max mixed-Q5 A130 fixed-memory long prefill | A131 plus stock SDPA: exact-ID `32768+16` Metal OOM after about **180 s** | A130: exact `8192+16` **107.023 prompt tok/s**, **76.544058 s**; independent clean exact `32768+16` **87.807667 prompt tok/s**, **373.179259 s**, HTTP 200 | removes the dense long-prefill allocation and converts the 32K crash into a complete exact request; short prompts retain stock SDPA and canonical **19.744722973 tok/s** decode; persistent BF16 KV/snapshot residency still owns the 131K gate | real `context_length=max_total_tokens=131072`, literal `/generate` token IDs, one request, 1 GiB MLX cache, 1,024-token native chunks; PERF-A130/A132 | 2026-09-01 22:09 PDT |
 | M1 Max mixed-Q5 on-demand quantized embedding, sampled direct `128 / 32 warm / 128 timed` | eager BF16 table **19.713595204 tok/s** | gathered-row dequantization **19.690129490 tok/s** | **-0.023465714 tok/s / -0.119033%**, canonical in both order directions; eager duplicate falls from **2,542,796,800** to **715,161,600 bytes** | same A128 dylib and selected environment, changing only `SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=0/1`; PERF-A131 | 2026-09-01 21:36 PDT |
@@ -179,6 +180,29 @@ tree throughput can be ranked for production.
 - Median: `32.953 TPS`; median wall time `7.769 s`.
 
 ## Deltas
+
+### 2026-09-01 23:25 PDT - PERF-A134 recovery baseline
+
+- Change: measurement and interrupted-work recovery only; no source changed.
+  Reused the recorded A133 candidate dylib and selected mixed-Q5 environment,
+  with cache reservation and append-only snapshots explicitly disabled.
+- Benchmark evidence: one fresh direct `128 / 32 warm / 128 timed` control
+  completed in **6.484766000 s** at **19.738568824 tok/s**. The recorded
+  selected A130 short result is **19.744722973 tok/s**, a difference of only
+  **-0.006154149 tok/s / -0.031169%**. The immediate floor gap is
+  **0.261431176 tok/s / 1.324%**.
+- Correctness evidence: exact 128-token timed length, canonical FNV-1a digest
+  `d0193f6d413b68c1`, last token 11406, zero speculative refills, and process
+  exit zero. Three recovered A134 focused binaries also exit zero. The newest
+  includes affine-Q8 decode shape `query=1, prefix=8191` at maximum absolute
+  error `1.19209e-06`; Q8 prefill, BF16 prefill, growth validation, and
+  append/rollback suffix replacement continue to pass.
+- Decision: baseline accepted. Audit the unrecorded Q8 cache migration/update
+  and split-reduction integration before a full-model smoke; then run
+  progressive exact capacity gates. The required analysis-only subagent batch
+  could not be scheduled because the harness has a one-thread limit and
+  returned `agent thread limit reached`.
+- Commit: pending record checkpoint.
 
 ### 2026-09-01 22:30 PDT - PERF-A133 append-only snapshots and full BF16 reserve
 
@@ -908,7 +932,7 @@ tree throughput can be ranked for production.
 | PERF-A131 | Gather quantized token-embedding rows before dequantization instead of materializing the entire BF16 vocabulary table. | Native Qwen3.8 C++ load/embed path; opt-in | Qualified and retained | Removes **1,827,635,200 bytes / 1.702 GiB** of eager duplicate storage. Focused output is bit-exact; all four full-model arms are canonical; matched decode moves only **-0.119033%**. Exact 32K runtime before OOM rises from about 66 to about 180 seconds, proving material capacity reachability. Signed `2a65daf1cc`. |
 | PERF-A132 | Preserve the embedding gather contract for native sampler output indices. | On-demand quantized embedding and scheduled native decode | Qualified and retained | Prompt IDs enter as MLX `int32`, while the first sampled token is MLX `uint32`. The narrowed A131 validation rejected that valid second forward. Focused signed/unsigned gathers are both bit-exact with floating indices still rejected; same-dylib direct control returns canonical **19.699758875 tok/s**. Signed `e7643c904d`. |
 | PERF-A133 | Reduce persistent full-attention KV and prompt-snapshot residency without perturbing batch-one decode. | Sixteen BF16 K/V caches, geometric growth, and no-MTP prompt snapshots at exact 131K | BF16 reserve rejected; snapshot mechanism retained | Metadata-only append-only snapshots pass exact rollback/overwrite invariants and are neutral in one direct pair (**19.685169420 -> 19.672600916 tok/s**). A final 131,072-slot BF16 reserve fails exact 32K after about 16 seconds: scheduler RSS is **18,225,056 KiB** before the request and final K/V adds 8 GiB against the approximately 25 GiB Metal working set. See PERF-FA145. |
-| PERF-A134 | Store long-context full-attention K/V as affine-Q8/G64 and consume it directly in fixed-memory prefill and split-history decode kernels. | Sixteen full-attention layers above the 8K stock-safe threshold; append-only cache; batch one; 24/4/256 GQA | Active | Final 131K storage is approximately **4.25 GiB** including scale/bias metadata instead of 8 GiB BF16. The retained A133 snapshot invariant avoids duplicate ownership; A130 supplies the fixed-memory prefill foundation and the previously qualified split-history design supplies the long-decode topology. |
+| PERF-A134 | Store long-context full-attention K/V as affine-Q8/G64 and consume it directly in fixed-memory prefill and split-history decode kernels. | Sixteen full-attention layers above the 8K stock-safe threshold; append-only cache; batch one; 24/4/256 GQA | Active; recovered implementation under integration audit | Final 131K storage is approximately **4.25 GiB** including scale/bias metadata instead of 8 GiB BF16. Recovered focused binaries pass Q8 prefill and `query=1, prefix=8191` split-decode parity, BF16 fallback parity, growth validation, and append/rollback replacement. Full engine cache migration, full-model behavior, and progressive/exact capacity remain unqualified. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
