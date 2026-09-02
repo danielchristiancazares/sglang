@@ -4098,3 +4098,43 @@ the stock full-attention mechanism a 32K or 131K solution.
 - Related commit or revert: signed `ee0bf40711` retains the kernel only above
   8,192 active tokens, preserving the canonical short path while exact 32K
   serving passes.
+
+## PERF-FA145 - Full 131K BF16 attention-cache reserve
+
+- Hypothesis: allocating each full-attention K/V cache at its final
+  131,072-token capacity on the first long chunk would remove geometric-growth
+  replacement lifetimes, and metadata-only append-only snapshots would remove
+  the remaining prompt-snapshot tensor owners, allowing A130 to scale from
+  exact 32K to exact 131K without changing cache precision.
+- Scope: the selected mixed 4.951-bpw Q5 target, A130 fixed-memory attention,
+  A131 on-demand embedding, all selected decode switches, sixteen BF16 K/V
+  pairs, one request, and real `context_length=max_total_tokens=131072`.
+- Attempted change: set `SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE=131072` and
+  `SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT=1`, then sent the exact literal-
+  ID `32768+16` capacity probe to a fresh server.
+- Benchmark evidence: the request failed after about 16 seconds with Metal
+  `kIOGPUCommandBufferCallbackErrorOutOfMemory`, substantially earlier than
+  A130's geometric BF16 cache, which completes the same request in
+  **373.179259 s**. A same-dylib short direct pair is neutral/slightly slower:
+  **19.685169420 -> 19.672600916 tok/s**, with canonical output in both arms.
+- Correctness evidence: the cache-growth policy passes aligned boundary and
+  invalid-input tests. Appending a generated suffix, rolling logical metadata
+  back, and overwriting the suffix preserves the complete prompt prefix and
+  replacement suffix exactly. All five A130 fixed-attention parity shapes
+  continue to pass with maximum absolute error at most `0.000244141`.
+- Failure mode: final BF16 K/V storage is 8 GiB. Scheduler RSS before the
+  request was 18,225,056 KiB (approximately 17.38 GiB), while MLX reports a
+  26,800,603,136-byte recommended working-set limit (approximately 25 GiB).
+  Eagerly making both resident exceeds the safe Metal allocation boundary
+  before prompt scratch or display/OS headroom.
+- Why not to retry unchanged: the representation's final live bytes alone
+  cross the current system limit; removing geometric copies cannot make that
+  final state fit. Raising the wired limit would require a privileged system
+  change and would consume unsafe unified-memory headroom on this 32 GiB
+  display machine.
+- Reopen only if: the model's resident footprint materially drops or a safely
+  qualified higher wired limit supplies at least the complete model plus 8 GiB
+  K/V and operating headroom. Otherwise use a compressed cache.
+- Related commit or revert: record-only A133 checkpoint; its metadata-only
+  snapshot mechanism is retained provisionally for PERF-A134's affine-Q8/G64
+  cache.

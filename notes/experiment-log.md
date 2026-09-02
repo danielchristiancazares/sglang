@@ -23946,3 +23946,87 @@ mean 13.929045  17.125658 446.051        39.730
   PERF-A133: exact 131K still needs reduction of the sixteen BF16 K/V caches
   and no-MTP prompt-snapshot lifetimes. Steady sampled serving, Responses/
   Codex `xhigh`, and a >=20 tok/s margin remain open.
+
+### 2026-09-01 22:30 PDT - A133 proves full BF16 cache residency exceeds the Metal limit
+
+- Main began at signed `0c0fd400a442df59f811655fb1679360f02f7974`,
+  107 commits ahead of `origin/main`, with an empty index. Daniel's three
+  user-owned working blobs remained exact at
+  `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`; no main source file was
+  replaced or staged.
+- Daniel disabled Spotlight with `sudo mdutil -a -i off`. A subsequent
+  `mdutil -as` reported `Indexing disabled` for `/`,
+  `/System/Volumes/Data`, and `/System/Volumes/Preboot`; the active
+  `mdworker_shared` wave drained before the capacity run. This is the first
+  long-capacity result after that host-contention source was removed.
+- A133 adds two opt-in native controls:
+  `SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE` accepts zero or a 64-aligned capacity
+  from 256 through 262,144, and
+  `SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT=1` snapshots only full-
+  attention logical offset/length after validating that the retained current
+  storage is append-only. Linear recurrent state snapshots remain unchanged.
+  Long requests above 8,192 tokens can reserve final cache capacity once,
+  avoiding geometric replacement allocations.
+- The strict C++20/O3 `-Wall -Wextra -Werror` focused run reports:
+
+  ```text
+  query_tokens=7 prefix_length=1 max_abs=0.000244141 non_finite=0
+  query_tokens=17 prefix_length=65 max_abs=3.05176e-05 non_finite=0
+  query_tokens=64 prefix_length=65 max_abs=3.33786e-05 non_finite=0
+  query_tokens=7 prefix_length=8191 max_abs=4.76837e-07 non_finite=0
+  query_tokens=1024 prefix_length=0 max_abs=0.000244141 non_finite=0
+  cache_growth_policy=pass rejected_invalid=1
+  append_only_prefix=exact replacement_suffix=exact
+  ```
+
+  The strict candidate dylib SHA-256 is
+  `5d6db7a7cda5cb874f0ddb9f58391bcd8f99b487b82d6bc7e3fa7288960c6e53`;
+  the focused test binary is
+  `2ae51fb7d51e0398086efdb7bf00e40e585722fbf34b72202eb3365447bf8889`;
+  and the hard-coded server dylib is
+  `f8584c596b54c36e8e1f4b2f9e7f02faa020fd9846686b709764911e2deac5b4`.
+  The candidate worktree's stale `native/build.sh` still selects
+  `.venv-mps` and failed before linking with `'mlx/array.h' file not found`;
+  rebuilding with the qualified `.venv` MLX include/library paths passed.
+- A short same-dylib adjacent screen changed only the snapshot switch. Control
+  reached **19.685169420 tok/s** in **6.502357042 s**; candidate reached
+  **19.672600916 tok/s** in **6.506511292 s**. Both returned canonical digest
+  `d0193f6d413b68c1` and last token 11406. This single pair is neutral/slightly
+  slower and qualifies the mechanism only as a residency primitive.
+- The decisive fresh server command was the A130 contract plus the two A133
+  controls:
+
+  ```text
+  /usr/bin/env -u SGLANG_RUST_SERVER -u SGLANG_RUST_BUILD_MODE -u SGLANG_MLX_MTP_DIR PYTHONPATH=/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 SGLANG_MLX_CLEAR_CACHE_STEPS=0 SGLANG_MLX_CACHE_LIMIT_GB=1 MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=1024 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS=1 SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1 SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION=1 SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE=131072 SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT=1 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 --served-model-name qwen3.8-27b-q5 --language-model-only --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --max-mamba-cache-size 5 --chunked-prefill-size 131072 --max-prefill-tokens 131072 --page-size 1 --disable-radix-cache --mlx-enable-sampling --sampling-defaults model --random-seed 42 --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --stream-interval 4 --scheduler-recv-interval 4 --watchdog-timeout 3600 --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments retained real 131,072 context/token pools, one request,
+  five Mamba slots, native sampling, both Qwen parsers, and language-only
+  metadata. Root/listener PID 17786 owned resource tracker 17789, scheduler
+  17790, and detokenizer 17791. Scheduler RSS before the request was about
+  18,225,056 KiB.
+- The exact command
+  `/Users/dcazares/.cache/sglang-qwen38/artifacts/sglang_context_probe 32768 16 127.0.0.1:30000`
+  reached Metal
+  `kIOGPUCommandBufferCallbackErrorOutOfMemory` about 16 seconds into the
+  request. The client received a malformed/truncated response after the server
+  crash. The crash handler removed the verified tree; all four PIDs were
+  absent, port 30000 was free, memory returned to 93%, throttled pages were
+  zero, and macOS reported no thermal or performance warning.
+- MLX had set its wired limit to 25.0 GB. `mx.device_info()` reports
+  `max_recommended_working_set_size=26800603136`,
+  `memory_size=34359738368`, and `max_buffer_length=20100448256` for the Apple
+  M1 Max; `sysctl iogpu.wired_limit_mb` is zero, selecting the default limit.
+  The scheduler's 18,225,056 KiB RSS (approximately 17.38 GiB) plus final 8
+  GiB BF16 K/V cannot fit within that boundary with safe OS/display headroom.
+  A privileged wired-
+  limit increase is therefore not the selected route.
+- PERF-A133 closes the unchanged full-reserve BF16 representation while
+  retaining its exact metadata-only snapshot mechanism. PERF-A134 now owns an
+  affine-Q8/G64 cache: payload is approximately 4 GiB at 131K and scale/bias
+  metadata approximately 0.25 GiB. It will consume that storage directly in
+  A130-derived fixed-memory prefill and split-history decode kernels, activate
+  only above the stock-safe 8K boundary, and then rerun progressive capacity,
+  sampled behavior, exact 131K, Responses/Codex `xhigh`, and >=20 tok/s gates.
