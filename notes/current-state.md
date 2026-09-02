@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-02
-00:42 PDT.
+00:55 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -202,6 +202,15 @@ pair **0.418530771 -> 0.453039271 ms** (**8.245152%**). Both preserve digest
 `d05378cc8066dc41`; neither reached the full-model gate. The next exact Q5
 candidate must change extraction cost, not only rearrange the same continuous
 bit windows.
+
+PERF-A141--A144 then close the remaining byte-neutral representation family
+on the same dominant shape. Low-nibble/high-plane extraction regresses
+**5.800641%**; sixteen-row and four-row unchanged-block interleaves regress
+**1.508948% / 0.515803%**; a combined weight plus raw-parameter stream
+regresses **3.662772%**. Every arm is bit-exact. A143's first 2.28% apparent
+win reverses across six samples per arm, so it receives no promotion credit.
+Further Q5 work must reduce actual bytes or remove arithmetic rather than
+repack the same stream.
 
 A128's 680 MiB duplicate parameter stream remains opt-in. A130 plus A131
 completes an independent exact `32768+16` server request at

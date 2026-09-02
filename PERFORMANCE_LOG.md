@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max affine-Q5 exact representation/layout follow-ups, production `K=17408, N=5120` micro | selected A100 continuous row stream | A141 nibble/high-plane **+5.800641%**; A142 16-row block layout **+1.508948%**; A143 four-row block layout **+0.515803%**; A144 combined weight/parameter stream **+3.662772%** | all four regress while preserving digest `d05378cc8066dc41`; A143's six-per-arm window is **0.432163523 / 0.434392635 ms** and wins only one pair | strict standalone C++/Metal candidate binaries; `regular|CANDIDATE 17408 5120 1000 10000`; PERF-A141--A144 | 2026-09-02 00:55 PDT |
 | M1 Max affine-Q5 lossless weight-window layouts, production `K=17408, N=5120` micro | selected A100 continuous 5-bit stream **0.435539514 ms** across six balanced controls | A139 four-row assembled windows **0.441254344 ms**; A140 row-local windows **0.453039271 ms** in its first matched arm | A139 regresses **0.005714830 ms / 1.312127%**; A140 regresses **0.034508500 ms / 8.245152%** against its adjacent **0.418530771 ms** control; all outputs remain exact | standalone strict C++/Metal benchmark, `regular|window 17408 5120 1000 10000`; PERF-A139/A140 | 2026-09-02 00:42 PDT |
 | M1 Max A137 selected mixed-Q5 actual-work decode, sampled direct `6237 / 32 warm / 256 timed` | selected short-history mean **19.667930618 tok/s** | five clean long-history samples mean **19.038932103 tok/s** | exact samples **19.049906088 / 19.052370326 / 19.013470487 / 19.046250807 / 19.032662806**; all share digest `9ec00ec01f8781e1` and last token 20; **0.961067897 tok/s / 5.047909%** improvement over current execution remains to 20 | final signed A137 dylib, selected mixed-Q5 environment, exact direct harness; PERF-A138 | 2026-09-02 00:31 PDT |
 | M1 Max A137 exact fast fused-Q4 sigmoid, sampled direct `128 / 32 warm / 128 timed` | precise-exp matched control **19.640965505 tok/s** | exact fast-exp correction **19.667930618 tok/s** | two independent five-pair windows improve **+0.140055% / +0.134527%**; aggregate **+0.026965113 tok/s / +0.137290%**; all 20 arms canonical; final committed-source smoke **19.729345617 tok/s**; mean gap **0.332069382 tok/s** | selected mixed-Q5 environment, same direct harness, strict final dylib; PERF-A137 | 2026-09-02 00:12 PDT |
@@ -185,6 +186,65 @@ tree throughput can be ranked for production.
 - Median: `32.953 TPS`; median wall time `7.769 s`.
 
 ## Deltas
+
+### 2026-09-02 00:55 PDT - PERF-A144 combined Q5 weight/parameter stream
+
+- Change: stored each unchanged 320-byte Q5 weight block beside its eight raw
+  BF16 scale/bias pairs. The exact kernel takes one combined parameter buffer
+  plus the activation, rather than separate weight, scale, and bias buffers.
+- Benchmark evidence: the first adjacent production-shape control/candidate
+  pair is **0.426560525 / 0.442184463 ms**, a
+  **0.015623938 ms / 3.662772%** regression.
+- Correctness evidence: deterministic small parity is bit-exact; both
+  production arms emit digest `d05378cc8066dc41` and first output `2.03125`.
+- Decision: reject A144. Padding each 320-byte weight block to 352 bytes and
+  changing its stride costs more than eliminating two kernel buffer streams.
+- Commit: no source retained; see PERF-FA155.
+
+### 2026-09-02 00:55 PDT - PERF-A143 four-row Q5 block interleave
+
+- Change: interleaved unchanged 320-byte K blocks across exactly the four
+  output rows owned by one SIMD group while retaining A100's five aligned
+  16-bit loads and exact unpack/FMA chain.
+- Benchmark evidence: six controls are **0.436174317, 0.431511263,
+  0.432978554, 0.435769900, 0.429650179, and 0.426896925 ms**, mean
+  **0.432163523 ms**. Six candidates are **0.426242704, 0.439474333,
+  0.436109267, 0.437530079, 0.432643296, and 0.434356133 ms**, mean
+  **0.434392635 ms**. The candidate regresses
+  **0.002229112 ms / 0.515803%** and wins only the first pair.
+- Correctness evidence: small parity is bit-exact; every production arm emits
+  digest `d05378cc8066dc41` and first output `2.03125`.
+- Decision: reject A143. Its isolated first-arm improvement does not repeat in
+  the balanced window; four-row locality is aggregate-slower than A100.
+- Commit: no source retained; see PERF-FA154.
+
+### 2026-09-02 00:55 PDT - PERF-A142 sixteen-row Q5 block interleave
+
+- Change: transposed only the physical weight-block order so all sixteen rows
+  owned by one threadgroup are contiguous for each 512-value K block. A100's
+  loads, unpack, arithmetic, and byte count remain unchanged.
+- Benchmark evidence: two order/reverse controls average **0.429063712 ms**;
+  candidates average **0.435538062 ms**, a
+  **0.006474350 ms / 1.508948%** regression.
+- Correctness evidence: small parity and both production arms are bit-exact
+  with digest `d05378cc8066dc41` and first output `2.03125`.
+- Decision: reject A142. Threadgroup-wide row-block locality makes the
+  per-SIMD traversal stride worse and does not improve the one-use weight path.
+- Commit: no source retained; see PERF-FA153.
+
+### 2026-09-02 00:55 PDT - PERF-A141 Q5 low-nibble/high-bit plane
+
+- Change: retained all five bits and the same ten bytes per sixteen codes, but
+  stored eight bytes of low nibbles plus one 16-bit high plane. The candidate
+  reconstructs each original integer before the unchanged sixteen FP32 FMAs.
+- Benchmark evidence: the first adjacent production-shape control/candidate
+  pair is **0.432100013 / 0.457164583 ms**, a
+  **0.025064570 ms / 5.800641%** regression.
+- Correctness evidence: deterministic small parity is bit-exact; both
+  production arms emit digest `d05378cc8066dc41` and first output `2.03125`.
+- Decision: reject A141. Per-value high-bit extraction costs more than the two
+  cross-window cases it removes from A100.
+- Commit: no source retained; see PERF-FA152.
 
 ### 2026-09-02 00:42 PDT - PERF-A140 row-local Q5 window layout
 
@@ -1146,6 +1206,10 @@ tree throughput can be ranked for production.
 | PERF-A138 | Establish and attribute the selected mixed-Q5 actual-work path after a 6,237-token history. | Final A137 direct engine, 32 warm plus 256 timed tokens, Metal shader counters | Retained diagnostic baseline | Five exact samples mean **19.038932103 tok/s**, leaving **0.961067897 tok/s / 5.047909%** over current execution. The trace maps **58,739 / 59,372** PCs and assigns **49.061847%** to Q5, **35.227%** to fused Q4, **6.051674%** to ordinary Q4, and **3.863774%** to SDPA. |
 | PERF-A139 | Preassemble each lane's continuous Q5 bits into two 32-bit windows and one 16-bit tail for four output rows. | Selected A100 production `K=17408, N=5120` affine-Q5 QMV micro | Runtime-correct and rejected | Six balanced controls/candidates regress **0.435539514 -> 0.441254344 ms**, **1.312127%**. Every output is exact; see PERF-FA150. |
 | PERF-A140 | Restrict the preassembled Q5 window layout and live weight state to one output row at a time. | Selected A100 production `K=17408, N=5120` affine-Q5 QMV micro | Runtime-correct and rejected | The first matched exact pair regresses **0.418530771 -> 0.453039271 ms**, **8.245152%**. The large loss rejects a repeated/full-model gate; see PERF-FA151. |
+| PERF-A141 | Store sixteen Q5 codes as low nibbles plus a high-bit plane while preserving ten bytes and reconstructing exact codes before each FMA. | Selected A100 production `K=17408, N=5120` affine-Q5 QMV micro | Runtime-correct and rejected | The exact adjacent pair regresses **0.432100013 -> 0.457164583 ms**, **5.800641%**; see PERF-FA152. |
+| PERF-A142 | Interleave unchanged Q5 K blocks across all sixteen output rows owned by one threadgroup. | Selected A100 production `K=17408, N=5120` affine-Q5 QMV micro | Runtime-correct and rejected | Order/reverse means regress **0.429063712 -> 0.435538062 ms**, **1.508948%**; see PERF-FA153. |
+| PERF-A143 | Interleave unchanged Q5 K blocks across the four output rows owned by one SIMD group. | Selected A100 production `K=17408, N=5120` affine-Q5 QMV micro | Runtime-correct and rejected | Six-per-arm means regress **0.432163523 -> 0.434392635 ms**, **0.515803%**, with only one candidate win; see PERF-FA154. |
+| PERF-A144 | Co-locate each unchanged Q5 block with its raw BF16 scale/bias pairs and consume one combined stream. | Selected A100 production `K=17408, N=5120` affine-Q5 QMV micro | Runtime-correct and rejected | The exact adjacent pair regresses **0.426560525 -> 0.442184463 ms**, **3.662772%**; see PERF-FA155. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
