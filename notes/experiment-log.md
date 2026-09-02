@@ -22597,3 +22597,93 @@ mean 13.929045  17.125658 446.051        39.730
   exact commands, closed paths, and continuation order. The selected result
   remains **19.241981332 tok/s** with **0.758018668 / 3.939400%** to the direct
   floor; exact 131K and Codex `xhigh` gates remain pending.
+
+### 2026-09-01 17:42 PDT - A114 first-boundary trace and precise-exp repair
+
+- Resumed from signed main HEAD `a29d05b45dd97ac33561d977dad141ffa1ef4db9`
+  (`docs: add Qwen3.8 Q5 performance handoff`), 85 commits ahead of
+  `origin/main`. The index remained empty. Daniel's three user-owned main
+  working-copy paths remained unchanged at blobs `0260ff7140`, `40e375e39c`,
+  and `bb42de39fb`.
+- The active candidate stayed isolated in detached worktree
+  `/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4` at base
+  `22408c50c4`. A temporary C++/Metal-only diagnostic exposed the fused gate,
+  up, sigmoid, SiLU, and final output arrays and compared them bitwise with
+  the selected separate MLX path for one real decode row at every target
+  layer. No Python was added.
+- The diagnostic command used the canonical direct environment with
+  `SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1`,
+  `SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_TRACE=1`, and trace artifact
+  `/Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a114_trace.dylib`.
+  Its SHA-256 is
+  `9e3f3a8c48fe363d8ba8617f579567c902cfbe2e6e8d14f613c2410a1046cf7e`;
+  the companion focused executable hash is
+  `acbb31033f90501583a99a95c93704a82af9177c5dc45068370345dbcf6531f3`.
+- Layers 0 through 61 match at every boundary. The first real mismatch is
+  layer 62, element 36. Gate and up remain bit-exact. Expected sigmoid is
+  BF16 `0x3a8b` (`0.00106048584`), while the fused `metal::exp` form produces
+  `0x3a8c` (`0.00106811523`). Expected/actual SiLU is `0xbbee`
+  (`-0.00726318359`) / `0xbbf0` (`-0.00732421875`); expected/actual final
+  output is `0x3c8e` (`0.0173339844`) / `0x3c8f` (`0.0174560547`).
+- Two attempted arithmetic-boundary repairs fail unchanged: volatile BF16
+  locals, then explicit BF16-to-volatile-`ushort`-to-BF16 round trips at every
+  boundary. Source inspection of installed MLX v0.32.2 shows precompiled
+  Metal kernels built with `-fno-fast-math`, custom kernels defaulting to
+  `CompileOptions{MathMode::Safe}`, and the existing exact recurrent SiLU
+  kernel using `metal::precise::exp`.
+- Changing only the A114 sigmoid helper from `metal::exp` to
+  `metal::precise::exp` makes gate, up, sigmoid, SiLU, and final output exact
+  for all 64 traced layers. All temporary trace surfaces and both unsuccessful
+  bit-materialization experiments were then removed. The clean candidate is
+  again exactly 302 added lines over three paths. `git diff --check` passes;
+  engine/header/test blobs are `a22c844a1cfd7616aef82c39ca4261928ded10e3`,
+  `512335f1ae677f48ee76a77d2f097bef720e71ce`, and
+  `b42ddac6a272e7db61282810bdcda8ba0664f4bd`.
+- The clean strict dylib was built with:
+
+  ```text
+  clang++ -std=c++20 -O3 -fPIC -shared -Wall -Wextra -Werror -isystem /Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/include -I/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native -L/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -Wl,-rpath,/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a114_q4_fused_swiglu_8x4_precise.dylib /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native/qwen38_c_api.cpp
+  ```
+
+  The known macOS 26.0 versus MLX 26.2 deployment warning is the only linker
+  warning. Clean artifact SHA-256 values are dylib
+  `ce3693e7a3c7e10c12fa7fad8d4a6de1ad114801342069def712bbdf931eb208`,
+  focused test
+  `1d93b05a3f69fcbb83202070a0c86797f0dede8ee1a105ef3fc2fb6b389083cb`,
+  and microbenchmark
+  `9dcb07560b177c5c920ddc3bede58479e5e659ee2a31f5e68d1980192d97ee9f`.
+- The exact focused command is:
+
+  ```text
+  /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 180s /Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a114_q4_fused_swiglu_8x4_precise
+  ```
+
+  It reports Q4 batch-one K/N `512/64`, `5120/128`, and `5120/17408`, then
+  fused SwiGLU `512/64` and `5120/17408`, all with `max_abs=0 mismatches=0`.
+- Precise production-shape commands are:
+
+  ```text
+  /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 180s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a114_q4_fused_swiglu_8x4_precise separate 5120 17408 1000 5000
+  /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 180s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a114_q4_fused_swiglu_8x4_precise fused 5120 17408 1000 5000
+  ```
+
+  Separate results are **0.603388567, 0.605122308 ms** (mean
+  **0.604255438**); fused results are **0.565522233, 0.562880642 ms** (mean
+  **0.564201438**). The reduction is **0.040054000 ms / 6.628659%**. Every
+  arm reports digest `8a9031349585365a` and first value `0.875`.
+- The clean canonical full-model command is:
+
+  ```text
+  /usr/bin/env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 240s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a114_q4_fused_swiglu_8x4_precise.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128
+  ```
+
+  It reports `seconds=6.612711833`, **19.356657788 tok/s**, canonical digest
+  `d0193f6d413b68c1`, and last token 11406. This is a correctness screen, not a
+  throughput qualification sample: `fileproviderd`, `mds_stores`, and fresh
+  `mdworker_shared` processes remained active.
+- Post-run safety checks found no model/benchmark process, no listener on port
+  30000, 95% free memory, zero throttled pages, and no thermal/performance
+  warning. Launchd-owned Metal compiler services and all indexing processes
+  were left untouched. The selected result remains **19.241981332 tok/s**;
+  wait for ordinary idle before a balanced five-pair and independent reversed
+  five-pair A114 qualification. A113 remains a separate later variable.

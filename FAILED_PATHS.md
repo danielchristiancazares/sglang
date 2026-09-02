@@ -3680,7 +3680,7 @@ option, or serving dispatch was added.
 - Related commit or revert: all candidates remain isolated outside `main`;
   signed A111 in `22408c50c4` remains selected.
 
-## PERF-FA132 - Current fused affine-Q4 gate/up/SwiGLU arithmetic
+## PERF-FA132 - Fast-exponent fused affine-Q4 gate/up/SwiGLU arithmetic
 
 - Hypothesis: one batch-one Metal dispatch can consume both Q4 gate/up
   matrices and emit the BF16 SwiGLU product while eliminating intermediate
@@ -3690,22 +3690,31 @@ option, or serving dispatch was added.
   one sampled direct `128 / 32 warm / 128 timed` screen.
 - Attempted change: one 8-SIMD by four-paired-row kernel retains MLX's Q4
   load/dot expression and explicitly materializes the gate, up, SiLU, and
-  final product BF16 rounding points. The route is opt-in through
+  final product BF16 rounding points. The rejected form evaluates sigmoid
+  with `metal::exp`; the route is opt-in through
   `SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU`.
 - Benchmark evidence: separate/fused production-shape means are
   **0.598734317 / 0.557800892 ms**, a **6.837%** isolated reduction. The
   full model reaches **19.406869588 tok/s** during active host indexing.
 - Correctness evidence: focused synthetic tests report zero mismatches at all
   selected shapes. The real model changes digest/last token from
-  `d0193f6d413b68c1` / 11406 to `f2a59800c8d89f75` / 19.
-- Failure mode: the synthetic fixture misses a real gate/up/activation value
-  that crosses a BF16 boundary after the fused compiler schedule. The first
-  divergent boundary remains unlocalized.
+  `d0193f6d413b68c1` / 11406 to `f2a59800c8d89f75` / 19. A temporary
+  real-weight/real-hidden trace localizes the first mismatch to layer 62,
+  element 36: gate and up are exact, while sigmoid rounds to BF16 `0x3a8c`
+  instead of MLX's `0x3a8b`. The difference propagates through SiLU
+  (`0xbbf0` versus `0xbbee`) and the final product (`0x3c8f` versus
+  `0x3c8e`).
+- Failure mode: the separate MLX kernels use safe/precise exponential
+  arithmetic. `metal::exp` inside this fused custom kernel changes one real
+  sigmoid rounding boundary. Volatile BF16 locals and explicit
+  BF16-to-`ushort`-to-BF16 round trips do not repair it.
 - Why not to retry unchanged: the full-model fixed-work trajectory is part of
-  the performance contract, and the current source fails it.
-- Reopen only if: an actual-weight and real-hidden C++ fixture identifies and
-  repairs the first gate, up, sigmoid, first-multiply, or second-multiply
-  mismatch while preserving the isolated speed margin.
-- Related commit or revert: candidate remains outside `main` in detached
-  worktree `perf-q4-packs4`; `HANDOFF.md` records exact source/artifact hashes
-  and commands.
+  the performance contract, and the fast-exponent source fails it.
+- Reopen only if: a future Metal/MLX compiler change makes `metal::exp`
+  demonstrably bit-exact to the safe separate path at every real boundary.
+  Replacing it with `metal::precise::exp` is materially different evidence,
+  not a retry of this failed arm.
+- Related commit or revert: the corrected precise-exp A114 candidate remains
+  outside `main` in detached worktree `perf-q4-packs4`. Its 64-layer trace,
+  focused parity, and canonical full-model screen pass; paired throughput
+  qualification remains pending.
