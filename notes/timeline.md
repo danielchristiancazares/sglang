@@ -1040,6 +1040,26 @@ code changes, or process state matter.
   **0.758018668 tok/s / 3.939400%**; exact 131K serving and Codex `xhigh`
   remain gated on clearing 20 with margin.
 
+### Fixed-memory native attention converts the mixed-Q5 exact 32K crash into a pass
+
+- On-demand token-embedding dequantization first removes **1.702 GiB** of eager
+  BF16 duplication. A follow-up contract repair admits the native sampler's
+  valid MLX `uint32` feedback alongside prompt `int32`, with both forms
+  bit-exact against gather from the complete dequantized table.
+- A native Q8/C64 online-softmax Metal kernel consumes the existing contiguous
+  BF16 GQA cache with fixed threadgroup storage. Five focused shapes, including
+  prefix 8,191 and a 1,024-token query chunk, stay within maximum absolute
+  error `0.000244141` and contain no non-finite values.
+- Always-on dispatch changes the seeded short-prompt trajectory, so the
+  selected policy keeps stock MLX SDPA through 8,192 active tokens. It restores
+  the canonical digest at **19.744722973 tok/s** and uses fixed-memory
+  attention only in the unsafe long-history region.
+- Independent clean exact requests complete at **107.023 prompt tok/s** for
+  `8192+16` and **87.807667 prompt tok/s** for `32768+16`. The latter takes
+  **373.179259 s** and remains healthy where A131 plus stock SDPA fails near
+  180 seconds. Exact 131K now moves to persistent BF16 KV and prompt-snapshot
+  residency; the decode floor and Codex `xhigh` remain open.
+
 ### 03:07–06:18 — DSpark-v2 crosses 150 tok/s and becomes the Windows default
 
 - The trained Qwen3.8-27B DSpark-v2 draft was integrated with online-FP8

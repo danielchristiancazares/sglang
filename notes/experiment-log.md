@@ -23842,3 +23842,108 @@ mean 13.929045  17.125658 446.051        39.730
   (`perf(mlx): dequantize embedding rows on demand`) contains only A131. The
   working blobs remain byte-for-byte unchanged, the index is empty, and main
   is 103 commits ahead of `origin/main` before this evidence update.
+
+### 2026-09-01 22:09 PDT - A130 fixed-memory attention completes exact 32K
+
+- Main began at signed `b0fef5809161da19053806d4fc2250d4887af96e`,
+  104 commits ahead of `origin/main`, with an empty index and Daniel's three
+  user-owned working blobs unchanged at
+  `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. No listener or model/compiler
+  workload was active. Spotlight and several `mdworker_shared` processes were
+  active throughout, so latency is labeled externally contended and is not a
+  throughput promotion window.
+- The first combined full-model smoke exposed an A131 contract bug before
+  attention. Prompt IDs enter `Engine::forward_hidden` as MLX `int32`, while
+  native sampling returns the first scheduled token as MLX `uint32`. A131 had
+  narrowed the gathered embedding helper to only `int32`; both the retained
+  A131 artifact and the new candidate therefore failed the second forward with
+  `invalid quantized embedding inputs`. The repair admits exactly `int32` and
+  `uint32`, preserving floating-index rejection. The strict focused test
+  reports:
+
+  ```text
+  selected_rows=6 signed_bit_mismatches=0 unsigned_bit_mismatches=0
+  ```
+
+  Its SHA-256 is
+  `cc86054b3f7cc0cf0549bed72af52d31443e2a366a883bf406528d64510b10b4`.
+  Same-dylib fixed-attention-disabled direct execution reaches
+  **19.699758875 tok/s**, digest `d0193f6d413b68c1`, and last token 11406.
+  Signed commit `e7643c904d9797b68bedb301ced3ec0f5c9050f2`
+  (`fix(mlx): accept sampled embedding indices`) contains only this repair and
+  its focused coverage.
+- A130 integrates a contiguous-cache BF16 Q8/C64 Metal online-softmax kernel
+  at `Engine::full_attn`. Its exact admitted geometry is batch one, 24 query
+  heads, four KV heads, head dimension 256, query length through 1,024, and a
+  64-token-aligned cache capacity. Threadgroups contain 128 threads and fixed
+  shared storage for eight query rows, 64 scores per row, online max/sum, and
+  256 output dimensions. It reads the existing geometrically grown cache and
+  allocates no history-sized score tensor.
+- Five final focused parity cases pass with no non-finite output:
+
+  ```text
+  query_tokens=7    prefix_length=1    max_abs=0.000244141
+  query_tokens=17   prefix_length=65   max_abs=0.0000305176
+  query_tokens=64   prefix_length=65   max_abs=0.0000333786
+  query_tokens=7    prefix_length=8191 max_abs=0.000000476837
+  query_tokens=1024 prefix_length=0    max_abs=0.000244141
+  ```
+
+  C++20/O3 `-Wall -Wextra -Werror` focused-test and dylib builds pass with
+  only the established macOS 26.0 / MLX 26.2 linker warning. Final provenance
+  is:
+
+  ```text
+  32603569e6ffc329b23f2338f3bbf570c9688117  qwen38_engine.cpp Git blob
+  09c7e8ad884af46f8a56fe7993290b5399ad3ce0  qwen38_engine.h Git blob
+  67c0a4e8b95edfd27f5f7b83bb335aada2419162  focused test Git blob
+  dddc855b5d568ac3ebf821120497c2f4731c63932cc51530c2c704d28523f0d2  strict candidate dylib
+  d1b0e9b5e469375c3726c43c856df91afc32b513c52b4e5028c36f9bd7df8b45  hard-coded server dylib
+  659b953c270e05724bc9c567fc8222319b23f27335965ac84709698c263b0600  focused test binary
+  ```
+
+- Unconditional use is not behavior-compatible. With the exact selected
+  direct environment and `128 / 32 warm / 128 timed`, always-on attention
+  reaches **19.667817477 tok/s** but changes the digest to
+  `b49d27b0ba43fd0c` and last token to 125363. The same repaired dylib with
+  only fixed attention disabled reaches **19.699758875** and restores the
+  canonical digest/last token. The selected dispatch therefore retains stock
+  SDPA through 8,192 active tokens and uses native fixed-memory attention only
+  above that already-qualified safe range. It reaches **19.744722973 tok/s**,
+  digest `d0193f6d413b68c1`, and last token 11406. PERF-FA144 closes the unchanged
+  always-on policy.
+- The exact server command for both capacity launches was:
+
+  ```text
+  /usr/bin/env -u SGLANG_RUST_SERVER -u SGLANG_RUST_BUILD_MODE -u SGLANG_MLX_MTP_DIR PYTHONPATH=/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 SGLANG_MLX_CLEAR_CACHE_STEPS=0 SGLANG_MLX_CACHE_LIMIT_GB=1 MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=1024 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS=1 SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1 SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION=1 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 --served-model-name qwen3.8-27b-q5 --language-model-only --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --max-mamba-cache-size 5 --chunked-prefill-size 131072 --max-prefill-tokens 131072 --page-size 1 --disable-radix-cache --mlx-enable-sampling --sampling-defaults model --random-seed 42 --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --stream-interval 4 --scheduler-recv-interval 4 --watchdog-timeout 3600 --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Both resolved real `context_length=max_total_tokens=131072`, outer prefill
+  limits 131,072, one request, five Mamba slots, native sampling, both Qwen
+  parsers, and language-only metadata with image/audio understanding false.
+- Root/listener PID 16509 owned resource tracker 16512, scheduler 16513, and
+  detokenizer 16514. The exact uncached command
+  `sglang_context_probe 8192 16 127.0.0.1:30000` returned HTTP 200 in
+  **76.544058 s**, **107.023331 prompt tok/s**, exact token counts,
+  `finish_reason=length`, zero retractions, and zero cached tokens. The server
+  remained healthy. It was then intentionally stopped; all four PIDs and port
+  30000 cleared and memory returned to baseline.
+- An independent identical restart used root/listener 16637, resource tracker
+  16640, scheduler 16641, and detokenizer 16642. The exact uncached command
+  `sglang_context_probe 32768 16 127.0.0.1:30000` returned HTTP 200 in
+  **373.179259 s**, **87.807667 prompt tok/s**, exact token counts,
+  `finish_reason=length`, zero retractions, and zero cached tokens. This is the
+  first mixed-Q5 native engine configuration to complete that request; A131
+  plus stock SDPA fails near 180 seconds. Peak observed wired memory was about
+  **25.41 GiB**, free memory about **637 MiB**, throttled pages remained zero,
+  and macOS reported no thermal or performance warning. Health passed after
+  completion. The verified tree then stopped and memory returned to baseline.
+- Signed commit `ee0bf40711a25a59955eeaf52ead6d21d4bc7a72`
+  (`perf(mlx): bound long-prefill attention memory`) contains only A130 and
+  its focused C++ test. Main is 106 commits ahead of `origin/main`; its index
+  is empty and Daniel's three working blobs remain exact. The next owner is
+  PERF-A133: exact 131K still needs reduction of the sixteen BF16 K/V caches
+  and no-MTP prompt-snapshot lifetimes. Steady sampled serving, Responses/
+  Codex `xhigh`, and a >=20 tok/s margin remain open.

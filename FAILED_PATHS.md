@@ -4069,3 +4069,32 @@ the exact control under a materially smaller resident model: the shifted
 boundary proves that embedding residency mattered, while the remaining failure
 confirms that allocator capping plus model-residency reduction does not make
 the stock full-attention mechanism a 32K or 131K solution.
+
+## PERF-FA144 - Always-on fixed-memory attention for short prompts
+
+- Hypothesis: the native online-softmax kernel could replace stock MLX SDPA
+  for every multi-token prefill while preserving the deterministic complete-
+  model trajectory.
+- Scope: the selected mixed-Q5 target, A128 and A131 switches, native sampling
+  seed 42, batch one, 128 prompt tokens, 32 warm tokens, and 128 timed tokens.
+- Attempted change: enabled fixed-memory attention for all multi-token chunks,
+  including the initial 128-token prompt.
+- Benchmark evidence: decode remains healthy at **19.667817477 tok/s**, but
+  the token digest changes from canonical `d0193f6d413b68c1` to
+  `b49d27b0ba43fd0c`; the last token changes from 11406 to 125363. Disabling
+  only fixed attention in the same repaired dylib restores
+  **19.699758875 tok/s**, the canonical digest, and last token 11406.
+- Correctness evidence: isolated output differences are small—five focused
+  shapes stay within maximum absolute error `0.000244141`—but they are enough
+  to cross a sampled decision boundary in the complete model.
+- Failure mode: the online reduction order is numerically equivalent within
+  BF16 tolerance but not bit-identical to stock SDPA, so unconditional use
+  changes ordinary deterministic behavior.
+- Why not to retry unchanged: short-prompt stock SDPA is already safe and the
+  model-level golden control rejects this policy even though tensor parity is
+  tight.
+- Reopen only if: the native reduction becomes bit-identical to MLX SDPA or a
+  new golden contract explicitly qualifies the changed sampled trajectory.
+- Related commit or revert: signed `ee0bf40711` retains the kernel only above
+  8,192 active tokens, preserving the canonical short path while exact 32K
+  serving passes.
