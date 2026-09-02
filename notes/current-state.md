@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-17:42 PDT.
+17:56 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -172,12 +172,13 @@ experiment-log entries.
 The current speed target is the immutable 4.951-bpw mixed-Q5 checkpoint at
 revision `596b8067f7cf429007bb668874ffee7e917c8340`, with the A100 aligned-word
 affine-Q5 batch-one Metal kernel and the stock-exact A111 affine-Q4 batch-one
-kernel explicitly enabled. Two independent balanced five-versus-five windows
-give a selected A100+A111 aggregate mean of **19.241981332 tok/s** on sampled
-direct `128 / 32 warm / 128 timed`, with digest `d0193f6d413b68c1` and last
-token 11406. Paired A100-only is **19.113936088 tok/s**, so A111 contributes
-**+0.128045244 / +0.669905%**. The direct gap is **0.758018668 tok/s /
-3.939400%**. The generic mixed target reaches **18.121698566 tok/s**.
+kernel explicitly enabled, plus A114's precise fused Q4 gate/up/SwiGLU route.
+Two independent A114 five-pair windows give a selected aggregate mean of
+**19.268407916 tok/s** on sampled direct `128 / 32 warm / 128 timed`, with
+digest `d0193f6d413b68c1` and last token 11406. Matched A100+A111 control is
+**19.228720305 tok/s**, so A114 contributes **+0.039687612 / +0.206398%**.
+The direct gap is **0.731592084 tok/s / 3.796848%**. The generic mixed target
+reaches **18.121698566 tok/s**.
 
 The fresh-session candidate matrix is resolved through A111. A100 is promoted:
 five aligned 16-bit loads reconstruct the same three bit windows and retain the
@@ -198,7 +199,7 @@ shape matrix; both are closed. Exact 131K serving, sampled behavior, and Codex
 `xhigh` qualification follow only after a direct candidate clears 20 with
 margin.
 
-A114 is the current exact candidate. It fuses each batch-one affine-Q4 gate/up
+A114 is qualified and retained. It fuses each batch-one affine-Q4 gate/up
 pair and the SwiGLU chain into one 8-SIMD/four-paired-row Metal dispatch. A
 temporary real-weight/real-hidden trace localized the original trajectory
 failure to layer 62, element 36: gate and up were exact, but `metal::exp`
@@ -207,12 +208,14 @@ Volatile locals and explicit BF16 bit round trips did not change it. Replacing
 only that operation with `metal::precise::exp` makes gate, up, sigmoid, SiLU,
 and final output exact across all 64 traced layers and restores the canonical
 full-model digest/last token. The corrected production-shape microbenchmark
-moves **0.604255438 -> 0.564201438 ms** (**-6.628659%**). One full-model
-correctness screen under continuing Spotlight/FileProvider activity reaches
-**19.356657788 tok/s**; it is not a qualification result. Balanced and
-independent reversed idle-host windows remain due before promotion. The
-selected result and direct gap therefore remain **19.241981332 tok/s** and
-**0.758018668 tok/s / 3.939400%**.
+moves **0.604255438 -> 0.564201438 ms** (**-6.628659%**). Forward and reversed
+five-pair windows improve **19.236012324 -> 19.264036375** and
+**19.221428286 -> 19.272779458 tok/s**; all 20 outputs are canonical. A new
+Q4 fixture constructs the failing gate value `-6.84375`: the precise kernel
+matches MLX in all 32 rows while the preserved fast-exp artifact fails all 32.
+The selected result and direct gap are now **19.268407916 tok/s** and
+**0.731592084 tok/s / 3.796848%**. Exact 131K serving and Codex `xhigh` stay
+deferred until the direct lane clears 20 with margin.
 
 The requested Q5 lane now serves through a provenance-pinned derived artifact.
 Bartowski's immutable `Qwen3.8-27B-Q5_K_S.gguf` source is pinned at revision

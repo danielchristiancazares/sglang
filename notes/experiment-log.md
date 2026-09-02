@@ -22686,3 +22686,84 @@ mean 13.929045  17.125658 446.051        39.730
   were left untouched. The selected result remains **19.241981332 tok/s**;
   wait for ordinary idle before a balanced five-pair and independent reversed
   five-pair A114 qualification. A113 remains a separate later variable.
+
+### 2026-09-01 17:59 PDT - A114 qualifies in two paired windows and is promoted
+
+- Pre-window state had no benchmark/server/compiler workload and no listener
+  on port 30000. A two-second `top` stability sample reached 98.13% idle;
+  memory was 95% free with zero throttled pages, AC power used `powermode 2`,
+  and `pmset -g therm` reported no thermal or performance warning. Fresh
+  Spotlight workers were present but near idle. Each arm used the corrected
+  A114 dylib and changed only
+  `SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=0/1`.
+- The first control/fused five-pair window reports:
+
+  ```text
+  pair  control       fused
+  1     19.324730384  19.238353460
+  2     19.251111098  19.252900231
+  3     19.192408442  19.305214020
+  4     19.209043376  19.234817304
+  5     19.202768320  19.288896860
+  mean  19.236012324  19.264036375
+  ```
+
+  Candidate movement is **+0.028024051 tok/s / +0.145685%**. All ten runs
+  produced 128 timed tokens, digest `d0193f6d413b68c1`, and last token 11406.
+- After a 60-second cooldown, the independent reversed fused/control window
+  began from 97.13% idle and normal thermals:
+
+  ```text
+  pair  fused         control
+  1     19.289244945  19.245002515
+  2     19.224734784  19.212625936
+  3     19.296968595  19.183495840
+  4     19.256385706  19.211986477
+  5     19.296563258  19.254030660
+  mean  19.272779458  19.221428286
+  ```
+
+  Candidate movement is **+0.051351172 tok/s / +0.267156%**. All ten runs
+  are canonical. Across both windows, control/fused means are
+  **19.228720305 / 19.268407916 tok/s**, a repeatable
+  **+0.039687612 / +0.206398%** win. This leaves
+  **0.731592084 tok/s / 3.796848%** to the direct floor.
+- The original synthetic test did not exercise the fast-exp defect. A new
+  C++ fixture now uses zero Q4 scales, BF16 gate bias `-6.84375`, unit up bias,
+  and one unit activation to construct the exact problematic gate value
+  through the real Q4 reduction. The strict precise-linked executable reports:
+
+  ```text
+  Q4 fused SwiGLU sigmoid boundary gate=-6.84375 expected=-0.00726318 actual=-0.00726318 mismatches=0
+  ```
+
+  The same test linked against the preserved fast-exp artifact exits 1 and
+  reports `actual=-0.00732422 mismatches=32`. This negative control proves the
+  regression test would catch the rejected arithmetic. Precise test artifact
+  SHA-256 is
+  `dcbae745f0945d282565fb305750512968733dccf0876c000b0891ab78d08f47`;
+  fast negative-control test SHA-256 is
+  `75d918ac6937bcd042222fd838c1f67af102b04cf270bacb2aaaa49d7e5a57cf`.
+- Final promoted blobs are engine
+  `a22c844a1cfd7616aef82c39ca4261928ded10e3`, header
+  `512335f1ae677f48ee76a77d2f097bef720e71ce`, and focused test
+  `a2137fa5f148c2d285ae68bd4852776049ed5aab`. `git diff --check`, strict
+  C++20/O3 warnings-as-errors compilation, focused exact parity, the boundary
+  negative control, canonical full-model screening, and both qualification
+  windows pass. Installed `clang-format --dry-run --Werror` flags thousands
+  of pre-existing whole-file style differences under this checkout's current
+  configuration, so it was not used to rewrite unrelated code.
+- The code blobs were inserted directly into the main index; Daniel's
+  overlapping engine/header working-copy hashes remained exactly
+  `0260ff7140` and `40e375e39c`, and his unrelated small-batch test remained
+  `bb42de39fb`. Signed commit
+  `ca524c3282dcfd282567e4b063c33325e4489518`
+  (`perf(mlx): fuse exact Q4 SwiGLU decode`) contains only the engine, header,
+  and focused Q4 test. Its EDDSA signature verifies good.
+- Post-window and post-commit checks found no benchmark/server process, no
+  port-30000 listener, 95% free memory, zero throttled pages, and normal
+  thermals. FileProvider reached 4.5% in one post-window snapshot but the
+  two-second aggregate was 97.60% idle; all system processes were left
+  untouched. A114 is selected. Continue with isolated A113 qualification and
+  a fresh selected-path profile; exact 131K and Codex `xhigh` remain deferred
+  until direct decode clears 20 with margin.
