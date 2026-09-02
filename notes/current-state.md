@@ -1,7 +1,7 @@
 # Current state
 
-**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-22:30 PDT.
+**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-02
+00:13 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -170,26 +170,27 @@ experiment-log entries.
 ## Active Apple handoff
 
 The current speed target is the immutable 4.951-bpw mixed-Q5 checkpoint at
-revision `596b8067f7cf429007bb668874ffee7e917c8340`, with the A100 aligned-word
-affine-Q5 batch-one Metal kernel and the stock-exact A111 affine-Q4 batch-one
-kernel explicitly enabled, A114's precise fused Q4 gate/up/SwiGLU route, and
-A113's redundant token-evaluation removal, plus A117's lane-parallel precise
-fused epilogue. A128 then combines each fused Q4 MLP pair's unchanged gate/up
-scale/bias bits into two aligned four-row decode bundles. Two independent
-A128 five-pair windows give a committed opt-in aggregate mean of
-**19.625370975 tok/s** on sampled direct `128 / 32 warm / 128 timed`, with
-digest `d0193f6d413b68c1` and last token 11406. Matched A117 control is
-**19.446907510 tok/s**, so A128 contributes
-**+0.178463465 / +0.917696%**. The direct gap is now
-**0.374629025 tok/s / 1.908902%**. The generic mixed target reaches
-**18.121698566 tok/s**, making the cumulative candidate gain
-**+1.503672409 / +8.297635%**. A128 remains opt-in. Its 680 MiB duplicate
-parameter stream now passes a real sampled `8192+16` SGLang request only with
-the existing one-GiB MLX recycled-buffer cap and 1,024-token native internal
-prefill chunks: **108.664 prompt tok/s**, **75.388639 s TTFT**, and exact token
-counts. Uncapped 2,048- and 1,024-token server arms both fail with Metal OOM,
-although the latter passes in the direct engine. Exact 131K, steady sampled
-serving, and Codex `xhigh` qualification remain pending.
+revision `596b8067f7cf429007bb668874ffee7e917c8340`. The selected direct path
+uses A100 aligned-word affine-Q5, stock-exact A111 affine-Q4, A114/A117 fused
+Q4 gate/up/SwiGLU with lane-parallel epilogues, A113's redundant token-
+evaluation removal, A128's aligned raw parameter bundles, A130 fixed-memory
+long-prefill attention, A131 on-demand embedding, and now A137's exact fast
+sigmoid. A137's two independent five-pair direct windows improve matched
+precise-exp control **19.640965505 -> 19.667930618 tok/s**, a
+**+0.026965113 / +0.137290%** gain. Every arm retains digest
+`d0193f6d413b68c1`, last token 11406, and exact length; the strict final-source
+smoke reaches **19.729345617 tok/s**. The current qualified mean remains
+**0.332069382 tok/s / 1.660347%** below the requested floor.
+
+A128's 680 MiB duplicate parameter stream remains opt-in. A130 plus A131
+completes an independent exact `32768+16` server request at
+**87.807667 prompt tok/s / 373.179259 s**, but final BF16 K/V cannot fit at
+131K. A134 proves that a final approximately 4.25 GiB affine-Q8/G64 K/V
+allocation fits; its current long-history composition reaches only
+**3.515167775 tok/s** and is rejected for promotion. Exact served 131K,
+steady sampled serving, and Responses/Codex `xhigh` qualification remain
+pending behind a faster compressed-cache design and a direct result above
+20 tok/s with margin.
 
 The fresh-session candidate matrix is resolved through A111. A100 is promoted:
 five aligned 16-bit loads reconstruct the same three bit windows and retain the
@@ -280,6 +281,17 @@ Metal insufficient memory after about 66 seconds. Startup advertises the real
 131,072-token context/admission surface and language-only metadata; the stock
 shape-growing BF16 KV plus dense-SDPA prefill path is not a capacity solution.
 
+A137 is qualified and retained in signed `24d745ff38`. The shared fused-Q4
+sigmoid helper now uses fast Metal exp and directly supplies precise BF16
+sigmoid bits `0x3a8b` for input `0xc0db` (`-6.84375`), the sole mismatch found
+by an exhaustive 65,536-pattern comparison. Corrected sigmoid and SiLU digests
+match precise evaluation over the complete BF16 domain. The production fused
+kernel also matches the separate QMV plus MLX SiLU path for all 65,280 finite
+input patterns. Two independent direct windows improve
+**19.640965505 -> 19.667930618 tok/s** (**+0.137290%**) with every output
+canonical. Keeping precise exp as a conditional fallback regresses the fused
+micro by **0.200153%** and is closed by PERF-FA149.
+
 PERF-A130 is now the selected long-prefill mechanism behind
 `SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION=1`. Its Q8/C64 native Metal
 online-softmax path starts only above 8,192 active tokens, retaining canonical
@@ -313,12 +325,14 @@ However, eagerly reserving all 131,072 BF16 slots makes the exact `32768+16`
 server probe fail after about 16 seconds. Scheduler RSS is 18,225,056 KiB
 (approximately 17.38 GiB) before the request; adding the final 8 GiB BF16 K/V
 cache exceeds MLX's approximately 25 GiB recommended Metal working set before
-safe OS/display headroom. That unchanged
-representation is closed by PERF-FA145. PERF-A134 is active: affine-Q8/G64
-K/V reduces final storage to approximately 4.25 GiB, retains the append-only
-snapshot invariant, and will use native fixed-memory prefill plus split-
-history decode. Exact 131K, steady sampled serving, Responses/Codex `xhigh`,
-and a decode result above 20 tok/s with margin remain open gates.
+safe OS/display headroom. That unchanged representation is closed by
+PERF-FA145. A134's affine-Q8/G64 representation reduces final storage to
+approximately 4.25 GiB and its complete 131,072-slot direct allocation fits,
+but `8193 / 1 warm / 8 timed` reaches only **3.515167775 tok/s**. Fixed split
+counts from one through 32 do not repair it. Preserve the capacity
+infrastructure, but do not promote the current Q8 composition; exact 131K,
+steady sampled serving, Responses/Codex `xhigh`, and decode above 20 tok/s
+with margin remain open gates.
 
 A118 and A119 are closed in their measured forms. Replacing A117's fused-Q4
 packed-word reads with one explicit `packed_ushort4` transaction is exact but
