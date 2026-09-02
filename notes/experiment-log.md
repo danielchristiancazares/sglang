@@ -24127,3 +24127,47 @@ mean 13.929045  17.125658 446.051        39.730
   the 128 MiB transfer at **-1.361225%**. The next A134 source axis is an
   explicit one-to-32 split-count control followed by a cache-update composition
   benchmark.
+
+### 2026-09-01 23:46 PDT - A134 full reserve fits; split and command-buffer axes close
+
+- Main remained at signed `a62e030699`, 110 commits ahead of `origin/main`,
+  with an empty index. Daniel's three user-owned working blobs remained exact
+  at `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. No SGLang listener, model
+  process, or compiler workload overlapped the sequential Metal runs.
+- A direct A134 engine run changed the cache reserve from 16,384 to the final
+  131,072 slots while retaining cache bits eight, append-only snapshots,
+  1,024-token internal chunks, the selected mixed-Q5 controls, and strict
+  rebuilt dylib. Exact `8193 / 1 warm / 8 timed` completed in
+  **2.275851542 s / 3.515167775 tok/s**, digest prefix `7acf`, and last token
+  1643. This proves the complete approximately 4.25 GiB affine-Q8/G64 cache
+  allocation fits the direct engine. It does not establish an exact served
+  131K request, and its decode rate remains ineligible.
+- A temporary `SGLANG_MLX_NATIVE_Q8_ATTN_KEY_SPLITS` control admitted exactly
+  1, 2, 4, 8, 16, or 32. The isolated command shape was
+  `bench_qwen38_a135_q8_splits ACTIVE_TOKENS CACHE_CAPACITY ITERATIONS`.
+  At 8,192/16,384/100, the attention results for 1/2/4/8/16/32/auto were
+  **7.4532 / 3.8310 / 2.0462 / 1.1594 / 1.2400 / 2.1842 / 2.0348 ms**. At
+  8,192/131,072/30, fixed 8/16/32/auto were
+  **1.4518 / 1.3758 / 2.2563 / 2.2434 ms**; after-append results varied
+  **1.536 / 1.190 / 2.087 / 2.088 ms**. At 32,768/131,072/30, fixed
+  8/16/32/auto were **3.9262 / 2.2349 / 2.3279 / 2.2791 ms**. Automatic
+  selection is already competitive at the larger history and fixed topology
+  does not repair the integrated deficit.
+- Removed the temporary split control. A negative source search finds no
+  `SGLANG_MLX_NATIVE_Q8_ATTN_KEY_SPLITS`, and the restored candidate engine
+  hash is `cfe798131b88e37de331bc7706d2e173f221e260`. No split source will be
+  committed.
+- Two final configuration-only short screens kept canonical digest
+  `d0193f6d413b68c1`, last token 11406, exact 128 timed tokens, and exit zero.
+  Changing `MLX_MAX_OPS_PER_BUFFER=100 -> 50` reached
+  **19.529132775 tok/s**; changing `MLX_MAX_MB_PER_BUFFER=256 -> 512` at 100
+  operations reached **19.652952905 tok/s**. Against the adjacent selected
+  controls' **19.690086676 tok/s** mean, these are **-0.817436%** and
+  **-0.188591%**. PERF-FA148 closes further command-buffer tuning until source
+  composition changes.
+- PERF-A134 remains useful only as capacity infrastructure. The next source
+  candidate returns to the measured decode owner: exhaustively characterize
+  the BF16-domain difference between selected precise-exp and faster-exp
+  sigmoid/SwiGLU evaluation before attempting a bit-exact fused-Q4 shader.

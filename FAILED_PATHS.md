@@ -4165,3 +4165,63 @@ the stock full-attention mechanism a 32K or 131K solution.
   identifies a new submission boundary specifically addressed by 128 MiB.
 - Related commit or revert: record-only PERF-FA146 checkpoint; no source
   changed.
+
+## PERF-FA147 - Fixed split count for affine-Q8/G64 cache attention
+
+- Hypothesis: A134's automatic key-split count underutilizes the M1 Max at
+  batch-one decode, so a fixed split topology would remove enough per-layer
+  attention cost to repair its long-history full-model regression.
+- Scope: the A134 affine-Q8/G64 fixed-memory attention shader, 24 query heads,
+  four KV heads, dimension 256, 8,192 or 32,768 active tokens, 16,384 or
+  131,072 allocated cache slots, and one through 32 key splits.
+- Attempted change: added a temporary validated process-start split override,
+  rebuilt the candidate dylib and isolated benchmark, measured 1/2/4/8/16/32
+  plus the automatic policy, then removed the control.
+- Benchmark evidence: at 8,192 active tokens and 16,384 capacity, 1/2/4/8/16/32
+  take **7.4532 / 3.8310 / 2.0462 / 1.1594 / 1.2400 / 2.1842 ms** and auto
+  takes **2.0348 ms**. At 32,768 active tokens and 131,072 capacity, fixed
+  8/16/32 take **3.9262 / 2.2349 / 2.3279 ms** versus **2.2791 ms** auto.
+  No fixed value dominates both histories or approaches the approximately
+  4.079 tok/s end-to-end deficit.
+- Correctness evidence: every arm uses the focused-tested A134 Q8 shader. The
+  retained test passes Q8 and BF16 parity, invalid cache growth rejection, and
+  exact append/rollback invariants. The temporary symbol is absent and the
+  restored engine hash is
+  `cfe798131b88e37de331bc7706d2e173f221e260`.
+- Failure mode: optimal split parallelism changes with active length and
+  allocation state, and the existing automatic policy is already competitive
+  at the decisive 32K shape. The integrated regression is larger and lies
+  elsewhere in cache quantization/update/dependency composition.
+- Why not to retry unchanged: a full 1--32 sweep measured both the short-long
+  boundary and a larger history; pinning the best isolated value would make
+  other histories slower and adds a production knob without a model win.
+- Reopen only if: a materially different shader changes per-split work or a
+  full-model Metal trace identifies split reduction as the dominant owner.
+- Related commit or revert: temporary override removed before commit; record-
+  only checkpoint.
+
+## PERF-FA148 - Fifty operations or 512 MiB per MLX command buffer
+
+- Hypothesis: more frequent submission at 50 operations or fewer submissions
+  at 512 MiB would improve the selected mixed-Q5 decode stream enough to clear
+  the remaining short-work gap.
+- Scope: selected A100/A111/A114/A113/A117/A128/A130/A131 direct mixed-Q5
+  workload, 64 SDPA blocks, fast synchronization, native sampling seed 42,
+  and `128 / 32 warm / 128 timed`.
+- Attempted change: measured 256 MiB with 50 operations, then 512 MiB with the
+  selected 100 operations, changing no model or kernel source.
+- Benchmark evidence: 50 operations reaches **19.529132775 tok/s** and 512 MiB
+  reaches **19.652952905 tok/s**. Adjacent 256 MiB/100-operation controls are
+  **19.738568824 / 19.641604528**, mean **19.690086676**, making the two arms
+  **0.817436%** and **0.188591%** slower respectively.
+- Correctness evidence: both candidates emit exact 128-token output, digest
+  `d0193f6d413b68c1`, last token 11406, and exit zero.
+- Failure mode: neither shorter operation batches nor larger byte batches
+  improve the current fused Q4/Q5 command stream; the 512 MiB difference is
+  noise-sized but has no winning evidence.
+- Why not to retry unchanged: the selected 256 MiB/100-operation setting beats
+  both candidates and the configuration-only family cannot provide the needed
+  repeatable margin.
+- Reopen only if: a source-level kernel or graph change materially changes the
+  command stream and a new trace identifies submission cadence as an owner.
+- Related commit or revert: record-only checkpoint; no source changed.
