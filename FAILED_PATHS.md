@@ -3994,3 +3994,36 @@ option, or serving dispatch was added.
   `5912bc2fe9b1e8f34bdace0b1a009f8aa1223d04` and
   `512335f1ae677f48ee76a77d2f097bef720e71ce`, exactly matching signed
   `00d09138ce`.
+
+## PERF-FA142 - Uncapped A128 long prefill
+
+- Hypothesis: A128's 680 MiB duplicate Q4 parameter stream could coexist with
+  the selected 2,048-token native prefill chunks without another residency
+  control; halving only the chunk would be sufficient if the command-buffer
+  working set alone owned the peak.
+- Scope: mixed 4.951-bpw Q5-class checkpoint, all selected A100/A111/A114/
+  A113/A117/A128 switches, real 131,072 SGLang context and token admission,
+  one request, one outer admission chunk, and sampled `8192+16` serving.
+- Attempted change: first retained the direct-benchmark 2,048-token internal
+  chunk, then changed only that chunk to 1,024 while leaving MLX's recycled
+  buffer cache uncapped.
+- Benchmark evidence: both served arms reached the native C++ prefill and
+  disconnected after about 40 seconds. A separate process with the same A128
+  dylib and 1,024-token internal chunk completed `8192 / 1 warm / 1 timed`, so
+  the smaller native engine path is functional outside full-server residency.
+- Correctness evidence: both server tracebacks end at
+  `NativeQwen38Engine.prefill` with Metal
+  `kIOGPUCommandBufferCallbackErrorOutOfMemory`; each crash handler removed
+  the complete verified server tree. Ports, model/compiler processes, memory,
+  and thermals returned to their clean prelaunch state after each failure.
+- Failure mode: full-server process and recycled-buffer residency consume the
+  remaining headroom. Internal chunk reduction alone does not make the A128
+  duplicate stream safe for realistic prompts.
+- Why not to retry unchanged: the failure reproduced across two native chunk
+  sizes, while adding the existing one-GiB cache cap made the identical
+  `8192+16` request complete.
+- Reopen only if: A128 stops duplicating its original parameter planes, the
+  server sheds material resident state, or allocator evidence shows a new
+  independent peak and the exact same 8K request is rerun.
+- Related commit or revert: no source change; PERF-A129 retains the successful
+  cache-capped configuration.

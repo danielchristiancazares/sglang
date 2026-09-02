@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-20:50 PDT.
+21:08 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -183,8 +183,13 @@ digest `d0193f6d413b68c1` and last token 11406. Matched A117 control is
 **+0.178463465 / +0.917696%**. The direct gap is now
 **0.374629025 tok/s / 1.908902%**. The generic mixed target reaches
 **18.121698566 tok/s**, making the cumulative candidate gain
-**+1.503672409 / +8.297635%**. A128 remains opt-in while its 680 MiB duplicate
-parameter stream awaits exact 131K serving and real-client qualification.
+**+1.503672409 / +8.297635%**. A128 remains opt-in. Its 680 MiB duplicate
+parameter stream now passes a real sampled `8192+16` SGLang request only with
+the existing one-GiB MLX recycled-buffer cap and 1,024-token native internal
+prefill chunks: **108.664 prompt tok/s**, **75.388639 s TTFT**, and exact token
+counts. Uncapped 2,048- and 1,024-token server arms both fail with Metal OOM,
+although the latter passes in the direct engine. Exact 131K, steady sampled
+serving, and Codex `xhigh` qualification remain pending.
 
 The fresh-session candidate matrix is resolved through A111. A100 is promoted:
 five aligned 16-bit loads reconstruct the same three bit windows and retain the
@@ -268,8 +273,12 @@ are canonical. Three second-position controls at **15.202523971**,
 wave and repeated 18.5 GB reloads, are excluded, and were replaced after
 enforced idle intervals. The final hardened source smoke reaches
 **19.662460455 tok/s**. The extra decode stream duplicates
-**713,031,680 bytes / 680 MiB**; exact 131K capacity, sampled serving, and
-Codex `xhigh` remain gates before default selection.
+**713,031,680 bytes / 680 MiB**. PERF-A129's one-GiB MLX cache cap plus
+1,024-token internal prefill converts the repeatable 8K Metal OOM into a
+complete sampled request; startup advertises the real 131,072-token
+context/admission surface and language-only metadata. Exact 131K capacity,
+steady sampled serving, and Codex `xhigh` remain gates before default
+selection.
 
 A118 and A119 are closed in their measured forms. Replacing A117's fused-Q4
 packed-word reads with one explicit `packed_ushort4` transaction is exact but

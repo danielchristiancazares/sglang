@@ -23639,3 +23639,73 @@ mean 13.929045  17.125658 446.051        39.730
   exact original blobs; the index is empty. Exact 131K serving, sampled
   behavior, and Codex `xhigh` remain pending. The direct gap is now
   **0.374629025 tok/s / 1.908902%**.
+
+### 2026-09-01 21:08 PDT - A128 reaches an 8K served prefill with a bounded MLX cache
+
+- Main began at signed `5e5034d209623005933e419d7de03cf729a8ee6f`,
+  100 commits ahead of `origin/main`, with an empty index and only Daniel's
+  three original modified paths at blobs
+  `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. The detached A128 worktree
+  remained at engine/header blobs `686aa5c138...` / `f6be290147...`.
+- Rebuilt that worktree's hard-coded ctypes library with:
+
+  ```text
+  /usr/bin/env MLX_PREFIX=/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx /bin/zsh python/sglang/srt/hardware_backend/mlx/native/build.sh
+  ```
+
+  The established macOS 26.0 / MLX 26.2 link warning was the only diagnostic.
+  The server library SHA-256 is
+  `bd61c37362a9dce99de8bd8ab368a5f587326bbb5a4b6bf49eb12a891bf77bbd`;
+  its engine/header Git blobs remain the final A128 values. A direct
+  `128 / 32 warm / 128 timed` sampled smoke with every selected A128 switch
+  reached **19.700245627 tok/s**, digest `d0193f6d413b68c1`, and last token
+  11406 despite an active Spotlight import wave.
+- The exact server command family was:
+
+  ```text
+  /usr/bin/env -u SGLANG_RUST_SERVER -u SGLANG_RUST_BUILD_MODE -u SGLANG_MLX_MTP_DIR PYTHONPATH=/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python SGLANG_USE_MLX=1 SGLANG_USE_MLX_NATIVE_GRAPH=1 SGLANG_MLX_CLEAR_CACHE_STEPS=0 [SGLANG_MLX_CACHE_LIMIT_GB=1] MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=<2048-or-1024> SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS=1 .venv/bin/python -m sglang.launch_server --model-path /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 --served-model-name qwen3.8-27b-q5 --language-model-only --context-length 131072 --max-total-tokens 131072 --max-running-requests 1 --max-mamba-cache-size 5 --chunked-prefill-size 131072 --max-prefill-tokens 131072 --page-size 1 --disable-radix-cache --mlx-enable-sampling --sampling-defaults model --random-seed 42 --reasoning-parser qwen3 --tool-call-parser qwen3_coder --incremental-streaming-output --stream-interval 4 --scheduler-recv-interval 4 --cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled --host 127.0.0.1 --port 30000
+  ```
+
+  Resolved arguments reported the real 131,072 context, total-token admission,
+  and outer prefill limits; one running request; five auxiliary slots; native
+  MLX execution; both Qwen parsers; and the language-only surface. Model list
+  reported `qwen3.8-27b-q5` with maximum length 131,072. `/model_info` reported
+  image/audio understanding false. The stub allocated no duplicate Python KV
+  pool; C++ owns the actual recurrent and full-attention state.
+- The first uncapped server (root/listener 14816, children 14821/14822) passed
+  a sampled exact `128+128` request at **19.596 generation tok/s** with
+  **85.520 prompt tok/s**, **1.496722 s TTFT**, exact length, and reasoning.
+  Its `8192+16` request entered C++ prefill, then failed after about 40 seconds
+  with Metal `kIOGPUCommandBufferCallbackErrorOutOfMemory`. The crash handler
+  removed the verified tree. Port, workloads, and compiler processes were
+  absent; memory recovered to 92% free with zero throttled pages.
+- A direct A128 `8192 / 1 warm / 1 timed` process changed only the internal
+  chunk to 1,024 and passed. Wall time was about 79 seconds; the single timed
+  token measured **17.720651752 tok/s**, digest `fa497f0b57cf1f24`, and last
+  token 1739. A second uncapped server (root/listener 14974) using the same
+  1,024-token chunk reproduced the served 8K Metal OOM at the same boundary.
+  This isolates full-server residency rather than the smaller C++ chunk's
+  correctness.
+- A third launch added only the existing pre-load
+  `SGLANG_MLX_CACHE_LIMIT_GB=1` to the 1,024-token arm. Root/listener PID 15123
+  became ready and the exact sampled client command was:
+
+  ```text
+  .venv/bin/python scripts/windows/bench_openai_stream.py --model qwen3.8-27b-q5 --input-tokens 8192 --output-tokens 16 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5 --skip-warmup --timeout 1200
+  ```
+
+  It completed **8192+16** with `finish_reason=length`, reasoning SHA-256
+  `7bdedc2dc8aa10b66c3ee48976bfccb84b5d5bc2888e101459a89378ef982b01`,
+  **108.664 prompt tok/s**, **75.388639 s TTFT**, **76.231461 s E2E**, and
+  **17.797 generation tok/s** across the deliberately short, non-steady
+  16-token tail. The server remained healthy. Post-request memory was 18%
+  free, encrypted swap stayed about 348 MiB, throttled pages stayed zero, and
+  thermals stayed normal. Foreground `Ctrl+C` then stopped the verified tree;
+  port 30000 and all matching processes were clear and memory recovered to
+  92% free.
+- PERF-A129 retains the one-GiB cache cap plus 1,024-token native chunk for
+  capacity work. PERF-FA142 closes both uncapped long-prefill forms. The next
+  launch must add `--watchdog-timeout 3600` before the 32K and exact 131K
+  synchronous prefills; steady sampled serving and Codex `xhigh` remain open.
