@@ -1057,16 +1057,24 @@ constexpr const char* kAffineQ4FusedSwiGluSource = R"(
         for (int row = 0; row < ResultsPerSimdgroup; ++row) {
           gate_results[row] = simd_sum(gate_results[row]);
           up_results[row] = simd_sum(up_results[row]);
-          if (thread_index_in_simdgroup == 0) {
-            const bfloat gate_value =
-                static_cast<bfloat>(gate_results[row]);
-            const bfloat up_value = static_cast<bfloat>(up_results[row]);
-            const bfloat sigmoid_value = sglang_q4_sigmoid(gate_value);
-            const bfloat silu_value =
-                static_cast<bfloat>(gate_value * sigmoid_value);
-            y[output_start + row] =
-                static_cast<bfloat>(silu_value * up_value);
-          }
+        }
+        const int row = thread_index_in_simdgroup;
+        if (row < ResultsPerSimdgroup) {
+          const float gate_result = row == 0 ? gate_results[0]
+              : row == 1                 ? gate_results[1]
+              : row == 2                 ? gate_results[2]
+                                         : gate_results[3];
+          const float up_result = row == 0 ? up_results[0]
+              : row == 1               ? up_results[1]
+              : row == 2               ? up_results[2]
+                                       : up_results[3];
+          const bfloat gate_value = static_cast<bfloat>(gate_result);
+          const bfloat up_value = static_cast<bfloat>(up_result);
+          const bfloat sigmoid_value = sglang_q4_sigmoid(gate_value);
+          const bfloat silu_value =
+              static_cast<bfloat>(gate_value * sigmoid_value);
+          y[output_start + row] =
+              static_cast<bfloat>(silu_value * up_value);
         }
 )";
 
