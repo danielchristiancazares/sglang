@@ -118,6 +118,75 @@ bool CheckQ5BatchTwoParity(int input_features, int output_features) {
          maximum_absolute_error <= 0.015625f && dispatch_matches;
 }
 
+bool CheckQ4BatchTwoParity(int input_features, int output_features) {
+  const std::size_t packed_columns =
+      static_cast<std::size_t>(input_features) / 8;
+  const std::size_t packed_elements =
+      static_cast<std::size_t>(output_features) * packed_columns;
+  const std::size_t parameter_columns =
+      static_cast<std::size_t>(input_features) / 64;
+  const std::size_t parameter_elements =
+      static_cast<std::size_t>(output_features) * parameter_columns;
+
+  std::vector<std::uint32_t> packed(packed_elements);
+  std::uint64_t state = UINT64_C(0x9e3779b97f4a7c15);
+  for (auto &value : packed) {
+    value = Next(state);
+  }
+  std::vector<float> scales(parameter_elements);
+  std::vector<float> biases(parameter_elements);
+  for (std::size_t index = 0; index < parameter_elements; ++index) {
+    scales[index] = 0.0025f + static_cast<float>(index % 17) * 0.000125f;
+    biases[index] = (static_cast<float>(index % 11) - 5.0f) * 0.00025f;
+  }
+  std::vector<float> input_values(static_cast<std::size_t>(2) * input_features);
+  for (std::size_t index = 0; index < input_values.size(); ++index) {
+    input_values[index] = std::sin(static_cast<float>(index) * 0.017f) * 0.25f;
+  }
+
+  const mx::array weights(packed.data(),
+                          {output_features, static_cast<int>(packed_columns)},
+                          mx::uint32);
+  const mx::array scale_array = mx::astype(
+      mx::array(scales.data(),
+                {output_features, static_cast<int>(parameter_columns)},
+                mx::float32),
+      mx::bfloat16);
+  const mx::array bias_array = mx::astype(
+      mx::array(biases.data(),
+                {output_features, static_cast<int>(parameter_columns)},
+                mx::float32),
+      mx::bfloat16);
+  const mx::array input = mx::astype(
+      mx::array(input_values.data(), {1, 2, input_features}, mx::float32),
+      mx::bfloat16);
+  const sglang::mlx_qwen38::QLinear linear{weights, scale_array, bias_array,
+                                           64,      4,           true};
+
+  const mx::array expected =
+      mx::quantized_matmul(input, linear.w, linear.scales, linear.biases, true,
+                           linear.group_size, linear.bits, "affine");
+  const mx::array actual =
+      sglang::mlx_qwen38::affine_q4_qmv_batch_two(linear, input);
+
+  if (setenv("SGLANG_MLX_NATIVE_Q4_BATCH_TWO_QMV", "1", 1) != 0) {
+    throw std::runtime_error("failed to enable Q4 batch-two dispatch");
+  }
+  const mx::array dispatched = linear(input);
+  if (unsetenv("SGLANG_MLX_NATIVE_Q4_BATCH_TWO_QMV") != 0) {
+    throw std::runtime_error("failed to disable Q4 batch-two dispatch");
+  }
+
+  const float maximum_absolute_error = MaximumAbsoluteError(expected, actual);
+  const bool exact = SameBfloat16(expected, actual);
+  const bool dispatch_matches = SameBfloat16(actual, dispatched);
+  std::cout << "Q4 batch-two K=" << input_features << " N=" << output_features
+            << " max_abs=" << maximum_absolute_error << " exact=" << exact
+            << " dispatch_matches=" << dispatch_matches << '\n';
+  return expected.shape() == mx::Shape{1, 2, output_features} &&
+         actual.shape() == expected.shape() && exact && dispatch_matches;
+}
+
 bool CheckQ4BatchTwoFusedParity(int input_features, int output_features) {
   const std::size_t packed_columns =
       static_cast<std::size_t>(input_features) / 8;
@@ -277,6 +346,27 @@ bool RejectsInvalidBatchTwoInputs() {
   const sglang::mlx_qwen38::QLinear q4_up{q4_weights, scales, scales,
                                           64,         4,      true};
 
+  const mx::array one_row = mx::slice(input, {0, 0, 0}, {1, 1, kInputFeatures});
+  bool q4_qmv_invalid = false;
+  try {
+    (void)sglang::mlx_qwen38::affine_q4_qmv_batch_two(q4, one_row);
+  } catch (const std::runtime_error &error) {
+    q4_qmv_invalid = std::string_view(error.what()) ==
+                     "invalid batch-two affine Q4 QMV inputs";
+  }
+  const mx::array short_input =
+      mx::slice(input, {0, 0, 0}, {1, 2, kInputFeatures / 2});
+  bool q4_qmv_unsupported = false;
+  try {
+    (void)sglang::mlx_qwen38::affine_q4_qmv_batch_two(q4, short_input);
+  } catch (const std::runtime_error &error) {
+    q4_qmv_unsupported = std::string_view(error.what()) ==
+                         "unsupported batch-two affine Q4 QMV shape";
+  }
+  if (!q4_qmv_invalid || !q4_qmv_unsupported) {
+    return false;
+  }
+
   bool q4_invalid = false;
   try {
     (void)sglang::mlx_qwen38::affine_q4_fused_swiglu_batch_two(q4, q4_up,
@@ -299,7 +389,6 @@ bool RejectsInvalidBatchTwoInputs() {
                      "unsupported batch-two affine Q4 fused SwiGLU shape";
   }
 
-  const mx::array one_row = mx::slice(input, {0, 0, 0}, {1, 1, kInputFeatures});
   bool q5_invalid = false;
   try {
     (void)sglang::mlx_qwen38::affine_q5_qmv_batch_two(q5, one_row);
@@ -314,6 +403,7 @@ bool RejectsInvalidBatchTwoInputs() {
 
 int main() {
   if (!CheckQ5BatchTwoParity(512, 64) || !CheckQ5BatchTwoParity(5120, 128) ||
+      !CheckQ4BatchTwoParity(512, 64) || !CheckQ4BatchTwoParity(5120, 128) ||
       !CheckQ4BatchTwoFusedParity(512, 64) ||
       !CheckQ4BatchTwoFusedParity(5120, 128) ||
       !CheckQ4BatchTwoSigmoidBoundary() || !RejectsInvalidBatchTwoInputs()) {
