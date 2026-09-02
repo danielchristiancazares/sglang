@@ -3925,3 +3925,37 @@ option, or serving dispatch was added.
   removes bytes or unpack work.
 - Related commit or revert: both candidates stayed outside `main`; exact A117
   engine/header content was restored against signed `00d09138ce`.
+
+## PERF-FA140 - Dense 20-bit affine-Q5 parameter reconstruction
+
+- Hypothesis: losslessly reducing the scale/bias stream by 37.5% and placing
+  four output rows in one dense bundle can offset bit extraction while leaving
+  quantized weights, FP32 FMA order, reductions, and BF16 stores unchanged.
+- Scope: all 240 Q5 matrices in the immutable mixed 4.951-bpw checkpoint and
+  selected A100's four-SIMD/four-result batch-one Metal kernel. Generic prefill
+  retains the original BF16 parameter tensors.
+- Attempted change: a C++ packer proves and encodes pairwise-opposite signs,
+  per-tensor scale-exponent bases, the Q5 exponent delta 4/5, and both BF16
+  mantissas in 20 bits. Four row codes occupy ten bytes. Each decode iteration
+  issues three packed four-byte loads, extracts four codes, reconstructs exact
+  BF16 bit patterns, and runs A100's unchanged dot sequence.
+- Benchmark evidence: at production K=17,408/N=5,120, forward
+  regular/compact measures **0.431460250 / 0.458926500 ms** and reverse
+  compact/regular measures **0.461158805 / 0.438137875 ms**. Aggregate
+  regular/compact is **0.434799063 / 0.460042653 ms**, a
+  **0.025243590 ms / 5.805806%** regression.
+- Correctness evidence: the checkpoint scan covers **419,840,000** pairs with
+  no zero, subnormal, infinity, or NaN and proves exact width bounds. Small and
+  production compact kernels are byte-exact against the regular kernel at
+  digests `5dfe43d38768b898` and `4c08a11e47576b08`.
+- Failure mode: three unaligned packed-window loads plus per-row exponent,
+  sign, mantissa, and BF16 reconstruction lengthen the instruction path more
+  than the reduced parameter-cache footprint shortens it.
+- Why not to retry unchanged: the largest profiled Q5 family regresses by
+  nearly six percent in both process orders, far beyond local variance.
+- Reopen only if: the representation eliminates most reconstruction work,
+  hardware/compiler support provides a cheaper bitfield decode, or a raw
+  interleaving control proves enough locality benefit to fund compression.
+- Related commit or revert: A125 remains isolated in the detached candidate
+  worktree only long enough to derive the raw-interleave control; it was never
+  wired into a model dylib or production default.

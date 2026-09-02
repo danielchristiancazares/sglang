@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max affine-Q5 lossless 20-bit scale/bias packing, production K=17,408/N=5,120 micro | selected A100 regular BF16 parameters **0.434799063 ms** | A125 dense four-row 20-bit bundles **0.460042653 ms** | **+0.025243590 ms / +5.805806%** regression; both order directions retain exact digest `4c08a11e47576b08`; entropy scan proves the representation but decode cost rejects this kernel | dedicated candidate binary, alternating `200 / 3000` process-isolated arms; PERF-FA140 | 2026-09-01 19:56 PDT |
 | M1 Max mixed 4.951-bpw Q5-class target, sampled direct `128 / 32 warm / 128 timed` | generic MLX QMM **18.121698566 tok/s** | selected A100+A111+A114+A113+A117 ten-sample mean **19.453092367 tok/s** | **+1.331393801 tok/s / +7.347%** over generic and **+0.184616727 / +0.958%** over matched serial-epilogue control **19.268475640**; exact digest stable; **0.546907633 tok/s / 2.811%** remains to the floor | pinned mixed revision `596b8067...8340`, seed 42, selected command-buffer controls, Q5/Q4/fused-MLP switches | 2026-09-01 18:36 PDT |
 | M1 Max affine-Q5 four-row and two-row read-ahead scheduling | selected A100; decisive K=17,408 control **0.428486222 ms** | A123 four-row prefetch regresses K=17,408/K=5,120 **0.431270% / 0.727663%**; A124 two-row decisive K=17,408 **0.429494958 ms** | A124 regresses decisive K=17,408 **0.001008736 ms / 0.235419%** and wins only four of ten long pairs; all shapes exact; both restored | direct Q5 micro, production K families, order/reverse windows; PERF-FA139 | 2026-09-01 19:35 PDT |
 | M1 Max fused affine-Q4 gate/up/SwiGLU source-order scheduling micro | selected A117 gate rows then up rows **0.558719448 ms** | A122 interleaved gate/up rows **0.569066813 ms** | **+0.010347364 ms / +1.851979%** regression; loses all ten order/reverse pairs while retaining exact digest `8a9031349585365a` | production `K=5120`, `N=17408`, `1000 / 10000`; preserved A117 and dedicated A122 executables | 2026-09-01 19:18 PDT |
@@ -868,6 +869,7 @@ tree throughput can be ranked for production.
 | PERF-A122 | Interleave each fused-Q4 gate row with its matching up row to expose two independent weight streams sooner. | Selected A117 production `5120/17408` fused Metal kernel | Runtime-correct and rejected | Ten order/reverse pairs regress **0.558719448 -> 0.569066813 ms**, **1.851979%**, with every pair slower and every digest exact. Exact A117 restored; see PERF-FA138. |
 | PERF-A123 | Prefetch all four Q5 result rows' weights and parameters before their unpack/FMA chains. | Selected A100 across profiled K=17,408/5,120/6,144 families | Runtime-correct and rejected | Long order/reverse aggregates regress K=17,408 **0.432488694 -> 0.434353889 ms** and K=5,120 **0.360067748 -> 0.362687827 ms**. K=6,144's **0.140840%** apparent gain reverses by order. See PERF-FA139. |
 | PERF-A124 | Limit Q5 read-ahead to two rows to reduce live register state. | Same selected A100 production families | Runtime-correct and rejected | Short balanced aggregates were noise-sized; the decisive K=17,408 ten-pair window regresses **0.428486222 -> 0.429494958 ms**, **0.235419%**, and wins only four pairs. Exact A100 restored; see PERF-FA139. |
+| PERF-A125 | Losslessly pack each affine-Q5 scale/bias pair into 20 bits and interleave four result rows into one 80-bit parameter bundle. | All 240 Q5 matrices; selected A100 four-row batch-one kernel; originals retained for prefill | Runtime-correct and rejected | Checkpoint analysis proves exact 20-bit coverage and 3.690411% theoretical Q5 stream reduction. Small parity is exact, but alternating production K=17,408/N=5,120 aggregates regress **0.434799063 -> 0.460042653 ms**, **5.805806%**. Bit reconstruction costs more than the saved metadata traffic; see PERF-FA140. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -5684,3 +5686,27 @@ tree throughput can be ranked for production.
 - Decision: reject both before full-model loading and restore exact A117/A100.
   Explicit row read-ahead adds live state without reducing streamed bytes; the
   compiler/order noise is larger than any residual scheduling effect.
+
+### 2026-09-01 19:56 PDT - PERF-A125 dense affine-Q5 parameter packing rejection
+
+- Change: analyzed every BF16 scale/bias pair in the immutable mixed checkpoint,
+  then added an opt-in C++ packer and Q5 Metal kernel. The candidate encodes two
+  seven-bit mantissas, one shared/opposite sign bit, a per-tensor scale-exponent
+  offset, and a bias/scale exponent delta in exactly 20 bits. Four adjacent
+  output rows are interleaved into one dense 80-bit bundle; original tensors
+  remain available for generic prefill.
+- Benchmark evidence: the CPU safetensor scan covers **402 tensors / 419,840,000
+  pairs**. All signs are pairwise opposite and all values are finite normal
+  BF16. Every Q5 tensor fits 20 bits; the ideal packed Q5 stream falls by
+  **3.690411%**. At K=17,408/N=5,120, forward regular/compact is
+  **0.431460250 / 0.458926500 ms** and reverse compact/regular is
+  **0.461158805 / 0.438137875 ms**. Aggregate regular/compact is
+  **0.434799063 / 0.460042653 ms**, a **5.805806%** regression.
+- Correctness evidence: the unchanged focused suite passes. A bounded
+  K=512/N=64 compact smoke exactly matches regular output, first value
+  `4.78125`, and digest `5dfe43d38768b898`. Every production arm exactly
+  matches first value `-23.375` and digest `4c08a11e47576b08`.
+- Decision: reject dense 20-bit reconstruction before model loading. Preserve
+  the entropy result, but require a representation with materially fewer
+  extraction/bitcast instructions. A raw 32-bit four-row interleave is the
+  next mechanism-isolation control.
