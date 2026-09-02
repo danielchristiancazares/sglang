@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-02
-00:55 PDT.
+01:04 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -211,6 +211,19 @@ regresses **3.662772%**. Every arm is bit-exact. A143's first 2.28% apparent
 win reverses across six samples per arm, so it receives no promotion credit.
 Further Q5 work must reduce actual bytes or remove arithmetic rather than
 repack the same stream.
+
+PERF-A145 bounds that byte-reduction route with the real checkpoint. Across
+all 240 Q5 tensors and **62,914,560** sampled codes, aggregate entropy is
+**4.722514 Shannon / 4.748775 ideal-Huffman bits/code**; practical local
+range, palette, and sparse-high-plane forms expose effectively no reduction.
+Even a fictional zero-cost ideal decoder projects to only about **2.5%** end
+to end at Q5's measured **49.061847%** owner, below the **5.047909%** gap.
+Exact-kernel Q4 is **7.648307%** faster only for the down-projection shape;
+the other Q5 families are nearly flat or slower, so down-only substitution
+projects to about **1.6658%** and changes precision. Lossless compression and
+selective Q4 are closed as standalone solutions. The active candidate is now
+algorithmic: remove full-vocabulary dense proposal construction and retention
+from the sampled standard-MTP path while preserving exact p/q verification.
 
 A128's 680 MiB duplicate parameter stream remains opt-in. A130 plus A131
 completes an independent exact `32768+16` server request at

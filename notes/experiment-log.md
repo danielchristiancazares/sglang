@@ -24434,3 +24434,79 @@ mean 13.929045  17.125658 446.051        39.730
   and exits zero. PERF-FA152--155 reject all four exact forms. A100 remains
   selected. The next candidate begins with real-checkpoint entropy and
   block-compressibility analysis; another physical layout is not funded.
+
+### 2026-09-02 01:04 PDT - real-checkpoint Q5 entropy and selective-Q4 ceiling
+
+- Main began at signed `2f0e64438f`, 116 commits ahead of `origin/main`, with
+  an empty index. Daniel's three protected working blobs remained exact at
+  Git hashes `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. Port 30000 was free and no
+  model, SGLang, benchmark, Metal trace, or user compiler process was active.
+  The detached experiment worktree remained at signed A137 commit
+  `24d745ff38`; its production engine/header were clean.
+- Built the standalone C++20/O3 analyzer with `-Wall -Wextra -Werror` against
+  the pinned MLX headers/library. The only linker output was the established
+  macOS 26.0 versus MLX 26.2 warning. Its exact read-only command was:
+
+  ```text
+  /Users/dcazares/.cache/sglang-qwen38/artifacts/analyze_qwen38_q5_code_entropy /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 4096
+  ```
+
+  It samples four separated 4,096-group windows from every one of the 240 Q5
+  tensors: **983,040 groups / 62,914,560 codes** total. Aggregate results are:
+
+  ```text
+  Shannon bits/code                 4.722514
+  ideal static Huffman bits/code    4.748775
+  top-15 coverage                  73.562622%
+  high-plane one bits              60.141535%
+  high-plane transitions/group     29.433534
+  groups with <=8 high bits         1.163839%
+  groups with range width <=4       0.000000%
+  groups with <=16 symbols          0.319824%
+  optimistic range reduction        0.000000%
+  optimistic palette reduction      0.000726%
+  optimistic sparse-high reduction  0.091079%
+  ```
+
+  Per-class Shannon/Huffman results are `qkv 4.720182/4.746712`,
+  `z 4.727054/4.753821`, `linear out 4.723942/4.750020`,
+  `down 4.726386/4.752963`, `self o 4.719044/4.744372`, and
+  `self v 4.697521/4.721034` bits/code. Analyzer binary/source SHA-256 values
+  are `fb42b64ab1525c00fa422bde3f84affdd8e355e40b9c6405a7ea91dd147b435e`
+  and `3eb5d69ca943a85f7318f17bb81333a681ba7bd1a2e77d82839711c5bf4a0b9a`.
+- Five stored bits versus ideal static-Huffman **4.748775** leaves only about
+  five percent Q5-byte reduction before decoder metadata/work. At the bounded
+  trace's **49.061847%** Q5 owner, even a zero-cost ideal decoder projects to
+  roughly **2.5%** end to end, below the selected long-history
+  **5.047909%** gap. Practical block forms expose essentially zero savings.
+- Existing strict Q5/Q4 executables then screened precision reduction with
+  these command forms, one Metal workload at a time:
+
+  ```text
+  bench_qwen38_affine_q5_a100 K N 1000 10000
+  bench_qwen38_affine_q4_qmv_exact custom K N 1000 10000
+  ```
+
+  Fresh shape results are:
+
+  ```text
+  K      N      Q5 ms        Q4 ms        Q4 delta
+  17408  5120   0.440694188  0.406988542  7.648307% faster
+   5120 10240   0.352619196  0.349670421  0.836249% faster
+   6144  5120   0.331701138  0.338516712  2.054733% slower
+  ```
+
+  The down family accounts for roughly 21.78% of actual-work shader PCs, so
+  down-only Q4 projects to about **1.6658%** end to end. It cannot close the
+  gap alone and changes checkpoint precision, requiring the complete
+  reasoning/tool/capacity contract before consideration. No checkpoint or
+  production source was modified. Q5 and Q4 executable hashes are
+  `45e6e6f2116d66139bc77a2bd8f51fc18af679426b5cc9caaf670f864efe792e`
+  and `c105e7d38daf45515616a6ab152368432a3914eee75ec42bde962485e5d6b8ef`.
+- PERF-A145/FA156 therefore close lossless compression and selective Q4 as
+  standalone solutions. The next candidate returns to the sampled standard
+  MTP path: it currently constructs and retains full-vocabulary dense q for
+  every draft even though top-k 20/top-p 0.95 leaves at most twenty nonzero
+  entries and the verifier already accepts sparse proposal indices/probabilities.

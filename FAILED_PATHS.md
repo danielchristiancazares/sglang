@@ -4413,3 +4413,46 @@ the stock full-attention mechanism a 32K or 131K solution.
   `9546192afc40011d561a62b151a24ceb8e702972d8f21ede85a9790a975df747`;
   source-at-measurement is
   `025ff210a0cfe6917fd288dcab7b0ca510f294200a5491357b31c25f0bf5db56`.
+
+## PERF-FA156 - Lossless affine-Q5 compression and selective Q4 substitution
+
+- Hypothesis: the mixed checkpoint's Q5 symbols or local blocks might be
+  compressible enough to cut streamed weight bytes by the complete measured
+  actual-work gap; alternatively, only high-value Q5 projection families
+  might be replaced by exact-kernel Q4 storage.
+- Scope: all 240 affine-Q5 tensors in pinned mixed checkpoint revision
+  `596b8067f7cf429007bb668874ffee7e917c8340`; selected A100 batch-one Q5
+  QMV and the corresponding exact custom-Q4 microkernels.
+- Attempted change: a strict standalone C++ analyzer sampled four separated
+  4,096-group windows per tensor and measured symbol entropy, high-plane
+  sparsity/transitions, local ranges, distinct symbols, palettes, and
+  optimistic storage reductions. Existing kernels then compared Q5 and Q4
+  on the three material production shapes.
+- Benchmark evidence: **983,040 groups / 62,914,560 codes** have aggregate
+  Shannon entropy **4.722514 bits/code** and ideal static-Huffman length
+  **4.748775 bits/code** versus five stored bits. Zero groups fit a width-four
+  range; optimistic palette/sparse-high reductions are only
+  **0.000726% / 0.091079%**. Q4 improves `17408x5120`
+  **0.440694188 -> 0.406988542 ms** (**7.648307%**), improves
+  `5120x10240` only **0.836249%**, and regresses `6144x5120`
+  **2.054733%**.
+- Correctness evidence: checkpoint analysis is read-only; the source
+  checkpoints and production engine remain untouched. Existing Q4/Q5
+  deterministic micro harnesses preserve their exact output contracts.
+- Failure mode: entropy leaves only about five percent ideal Q5-byte savings,
+  and decoder/metadata cost makes the achievable reduction lower. At the
+  measured **49.061847%** Q5 owner, even a zero-cost ideal decoder projects
+  to only about **2.5%** end to end. Down-only Q4 projects to about
+  **1.6658%** and changes the model's quantized weights.
+- Why not to retry unchanged: neither route can cover the current
+  **5.047909%** actual-work gap by itself, and Q4 needs full semantic,
+  reasoning, tool, and capacity requalification for a lower ceiling.
+- Reopen only if: a decoder fuses into otherwise-required arithmetic with
+  essentially zero overhead and exploits cross-tensor structure absent from
+  these samples, or a precision-changing composition is paired with another
+  measured win and passes the complete behavior contract.
+- Related commit or revert: no production source changed. Analyzer binary
+  SHA-256 is
+  `fb42b64ab1525c00fa422bde3f84affdd8e355e40b9c6405a7ea91dd147b435e`;
+  source-at-measurement is
+  `3eb5d69ca943a85f7318f17bb81333a681ba7bd1a2e77d82839711c5bf4a0b9a`.
