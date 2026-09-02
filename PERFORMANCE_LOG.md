@@ -5376,3 +5376,32 @@ tree throughput can be ranked for production.
   qualification. Resume only after the background indexing wave returns to
   the ordinary idle state; require a complete five-pair window and an
   independent reversed window before promotion.
+
+### 2026-09-01 17:06 PDT - PERF-A114 fused Q4 gate/up/SwiGLU screen
+
+- Production reachability: all 64 target MLP gate and 64 up projections in
+  the mixed 4.951-bpw checkpoint are affine-Q4/G64. Batch-one decode reaches
+  `Engine::mlp()` on every target layer. The candidate replaces the two A111
+  QMV submissions and the BF16 sigmoid/multiply chain with one 8-SIMD by
+  four-paired-row Metal kernel behind
+  `SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU`.
+- Strict C++20/O3 warnings-as-errors builds pass. Synthetic focused parity is
+  bit-exact for the selected Q4 QMV at K/N **512/64, 5120/128, and
+  5120/17408**, and for the complete fused chain at **512/64** and
+  **5120/17408**.
+- Production-shape `1000 / 5000` microbenchmarks measure separate
+  **0.596468750, 0.600999883 ms** (mean **0.598734317**) and fused 8x4
+  **0.555415667, 0.560186117 ms** (mean **0.557800892**), a
+  **0.040933425 ms / 6.837%** reduction with one shared digest. Direct fused
+  geometry screens select 8x4 over 8x2 by **1.769%**; 16x2 and 8x8 are
+  slower.
+- One full mixed-target screen under continuing Spotlight/FileProvider
+  activity reaches **19.406869588 tok/s**. It changes the canonical digest
+  and last token from `d0193f6d413b68c1` / 11406 to
+  `f2a59800c8d89f75` / 19.
+- Decision: reject the current fused implementation at the real-model
+  correctness gate. Preserve the 8x4 artifact and candidate worktree for a
+  first-diverging-layer diagnostic. Throughput remains diagnostic until a
+  real-weight/real-hidden fixture proves gate, up, sigmoid, and both BF16
+  multiply boundaries independently exact. The selected timing stays
+  **19.241981332 tok/s**.

@@ -22546,3 +22546,54 @@ mean 13.929045  17.125658 446.051        39.730
   result remains **19.241981332 tok/s** and the gap remains
   **0.758018668 / 3.939400%**. Exact 131K serving and Codex `xhigh` remain
   pending.
+
+### 2026-09-01 17:06 PDT - Fused Q4 SwiGLU micro-win fails real-model exactness; root handoff written
+
+- Continued from signed `b1322134e51ebf301496ff53fc922aa24f9f0103`.
+  Main remained 84 commits ahead of `origin/main`, with an empty index and
+  Daniel's three user-owned working-copy paths unchanged at blobs
+  `0260ff7140`, `40e375e39c`, and `bb42de39fb`.
+- Restored A113's explicit `eval(pending_tok_)` in detached worktree
+  `/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4`, leaving the
+  A114 variable isolated. The worktree remains detached at `22408c50c4` and
+  now modifies only the engine, header, and existing Q4 focused C++ test.
+- A114 adds an opt-in batch-one Q4/G64 gate/up/SwiGLU Metal kernel. The final
+  micro-selected geometry uses eight SIMD groups, four paired output rows per
+  SIMD, two packs per lane, and explicit BF16 materialization at the gate, up,
+  SiLU, and final-product boundaries. Prefill and unsupported shapes retain
+  the established path.
+- Strict dylib, focused-test, and microbenchmark builds pass under C++20/O3
+  warnings-as-errors. Focused parity reports zero mismatches for the existing
+  Q4 QMV at K/N `512/64`, `5120/128`, and `5120/17408`, and for fused SwiGLU
+  at `512/64` and `5120/17408`.
+- Long `1000 / 5000` microbenchmark results are separate
+  **0.596468750, 0.600999883 ms** and fused 8x4
+  **0.555415667, 0.560186117 ms**, means **0.598734317 / 0.557800892** and a
+  **6.837%** candidate reduction. All arms use digest `8a9031349585365a`.
+  A balanced fused-only comparison selects 8x4 over 8x2 means
+  **0.555322754 / 0.565323179 ms**. A 16x2 screen reaches
+  **0.562536738 ms** against adjacent 8x4 **0.559433879**; an 8x8 screen
+  reaches **0.602943563** against adjacent 8x4 **0.560497392**.
+- Final 8x4 artifact SHA-256 values are dylib
+  `1733390d7e983762cd78fb64adaeb770e8fd18c0713fd32c0f2ccca68c454e3f`,
+  test `9e94fd9cb0abdfd81c4aefc29474bc0833526ca1d4c7008538a809233a13ba6a`,
+  benchmark
+  `520b952915da56d73f89a3ee10e8e73dc51763fdcb9630d93b55cdca28f563c1`,
+  and benchmark source
+  `3f4ca53a61943a8bb17553426bb5868ccd19b5614d1dce4183bac7f330ad5f48`.
+- The exact direct command recorded in root `HANDOFF.md` reaches
+  **19.406869588 tok/s** but changes digest/last token from the selected
+  `d0193f6d413b68c1` / 11406 to `f2a59800c8d89f75` / 19. PERF-FA132 rejects
+  the current implementation. An actual-weight, real-hidden diagnostic must
+  locate the first divergent gate/up/sigmoid/multiply boundary before another
+  throughput window.
+- During the full screen, `fileproviderd`, `mds_stores`, and fresh
+  `mdworker_shared` cohorts remained active. Memory stayed 95% free with zero
+  throttled pages, thermal/performance status stayed normal, and the result is
+  excluded from throughput qualification independently of its digest failure.
+  Port 30000 and the model/benchmark process set were clear afterward.
+- Wrote root `HANDOFF.md` with the objective, acceptance gates, safety rules,
+  main and detached-worktree blobs, selected/candidate artifacts, raw evidence,
+  exact commands, closed paths, and continuation order. The selected result
+  remains **19.241981332 tok/s** with **0.758018668 / 3.939400%** to the direct
+  floor; exact 131K and Codex `xhigh` gates remain pending.

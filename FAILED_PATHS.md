@@ -3679,3 +3679,33 @@ option, or serving dispatch was added.
   streamed bytes while retaining A111's FP32 reduction order.
 - Related commit or revert: all candidates remain isolated outside `main`;
   signed A111 in `22408c50c4` remains selected.
+
+## PERF-FA132 - Current fused affine-Q4 gate/up/SwiGLU arithmetic
+
+- Hypothesis: one batch-one Metal dispatch can consume both Q4 gate/up
+  matrices and emit the BF16 SwiGLU product while eliminating intermediate
+  arrays and elementwise kernels.
+- Scope: mixed 4.951-bpw Q5-class target, its 128 Q4 MLP gate/up linears,
+  selected A100+A111, production-shape microbenchmarks, synthetic parity, and
+  one sampled direct `128 / 32 warm / 128 timed` screen.
+- Attempted change: one 8-SIMD by four-paired-row kernel retains MLX's Q4
+  load/dot expression and explicitly materializes the gate, up, SiLU, and
+  final product BF16 rounding points. The route is opt-in through
+  `SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU`.
+- Benchmark evidence: separate/fused production-shape means are
+  **0.598734317 / 0.557800892 ms**, a **6.837%** isolated reduction. The
+  full model reaches **19.406869588 tok/s** during active host indexing.
+- Correctness evidence: focused synthetic tests report zero mismatches at all
+  selected shapes. The real model changes digest/last token from
+  `d0193f6d413b68c1` / 11406 to `f2a59800c8d89f75` / 19.
+- Failure mode: the synthetic fixture misses a real gate/up/activation value
+  that crosses a BF16 boundary after the fused compiler schedule. The first
+  divergent boundary remains unlocalized.
+- Why not to retry unchanged: the full-model fixed-work trajectory is part of
+  the performance contract, and the current source fails it.
+- Reopen only if: an actual-weight and real-hidden C++ fixture identifies and
+  repairs the first gate, up, sigmoid, first-multiply, or second-multiply
+  mismatch while preserving the isolated speed margin.
+- Related commit or revert: candidate remains outside `main` in detached
+  worktree `perf-q4-packs4`; `HANDOFF.md` records exact source/artifact hashes
+  and commands.
