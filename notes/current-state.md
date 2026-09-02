@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-17:56 PDT.
+18:10 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -172,13 +172,14 @@ experiment-log entries.
 The current speed target is the immutable 4.951-bpw mixed-Q5 checkpoint at
 revision `596b8067f7cf429007bb668874ffee7e917c8340`, with the A100 aligned-word
 affine-Q5 batch-one Metal kernel and the stock-exact A111 affine-Q4 batch-one
-kernel explicitly enabled, plus A114's precise fused Q4 gate/up/SwiGLU route.
-Two independent A114 five-pair windows give a selected aggregate mean of
-**19.268407916 tok/s** on sampled direct `128 / 32 warm / 128 timed`, with
-digest `d0193f6d413b68c1` and last token 11406. Matched A100+A111 control is
-**19.228720305 tok/s**, so A114 contributes **+0.039687612 / +0.206398%**.
-The direct gap is **0.731592084 tok/s / 3.796848%**. The generic mixed target
-reaches **18.121698566 tok/s**.
+kernel explicitly enabled, A114's precise fused Q4 gate/up/SwiGLU route, and
+A113's redundant token-evaluation removal. Two independent A113 five-pair
+windows give a selected aggregate mean of **19.289499778 tok/s** on sampled
+direct `128 / 32 warm / 128 timed`, with digest `d0193f6d413b68c1` and last
+token 11406. Matched A114 control is **19.278381518 tok/s**, so A113
+contributes **+0.011118260 / +0.057672%**. The direct gap is
+**0.710500222 tok/s / 3.683352%**. The generic mixed target reaches
+**18.121698566 tok/s**.
 
 The fresh-session candidate matrix is resolved through A111. A100 is promoted:
 five aligned 16-bit loads reconstruct the same three bit windows and retain the
@@ -216,6 +217,16 @@ matches MLX in all 32 rows while the preserved fast-exp artifact fails all 32.
 The selected result and direct gap are now **19.268407916 tok/s** and
 **0.731592084 tok/s / 3.796848%**. Exact 131K serving and Codex `xhigh` stay
 deferred until the direct lane clears 20 with margin.
+
+A113 is also qualified and retained. `Engine::emit_scheduled()` previously
+evaluated `pending_tok_` and immediately called `array::item<int32_t>()`, which
+performs the same evaluation internally. Removing the explicit call preserves
+the two-token pipeline and every fixed-work output. Forward and reversed
+five-pair windows improve **19.270942164 -> 19.277656005** and
+**19.285820872 -> 19.301343552 tok/s**. Aggregate matched control/candidate is
+**19.278381518 / 19.289499778**, a **+0.057672%** win. Signed
+`ad11696f2e` contains the one-line deletion. The selected gap is now
+**0.710500222 tok/s / 3.683352%**.
 
 The requested Q5 lane now serves through a provenance-pinned derived artifact.
 Bartowski's immutable `Qwen3.8-27B-Q5_K_S.gguf` source is pinned at revision

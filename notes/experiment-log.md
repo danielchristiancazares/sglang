@@ -22768,3 +22768,69 @@ mean 13.929045  17.125658 446.051        39.730
   untouched. A114 is selected. Continue with isolated A113 qualification and
   a fresh selected-path profile; exact 131K and Codex `xhigh` remain deferred
   until direct decode clears 20 with margin.
+
+### 2026-09-01 18:10 PDT - A113 qualifies on A114 and removes duplicate evaluation
+
+- Started from signed A114 code `ca524c3282` and record `90c76d25f0`. In the
+  detached A114 worktree, removed only the explicit `eval(pending_tok_)`
+  immediately before `pending_tok_.item<int32_t>()`. Installed MLX 0.32.2's
+  `array::item<T>()` directly calls `array::eval()`, so scheduling, scalar
+  value, and object lifetime remain unchanged.
+- Strict C++20/O3 warnings-as-errors builds produced candidate dylib
+  `/Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a114_a113_no_duplicate_eval.dylib`
+  with SHA-256
+  `1251a9efc9655cd8ef6f853114ae6b293b1c4abc676399bf9bacf42053992305`.
+  Its focused executable hashes to
+  `a8a944c631378bd7f1a37e3f8531cbe9fd2db2b429784f2193bd79675f3e3a34`
+  and passes the three Q4 QMV shapes, two fused-chain shapes, and the precise
+  sigmoid boundary with zero mismatches.
+- The exact direct environment matches A114 qualification and keeps
+  `SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1` for both arms. Only the dylib changes
+  between selected precise A114 and A114+A113.
+- Forward A114-control/A113-candidate results are:
+
+  ```text
+  pair  control       candidate
+  1     19.347148243  19.329479119
+  2     19.242627231  19.215573021
+  3     19.218382143  19.307212105
+  4     19.306167755  19.295138296
+  5     19.240385449  19.240877485
+  mean  19.270942164  19.277656005
+  ```
+
+  The first window moves **+0.006713841 tok/s / +0.034839%**. Every run is
+  canonical.
+- After a 60-second cooldown, the independent reversed candidate/control
+  window began from 98.14% idle, 94% free memory, zero throttled pages, and
+  normal thermals:
+
+  ```text
+  pair  candidate     control
+  1     19.317661340  19.264135243
+  2     19.320699549  19.331620301
+  3     19.256770404  19.268522238
+  4     19.296717561  19.304819499
+  5     19.314868904  19.260007079
+  mean  19.301343552  19.285820872
+  ```
+
+  The second window moves **+0.015522680 / +0.080488%**. All 20 combined
+  runs preserve 128 timed tokens, digest `d0193f6d413b68c1`, and last token
+  11406. Aggregate matched control/candidate is
+  **19.278381518 / 19.289499778 tok/s**, a
+  **+0.011118260 / +0.057672%** win.
+- Post-window checks found no model/server process, no port-30000 listener,
+  95% free memory, zero throttled pages, and normal thermals. One snapshot
+  showed FileProvider at 5.3% and `mds_stores` at 1.1%, while the aggregate
+  CPU sample remained 96.4% idle; system processes were left untouched.
+- Candidate engine blob is
+  `a5fce61035004b6a7bf26f3dd5f229ff9325b1b7`. It was inserted directly into
+  the main index while Daniel's engine/header/small-batch working-copy hashes
+  remained `0260ff7140`, `40e375e39c`, and `bb42de39fb`. Signed commit
+  `ad11696f2e` (`perf(mlx): avoid duplicate token evaluation`) contains the
+  one-line deletion and has a good EDDSA signature.
+- A113 is selected at **19.289499778 tok/s**. The direct gap is now
+  **0.710500222 tok/s / 3.683352%**. Profile this exact A100+A111+A114+A113
+  path next; exact 131K serving and Codex `xhigh` stay deferred until direct
+  decode clears 20 with margin.

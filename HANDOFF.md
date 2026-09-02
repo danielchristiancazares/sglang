@@ -1,6 +1,6 @@
 # Qwen3.8-27B Q5 SGLang performance handoff
 
-**Snapshot:** 2026-09-01 17:59 PDT
+**Snapshot:** 2026-09-01 18:10 PDT
 
 **Repository:** `/Users/dcazares/sglang`
 
@@ -15,20 +15,20 @@ real Codex work with `xhigh` reasoning, a 131K context window, and at least
 **20 generated tokens/s**. The Codex harness stays unchanged.
 
 The current selected Apple lane is the immutable mixed 4.951-bpw checkpoint
-with the A100 Q5, A111 Q4, and precise-exp A114 fused Q4 MLP Metal kernels.
-Its qualified direct result is:
+with the A100 Q5, A111 Q4, precise-exp A114 fused Q4 MLP Metal kernels, and
+A113's duplicate token-evaluation cleanup. Its qualified direct result is:
 
 | Metric | Selected result |
 |---|---:|
 | Generic mixed-checkpoint direct decode | **18.121698566 tok/s** |
-| Selected A100 + A111 + A114 direct decode | **19.268407916 tok/s** |
-| Gain over generic | **+1.146709350 / +6.327825%** |
-| A114 gain over matched A100+A111 | **+0.039687612 / +0.206398%** |
-| Remaining direct gap | **0.731592084 tok/s / 3.796848%** |
+| Selected A100 + A111 + A114 + A113 direct decode | **19.289499778 tok/s** |
+| Gain over generic | **+1.167801212 / +6.444215%** |
+| A113 gain over matched A114 | **+0.011118260 / +0.057672%** |
+| Remaining direct gap | **0.710500222 tok/s / 3.683352%** |
 | Fixed-work digest | `d0193f6d413b68c1` |
 | Last token | `11406` |
 
-The selected number is the aggregate of two independent A114 five-pair
+The selected number is the aggregate of two independent A113 five-pair
 windows, the second in reversed order. Exact 131,072-token serving, sampled
 behavior, and Codex `xhigh`
 qualification for this mixed checkpoint remain pending. An older GGUF Q5 lane
@@ -84,13 +84,13 @@ active; label their performance as externally exposed to contention.
 ### Main checkout
 
 - Branch: `main`
-- HEAD: `ca524c3282dcfd282567e4b063c33325e4489518`
-  (`perf(mlx): fuse exact Q4 SwiGLU decode`), signed with a verified good EDDSA
+- HEAD: `ad11696f2e` (`perf(mlx): avoid duplicate token evaluation`), signed
+  with a verified good EDDSA
   signature.
-- Tracking state at snapshot: `main...origin/main [ahead 87]`.
+- Tracking state at snapshot: `main...origin/main [ahead 89]`.
 - Index: empty.
-- Selected code commit: `ca524c3282dcfd282567e4b063c33325e4489518`
-  (`perf(mlx): fuse exact Q4 SwiGLU decode`).
+- Selected code commit: `ad11696f2e`
+  (`perf(mlx): avoid duplicate token evaluation`).
 
 Daniel owns these three existing main-checkout modifications. Preserve their
 working-copy bytes and keep them outside optimization commits:
@@ -114,7 +114,7 @@ A114 8-SIMD-by-4-paired-row fused Q4 gate/up/SwiGLU source:
 
 | Modified path | Current Git blob |
 |---|---|
-| `python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp` | `a22c844a1cfd7616aef82c39ca4261928ded10e3` |
+| `python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp` | `a5fce61035004b6a7bf26f3dd5f229ff9325b1b7` |
 | `python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.h` | `512335f1ae677f48ee76a77d2f097bef720e71ce` |
 | `test/registered/unit/hardware_backend/mlx/test_qwen38_affine_q4_batch_one_qmv.cpp` | `a2137fa5f148c2d285ae68bd4852776049ed5aab` |
 
@@ -301,7 +301,7 @@ The linker emits the known macOS 26.0 versus MLX 26.2 deployment warning.
 3. Let the indexing/FileProvider wave reach the ordinary idle state.
 4. Treat precise-exp A114 in signed `ca524c3282` as selected; keep the fast-exp
    artifact closed by PERF-FA132.
-5. Complete A113's interrupted windows as a separate candidate.
+5. Treat signed A113 commit `ad11696f2e` as selected.
 6. Profile the latest exact winner and continue native C++/Metal hotspot work
    until direct performance clears 20 with margin.
 7. Run exact 131K SGLang serving, behavior, Responses API, and Codex `xhigh`
@@ -323,6 +323,6 @@ The linker emits the known macOS 26.0 versus MLX 26.2 deployment warning.
 - `FAILED_PATHS.md`: measured rejected candidates and reopen conditions.
 
 The objective remains open. The selected production-quality direct result is
-19.268407916 tok/s; precise-exp A114 is qualified and committed, leaving
-0.731592084 tok/s / 3.796848% to the direct floor before exact 131K and Codex
-`xhigh` qualification.
+19.289499778 tok/s; A113 is qualified and committed on precise-exp A114,
+leaving 0.710500222 tok/s / 3.683352% to the direct floor before exact 131K
+and Codex `xhigh` qualification.
