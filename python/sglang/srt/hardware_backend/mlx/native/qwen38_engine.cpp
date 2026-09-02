@@ -4699,7 +4699,6 @@ void Engine::load_mtp(const std::string& mtp_dir) {
 }
 
 int32_t Engine::emit_scheduled() {
-  eval(pending_tok_);
   last_emitted_ = pending_tok_.item<int32_t>();
   if (last_emitted_ == 248069) {
     reasoning_open_ = false;
