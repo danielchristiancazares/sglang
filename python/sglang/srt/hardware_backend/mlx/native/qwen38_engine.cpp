@@ -213,6 +213,13 @@ bool native_mtp_post_norm_seed_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_mtp_committed_history_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_MTP_COMMITTED_HISTORY");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 float native_dflash_selector_temperature() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_DFLASH_SELECTOR_TEMPERATURE");
@@ -2444,6 +2451,57 @@ const mx::fast::CustomKernelFunction& affine_q5_batch_two_qmv_metal() {
 
 } // namespace
 
+std::pair<array, array> align_mtp_committed_history(
+    const array& target_hidden,
+    const array& token_ids,
+    const array& previous_hidden,
+    bool has_previous_hidden,
+    const array& final_norm,
+    float rms_norm_eps,
+    bool post_norm_hidden) {
+  if (target_hidden.ndim() != 3 || target_hidden.shape()[0] != 1 ||
+      token_ids.ndim() != 2 || token_ids.shape()[0] != 1 ||
+      token_ids.dtype() != mx::int32 ||
+      token_ids.shape()[1] != target_hidden.shape()[1] ||
+      target_hidden.shape()[1] < 1 || target_hidden.shape()[2] < 1) {
+    throw std::runtime_error("invalid committed MTP history inputs");
+  }
+  const int token_count = static_cast<int>(token_ids.shape()[1]);
+  const int hidden_size = static_cast<int>(target_hidden.shape()[2]);
+  array target_prefix = slice(
+      target_hidden,
+      {0, 0, 0},
+      {1, token_count - 1, hidden_size});
+  array aligned_hidden = target_prefix;
+  array aligned_tokens = slice(
+      token_ids,
+      {0, 1},
+      {1, token_count});
+  if (has_previous_hidden) {
+    array previous = previous_hidden;
+    if (previous.ndim() == 2 && previous.shape() == mx::Shape{1, hidden_size}) {
+      previous = expand_dims(previous, 1);
+    }
+    if (previous.ndim() != 3 ||
+        previous.shape() != mx::Shape{1, 1, hidden_size} ||
+        previous.dtype() != target_hidden.dtype()) {
+      throw std::runtime_error("invalid previous hidden state for MTP history");
+    }
+    aligned_hidden = token_count == 1
+        ? previous
+        : concatenate({previous, target_prefix}, 1);
+    aligned_tokens = token_ids;
+  }
+  if (post_norm_hidden && aligned_hidden.shape()[1] > 0) {
+    if (final_norm.ndim() != 1 || final_norm.shape()[0] != hidden_size) {
+      throw std::runtime_error("invalid final norm for committed MTP history");
+    }
+    aligned_hidden = mx::fast::rms_norm(
+        aligned_hidden, final_norm, rms_norm_eps);
+  }
+  return {aligned_hidden, aligned_tokens};
+}
+
 bool prepare_fused_q4_raw_decode_parameters(
     QLinear& gate, const QLinear& up) {
   if (!gate.valid || !up.valid || gate.bits != 4 || up.bits != 4 ||
@@ -4313,6 +4371,24 @@ void Engine::forward_argmax(const int32_t* tokens, int n, int32_t* out) {
   }
 }
 
+int Engine::target_sequence_length() const {
+  int sequence_length = -1;
+  for (const DecoderLayer& layer : layers_) {
+    if (layer.is_linear) {
+      continue;
+    }
+    if (sequence_length < 0) {
+      sequence_length = layer.attn.offset;
+    } else if (layer.attn.offset != sequence_length) {
+      throw std::runtime_error("inconsistent target attention offsets");
+    }
+  }
+  if (sequence_length < 0) {
+    throw std::runtime_error("target has no full-attention layer");
+  }
+  return sequence_length;
+}
+
 array Engine::mtp_seed_hidden() const {
   if (!native_mtp_post_norm_seed_enabled()) {
     return last_hidden_;
@@ -4323,14 +4399,156 @@ array Engine::mtp_seed_hidden() const {
 
 void Engine::mtp_reset() {
   mtp_layer_.attn.cache_length = 0;
-  int seq = 0;
-  for (const auto& layer : layers_) {
-    if (!layer.is_linear) {
-      seq = layer.attn.offset;
-      break;
-    }
+  mtp_layer_.attn.offset = target_sequence_length();
+  mtp_cycle_snapshot_ = LayerSnap{};
+  mtp_cycle_previous_hidden_ = array(0);
+  mtp_cycle_pending_ = false;
+}
+
+void Engine::mtp_append_history(
+    const array& target_hidden, const array& token_ids) {
+  if (target_hidden.ndim() != 3 || target_hidden.shape()[0] != 1 ||
+      token_ids.ndim() != 2 || token_ids.shape()[0] != 1 ||
+      target_hidden.shape()[1] != token_ids.shape()[1] ||
+      target_hidden.shape()[1] < 1 || token_ids.dtype() != mx::int32) {
+    throw std::runtime_error("invalid aligned MTP history append");
   }
-  mtp_layer_.attn.offset = seq;
+  if (mtp_layer_.attn.offset != mtp_layer_.attn.cache_length) {
+    throw std::runtime_error("noncontiguous committed MTP history");
+  }
+  const int previous_length = mtp_layer_.attn.cache_length;
+  const int token_count = static_cast<int>(token_ids.shape()[1]);
+  array hidden = mtp_forward(embed(token_ids), target_hidden);
+  eval(hidden);
+  if (mtp_layer_.attn.cache_length != previous_length + token_count ||
+      mtp_layer_.attn.offset != mtp_layer_.attn.cache_length) {
+    throw std::runtime_error("invalid committed MTP history length");
+  }
+}
+
+void Engine::mtp_append_prompt_history(
+    const array& target_hidden,
+    const int32_t* tokens,
+    int token_count,
+    const array& previous_hidden,
+    bool has_previous_hidden) {
+  if (token_count < 1) {
+    throw std::runtime_error("MTP prompt history requires a token");
+  }
+  const int current_target_length = target_sequence_length();
+  const int previous_target_length = current_target_length - token_count;
+  const int expected_previous_mtp_length =
+      std::max(0, previous_target_length - 1);
+  if (previous_target_length < 0 ||
+      has_previous_hidden != (previous_target_length > 0) ||
+      mtp_layer_.attn.cache_length != expected_previous_mtp_length ||
+      mtp_layer_.attn.offset != expected_previous_mtp_length) {
+    throw std::runtime_error("invalid MTP prompt history state");
+  }
+  array token_ids(tokens, {1, token_count}, mx::int32);
+  auto [aligned_hidden, aligned_tokens] = align_mtp_committed_history(
+      target_hidden,
+      token_ids,
+      previous_hidden,
+      has_previous_hidden,
+      final_norm_,
+      cfg_.rms_norm_eps,
+      native_mtp_post_norm_seed_enabled());
+  if (aligned_tokens.shape()[1] > 0) {
+    mtp_append_history(aligned_hidden, aligned_tokens);
+  }
+  if (mtp_layer_.attn.cache_length != current_target_length - 1 ||
+      mtp_layer_.attn.offset != current_target_length - 1) {
+    throw std::runtime_error("MTP prompt history is not one token behind");
+  }
+  if (native_spec_trace_enabled()) {
+    std::fprintf(
+        stderr,
+        "qwen38_mtp prompt_history target=%d mtp=%d appended=%d\n",
+        current_target_length,
+        mtp_layer_.attn.cache_length,
+        static_cast<int>(aligned_tokens.shape()[1]));
+  }
+}
+
+void Engine::mtp_begin_committed_cycle() {
+  if (!mtp_committed_history_enabled_) {
+    throw std::runtime_error("committed MTP history is disabled");
+  }
+  if (mtp_cycle_pending_) {
+    throw std::runtime_error("MTP committed cycle already pending");
+  }
+  const int target_length = target_sequence_length();
+  if (target_length < 1 ||
+      mtp_layer_.attn.cache_length != target_length - 1 ||
+      mtp_layer_.attn.offset != target_length - 1 ||
+      last_hidden_.ndim() < 1) {
+    throw std::runtime_error("invalid MTP committed cycle state");
+  }
+  mtp_cycle_snapshot_.is_linear = false;
+  mtp_cycle_snapshot_.keys = mtp_layer_.attn.keys;
+  mtp_cycle_snapshot_.values = mtp_layer_.attn.values;
+  mtp_cycle_snapshot_.offset = mtp_layer_.attn.offset;
+  mtp_cycle_snapshot_.cache_length = mtp_layer_.attn.cache_length;
+  mtp_cycle_snapshot_.cache_capacity = mtp_layer_.attn.cache_capacity;
+  mtp_cycle_previous_hidden_ = last_hidden_;
+  mtp_cycle_pending_ = true;
+  if (native_spec_trace_enabled()) {
+    std::fprintf(
+        stderr,
+        "qwen38_mtp cycle_begin target=%d mtp=%d\n",
+        target_length,
+        mtp_layer_.attn.cache_length);
+  }
+}
+
+void Engine::mtp_commit_cycle(
+    const int32_t* tokens,
+    int token_count,
+    const array& committed_hidden) {
+  if (!mtp_cycle_pending_ || token_count < 1 ||
+      committed_hidden.ndim() != 3 || committed_hidden.shape()[0] != 1 ||
+      committed_hidden.shape()[1] < token_count ||
+      committed_hidden.shape()[2] != cfg_.hidden_size) {
+    throw std::runtime_error("invalid committed MTP cycle result");
+  }
+  mtp_layer_.attn.keys = mtp_cycle_snapshot_.keys;
+  mtp_layer_.attn.values = mtp_cycle_snapshot_.values;
+  mtp_layer_.attn.offset = mtp_cycle_snapshot_.offset;
+  mtp_layer_.attn.cache_length = mtp_cycle_snapshot_.cache_length;
+  mtp_layer_.attn.cache_capacity = mtp_cycle_snapshot_.cache_capacity;
+
+  array token_ids(tokens, {1, token_count}, mx::int32);
+  array hidden_prefix = slice(
+      committed_hidden,
+      {0, 0, 0},
+      {1, token_count, cfg_.hidden_size});
+  auto [aligned_hidden, aligned_tokens] = align_mtp_committed_history(
+      hidden_prefix,
+      token_ids,
+      mtp_cycle_previous_hidden_,
+      /*has_previous_hidden=*/true,
+      final_norm_,
+      cfg_.rms_norm_eps,
+      native_mtp_post_norm_seed_enabled());
+  mtp_append_history(aligned_hidden, aligned_tokens);
+
+  const int target_length = target_sequence_length();
+  if (mtp_layer_.attn.cache_length != target_length - 1 ||
+      mtp_layer_.attn.offset != target_length - 1) {
+    throw std::runtime_error("committed MTP cache is not one token behind");
+  }
+  if (native_spec_trace_enabled()) {
+    std::fprintf(
+        stderr,
+        "qwen38_mtp cycle_commit target=%d mtp=%d appended=%d\n",
+        target_length,
+        mtp_layer_.attn.cache_length,
+        token_count);
+  }
+  mtp_cycle_snapshot_ = LayerSnap{};
+  mtp_cycle_previous_hidden_ = array(0);
+  mtp_cycle_pending_ = false;
 }
 
 array Engine::mtp_forward(const array& token_embed, const array& hidden) {
@@ -4484,6 +4702,8 @@ void Engine::load_dflash2(
   }
 
   mtp_valid_ = false;
+  mtp_committed_history_enabled_ = false;
+  mtp_cycle_pending_ = false;
   dflash_valid_ = true;
   dspark_valid_ = false;
   dflash_reset();
@@ -4604,6 +4824,8 @@ void Engine::load_dspark(
   }
 
   mtp_valid_ = false;
+  mtp_committed_history_enabled_ = false;
+  mtp_cycle_pending_ = false;
   dflash_valid_ = false;
   dspark_valid_ = true;
   dspark_reset();
@@ -5445,6 +5667,7 @@ int Engine::verify_speculative_block(
   const bool tape_commit = native_dflash_tape_commit_enabled();
   TargetForward verified = forward_hidden_captured(
       array(input, {1, draft_token_count + 1}, mx::int32), tape_commit);
+  array committed_hidden = verified.hidden;
   last_hidden_ = last_token(verified.hidden);
   array target_logits = logits(verified.hidden);
   int accepted = 0;
@@ -5587,11 +5810,15 @@ int Engine::verify_speculative_block(
       restore();
       TargetForward committed = forward_hidden_captured(
           array(input, {1, accepted + 1}, mx::int32));
+      committed_hidden = committed.hidden;
       last_hidden_ = last_token(committed.hidden);
       draft_append_context(committed.captured, accepted + 1);
     }
   } else {
     draft_append_context(verified.captured, draft_token_count + 1);
+  }
+  if (mtp_cycle_pending_) {
+    mtp_commit_cycle(input, accepted + 1, committed_hidden);
   }
 
   for (int index = 0; index < accepted; ++index) {
@@ -5636,11 +5863,17 @@ int Engine::verify_speculative_block(
 }
 
 int32_t Engine::target_only_spec_refill(int32_t token) {
+  if (mtp_valid_ && mtp_committed_history_enabled_) {
+    mtp_begin_committed_cycle();
+  }
   int32_t input[1] = {token};
   TargetForward target = forward_hidden_captured(
       array(input, {1, 1}, mx::int32));
   last_hidden_ = last_token(target.hidden);
   draft_append_context(target.captured, 1);
+  if (mtp_cycle_pending_) {
+    mtp_commit_cycle(input, 1, target.hidden);
+  }
   array next = select_token(target.hidden);
   eval(next);
   spec_buf_[0] = next.item<int32_t>();
@@ -5810,7 +6043,11 @@ void Engine::spec_refill(int32_t token) {
       return;
     }
 
-    mtp_reset();
+    if (mtp_committed_history_enabled_) {
+      mtp_begin_committed_cycle();
+    } else {
+      mtp_reset();
+    }
     array hidden = mtp_seed_hidden();
     if (hidden.ndim() == 1) {
       hidden = reshape(hidden, {1, 1, hidden.shape()[0]});
@@ -5941,6 +6178,11 @@ void Engine::load_mtp(const std::string& mtp_dir) {
   mtp_layer_.attn.k_norm =
       require(weights, mtp_prefix + "layers.0.self_attn.k_norm.weight");
   mtp_block_ = native_mtp_block_size();
+  mtp_committed_history_enabled_ = native_mtp_committed_history_enabled();
+  if (mtp_committed_history_enabled_ && !sampling_enabled_) {
+    throw std::runtime_error(
+        "committed MTP history requires native sampling");
+  }
   dflash_valid_ = false;
   dspark_valid_ = false;
   mtp_valid_ = true;
@@ -6047,10 +6289,18 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
       token_history_.end(), new_tokens, new_tokens + new_token_count);
   array hidden(0);
   const bool capture_draft_context = dflash_valid_ || dspark_valid_;
+  const bool capture_mtp_history =
+      mtp_valid_ && mtp_committed_history_enabled_;
+  array previous_mtp_hidden = last_hidden_;
+  bool has_previous_mtp_hidden =
+      capture_mtp_history && target_sequence_length() > 0;
   constexpr int kDraftPrefillChunkSize = 2048;
+  constexpr int kMtpCommittedPrefillChunkSize = 1024;
   const int internal_chunk_size = capture_draft_context
       ? kDraftPrefillChunkSize
-      : (!has_mtp() ? target_only_prefill_chunk_size_ : 0);
+      : (capture_mtp_history
+             ? kMtpCommittedPrefillChunkSize
+             : (!has_mtp() ? target_only_prefill_chunk_size_ : 0));
   if (internal_chunk_size > 0) {
     for (int offset = 0; offset < new_token_count;
          offset += internal_chunk_size) {
@@ -6064,12 +6314,30 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
         draft_append_context(target.captured, chunk_size);
       } else {
         hidden = forward_hidden(chunk_ids);
+        if (capture_mtp_history) {
+          mtp_append_prompt_history(
+              hidden,
+              new_tokens + offset,
+              chunk_size,
+              previous_mtp_hidden,
+              has_previous_mtp_hidden);
+          previous_mtp_hidden = last_token(hidden);
+          has_previous_mtp_hidden = true;
+        }
       }
       mx::synchronize();
     }
   } else {
     array ids(new_tokens, {1, new_token_count}, mx::int32);
     hidden = forward_hidden(ids);
+    if (capture_mtp_history) {
+      mtp_append_prompt_history(
+          hidden,
+          new_tokens,
+          new_token_count,
+          previous_mtp_hidden,
+          has_previous_mtp_hidden);
+    }
   }
   if (!has_mtp()) {
     snapshot();
