@@ -2243,7 +2243,7 @@ array quantized_embedding_rows(
       embedding.w.shape()[0] != embedding.scales.shape()[0] ||
       embedding.scales.shape() != embedding.biases.shape() ||
       embedding.group_size <= 0 || embedding.bits <= 0 ||
-      tokens.dtype() != mx::int32) {
+      (tokens.dtype() != mx::int32 && tokens.dtype() != mx::uint32)) {
     throw std::runtime_error("invalid quantized embedding inputs");
   }
   const int hidden_size =

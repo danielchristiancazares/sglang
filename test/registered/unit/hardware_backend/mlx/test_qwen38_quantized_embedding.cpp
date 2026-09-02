@@ -28,9 +28,10 @@ bool CheckSelectedRowParity() {
   sglang::mlx_qwen38::QLinear embedding{
       quantized[0], quantized[1], quantized[2], 64, 4, true};
   const std::vector<std::int32_t> token_values{31, 0, 7, 7, 18, 3};
-  mx::array tokens(
+  mx::array signed_tokens(
       token_values.data(), {1, static_cast<int>(token_values.size())},
       mx::int32);
+  mx::array unsigned_tokens = mx::astype(signed_tokens, mx::uint32);
 
   mx::array full = mx::dequantize(
       embedding.w,
@@ -41,20 +42,30 @@ bool CheckSelectedRowParity() {
       "affine",
       std::nullopt,
       mx::bfloat16);
-  mx::array expected = mx::take(full, tokens, 0);
-  mx::array actual =
-      sglang::mlx_qwen38::quantized_embedding_rows(embedding, tokens);
-  mx::eval(expected, actual);
+  mx::array expected = mx::take(full, signed_tokens, 0);
+  mx::array signed_actual =
+      sglang::mlx_qwen38::quantized_embedding_rows(embedding, signed_tokens);
+  mx::array unsigned_actual = sglang::mlx_qwen38::quantized_embedding_rows(
+      embedding, unsigned_tokens);
+  mx::eval(expected, signed_actual, unsigned_actual);
 
-  std::size_t bit_mismatches = 0;
+  std::size_t signed_bit_mismatches = 0;
+  std::size_t unsigned_bit_mismatches = 0;
   const auto* expected_bits = expected.data<std::uint16_t>();
-  const auto* actual_bits = actual.data<std::uint16_t>();
+  const auto* signed_actual_bits = signed_actual.data<std::uint16_t>();
+  const auto* unsigned_actual_bits = unsigned_actual.data<std::uint16_t>();
   for (std::size_t index = 0; index < expected.size(); ++index) {
-    bit_mismatches += expected_bits[index] != actual_bits[index];
+    signed_bit_mismatches += expected_bits[index] != signed_actual_bits[index];
+    unsigned_bit_mismatches +=
+        expected_bits[index] != unsigned_actual_bits[index];
   }
   std::cout << "selected_rows=" << token_values.size()
-            << " bit_mismatches=" << bit_mismatches << '\n';
-  return expected.shape() == actual.shape() && bit_mismatches == 0;
+            << " signed_bit_mismatches=" << signed_bit_mismatches
+            << " unsigned_bit_mismatches=" << unsigned_bit_mismatches
+            << '\n';
+  return expected.shape() == signed_actual.shape() &&
+      expected.shape() == unsigned_actual.shape() &&
+      signed_bit_mismatches == 0 && unsigned_bit_mismatches == 0;
 }
 
 bool RejectsInvalidTokenType() {
