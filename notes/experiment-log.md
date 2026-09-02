@@ -24510,3 +24510,68 @@ mean 13.929045  17.125658 446.051        39.730
   MTP path: it currently constructs and retains full-vocabulary dense q for
   every draft even though top-k 20/top-p 0.95 leaves at most twenty nonzero
   entries and the verifier already accepts sparse proposal indices/probabilities.
+
+### 2026-09-02 01:17 PDT - A146/A147 sparse standard-MTP q is exact but neutral
+
+- Main began at signed `a5fba94c81`, 117 commits ahead of `origin/main`,
+  with an empty index and only Daniel's three protected working blobs at
+  their exact recorded Git hashes. Port 30000, model/server, benchmark,
+  trace, and user compiler searches were clear. Memory pressure reported 94%
+  free capacity with zero throttled pages; macOS reported no thermal or
+  performance warning and AC power was present. The detached A137 worktree
+  began and ended with production engine blob
+  `a5696cdc8dfa0c70316aa233e77215c52d450534` and no tracked diff.
+- Established a fresh selected-model MTP baseline rather than extrapolating
+  from the older uniform-Q5 target. Every process used A137 artifact
+  `libqwen38_a137_promote_final.dylib`, mixed target revision
+  `596b8067f7cf429007bb668874ffee7e917c8340`, official five-bit MTP revision
+  `1faa5a803c972c57cfc1beed606184e726ad3d85`, post-norm seed enabled, and
+  the selected mixed-Q5 environment:
+
+  ```text
+  /usr/bin/env -u SGLANG_MLX_NATIVE_ATTN_CACHE_BITS MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=1024 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS=1 SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1 SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION=1 SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE=0 SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT=0 SGLANG_MLX_NATIVE_MTP_POST_NORM_SEED=1 SGLANG_MLX_NATIVE_MTP_BLOCK_SIZE=BLOCK /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 600s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native DYLIB MIXED_TARGET 128 32 128 MTP_DIR
+  ```
+
+  Block two reaches **15.240303571 tok/s**, 71 refills, mean width
+  **1.802816901**, digest `b10401e93371a45e`, and last token 2466. Block
+  three reaches **10.126390206 tok/s**, 63 refills, width **2.047619048**,
+  digest `ecca043451e9f34c`, and last token 5359. Block two is the only funded
+  sparse-q shape.
+- A baseline `128 / 4 warm / 16 timed` trace used
+  `SGLANG_MLX_NATIVE_TRACE_SPEC=1` and reached **12.947182273 tok/s**, ten
+  refills, width **1.6**, digest `1db9bc7ba5d021ea`, and last token 198.
+  After first-use compilation, two-token target verification is consistently
+  about **102--104 ms**; acceptance sampling is roughly **0.54--0.77 ms**
+  and rejection replay/commit roughly **1.8--2.0 ms**.
+- A146 factors the existing top-k-20/top-p-0.95 support producer, samples the
+  probability-sorted support directly, and passes `[1,drafts,20]` sparse IDs
+  and q values into the already-qualified sparse verifier. Strict C++20/O3
+  `-Wall -Wextra -Werror` build passed with only the established macOS
+  26.0/MLX 26.2 link warning. The new binary with its flag disabled
+  reproduces **15.230953312 tok/s**, 71 refills, width **1.802816901**, and
+  digest `b10401e93371a45e`. Enabling sparse proposals instead reaches only
+  **6.983233096 tok/s**, 107 refills, width **1.196261682**, digest
+  `2822024397f42e25`, and last token 148544: a **54.151044%** regression.
+  Exact p/q lookup, rejection, residual sampling, and state commit all
+  complete; the failure is the changed seeded trajectory. A146 binary/source
+  hashes are `7d605fcb95403f0ec8715cbe9fc770e15b1ab9f20d84bd463b58939023036707`
+  and `4439ba4e3551118f91eae05c8502dce2493bd92165746c516d6fee95719bc495`.
+- MLX 0.32.2 `random.cpp` selects its inverse-CDF implementation when one
+  distribution's total size equals its vocabulary dimension. It therefore
+  consumes one uniform and walks dense vocabulary-ID order rather than using
+  Gumbel-max. A temporary full-vocabulary Gumbel plus sparse gather remained
+  seed-inexact and was not timed as a candidate. A147 instead sorts the
+  20-entry support by token ID before the same categorical call.
+- A147's traced 16-token result exactly reproduces baseline digest
+  `1db9bc7ba5d021ea`, last token 198, ten refills, width 1.6, every target-p
+  value, and the full acceptance path. Its full 128-token result is
+  **15.222551699 tok/s**, 71 refills, width **1.802816901**, digest
+  `b10401e93371a45e`, and last token 2466. Against the adjacent disabled
+  **15.230953312 tok/s**, this is a **0.008401613 / 0.055161%** regression.
+  Final binary/source SHA-256 values are
+  `8fb728c107d57d942313f32e28b3fd145994b3519d51807762fb7dafe345911a`
+  and `d560ac0942d6b9cc7c295b012f91110464ab4c78dba0ff3e82308be8d8500ec9`.
+- PERF-FA157/158 reject both sparse-only forms. A137 source was restored
+  byte-for-byte with an empty tracked diff. The next candidate targets the
+  actual approximately 103 ms owner: exact row-wise/native batch-one
+  execution for the M=2 target verification matrices.

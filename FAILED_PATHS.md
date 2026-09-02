@@ -4456,3 +4456,57 @@ the stock full-attention mechanism a 32K or 131K solution.
   `fb42b64ab1525c00fa422bde3f84affdd8e355e40b9c6405a7ea91dd147b435e`;
   source-at-measurement is
   `3eb5d69ca943a85f7318f17bb81333a681ba7bd1a2e77d82839711c5bf4a0b9a`.
+
+## PERF-FA157 - Probability-ordered sparse standard-MTP proposal sampling
+
+- Hypothesis: retaining only the top-20/top-p proposal support would remove
+  redundant full-vocabulary scatter, categorical, and verifier storage.
+- Scope: selected mixed-Q5 target, official affine-5-bit MTP revision
+  `1faa5a803c972c57cfc1beed606184e726ad3d85`, sampled block two, seed 42.
+- Attempted change: sampled the probability-sorted 20-entry support directly
+  and passed its IDs/probabilities through the existing sparse-q verifier.
+- Benchmark evidence: the flag-disabled binary reaches **15.230953312 tok/s**
+  with 71 refills and width **1.802816901**. Sparse sampling reaches only
+  **6.983233096 tok/s**, 107 refills, and width **1.196261682**, a
+  **54.151044%** regression.
+- Correctness evidence: proposal q lookup, exact p/q acceptance, residual
+  sampling, state commit, and 128-token completion all succeed. Output digest
+  changes from `b10401e93371a45e` to `2822024397f42e25`.
+- Failure mode: MLX 0.32.2 uses inverse-CDF sampling for this single
+  distribution. Sorting support by probability changes the deterministic CDF
+  order and therefore the seeded proposal/acceptance trajectory.
+- Why not to retry unchanged: the result is distributionally valid but loses
+  more than half the throughput on the required seed and violates the fixed
+  seeded trajectory used for attribution.
+- Reopen only if: sampling preserves vocabulary-order CDF and exact RNG
+  consumption; PERF-A147 measures that form.
+- Related commit or revert: source restored. A146 binary/source SHA-256 values
+  are `7d605fcb95403f0ec8715cbe9fc770e15b1ab9f20d84bd463b58939023036707`
+  and `4439ba4e3551118f91eae05c8502dce2493bd92165746c516d6fee95719bc495`.
+
+## PERF-FA158 - Seed-exact vocabulary-ordered sparse MTP proposals
+
+- Hypothesis: sorting the sparse support by token ID would reproduce MLX's
+  dense inverse-CDF order and make sparse q both exact and faster.
+- Scope: the same mixed-Q5/5-bit-MTP block-two sampled contract as PERF-FA157.
+- Attempted change: sorted the 20 support entries by ascending vocabulary ID
+  before categorical sampling, retained one-uniform RNG consumption, and
+  passed sparse q to the established verifier.
+- Benchmark evidence: control/candidate are **15.230953312 / 15.222551699
+  tok/s**, a **0.008401613 tok/s / 0.055161%** regression. Both use 71
+  refills and mean width **1.802816901**.
+- Correctness evidence: the 128-token digest `b10401e93371a45e`, last token
+  2466, refill count, and width are exact. A 16-token trace also reproduces
+  digest `1db9bc7ba5d021ea`, last token 198, all target probabilities, and the
+  complete acceptance sequence.
+- Failure mode: dense proposal scatter and q retention are not material beside
+  the approximately 103 ms target verification pass; sparse bookkeeping adds
+  enough work to remain flat/slightly slower.
+- Why not to retry unchanged: the complete exact cycle directly measures no
+  gain, and the candidate cannot approach the **5.047909%** actual-work gap.
+- Reopen only if: sparse p and q are consumed by a fused verifier/sampler that
+  also removes measured target-side work rather than only representation.
+- Related commit or revert: A137 source restored. Final A147 binary/source
+  SHA-256 values are
+  `8fb728c107d57d942313f32e28b3fd145994b3519d51807762fb7dafe345911a` and
+  `d560ac0942d6b9cc7c295b012f91110464ab4c78dba0ff3e82308be8d8500ec9`.
