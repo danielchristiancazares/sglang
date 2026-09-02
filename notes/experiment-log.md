@@ -23383,3 +23383,58 @@ mean 13.929045  17.125658 446.051        39.730
   restoration returns engine blob
   `5912bc2fe9b1e8f34bdace0b1a009f8aa1223d04`; engine/header diff against
   signed A117 is empty and `git diff --check` passes. Port 30000 remained free.
+
+### 2026-09-01 19:56 PDT - A125 exact affine entropy win does not survive dense Q5 decode
+
+- Main remained at signed `8442d51ae7d720f626c4f734379abc25e84d4c97`,
+  96 commits ahead of `origin/main`, with an empty index and Daniel's three
+  user-owned blobs unchanged at `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. The detached candidate began
+  from exact selected A117/A100 engine/header blobs
+  `5912bc2fe9b1e8f34bdace0b1a009f8aa1223d04` and
+  `512335f1ae677f48ee76a77d2f097bef720e71ce`.
+- A standalone strict C++20 CPU analyzer loaded the four immutable mixed-model
+  shards through MLX without instantiating the model. Across **402 affine
+  tensors / 419,840,000 parameter pairs**, scale and bias signs are opposite
+  pair-by-pair; every value is finite normal BF16. All 240 Q5 tensors fit a
+  fixed 20-bit linked representation. All fused-Q4 MLP tensors also fit 20
+  bits; only the embedding and two Q4 self-attention q projections require 21.
+  Ideal bitstream stream reductions are **3.690411% Q5**, **4.218163% Q4**,
+  and **3.959524% combined**. Analyzer source/binary/report SHA-256 values are:
+
+  ```text
+  9a1234cb94348647df68a8fc03ba1108cff8015a6c2c5d2439589a4d744d491c  analyze_qwen38_affine_params.cpp
+  72f36590d2460e91161c68bcb46fddd41d82c326886e99826461617458d82d02  analyze_qwen38_affine_params
+  8e8d32f0a159f37d34d29e87112e5a7a944a3693ad26209e1c0662150009ace4  analyze_qwen38_affine_params_signlinked_20260901.txt
+  ```
+
+- PERF-A125 added an opt-in C++ packer, retained original prefill parameters,
+  interleaved four row codes into each ten-byte bundle, and reconstructed exact
+  scale/bias BF16 bits in a dedicated Q5 Metal kernel. The strict build used:
+
+  ```text
+  clang++ -std=c++20 -O3 -Wall -Wextra -Werror -isystem /Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/include -I/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native -L/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -Wl,-rpath,/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a125_q5_compact_params /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a125_q5_compact_params.cpp /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp
+  ```
+
+  Candidate engine/header blobs are
+  `bffa76ce87cea009e3c025a947cf97b12226c535` and
+  `3476925b67c4a65167d5aec7177290108fc74648`. Benchmark source/binary and
+  unchanged-suite binary hashes are `b14380bb...536e5`,
+  `f4ae356b...cfac`, and `b14b1315...e175` respectively. The unchanged focused
+  suite passes. K=512/N=64 compact and regular outputs match exactly at digest
+  `5dfe43d38768b898`.
+- Production K=17,408/N=5,120 ran `200 / 3000` in alternating order:
+
+  ```text
+  regular  0.431460250 ms  digest 4c08a11e47576b08
+  compact  0.458926500 ms  digest 4c08a11e47576b08
+  compact  0.461158805 ms  digest 4c08a11e47576b08
+  regular  0.438137875 ms  digest 4c08a11e47576b08
+  aggregate regular/compact 0.434799063 / 0.460042653 ms
+  ```
+
+  A125 regresses **0.025243590 ms / 5.805806%** and is rejected before a
+  dylib or model load. Port 30000 remained free. The entropy proof is retained;
+  the next control keeps raw 32-bit BF16 pairs while interleaving four rows to
+  isolate locality/load-count benefit from reconstruction cost.
