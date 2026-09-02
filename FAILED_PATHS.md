@@ -4225,3 +4225,34 @@ the stock full-attention mechanism a 32K or 131K solution.
 - Reopen only if: a source-level kernel or graph change materially changes the
   command stream and a new trace identifies submission cadence as an owner.
 - Related commit or revert: record-only checkpoint; no source changed.
+
+## PERF-FA149 - Precise-exp fallback inside the fast fused-Q4 sigmoid
+
+- Hypothesis: using fast Metal exp for ordinary BF16 gates while branching to
+  precise exp for the sole finite mismatch and non-finite patterns would
+  preserve exact behavior and recover the fast-exp instruction saving.
+- Scope: the shared sigmoid helper used by regular-parameter and raw-parameter
+  fused affine-Q4 gate/up/SwiGLU batch-one kernels.
+- Attempted change: compute fast exp first, detect BF16 input `0xc0db` or an
+  all-ones exponent, and overwrite the exponential with
+  `metal::precise::exp` on that branch.
+- Benchmark evidence: four alternating `raw 5120 17408 1000 10000` runs
+  average **0.554598152 ms** for unconditional precise exp and
+  **0.555708195 ms** for conditional fallback, a
+  **0.001110043 ms / 0.200153%** regression.
+- Correctness evidence: the standalone Metal analyzer covers all 65,536 BF16
+  patterns and reports zero corrected sigmoid and SiLU mismatches. Existing
+  production-shape and `-6.84375` boundary tests also pass bit-for-bit.
+- Failure mode: retaining the precise exponential in the compiled shader adds
+  enough instruction/control cost to exceed any benefit from the ordinary
+  fast path, even though the exceptional branch is not reached by the
+  benchmark fixture.
+- Why not to retry unchanged: the exact production-shape micro directly
+  measures the complete fused dispatch and repeatedly favors unconditional
+  precise exp.
+- Reopen only if: the Metal compiler proves it can isolate a cold precise path
+  without charging the ordinary shader, or a new architecture has materially
+  different branch/function lowering.
+- Related commit or revert: no source retained. PERF-A137 encodes the one
+  exceptional result directly, remains complete-domain exact, and wins the
+  full-model gate in signed `24d745ff38`.

@@ -24171,3 +24171,100 @@ mean 13.929045  17.125658 446.051        39.730
   candidate returns to the measured decode owner: exhaustively characterize
   the BF16-domain difference between selected precise-exp and faster-exp
   sigmoid/SwiGLU evaluation before attempting a bit-exact fused-Q4 shader.
+
+### 2026-09-02 00:13 PDT - A137 retains an exhaustive-exact fast sigmoid win
+
+- Main began at signed `e551dc6136`, 111 commits ahead of `origin/main`, with
+  an empty index. Daniel's three user-owned working blobs remained exact at
+  `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. No SGLang listener or model/
+  compiler workload overlapped the sequential Metal measurements.
+- A standalone C++/Metal analyzer enumerated all 65,536 raw BF16 patterns and
+  compared the A114 precise sigmoid/SiLU chain with `metal::exp`. There are
+  65,280 finite patterns and exactly one finite mismatch: input `0xc0db`
+  (`-6.84375`) produces precise/fast sigmoid bits `0x3a8b/0x3a8c` and
+  precise/fast SiLU bits `0xbbee/0xbbf0`. All 256 non-finite patterns already
+  agree. Replacing only the exceptional fast result makes complete-domain
+  corrected digests identical to precise:
+
+  ```text
+  precise_sigmoid_digest=0x2ea833bdb8daa4c7
+  corrected_sigmoid_digest=0x2ea833bdb8daa4c7
+  precise_silu_digest=0xaddc48ce55070204
+  corrected_silu_digest=0xaddc48ce55070204
+  all_corrected_sigmoid_mismatches=0
+  all_corrected_silu_mismatches=0
+  ```
+
+- A136 first computed fast exp and retained conditional precise-exp fallback.
+  Four alternating production-shape `raw 5120 17408 1000 10000` runs average
+  **0.554598152 ms** control and **0.555708195 ms** candidate, a
+  **0.200153%** regression. The exact formulation is closed by PERF-FA149.
+- A137 removes precise exp from the ordinary shader entirely and returns BF16
+  sigmoid bits `0x3a8b` only for input `0xc0db`; every other input uses fast
+  exp. The helper lives in the shared Metal header consumed by both regular
+  and raw fused-Q4 kernels. Its initial four-pair micro aggregate is
+  **0.556598826 -> 0.556178180 ms** (**0.075574%** faster), small enough that
+  the complete model remained decisive.
+- Both full-model windows used this exact command shape, changing only the
+  dylib between the precise A134 control and A137 candidate:
+
+  ```text
+  /usr/bin/env -u SGLANG_MLX_NATIVE_ATTN_CACHE_BITS MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=1024 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS=1 SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1 SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION=1 SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE=0 SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT=0 /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native DYLIB /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128
+  ```
+
+  First-window control/candidate samples are:
+
+  ```text
+  control    19.631994430 19.642262607 19.638519049 19.624306578 19.635511097
+  candidate  19.659547829 19.666979521 19.645365092 19.681088588 19.657108238
+  means      19.634518752 19.662017854  (+0.140055%)
+  ```
+
+  Independent reversed-window samples are:
+
+  ```text
+  control    19.640640344 19.666424535 19.660151751 19.630702396 19.639142268
+  candidate  19.613865432 19.674795989 19.686600725 19.679776340 19.714178426
+  means      19.647412259 19.673843382  (+0.134527%)
+  ```
+
+  Aggregate matched throughput is **19.640965505 -> 19.667930618 tok/s**,
+  **+0.026965113 / +0.137290%**. Every valid arm emits exact 128-token output,
+  digest `d0193f6d413b68c1`, last token 11406, and exit zero.
+- One reversed candidate/control pair (**19.675537826 / 16.809087295**) and
+  its immediate retake (**16.802773049 / 16.106106695**) were retained as an
+  externally contended interval and excluded together. After 60 seconds idle,
+  CPU was 87.25% idle, memory had 19 GiB unused, throttled pages were zero, and
+  macOS reported no thermal/performance warning; the replacement pair restored
+  **19.714178426 / 19.639142268 tok/s**.
+- The strict final C++20/O3 `-Wall -Wextra -Werror` production-path test reports
+  all existing Q4/Q4-fused cases exact, the original boundary exact, and:
+
+  ```text
+  Q4 fused SwiGLU finite BF16 patterns=65280 changed_by_qmv=255 mismatches=0
+  ```
+
+  It compares the selected fused output to separate affine-Q4 QMV plus MLX
+  SiLU after constructing every finite BF16 input pattern. The 255 changed
+  synthetic gate bits are altered by the QMV accumulation before either
+  epilogue and are therefore compared at the actual shared boundary.
+- Final artifact SHA-256 values are
+  `61d0d1e704fc417ee15be16054af21a01474fe1f7c274e7666b5382554a61577`
+  for `libqwen38_a137_promote_final.dylib` and
+  `94b22866913b9cf96842bc6021c23ddb80a7434d21b311df6eb1163a51b9631f`
+  for `test_qwen38_a137_promote_final`. The final dylib smoke reaches
+  **19.729345617 tok/s** with canonical output.
+- To protect Daniel's overlapping main-worktree engine blob, A137 was applied
+  and signed in a clean detached promotion worktree, then `main` was advanced
+  by exact parent-checked ref update and its empty index refreshed without
+  touching worktree content. Signed commit `24d745ff38`
+  (`perf(mlx): accelerate exact fused q4 sigmoid`) contains only the shared
+  helper and exhaustive C++ test. Main is now 112 commits ahead; its index is
+  empty and all three protected hashes remain unchanged.
+- The selected short direct mean is **19.667930618 tok/s**, leaving
+  **0.332069382 tok/s** to 20. A137 closes sigmoid arithmetic. The next batch
+  returns to weight-side Q4/Q5 bytes and instruction ownership while the A134
+  compressed-cache composition remains capacity-only and performance-
+  ineligible.

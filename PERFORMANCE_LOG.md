@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max A137 exact fast fused-Q4 sigmoid, sampled direct `128 / 32 warm / 128 timed` | precise-exp matched control **19.640965505 tok/s** | exact fast-exp correction **19.667930618 tok/s** | two independent five-pair windows improve **+0.140055% / +0.134527%**; aggregate **+0.026965113 tok/s / +0.137290%**; all 20 arms canonical; final committed-source smoke **19.729345617 tok/s**; mean gap **0.332069382 tok/s** | selected mixed-Q5 environment, same direct harness, strict final dylib; PERF-A137 | 2026-09-02 00:12 PDT |
 | M1 Max A134 affine-Q8/G64 cache capacity and split-count attribution | 16,384-slot automatic split policy: **2.103212500 ms** attention at 8,192 active tokens | 131,072-slot direct engine completes `8193 / 1 warm / 8 timed` at **3.515167775 tok/s**; isolated 131K-reserve attention at 8K is **1.3758--2.2434 ms** across competitive 16/auto runs | the final approximately **4.25 GiB** cache allocation fits, but fixed 1/2/4-way splits regress to **7.4532 / 3.8310 / 2.0462 ms** at 16K capacity and fixed 8/16/32 do not repair full-model composition; temporary override removed | `bench_qwen38_a135_q8_splits ACTIVE CAPACITY 30|100` plus strict A134 direct engine at `SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE=131072`; PERF-FA147 | 2026-09-01 23:46 PDT |
 | M1 Max mixed-Q5 A134 direct long-history integration, `8193 / 1 warm / 8 timed` | matched BF16 cache **7.529148099 tok/s** in **1.062537208 s** | affine-Q8/G64 cache plus split decode **3.449726941 tok/s** in **2.319024125 s** | **-4.079421158 tok/s / -54.181710%**; both complete exact prefill/warm/decode, so current Q8 composition is functional but performance-ineligible; isolated one-layer Q8 attention/append at 8K are only **2.103212500 / 0.295643750 ms** | strict rebuilt A134 dylib, selected mixed-Q5 environment, 1,024-token chunks, 16,384-slot reserve, append-only snapshots; change only cache bits `0 -> 8` | 2026-09-01 23:36 PDT |
 | M1 Max mixed-Q5 A134 recovery control, sampled direct `128 / 32 warm / 128 timed` | recorded A130 selected short path **19.744722973 tok/s** | fresh A133-artifact control **19.738568824 tok/s** in **6.484766000 s** | **-0.006154149 tok/s / -0.031169%** from the recorded sample; canonical digest `d0193f6d413b68c1`, last token 11406, and exact 128-token output reproduce; **0.261431176 tok/s / 1.324%** remains to the floor | selected mixed-Q5 environment with A100/A111/A114/A113/A117/A128/A130/A131 enabled and both A133 controls disabled; `bench_qwen38_native ... 128 32 128` | 2026-09-01 23:25 PDT |
@@ -183,6 +184,63 @@ tree throughput can be ranked for production.
 
 ## Deltas
 
+### 2026-09-02 00:12 PDT - PERF-A137 exact fast fused-Q4 sigmoid
+
+- Change: replaced the fused-Q4 helper's unconditional precise exponential
+  with the fast Metal exponential and the one exact BF16 correction established
+  by exhaustive comparison: input `0xc0db` (`-6.84375`) returns precise
+  sigmoid bits `0x3a8b`. The helper is the shared header used by both regular-
+  parameter and selected raw-parameter fused Q4 kernels.
+- Benchmark evidence: the first five-pair control/candidate window is
+  **19.634518752 / 19.662017854 tok/s** (**+0.140055%**); the independent
+  reversed window is **19.647412259 / 19.673843382 tok/s**
+  (**+0.134527%**). Aggregate matched throughput is
+  **19.640965505 -> 19.667930618 tok/s**, a
+  **+0.026965113 / +0.137290%** win. The strict final committed-source smoke
+  reaches **19.729345617 tok/s**. The remaining mean gap is
+  **0.332069382 tok/s**.
+- Raw full-model control samples are **19.631994430, 19.642262607,
+  19.638519049, 19.624306578, 19.635511097** and **19.640640344,
+  19.666424535, 19.660151751, 19.630702396, 19.639142268**. Candidate samples
+  are **19.659547829, 19.666979521, 19.645365092, 19.681088588,
+  19.657108238** and **19.613865432, 19.674795989, 19.686600725,
+  19.679776340, 19.714178426**.
+- Correctness evidence: a standalone Metal analyzer compares precise, fast,
+  and corrected sigmoid plus SiLU over all 65,536 BF16 bit patterns. Fast
+  differs at exactly one finite input; corrected precise/fast digests are
+  identical with zero mismatches over the complete domain. The production
+  fused-Q4 test then exercises all 65,280 finite input patterns through QMV;
+  it reports `changed_by_qmv=255 mismatches=0` against the separate QMV plus
+  MLX SiLU oracle. Existing production shapes and the original boundary also
+  remain bit-exact. Every full-model arm emits digest `d0193f6d413b68c1`, last
+  token 11406, and exact length.
+- Environmental evidence: one candidate/control pair
+  (**19.675537826 / 16.809087295**) and its immediate slow retake
+  (**16.802773049 / 16.106106695**) were retained as externally contended and
+  excluded together. A 60-second idle interval restored the replacement pair
+  to **19.714178426 / 19.639142268**. Throttled pages remained zero and macOS
+  reported no thermal or performance warning.
+- Decision: qualify and retain A137. Signed `24d745ff38` contains the shared
+  shader correction and exhaustive production-path C++ test. Continue with
+  weight-side Q4/Q5 work; sigmoid arithmetic is now exhausted.
+- Commit: signed `24d745ff38` (`perf(mlx): accelerate exact fused q4 sigmoid`).
+
+### 2026-09-02 00:12 PDT - PERF-FA149 precise fallback inside fast sigmoid
+
+- Change: used fast exp by default but retained a conditional
+  `metal::precise::exp` fallback for the exceptional and non-finite BF16
+  patterns.
+- Benchmark evidence: four alternating production-shape micro runs average
+  **0.554598152 ms** for unconditional precise exp and
+  **0.555708195 ms** for the conditional fallback, a **0.200153%** regression.
+- Correctness evidence: the complete 65,536-pattern analyzer reports zero
+  corrected sigmoid and SiLU mismatches, and production-shape plus boundary
+  tests pass.
+- Decision: reject the formulation. Merely retaining precise exp in the
+  shader removes the intended benefit; A137 replaces the sole differing result
+  directly and is also complete-domain exact.
+- Commit: no source retained; see `FAILED_PATHS.md`.
+
 ### 2026-09-01 23:46 PDT - PERF-FA147 Q8 cache split-count and full-reserve screen
 
 - Change: added a temporary process-start override for the Q8 attention key
@@ -210,7 +268,7 @@ tree throughput can be ranked for production.
 - Decision: reject a fixed split-count production control and stop sweeping
   this axis. Retain automatic selection and the full-reserve capacity evidence;
   A134 requires a different cache representation/composition before promotion.
-- Commit: pending evidence checkpoint; see `FAILED_PATHS.md`.
+- Commit: signed `e551dc6136` evidence checkpoint; see `FAILED_PATHS.md`.
 
 ### 2026-09-01 23:46 PDT - PERF-FA148 mixed-Q5 command-buffer extensions
 
@@ -226,7 +284,7 @@ tree throughput can be ranked for production.
   canonical digest `d0193f6d413b68c1`, last token 11406, and exit zero.
 - Decision: retain 256 MiB and 100 operations. The configuration space is
   closed until a source change materially alters command-stream composition.
-- Commit: pending evidence checkpoint; see `FAILED_PATHS.md`.
+- Commit: signed `e551dc6136` evidence checkpoint; see `FAILED_PATHS.md`.
 
 ### 2026-09-01 23:36 PDT - PERF-A134 first integrated Q8 cache screen
 
@@ -1017,6 +1075,9 @@ tree throughput can be ranked for production.
 | PERF-A132 | Preserve the embedding gather contract for native sampler output indices. | On-demand quantized embedding and scheduled native decode | Qualified and retained | Prompt IDs enter as MLX `int32`, while the first sampled token is MLX `uint32`. The narrowed A131 validation rejected that valid second forward. Focused signed/unsigned gathers are both bit-exact with floating indices still rejected; same-dylib direct control returns canonical **19.699758875 tok/s**. Signed `e7643c904d`. |
 | PERF-A133 | Reduce persistent full-attention KV and prompt-snapshot residency without perturbing batch-one decode. | Sixteen BF16 K/V caches, geometric growth, and no-MTP prompt snapshots at exact 131K | BF16 reserve rejected; snapshot mechanism retained | Metadata-only append-only snapshots pass exact rollback/overwrite invariants and are neutral in one direct pair (**19.685169420 -> 19.672600916 tok/s**). A final 131,072-slot BF16 reserve fails exact 32K after about 16 seconds: scheduler RSS is **18,225,056 KiB** before the request and final K/V adds 8 GiB against the approximately 25 GiB Metal working set. See PERF-FA145. |
 | PERF-A134 | Store long-context full-attention K/V as affine-Q8/G64 and consume it directly in fixed-memory prefill and split-history decode kernels. | Sixteen full-attention layers above the 8K stock-safe threshold; append-only cache; batch one; 24/4/256 GQA | Direct capacity primitive; current composition rejected | Focused Q8 prefill/split parity and full `8193+9` direct execution pass without OOM. A full 131,072-slot reserve also fits and completes at **3.515167775 tok/s**, but matched BF16 at 16K reserve reaches **7.529148099**. A 1--32 split sweep shows no fixed topology repair, so automatic selection remains and the integrated Q8 representation needs redesign before serving gates. See PERF-FA147. |
+| PERF-A135 | Pin affine-Q8 attention to one through 32 key splits. | A134 batch-one split-history decode | Runtime-correct and rejected | Fixed values do not dominate across 8K/32K histories; automatic reaches **2.2791 ms** at 32K versus fixed 16 at **2.2349 ms**, far too small to repair the full-model deficit. Temporary control removed; see PERF-FA147. |
+| PERF-A136 | Retain precise exp only as an exceptional/non-finite fallback behind fast fused-Q4 sigmoid. | Shared regular/raw fused-Q4 sigmoid helper | Complete-domain exact and rejected | Four paired micros regress **0.554598152 -> 0.555708195 ms**, **0.200153%**. Presence of the precise operation defeats the intended instruction saving; see PERF-FA149. |
+| PERF-A137 | Use fast fused-Q4 sigmoid with the sole exhaustive BF16 correction encoded directly. | Shared regular/raw fused-Q4 helper; selected mixed-Q5 decode | Qualified and retained | Complete 65,536-pattern corrected sigmoid/SiLU comparison has zero mismatches; production fused QMV covers all 65,280 finite inputs with zero oracle mismatches. Two five-pair full-model windows improve **19.640965505 -> 19.667930618 tok/s**, **+0.137290%**, all canonical. Signed `24d745ff38`. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
