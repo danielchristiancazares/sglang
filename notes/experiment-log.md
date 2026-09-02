@@ -23709,3 +23709,61 @@ mean 13.929045  17.125658 446.051        39.730
   capacity work. PERF-FA142 closes both uncapped long-prefill forms. The next
   launch must add `--watchdog-timeout 3600` before the 32K and exact 131K
   synchronous prefills; steady sampled serving and Codex `xhigh` remain open.
+
+### 2026-09-01 21:19 PDT - Exact-ID 32K rejects the cache-capped dense-SDPA path
+
+- Main was signed `12a403bf20800f05d036832cc5ad98cec5fcdc80`, 101
+  commits ahead of `origin/main`, with an empty index and Daniel's three
+  original modified paths unchanged. The detached A128 worktree remained at
+  engine/header blobs `686aa5c138bb9094b8db3e7a1a6080fdf3d50a01` and
+  `f6be290147e665ef1df2f1c6539f9cfe7e31355e`; its server dylib remained
+  `bd61c37362a9dce99de8bd8ab368a5f587326bbb5a4b6bf49eb12a891bf77bbd`.
+- Relaunched the exact selected A128 serving command from the 21:08 entry with
+  `SGLANG_MLX_CACHE_LIMIT_GB=1`,
+  `SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=1024`, and
+  `--watchdog-timeout 3600`. Resolved arguments retained real 131,072 context,
+  total-token, outer-prefill, and maximum-prefill limits; one running request;
+  five Mamba slots; both Qwen parsers; native sampling; language-only metadata;
+  and disabled CUDA graphs. Root/listener PID was 15355, with resource tracker
+  15358, scheduler 15359, and detokenizer 15360.
+- The existing OpenAI benchmark's 32K calibration first tokenized to 344,115
+  tokens and was discarded as a capacity measurement. To eliminate that
+  confound, compiled the existing no-tokenizer client with:
+
+  ```text
+  rustc +1.92 --edition 2024 -O scripts/apple_silicon_context_probe.rs -o /Users/dcazares/.cache/sglang-qwen38/artifacts/sglang_context_probe
+  ```
+
+  Source SHA-256 is
+  `25ac3553f51534562e1746833d52a12831f92c13186962bd86c655ce38e14428`;
+  binary SHA-256 is
+  `6bbe7b759c2a816a130a4187afe01bdc377a1f794d7ea89a293aebab657bcc24`.
+  It sends the exact number of literal token IDs directly to `/generate`, uses
+  a four-hour socket timeout, and performs no tokenizer or calibration call.
+- The exact command was:
+
+  ```text
+  /Users/dcazares/.cache/sglang-qwen38/artifacts/sglang_context_probe 32768 16 127.0.0.1:30000
+  ```
+
+  After about 66 seconds, scheduler PID 15359 failed at
+  `NativeQwen38Engine.prefill` with
+  `[METAL] Command buffer execution failed: Insufficient Memory
+  (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)`. The crash handler
+  removed the complete verified server tree before emitting HTTP headers, so
+  the raw client ended with `malformed HTTP response`. Listener and all four
+  PIDs were absent afterward; health correctly refused connection. System
+  memory recovered to 92% free, throttled pages were zero, and
+  `pmset -g therm` reported no thermal or performance warning. Spotlight
+  workers were active but the failure is a direct Metal allocation error and
+  not promoted as a contention-adjusted throughput result.
+- Source inspection identifies the scaling owner. Every one of the 16
+  full-attention layers geometrically grows contiguous BF16 K/V arrays, then
+  stock MLX SDPA consumes the entire accumulated history for each 1,024-token
+  query chunk. Reducing the chunk again can lower one transient but does not
+  make the mechanism suitable for 131K. The already-qualified PERF-A017
+  Apple7+ Q8/C64 Metal GQA kernel matches this model's batch-one 24-query-head,
+  four-KV-head, dimension-256 shape and has measured zero residency growth at
+  131,072 keys. Unlike the earlier Torch backend, the C++ MLX engine now
+  exposes a direct native dispatch owner. PERF-A130 will integrate that
+  fixed-memory mechanism; PERF-FA143 closes A129 as a capacity solution.
