@@ -1149,6 +1149,22 @@ code changes, or process state matter.
   decode prefixes. PERF-A164 moves this invariant into the native MTP state
   owner before another checkpoint or kernel is ranked.
 
+### Committed MTP history clears the actual-work decode floor
+
+- Signed A164 commit `b92c21d69d` adds opt-in prompt-shifted and
+  accepted-prefix history at the standard-MTP state owner. It streams prompt
+  alignment in bounded chunks, restores speculative KV before commit, and
+  keeps MTP cache length exactly one token behind the target.
+- The optimized Q4 MTP improves from **7.516953814** empty-cache tok/s to a
+  clean five-sample mean **23.821754359 tok/s** after 6,237 prompt tokens.
+  All runs retain 131 refills, width **1.961832061**, digest
+  `d468c7e1b0d274b3`, and last token 20.
+- A post-commit rebuild reproduces **23.819226864 / 23.811460300 tok/s**.
+  One FileProvider/indexing-contended sample is retained at
+  **19.724760551 tok/s** with identical acceptance/output; the user accepted
+  it as labeled host noise. Work now moves to exact served 131K and a real
+  Responses/Codex `xhigh` coding turn.
+
 ## 2026-09-08
 
 ### 18:57-19:26 - install and benchmark NVIDIA's stock mixed-precision checkpoint
