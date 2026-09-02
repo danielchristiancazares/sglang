@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-02
-00:31 PDT.
+00:42 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -194,6 +194,15 @@ ordinary Q4 **6.051674%**, and two-pass SDPA **3.863774%**. Streamed Q5
 bytes/instructions remain the first optimization owner; attention alone
 cannot close the measured gap at this history.
 
+PERF-A139/A140 close lossless preassembled Q5 windows. A139's four-row form
+regresses the dominant `K=17408, N=5120` micro
+**0.435539514 -> 0.441254344 ms** (**1.312127%**) across six samples per arm.
+A140 reduces live weight state to one row and regresses its adjacent exact
+pair **0.418530771 -> 0.453039271 ms** (**8.245152%**). Both preserve digest
+`d05378cc8066dc41`; neither reached the full-model gate. The next exact Q5
+candidate must change extraction cost, not only rearrange the same continuous
+bit windows.
+
 A128's 680 MiB duplicate parameter stream remains opt-in. A130 plus A131
 completes an independent exact `32768+16` server request at
 **87.807667 prompt tok/s / 373.179259 s**, but final BF16 K/V cannot fit at
@@ -375,6 +384,13 @@ rows still regresses the decisive K=17,408 aggregate
 shape is exact and A100/A117 is restored. Further Q5 kernel work must remove
 streamed bytes or unpack/arithmetic instructions rather than merely extend
 the number of live row loads.
+
+A139/A140 also close preassembled continuous-Q5 window layouts in four-row and
+row-local forms. The balanced A139 production mean regresses
+**0.435539514 -> 0.441254344 ms**; A140's first matched exact pair regresses
+**0.418530771 -> 0.453039271 ms**. Preserve A100's selected aligned-word
+stream. A low-nibble/high-bit-plane representation remains distinct because
+it changes extraction instructions rather than only address layout.
 
 The requested Q5 lane now serves through a provenance-pinned derived artifact.
 Bartowski's immutable `Qwen3.8-27B-Q5_K_S.gguf` source is pinned at revision
