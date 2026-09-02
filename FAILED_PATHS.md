@@ -3959,3 +3959,38 @@ option, or serving dispatch was added.
 - Related commit or revert: A125 remains isolated in the detached candidate
   worktree only long enough to derive the raw-interleave control; it was never
   wired into a model dylib or production default.
+
+## PERF-FA141 - Raw four-row affine-Q5 parameter interleaving
+
+- Hypothesis: one aligned 16-byte load for four unchanged scale/bias pairs can
+  improve parameter locality without A125's extraction and BF16 reconstruction
+  cost; limiting it to a microbenchmark winner can preserve a full-model gain.
+- Scope: selected A100's affine-Q5 batch-one kernel across K=17,408, K=5,120,
+  and K=6,144, followed by a K=17,408-only mixed-model gate.
+- Attempted change: a C++ load-time packer copied raw BF16 pairs into four-row
+  bundles while retaining original tensors for prefill. The Metal kernel read
+  one `uint4`, bitcast each pair exactly, and kept the selected dot, reduction,
+  and store paths unchanged. A127 prepared the duplicate stream only when
+  `input_features == 17408`.
+- Benchmark evidence: K=17,408 improves **0.4315079725 -> 0.4295822229 ms**,
+  **0.446284%**, with only five of ten pair wins. K=5,120 regresses
+  **0.3587223191 -> 0.3624250267 ms**, **1.032193%**, and K=6,144 regresses
+  **0.3169493750 -> 0.3407608625 ms**, **7.512710%**. The shape-gated complete
+  model regresses **19.4281991915 -> 19.3109191455 tok/s**, **0.603659%**.
+- Correctness evidence: every micro digest is exact. All full-model samples
+  preserve canonical digest `d0193f6d413b68c1`, last token 11406, and exact
+  timed length.
+- Failure mode: the vector parameter load does not reduce bytes or arithmetic,
+  and its shape-local micro movement does not survive 64 duplicate parameter
+  arrays, added residency, and the complete decode schedule.
+- Why not to retry unchanged: the only favorable shape failed a same-dylib
+  full-model control in both process orders; the other production shapes are
+  directly negative.
+- Reopen only if: the packed layout replaces rather than duplicates original
+  tensors through both prefill and decode, or it removes parameter bytes or
+  instructions in a fused consumer.
+- Related commit or revert: A126/A127 remained opt-in in the detached candidate
+  worktree. `apply_patch` restored engine/header Git blobs
+  `5912bc2fe9b1e8f34bdace0b1a009f8aa1223d04` and
+  `512335f1ae677f48ee76a77d2f097bef720e71ce`, exactly matching signed
+  `00d09138ce`.
