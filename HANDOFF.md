@@ -1,10 +1,10 @@
 # Qwen3.8-27B Q5 SGLang performance handoff
 
-**Snapshot:** 2026-09-01 17:06 PDT
+**Snapshot:** 2026-09-01 17:59 PDT
 
 **Repository:** `/Users/dcazares/sglang`
 
-**Active goal ID:** `01a05d87-e5de-7bf0-bcef-7122ed2f6dd2`
+**Active goal ID:** `01a05f84-93f2-75b3-9fd1-f5fac3dfd8b4`
 
 **Goal status:** active
 
@@ -15,20 +15,22 @@ real Codex work with `xhigh` reasoning, a 131K context window, and at least
 **20 generated tokens/s**. The Codex harness stays unchanged.
 
 The current selected Apple lane is the immutable mixed 4.951-bpw checkpoint
-with the A100 Q5 and A111 Q4 batch-one Metal kernels. Its qualified direct
-result is:
+with the A100 Q5, A111 Q4, and precise-exp A114 fused Q4 MLP Metal kernels.
+Its qualified direct result is:
 
 | Metric | Selected result |
 |---|---:|
 | Generic mixed-checkpoint direct decode | **18.121698566 tok/s** |
-| Selected A100 Q5 + A111 Q4 direct decode | **19.241981332 tok/s** |
-| Gain over generic | **+1.120282766 / +6.181996%** |
-| Remaining direct gap | **0.758018668 tok/s / 3.939400%** |
+| Selected A100 + A111 + A114 direct decode | **19.268407916 tok/s** |
+| Gain over generic | **+1.146709350 / +6.327825%** |
+| A114 gain over matched A100+A111 | **+0.039687612 / +0.206398%** |
+| Remaining direct gap | **0.731592084 tok/s / 3.796848%** |
 | Fixed-work digest | `d0193f6d413b68c1` |
 | Last token | `11406` |
 
-The selected number is the aggregate of two independent balanced five-pair
-windows. Exact 131,072-token serving, sampled behavior, and Codex `xhigh`
+The selected number is the aggregate of two independent A114 five-pair
+windows, the second in reversed order. Exact 131,072-token serving, sampled
+behavior, and Codex `xhigh`
 qualification for this mixed checkpoint remain pending. An older GGUF Q5 lane
 passed exact 131K capacity at far lower decode speed; that capacity result does
 not qualify the current native affine-Q5 lane.
@@ -82,13 +84,13 @@ active; label their performance as externally exposed to contention.
 ### Main checkout
 
 - Branch: `main`
-- HEAD: `b1322134e51ebf301496ff53fc922aa24f9f0103`
-  (`perf: record post-A111 Q4 screens`), signed with a verified good EDDSA
+- HEAD: `ca524c3282dcfd282567e4b063c33325e4489518`
+  (`perf(mlx): fuse exact Q4 SwiGLU decode`), signed with a verified good EDDSA
   signature.
-- Tracking state at snapshot: `main...origin/main [ahead 84]`.
+- Tracking state at snapshot: `main...origin/main [ahead 87]`.
 - Index: empty.
-- Selected code commit: `22408c50c49dd10a84d73740617991a6bf9eba02`
-  (`perf(mlx): tile stock-exact Q4 decode`).
+- Selected code commit: `ca524c3282dcfd282567e4b063c33325e4489518`
+  (`perf(mlx): fuse exact Q4 SwiGLU decode`).
 
 Daniel owns these three existing main-checkout modifications. Preserve their
 working-copy bytes and keep them outside optimization commits:
@@ -107,16 +109,16 @@ Path:
 /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4
 ```
 
-The worktree is detached at exact base `22408c50c4`. It contains the active
-A114 8-SIMD-by-4-paired-row fused Q4 gate/up/SwiGLU experiment:
+The worktree is detached at exact base `22408c50c4`. It retains the promoted
+A114 8-SIMD-by-4-paired-row fused Q4 gate/up/SwiGLU source:
 
 | Modified path | Current Git blob |
 |---|---|
-| `python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp` | `48a4b550f8a81e19d31200ba8795685cbf7ac462` |
+| `python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp` | `a22c844a1cfd7616aef82c39ca4261928ded10e3` |
 | `python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.h` | `512335f1ae677f48ee76a77d2f097bef720e71ce` |
-| `test/registered/unit/hardware_backend/mlx/test_qwen38_affine_q4_batch_one_qmv.cpp` | `b42ddac6a272e7db61282810bdcda8ba0664f4bd` |
+| `test/registered/unit/hardware_backend/mlx/test_qwen38_affine_q4_batch_one_qmv.cpp` | `a2137fa5f148c2d285ae68bd4852776049ed5aab` |
 
-`git diff --check` passes. The diff adds 302 lines across those three paths.
+`git diff --check` passes. The diff adds 370 lines across those three paths.
 The earlier A113 removal of `eval(pending_tok_)` has been restored here, so
 A114 isolates the fusion variable.
 
@@ -168,9 +170,9 @@ and its sigmoid expression.
 
 | Artifact | SHA-256 |
 |---|---|
-| `/Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a114_q4_fused_swiglu_8x4.dylib` | `1733390d7e983762cd78fb64adaeb770e8fd18c0713fd32c0f2ccca68c454e3f` |
-| `/Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a114_q4_fused_swiglu_8x4` | `9e94fd9cb0abdfd81c4aefc29474bc0833526ca1d4c7008538a809233a13ba6a` |
-| `/Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a114_q4_fused_swiglu_8x4` | `520b952915da56d73f89a3ee10e8e73dc51763fdcb9630d93b55cdca28f563c1` |
+| `/Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a114_q4_fused_swiglu_8x4_precise.dylib` | `ce3693e7a3c7e10c12fa7fad8d4a6de1ad114801342069def712bbdf931eb208` |
+| `/Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a114_q4_fused_swiglu_8x4_precise_boundary` | `dcbae745f0945d282565fb305750512968733dccf0876c000b0891ab78d08f47` |
+| `/Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a114_q4_fused_swiglu_8x4_precise` | `9dcb07560b177c5c920ddc3bede58479e5e659ee2a31f5e68d1980192d97ee9f` |
 | `/Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a114_q4_fused_swiglu.cpp` | `3f4ca53a61943a8bb17553426bb5868ccd19b5614d1dce4183bac7f330ad5f48` |
 
 Strict C++20/O3 warnings-as-errors builds pass. The focused parity executable
@@ -195,34 +197,26 @@ iterations:
 Every microbenchmark arm has digest `8a9031349585365a` and first value
 `0.875`.
 
-### Full-model result and correctness blocker
+### Full-model qualification and correctness repair
 
-One full mixed-checkpoint screen completed at **19.406869588 tok/s** under
-active Spotlight/FileProvider activity. It produced digest
-`f2a59800c8d89f75` and last token `19`; the selected canonical values are
-`d0193f6d413b68c1` and `11406`. Treat the throughput as a diagnostic only.
-The current fused implementation fails the fixed-work trajectory gate.
+A real-weight/real-hidden trace localized the old fast-exp failure to layer
+62, element 36: gate and up were exact, while `metal::exp` rounded sigmoid to
+BF16 `0x3a8c` instead of MLX's `0x3a8b`. `metal::precise::exp` makes gate, up,
+sigmoid, SiLU, and output exact across all 64 layers. A dedicated C++ boundary
+test at gate `-6.84375` passes the precise artifact in all 32 rows and fails
+the preserved fast artifact in all 32.
 
-Synthetic parity therefore covers too little of the real activation/parameter
-space. Before another throughput run, locate the first real layer/token that
-diverges and compare these boundaries independently:
-
-1. fused gate QMV against selected A111 gate QMV;
-2. fused up QMV against selected A111 up QMV;
-3. BF16 sigmoid output;
-4. the first BF16 multiply;
-5. the second BF16 multiply.
-
-An actual-checkpoint C++ fixture or a temporary diagnostic output from the
-native engine can establish this without adding Python. Extend the focused C++
-test with real tensors or a captured real hidden row. Preserve MLX's exact
-expression structure and operation boundaries. A corrected implementation
-still needs a canonical full-model digest and paired qualification windows.
+Forward and reversed five-pair windows improve
+**19.236012324 -> 19.264036375** and
+**19.221428286 -> 19.272779458 tok/s**. Aggregate matched control/candidate is
+**19.228720305 / 19.268407916 tok/s**, a
+**+0.039687612 / +0.206398%** win. Every run retains digest
+`d0193f6d413b68c1` and last token 11406.
 
 ### Exact A114 full-model command
 
 ```text
-/usr/bin/env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 240s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a114_q4_fused_swiglu_8x4.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128
+/usr/bin/env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 240s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a114_q4_fused_swiglu_8x4_precise.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128
 ```
 
 ## A113 duplicate scalar evaluation experiment
@@ -276,22 +270,23 @@ families are:
 ### A114 focused parity
 
 ```text
-/opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 180s /Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a114_q4_fused_swiglu_8x4
+/opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 180s /Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a114_q4_fused_swiglu_8x4_precise_boundary
 ```
 
-Expected output has five `max_abs=0 mismatches=0` lines.
+Expected output has five general `max_abs=0 mismatches=0` lines plus the
+`gate=-6.84375 ... mismatches=0` boundary line.
 
 ### A114 production-shape microbenchmark
 
 ```text
-/opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 180s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a114_q4_fused_swiglu_8x4 separate 5120 17408 1000 5000
-/opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 180s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a114_q4_fused_swiglu_8x4 fused 5120 17408 1000 5000
+/opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 180s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a114_q4_fused_swiglu_8x4_precise separate 5120 17408 1000 5000
+/opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 180s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a114_q4_fused_swiglu_8x4_precise fused 5120 17408 1000 5000
 ```
 
 ### Strict A114 dylib build
 
 ```text
-clang++ -std=c++20 -O3 -fPIC -shared -Wall -Wextra -Werror -isystem /Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/include -I/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native -L/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -Wl,-rpath,/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a114_q4_fused_swiglu_8x4.dylib /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native/qwen38_c_api.cpp
+clang++ -std=c++20 -O3 -fPIC -shared -Wall -Wextra -Werror -isystem /Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/include -I/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native -L/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -Wl,-rpath,/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a114_q4_fused_swiglu_8x4_precise.dylib /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native/qwen38_c_api.cpp
 ```
 
 The linker emits the known macOS 26.0 versus MLX 26.2 deployment warning.
@@ -304,19 +299,14 @@ The linker emits the known macOS 26.0 versus MLX 26.2 deployment warning.
    status, port 30000, workload ancestry, Metal compiler ownership, GPU
    residency, memory pressure, and thermal state.
 3. Let the indexing/FileProvider wave reach the ordinary idle state.
-4. Diagnose A114 at the first real divergence. Retain the 8x4 geometry only
-   after real-weight, real-hidden exactness passes.
-5. Run one candidate/control direct screen. Require canonical digest
-   `d0193f6d413b68c1` and last token `11406` before collecting a throughput
-   window.
-6. If A114 becomes exact, collect balanced five-pair and independent reversed
-   windows. Record every raw sample and host state.
-7. Complete A113's interrupted windows as a separate candidate.
-8. Profile the latest exact winner and continue native C++/Metal hotspot work
+4. Treat precise-exp A114 in signed `ca524c3282` as selected; keep the fast-exp
+   artifact closed by PERF-FA132.
+5. Complete A113's interrupted windows as a separate candidate.
+6. Profile the latest exact winner and continue native C++/Metal hotspot work
    until direct performance clears 20 with margin.
-9. Run exact 131K SGLang serving, behavior, Responses API, and Codex `xhigh`
+7. Run exact 131K SGLang serving, behavior, Responses API, and Codex `xhigh`
    gates only after the direct floor is stable.
-10. Update `PERFORMANCE_LOG.md`, `FAILED_PATHS.md`,
+8. Update `PERFORMANCE_LOG.md`, `FAILED_PATHS.md`,
     `notes/experiment-log.md`, and compact state documents after every
     meaningful result. Commit signed, atomic wins and useful rejected-path
     evidence while preserving Daniel's three working-copy files.
@@ -333,6 +323,6 @@ The linker emits the known macOS 26.0 versus MLX 26.2 deployment warning.
 - `FAILED_PATHS.md`: measured rejected candidates and reopen conditions.
 
 The objective remains open. The selected production-quality direct result is
-19.241981332 tok/s; the current A114 implementation has useful microbenchmark
-economics and a real-model correctness divergence that must be resolved before
-its speed can count.
+19.268407916 tok/s; precise-exp A114 is qualified and committed, leaving
+0.731592084 tok/s / 3.796848% to the direct floor before exact 131K and Codex
+`xhigh` qualification.

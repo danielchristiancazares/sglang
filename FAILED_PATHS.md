@@ -3715,6 +3715,6 @@ option, or serving dispatch was added.
   Replacing it with `metal::precise::exp` is materially different evidence,
   not a retry of this failed arm.
 - Related commit or revert: the corrected precise-exp A114 candidate remains
-  outside `main` in detached worktree `perf-q4-packs4`. Its 64-layer trace,
-  focused parity, and canonical full-model screen pass; paired throughput
-  qualification remains pending.
+  materially distinct from this failed arm. Its 64-layer trace, dedicated
+  boundary negative control, focused parity, and two paired throughput windows
+  pass; precise-exp A114 is promoted while the fast-exp source stays closed.
