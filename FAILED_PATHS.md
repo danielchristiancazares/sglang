@@ -4059,3 +4059,13 @@ option, or serving dispatch was added.
   a different independent peak before rerunning this exact probe.
 - Related commit or revert: no source change; PERF-A130 takes over the
   capacity path.
+
+### Follow-up after PERF-A131
+
+On-demand quantized embedding removes **1,827,635,200 bytes / 1.702 GiB** and
+extends the identical exact-ID request from about 66 to about 180 seconds
+before the same Metal insufficient-memory exception. This reopens and closes
+the exact control under a materially smaller resident model: the shifted
+boundary proves that embedding residency mattered, while the remaining failure
+confirms that allocator capping plus model-residency reduction does not make
+the stock full-attention mechanism a 32K or 131K solution.
