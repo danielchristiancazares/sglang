@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-21:08 PDT.
+22:30 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -303,6 +303,22 @@ Metal OOM; this is a qualified residency win, not a capacity pass. Signed
 `e7643c904d` additionally admits the native sampler's valid MLX `uint32`
 indices alongside prompt `int32` indices; both gathered forms are bit-exact
 and floating indices remain rejected.
+
+PERF-A133 proves that snapshot ownership is not the remaining capacity owner
+by itself. Its metadata-only append-only snapshot passes exact logical
+rollback, suffix overwrite, growth-boundary, and fixed-attention parity tests;
+changing only that switch is neutral in one short direct pair at
+**19.685169420 -> 19.672600916 tok/s**, with canonical output in both arms.
+However, eagerly reserving all 131,072 BF16 slots makes the exact `32768+16`
+server probe fail after about 16 seconds. Scheduler RSS is 18,225,056 KiB
+(approximately 17.38 GiB) before the request; adding the final 8 GiB BF16 K/V
+cache exceeds MLX's approximately 25 GiB recommended Metal working set before
+safe OS/display headroom. That unchanged
+representation is closed by PERF-FA145. PERF-A134 is active: affine-Q8/G64
+K/V reduces final storage to approximately 4.25 GiB, retains the append-only
+snapshot invariant, and will use native fixed-memory prefill plus split-
+history decode. Exact 131K, steady sampled serving, Responses/Codex `xhigh`,
+and a decode result above 20 tok/s with margin remain open gates.
 
 A118 and A119 are closed in their measured forms. Replacing A117's fused-Q4
 packed-word reads with one explicit `packed_ushort4` transaction is exact but

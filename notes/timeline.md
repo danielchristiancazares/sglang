@@ -1060,6 +1060,25 @@ code changes, or process state matter.
   180 seconds. Exact 131K now moves to persistent BF16 KV and prompt-snapshot
   residency; the decode floor and Codex `xhigh` remain open.
 
+### Spotlight isolation closes the full-reserve BF16 cache and selects affine Q8
+
+- Spotlight indexing is disabled on `/`, `/System/Volumes/Data`, and
+  `/System/Volumes/Preboot`; active shared metadata workers drained before the
+  capacity launch, removing the earlier host-contention confounder.
+- A metadata-only append-only snapshot retains only logical offset/length while
+  the current cache owns prompt storage. Focused growth, rollback, overwrite,
+  and five fixed-attention parity cases pass. A same-dylib switch pair is
+  neutral at **19.685169420 -> 19.672600916 tok/s**, canonical in both arms.
+- Reserving all 131,072 BF16 cache slots on the first long chunk fails exact
+  `32768+16` after about 16 seconds with Metal insufficient memory. Scheduler
+  RSS is **18,225,056 KiB** before the request, final BF16 K/V is 8 GiB, and
+  MLX reports an approximately 25 GiB recommended working set; the final
+  representation does not fit safely even after snapshot ownership is removed.
+- PERF-A134 therefore owns exact 131K with affine-Q8/G64 K/V (approximately
+  4.25 GiB including metadata), the retained append-only snapshot invariant,
+  A130's fixed-memory prefill, and split-history long decode. The >=20 tok/s,
+  sampled behavior, and Responses/Codex `xhigh` gates remain open.
+
 ### 03:07–06:18 — DSpark-v2 crosses 150 tok/s and becomes the Windows default
 
 - The trained Qwen3.8-27B DSpark-v2 draft was integrated with online-FP8
