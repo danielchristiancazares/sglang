@@ -1136,6 +1136,19 @@ code changes, or process state matter.
   served 131K composition, and a real Responses/Codex `xhigh` coding turn
   remain the active qualification sequence.
 
+### Actual-work MTP collapse localizes to missing committed history
+
+- A163 target-only reproduces **19.057906040 tok/s** after 6,237 prompt
+  tokens. The official five-bit MTP reaches only **7.839819833 tok/s** and
+  width **1.032258065**; the optimized Q4 MTP falls from
+  **26.491661416 tok/s** short to **7.516953814 tok/s** and width
+  **1.003921569** long.
+- Native standard MTP clears its attention cache before every proposal and
+  never constructs shifted prompt history. Official MTPLX keeps prompt hidden
+  rows paired with following tokens and restores then appends only committed
+  decode prefixes. PERF-A164 moves this invariant into the native MTP state
+  owner before another checkpoint or kernel is ranked.
+
 ## 2026-09-08
 
 ### 18:57-19:26 - install and benchmark NVIDIA's stock mixed-precision checkpoint

@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-02
-02:45 PDT.
+03:09 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -185,18 +185,19 @@ This clears the short direct execution gate; it does not yet qualify the
 6,237-token actual-work shape, exact served 131K, or a real Responses/Codex
 `xhigh` coding turn.
 
-The representative selected direct `6237 / 32 warm / 256 timed` window is
-lower: five clean processes measure **19.049906088, 19.052370326,
-19.013470487, 19.046250807, and 19.032662806 tok/s**, mean
-**19.038932103 tok/s**. Every process has identical digest
-`9ec00ec01f8781e1` and last token 20. This pre-A149/A150/A163 actual-work
-baseline needs **0.961067897 tok/s / 5.047909%** over its recorded execution
-to reach 20 and must now be rerun with the qualified verifier composition. A
-bounded A137 long-history trace maps **58,739 / 59,372** sampled PCs:
-affine-Q5 owns **49.061847%**, fused raw-parameter Q4 SwiGLU **35.227%**,
-ordinary Q4 **6.051674%**, and two-pass SDPA **3.863774%**. Streamed Q5
-bytes/instructions remain the first optimization owner; attention alone
-cannot close the measured gap at this history.
+The A163 actual-work rerun isolates a state defect rather than a verifier
+kernel gap. Target-only `6237 / 32 warm / 256 timed` reproduces
+**19.057906040 tok/s**, digest `9ec00ec01f8781e1`, and last token 20. The
+official five-bit MTP falls to **7.839819833 tok/s**, 248 refills, and width
+**1.032258065**. The optimized Q4 MTPLX checkpoint reaches
+**26.491661416 tok/s** and width **1.954545455** on the short shape, then
+falls to **7.516953814 tok/s**, 255 refills, and width **1.003921569** after
+the same long prompt. Native `mtp_reset()` currently clears MTP KV before
+every proposal at the target's absolute position, and prefill never builds
+the one-token-shifted prompt history. Official MTPLX retains that history and
+appends only target-committed prefixes. PERF-A164 now owns an opt-in native
+committed-history repair; no checkpoint or sampler change can substitute for
+it.
 
 PERF-A139/A140 close lossless preassembled Q5 windows. A139's four-row form
 regresses the dominant `K=17408, N=5120` micro

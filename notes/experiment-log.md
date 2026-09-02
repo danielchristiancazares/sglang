@@ -24874,3 +24874,51 @@ mean 13.929045  17.125658 446.051        39.730
   complete the user objective: next rerun the 6,237-token actual-work shape,
   integrate/launch the exact 131,072-token served composition, and pass real
   Responses/Codex `xhigh`, reasoning, and tool behavior gates.
+
+### 2026-09-02 03:09 PDT - A163 actual-work rerun and committed-MTP root cause
+
+- Main and the isolated detached worktree both began at signed
+  `3e4773f0b4e38a2fbf79c9cdf1d529df49dd6835`. Main remained 124 commits
+  ahead of `origin/main`, with an empty index and only Daniel's three protected
+  native source/test paths modified. Their Git blob hashes remained exactly
+  `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. All model execution used the
+  strict A163 dylib `c923d0901b1e9e2f157bb36c2cc1d1804ac89173283bc6ce75530e8f9d1c070d`.
+- Each Metal run used the selected environment from the A163 entry, including
+  native official target sampling, seed 42, all qualified Q4/Q5 M=1/M=2
+  kernels, quantized embedding, fixed prefill attention, 1,024-token target
+  chunks, post-norm MTP seed, and block two. Port 30000, benchmark/server/user
+  compiler processes, memory pressure, and thermal state were checked before
+  each gate; workloads were sequential and ordinary Metal compiler services
+  were left untouched.
+- Selected mixed target plus official five-bit MTP, exact command tail:
+  `bench_qwen38_native libqwen38_a163_promote.dylib <mixed-rev> 6237 32 256 <official-mtp-rev>`.
+  Result: **7.839819833 tok/s**, **32.653811625 s**, 248 refills, width
+  **1.032258065**, digest `b4e2b7693574f301`, last token 30055.
+- Same artifact and target without MTP, command tail
+  `bench_qwen38_native ... <mixed-rev> 6237 32 256`: **19.057906040 tok/s**,
+  **13.432745416 s**, digest `9ec00ec01f8781e1`, last token 20. This matches
+  the prior long target-only mean **19.038932103 tok/s**.
+- Uniform target revision `2568951b893b6427d0a8eb91cc7f4307154c2f05`
+  plus official MTP on the short shape reaches **14.606495312 tok/s**, width
+  **1.488372093**, 86 refills, digest prefix `464a`, and last token 24. It is
+  rejected as the selected route.
+- Optimized Q4 MTP revision
+  `123db8bcc7101455b00d9aad36c0e760c6e7de02` plus the mixed target reaches
+  **26.491661416 tok/s**, **4.831709042 s**, 66 refills, width
+  **1.954545455**, digest prefix `d777`, and last token 471 on
+  `128 / 32 / 128`. On `6237 / 32 / 256` it falls to
+  **7.516953814 tok/s**, **34.056348667 s**, 255 refills, width
+  **1.003921569**, digest prefix `7f268`, and last token 13883.
+- Source diagnosis: `Engine::mtp_reset()` sets `cache_length=0` before every
+  standard-MTP draft and stamps the target sequence as its absolute offset.
+  `Engine::prefill()` captures no MTP prompt history. Read-only official MTPLX
+  v2.9.0 commit `76b52bec6fb22856260355a8f723add67100bb1d` shows the required contract:
+  target prompt hidden rows `0..N-2` pair with prompt tokens `1..N-1`; decode
+  snapshots that cache, drafts speculatively, restores it, and appends only
+  target-committed input/hidden pairs. Both checkpoints collapsing only after
+  long history confirms native state ownership as the next candidate.
+- Next handoff: implement PERF-A164 as an opt-in C++ committed-history path,
+  stream prompt history in bounded chunks, preserve exact p/q sampling, add
+  focused C++ alignment coverage, and rerun both short and 6,237-token gates.
