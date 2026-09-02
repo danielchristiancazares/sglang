@@ -4027,3 +4027,35 @@ option, or serving dispatch was added.
   independent peak and the exact same 8K request is rerun.
 - Related commit or revert: no source change; PERF-A129 retains the successful
   cache-capped configuration.
+
+## PERF-FA143 - Cache-capped stock SDPA at exact 32K IDs
+
+- Hypothesis: a one-GiB MLX recycled-buffer cap and 1,024-token native prefill
+  chunks, which pass exact `8192+16`, would leave enough working memory for
+  progressively longer prompts under the real 131,072-token server contract.
+- Scope: the pinned mixed 4.951-bpw Q5-class checkpoint, selected A128 dylib,
+  all selected decode switches, one request, language-only serving, real
+  `context_length=max_total_tokens=131072`, and a 3,600-second watchdog.
+- Attempted change: sent 32,768 literal token ID 100 values plus 16 requested
+  output tokens through `/generate` using the compiled read-only Rust probe.
+  This bypasses all tokenizer and prompt-calibration paths.
+- Benchmark evidence: the request ran for about 66 seconds, then the scheduler
+  failed inside `NativeQwen38Engine.prefill` with Metal
+  `kIOGPUCommandBufferCallbackErrorOutOfMemory`. No HTTP response headers were
+  emitted before the verified server tree exited.
+- Correctness evidence: the same configuration already passed exact
+  `8192+16`. After failure, listener PID 15355 and children 15358/15359/15360
+  were absent, port 30000 was free, memory recovered to 92%, throttled pages
+  were zero, and there was no thermal or performance warning.
+- Failure mode: capping allocator recycling does not bound the live
+  full-attention working set. The engine geometrically grows contiguous BF16
+  K/V and calls stock SDPA for each query chunk against all accumulated keys;
+  its dense score transient scales with chunk length times context length.
+- Why not to retry unchanged: exact IDs eliminate the earlier 344,115-token
+  tokenizer overshoot, so this is a direct 32K native capacity failure.
+  Extrapolating the same dense mechanism to 131K is not credible.
+- Reopen only if: prefill attention becomes fixed-memory, KV residency is
+  materially reduced, or direct allocation telemetry identifies and removes
+  a different independent peak before rerunning this exact probe.
+- Related commit or revert: no source change; PERF-A130 takes over the
+  capacity path.

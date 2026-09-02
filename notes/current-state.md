@@ -275,9 +275,12 @@ enforced idle intervals. The final hardened source smoke reaches
 **19.662460455 tok/s**. The extra decode stream duplicates
 **713,031,680 bytes / 680 MiB**. PERF-A129's one-GiB MLX cache cap plus
 1,024-token internal prefill converts the repeatable 8K Metal OOM into a
-complete sampled request; startup advertises the real 131,072-token
-context/admission surface and language-only metadata. Exact 131K capacity,
-steady sampled serving, and Codex `xhigh` remain gates before default
+complete sampled request, but an exact-ID `32768+16` request still fails with
+Metal insufficient memory after about 66 seconds. Startup advertises the real
+131,072-token context/admission surface and language-only metadata; the stock
+shape-growing BF16 KV plus dense-SDPA prefill path is not a capacity solution.
+PERF-A130 now owns fixed-memory native Metal attention integration. Exact 131K
+capacity, steady sampled serving, and Codex `xhigh` remain gates before default
 selection.
 
 A118 and A119 are closed in their measured forms. Replacing A117's fused-Q4
