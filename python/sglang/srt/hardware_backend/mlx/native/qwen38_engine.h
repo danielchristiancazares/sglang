@@ -42,6 +42,8 @@ mlx::core::array affine_q4_fused_swiglu_batch_one(
     const mlx::core::array& x);
 mlx::core::array affine_q5_qmv_batch_one(
     const QLinear& linear, const mlx::core::array& x);
+mlx::core::array quantized_embedding_rows(
+    const QLinear& embedding, const mlx::core::array& tokens);
 mlx::core::array dspark_yarn_rope(
     const mlx::core::array& x, int offset);
 mlx::core::array dspark_confidence(
@@ -315,6 +317,7 @@ class Engine {
   bool reasoning_open_ = false;
   bool reasoning_cap_selected_ = false;
   int target_only_prefill_chunk_size_ = 0;
+  bool quantized_embedding_enabled_ = false;
   bool prompt_snapshot_valid_ = false;
   std::vector<int32_t> prompt_snapshot_history_;
 

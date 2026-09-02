@@ -133,6 +133,13 @@ bool native_q5_batch_one_qmv_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_quantized_embedding_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 int native_target_only_prefill_chunk_size() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE");
@@ -2226,6 +2233,36 @@ array QLinear::operator()(const array& x) const {
       x, w, scales, biases, /*transpose=*/true, group_size, bits, "affine");
 }
 
+array quantized_embedding_rows(
+    const QLinear& embedding, const array& tokens) {
+  if (!embedding.valid || embedding.w.ndim() != 2 ||
+      embedding.scales.ndim() != 2 || embedding.biases.ndim() != 2 ||
+      embedding.w.dtype() != mx::uint32 ||
+      embedding.scales.dtype() != mx::bfloat16 ||
+      embedding.biases.dtype() != mx::bfloat16 ||
+      embedding.w.shape()[0] != embedding.scales.shape()[0] ||
+      embedding.scales.shape() != embedding.biases.shape() ||
+      embedding.group_size <= 0 || embedding.bits <= 0 ||
+      tokens.dtype() != mx::int32) {
+    throw std::runtime_error("invalid quantized embedding inputs");
+  }
+  const int hidden_size =
+      embedding.scales.shape()[1] * embedding.group_size;
+  if (hidden_size <= 0 ||
+      embedding.w.shape()[1] * 32 != hidden_size * embedding.bits) {
+    throw std::runtime_error("unsupported quantized embedding shape");
+  }
+  return mx::dequantize(
+      take(embedding.w, tokens, 0),
+      take(embedding.scales, tokens, 0),
+      take(embedding.biases, tokens, 0),
+      embedding.group_size,
+      embedding.bits,
+      "affine",
+      std::nullopt,
+      mx::bfloat16);
+}
+
 array affine_qmm_small_batch(const QLinear& linear, const array& x) {
   if (!linear.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
       x.shape()[1] < 2 || x.shape()[1] > 8 ||
@@ -2603,6 +2640,7 @@ Engine::Engine(MlxQwen38Config cfg, const std::string& model_dir)
     throw std::runtime_error("invalid Qwen3.8 config");
   }
   target_only_prefill_chunk_size_ = native_target_only_prefill_chunk_size();
+  quantized_embedding_enabled_ = native_quantized_embedding_enabled();
   layers_.resize(static_cast<size_t>(cfg_.num_hidden_layers));
   load_weights(model_dir);
   sampling_enabled_ = native_sampling_enabled();
@@ -2804,16 +2842,18 @@ void Engine::load_weights(const std::string& model_dir) {
   }
 
   embed_tokens_ = load_qlinear(weights, "language_model.model.embed_tokens");
-  embed_table_ = mx::dequantize(
-      embed_tokens_.w,
-      embed_tokens_.scales,
-      embed_tokens_.biases,
-      embed_tokens_.group_size,
-      embed_tokens_.bits,
-      "affine",
-      std::nullopt,
-      mx::bfloat16);
-  eval(embed_table_);
+  if (!quantized_embedding_enabled_) {
+    embed_table_ = mx::dequantize(
+        embed_tokens_.w,
+        embed_tokens_.scales,
+        embed_tokens_.biases,
+        embed_tokens_.group_size,
+        embed_tokens_.bits,
+        "affine",
+        std::nullopt,
+        mx::bfloat16);
+    eval(embed_table_);
+  }
   lm_head_ = load_qlinear(weights, "language_model.lm_head");
   final_norm_ = require(weights, "language_model.model.norm.weight");
 
@@ -2862,6 +2902,9 @@ void Engine::load_weights(const std::string& model_dir) {
 }
 
 array Engine::embed(const array& tokens) const {
+  if (quantized_embedding_enabled_) {
+    return quantized_embedding_rows(embed_tokens_, tokens);
+  }
   return take(embed_table_, tokens, 0);
 }
 
