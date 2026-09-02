@@ -4,7 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
-| M1 Max mixed-Q5 A128 native serving, long-prefill residency | eager BF16 embedding: exact-ID `32768+16` OOM after about **66 s** | on-demand quantized embedding: the same request reaches about **180 s** before the unchanged Metal OOM; exact `8192+16` remains qualified | removing **1,827,635,200 bytes / 1.702 GiB** materially shifts the failure boundary but stock shape-growing BF16 KV plus dense SDPA still cannot complete 32K; fixed-memory native attention remains the capacity owner | real `context_length=max_total_tokens=131072`, exact `/generate` token IDs, one request, one-GiB MLX cache, internal chunk 1,024; PERF-A129/A131/FA143 | 2026-09-01 21:36 PDT |
+| M1 Max mixed-Q5 A130 fixed-memory long prefill | A131 plus stock SDPA: exact-ID `32768+16` Metal OOM after about **180 s** | A130: exact `8192+16` **107.023 prompt tok/s**, **76.544058 s**; independent clean exact `32768+16` **87.807667 prompt tok/s**, **373.179259 s**, HTTP 200 | removes the dense long-prefill allocation and converts the 32K crash into a complete exact request; short prompts retain stock SDPA and canonical **19.744722973 tok/s** decode; persistent BF16 KV/snapshot residency still owns the 131K gate | real `context_length=max_total_tokens=131072`, literal `/generate` token IDs, one request, 1 GiB MLX cache, 1,024-token native chunks; PERF-A130/A132 | 2026-09-01 22:09 PDT |
 | M1 Max mixed-Q5 on-demand quantized embedding, sampled direct `128 / 32 warm / 128 timed` | eager BF16 table **19.713595204 tok/s** | gathered-row dequantization **19.690129490 tok/s** | **-0.023465714 tok/s / -0.119033%**, canonical in both order directions; eager duplicate falls from **2,542,796,800** to **715,161,600 bytes** | same A128 dylib and selected environment, changing only `SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=0/1`; PERF-A131 | 2026-09-01 21:36 PDT |
 | M1 Max fused affine-Q4 gate/up/SwiGLU combined raw parameters, production micro and sampled direct model | A117 four independent BF16 parameter planes: micro **0.5601321469 ms**, matched model **19.4469075097 tok/s** | A128 two aligned gate/up four-row bundles: micro **0.5542401462 ms**, model **19.6253709751 tok/s** | micro **-0.0058920007 ms / -1.051895%**, all ten pairs; two model windows **+1.027929% / +0.807546%**, aggregate **+0.1784634654 tok/s / +0.917696%**; all 20 clean outputs canonical; 680 MiB duplicate stream; committed opt-in, capacity pending | `regular|raw 5120 17408 1000 10000`; same-dylib direct `128 / 32 warm / 128 timed`, seed 42, order/reverse | 2026-09-01 20:50 PDT |
 | M1 Max affine-Q5 raw four-row parameter interleave, production micros and sampled full model | selected A100 separate BF16 scale/bias arrays; full-model mean **19.4281991915 tok/s** | A126 raw interleave: K=17,408 **0.4295822229 ms**, K=5,120 **0.3624250267 ms**, K=6,144 **0.3407608625 ms**; A127 K=17,408-only full-model mean **19.3109191455 tok/s** | isolated K=17,408 improves **0.446284%**, but K=5,120/K=6,144 regress **1.032193% / 7.512710%** and shape-gated full-model throughput regresses **0.117280046 tok/s / 0.603659%**; all outputs exact; restored | dedicated candidate binary plus same-dylib direct `128 / 32 warm / 128 timed` order/reverse controls; PERF-FA141 | 2026-09-01 20:12 PDT |
@@ -878,8 +878,10 @@ tree throughput can be ranked for production.
 | PERF-A127 | Gate raw four-row parameter interleaving to only K=17,408 Q5 projections and measure the complete mixed model. | Sixty-four Q5 gate/up projections, duplicate decode metadata retained beside prefill tensors | Runtime-correct and rejected | Same-dylib order/reverse controls give **19.4281991915** control versus **19.3109191455 tok/s** candidate, a **0.603659%** regression. All four samples preserve digest `d0193f6d413b68c1` and last token 11406. Exact A117/A100 source restored; see PERF-FA141. |
 | PERF-A128 | Combine each fused Q4 MLP pair's unchanged gate/up scale/bias bits into two aligned four-row parameter bundles. | All 64 fused Q4 gate/up/SwiGLU decode kernels; original planes retained for prefill; explicit opt-in | Qualified and retained; capacity pending | Ten micro pairs improve **0.5601321469 -> 0.5542401462 ms**, **1.051895%**, with every pair exact and faster. Forward/reversed full-model windows improve **19.439523730 -> 19.639348219** and **19.454291289 -> 19.611393731 tok/s**; aggregate **+0.178463465 / +0.917696%**, all outputs canonical. Signed `f2fcce0c73`; 680 MiB duplicate residency requires the exact 131K gate before default selection. |
 | PERF-A129 | Bound recycled MLX buffers and halve target-only internal prefill chunks so A128's duplicate parameter stream can serve long prompts. | Native mixed-Q5 A128 SGLang server, real 131,072 admission metadata, one outer request | 8K-only control; rejected as a capacity solution | Uncapped 2,048- and 1,024-token forms both OOM on `8192+16`. A one-GiB cache cap plus 1,024-token chunks makes exact `8192+16` pass, but an exact-ID `32768+16` request still reaches Metal insufficient memory after about 66 seconds. See PERF-FA143. |
-| PERF-A130 | Replace stock dense prefill SDPA with the already-qualified fixed-memory native Metal GQA mechanism inside the C++ MLX engine. | Sixteen Qwen3.8 full-attention layers, contiguous BF16 KV, batch one, query chunks through 1,024, head shape 24/4/256 | Active | PERF-A017 already proves the matching Q8/C64 Apple7+ kernel at `E=17,L=131072`: **137.906625 ms**, 0 MiB measured residency growth, maximum error `4.3120235e-07`. The C++ native engine provides a direct dispatch owner without the previously blocked Python seam. |
+| PERF-A130 | Replace unsafe long-prefill stock SDPA with fixed-memory native Metal GQA inside the C++ MLX engine while retaining stock SDPA through 8K. | Sixteen Qwen3.8 full-attention layers, contiguous BF16 KV, batch one, query chunks through 1,024, head shape 24/4/256 | Qualified through exact 32K; retained | Five focused shapes pass at maximum absolute error `0.000244141`, including prefix 8,191 and query length 1,024. Always-on dispatch changes the deterministic trajectory, so the selected 8K threshold preserves canonical short work. Independent clean exact `32768+16` completes at **87.807667 prompt tok/s / 373.179259 s** where A131 stock SDPA OOMs. Signed `ee0bf40711`; persistent KV residency remains before 131K. |
 | PERF-A131 | Gather quantized token-embedding rows before dequantization instead of materializing the entire BF16 vocabulary table. | Native Qwen3.8 C++ load/embed path; opt-in | Qualified and retained | Removes **1,827,635,200 bytes / 1.702 GiB** of eager duplicate storage. Focused output is bit-exact; all four full-model arms are canonical; matched decode moves only **-0.119033%**. Exact 32K runtime before OOM rises from about 66 to about 180 seconds, proving material capacity reachability. Signed `2a65daf1cc`. |
+| PERF-A132 | Preserve the embedding gather contract for native sampler output indices. | On-demand quantized embedding and scheduled native decode | Qualified and retained | Prompt IDs enter as MLX `int32`, while the first sampled token is MLX `uint32`. The narrowed A131 validation rejected that valid second forward. Focused signed/unsigned gathers are both bit-exact with floating indices still rejected; same-dylib direct control returns canonical **19.699758875 tok/s**. Signed `e7643c904d`. |
+| PERF-A133 | Reduce persistent full-attention KV and prompt-snapshot residency without perturbing batch-one decode. | Sixteen BF16 K/V caches, geometric growth, and no-MTP prompt snapshots at exact 131K | Active | A130 bounds attention scratch and passes exact 32K, leaving source-visible BF16 K/V at **8 GiB** by 131,072 tokens before snapshot and functional-update lifetime costs. Evaluate snapshot elision and an exact native FP8 cache path while retaining the stock short-prompt and sampled behavior gates. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -5856,3 +5858,55 @@ tree throughput can be ranked for production.
   decode-neutral within the measured noise scale and materially moves the
   capacity boundary, but it does not displace PERF-A130: stock attention still
   fails exact 32K and cannot support the required 131K contract.
+
+### 2026-09-01 21:55 PDT - PERF-A132 sampled embedding index repair
+
+- Change: widened the on-demand quantized embedding helper's index contract
+  from only MLX `int32` to exactly `int32` or `uint32`. Native prompt arrays
+  use the signed type, while `select_token` returns an unsigned sampled token
+  that scheduled decode feeds through the same embedding owner.
+- Benchmark evidence: the focused test reports
+  `signed_bit_mismatches=0 unsigned_bit_mismatches=0`. With the repaired
+  combined dylib and fixed attention disabled, the complete canonical direct
+  workload reaches **19.699758875 tok/s**, digest `d0193f6d413b68c1`, and last
+  token 11406. Before the repair, both the retained A131 artifact and the new
+  candidate fail on the second forward with
+  `invalid quantized embedding inputs`.
+- Correctness evidence: both admitted integer types reproduce gather from the
+  fully dequantized table bit for bit; the existing floating-index rejection
+  remains fail-closed. The clean focused test and combined dylib compile with
+  C++20/O3 and `-Wall -Wextra -Werror`.
+- Decision: retain signed `e7643c904d` as an independent correctness fix.
+
+### 2026-09-01 22:09 PDT - PERF-A130 fixed-memory serving reaches exact 32K
+
+- Change: integrated the Q8/C64 online-softmax Metal GQA kernel directly in
+  `Engine::full_attn`. The opt-in dispatch applies only when active history is
+  above 8,192 tokens, batch is one, query length is at most 1,024, and the
+  model geometry is exactly 24 query heads, four KV heads, and dimension 256.
+  Stock MLX SDPA remains the fallback and the selected short-prompt path.
+- Benchmark evidence: an always-on 128-token prefill leaves decode at
+  **19.667817477 tok/s** but changes the deterministic digest to
+  `b49d27b0ba43fd0c` and last token to 125363. The selected 8K threshold
+  restores digest `d0193f6d413b68c1`, last token 11406, and reaches
+  **19.744722973 tok/s**. Exact server requests then complete at:
+
+  ```text
+  8192+16   107.023331 prompt tok/s   76.544058 s   HTTP 200
+  32768+16   87.807667 prompt tok/s  373.179259 s   HTTP 200
+  ```
+
+  The 32K arm used an independent launcher restart and reports zero cached
+  tokens, zero retractions, exact requested lengths, and
+  `finish_reason=length`. A131 with stock SDPA fails the same exact request
+  around 180 seconds.
+- Correctness evidence: five deterministic C++/Metal parity shapes, including
+  prefix 8,191 and maximum query length 1,024, have no non-finite values and
+  maximum absolute error at most `0.000244141`. Strict focused test and dylib
+  builds pass. Both server launches resolve real 131,072 context/token pools,
+  one request, five Mamba slots, language-only metadata, and the intended
+  parsers. The listener stays healthy after each successful request.
+- Decision: retain signed `ee0bf40711` as the new long-prefill capacity winner.
+  Exact 131K remains open because the sixteen geometrically grown BF16 K/V
+  pairs alone reach 8 GiB and the no-MTP prompt snapshot can extend their
+  lifetime. PERF-A133 now owns persistent cache/snapshot residency.

@@ -279,9 +279,17 @@ complete sampled request, but an exact-ID `32768+16` request still fails with
 Metal insufficient memory after about 66 seconds. Startup advertises the real
 131,072-token context/admission surface and language-only metadata; the stock
 shape-growing BF16 KV plus dense-SDPA prefill path is not a capacity solution.
-PERF-A130 now owns fixed-memory native Metal attention integration. Exact 131K
-capacity, steady sampled serving, and Codex `xhigh` remain gates before default
-selection.
+
+PERF-A130 is now the selected long-prefill mechanism behind
+`SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION=1`. Its Q8/C64 native Metal
+online-softmax path starts only above 8,192 active tokens, retaining canonical
+stock SDPA for ordinary prompts. The thresholded direct smoke reaches
+**19.744722973 tok/s**, digest `d0193f6d413b68c1`, and last token 11406. An
+independent clean exact-ID `32768+16` server request completes at
+**87.807667 prompt tok/s / 373.179259 s** where A131 plus stock SDPA fails
+around 180 seconds. Signed `ee0bf40711` owns this win. Exact 131K still needs
+persistent KV/snapshot residency reduction; steady sampled serving and Codex
+`xhigh` also remain gates before default selection.
 
 PERF-A131 retains on-demand quantized embedding behind
 `SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1`. It replaces the eager
@@ -291,7 +299,10 @@ selected rows, removing **1,827,635,200 bytes / 1.702 GiB**. Focused output is
 bit-exact, matched sampled decode is **19.713595204 -> 19.690129490 tok/s**
 (**-0.119033%**), and canonical full-model output is unchanged. The exact 32K
 request now runs about 180 rather than 66 seconds before the same stock-path
-Metal OOM; this is a qualified residency win, not a capacity pass.
+Metal OOM; this is a qualified residency win, not a capacity pass. Signed
+`e7643c904d` additionally admits the native sampler's valid MLX `uint32`
+indices alongside prompt `int32` indices; both gathered forms are bit-exact
+and floating indices remain rejected.
 
 A118 and A119 are closed in their measured forms. Replacing A117's fused-Q4
 packed-word reads with one explicit `packed_ushort4` transaction is exact but
