@@ -50,6 +50,14 @@ mlx::core::array affine_q5_qmv_batch_one(
     const QLinear& linear, const mlx::core::array& x);
 mlx::core::array affine_q5_qmv_batch_two(
     const QLinear& linear, const mlx::core::array& x);
+std::pair<mlx::core::array, mlx::core::array> align_mtp_committed_history(
+    const mlx::core::array& target_hidden,
+    const mlx::core::array& token_ids,
+    const mlx::core::array& previous_hidden,
+    bool has_previous_hidden,
+    const mlx::core::array& final_norm,
+    float rms_norm_eps,
+    bool post_norm_hidden);
 mlx::core::array quantized_embedding_rows(
     const QLinear& embedding, const mlx::core::array& tokens);
 mlx::core::array fixed_prefill_attention(
@@ -228,8 +236,23 @@ class Engine {
   void snapshot();
   void restore();
   void forward_argmax(const int32_t* tokens, int n, int32_t* out);
+  int target_sequence_length() const;
   mlx::core::array mtp_seed_hidden() const;
   void mtp_reset();
+  void mtp_append_history(
+      const mlx::core::array& target_hidden,
+      const mlx::core::array& token_ids);
+  void mtp_append_prompt_history(
+      const mlx::core::array& target_hidden,
+      const int32_t* tokens,
+      int token_count,
+      const mlx::core::array& previous_hidden,
+      bool has_previous_hidden);
+  void mtp_begin_committed_cycle();
+  void mtp_commit_cycle(
+      const int32_t* tokens,
+      int token_count,
+      const mlx::core::array& committed_hidden);
   int mtp_draft(int32_t bonus, int32_t* drafts, int n_draft);
   mlx::core::array mtp_forward(
       const mlx::core::array& token_embed, const mlx::core::array& hidden);
@@ -342,6 +365,10 @@ class Engine {
   mlx::core::array mtp_pre_emb_{0};
   mlx::core::array mtp_pre_hid_{0};
   mlx::core::array mtp_norm_{0};
+  bool mtp_committed_history_enabled_ = false;
+  LayerSnap mtp_cycle_snapshot_;
+  mlx::core::array mtp_cycle_previous_hidden_{0};
+  bool mtp_cycle_pending_ = false;
   bool dflash_valid_ = false;
   int dflash_context_offset_ = 0;
   QLinear dflash_fc_;
