@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max mixed-Q5 A128 native serving, long-prefill residency | uncapped MLX recycled buffers: real `8192+16` prefill OOMs at both 2,048- and 1,024-token internal chunks | one-GiB MLX cache cap plus 1,024-token internal chunks: exact `8192+16` passes at **108.664 prompt tok/s**, **75.388639 s TTFT**, **76.231461 s E2E** | converts a repeatable Metal OOM into a complete sampled request; short uncapped `128+128` smoke reaches **19.596 tok/s**; 32K/exact-131K and steady served decode remain pending | real `context_length=max_total_tokens=131072`, one request, outer 131,072 admission, `SGLANG_MLX_CACHE_LIMIT_GB=1`, `SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=1024`; PERF-A129/FA142 | 2026-09-01 21:08 PDT |
 | M1 Max fused affine-Q4 gate/up/SwiGLU combined raw parameters, production micro and sampled direct model | A117 four independent BF16 parameter planes: micro **0.5601321469 ms**, matched model **19.4469075097 tok/s** | A128 two aligned gate/up four-row bundles: micro **0.5542401462 ms**, model **19.6253709751 tok/s** | micro **-0.0058920007 ms / -1.051895%**, all ten pairs; two model windows **+1.027929% / +0.807546%**, aggregate **+0.1784634654 tok/s / +0.917696%**; all 20 clean outputs canonical; 680 MiB duplicate stream; committed opt-in, capacity pending | `regular|raw 5120 17408 1000 10000`; same-dylib direct `128 / 32 warm / 128 timed`, seed 42, order/reverse | 2026-09-01 20:50 PDT |
 | M1 Max affine-Q5 raw four-row parameter interleave, production micros and sampled full model | selected A100 separate BF16 scale/bias arrays; full-model mean **19.4281991915 tok/s** | A126 raw interleave: K=17,408 **0.4295822229 ms**, K=5,120 **0.3624250267 ms**, K=6,144 **0.3407608625 ms**; A127 K=17,408-only full-model mean **19.3109191455 tok/s** | isolated K=17,408 improves **0.446284%**, but K=5,120/K=6,144 regress **1.032193% / 7.512710%** and shape-gated full-model throughput regresses **0.117280046 tok/s / 0.603659%**; all outputs exact; restored | dedicated candidate binary plus same-dylib direct `128 / 32 warm / 128 timed` order/reverse controls; PERF-FA141 | 2026-09-01 20:12 PDT |
 | M1 Max affine-Q5 lossless 20-bit scale/bias packing, production K=17,408/N=5,120 micro | selected A100 regular BF16 parameters **0.434799063 ms** | A125 dense four-row 20-bit bundles **0.460042653 ms** | **+0.025243590 ms / +5.805806%** regression; both order directions retain exact digest `4c08a11e47576b08`; entropy scan proves the representation but decode cost rejects this kernel | dedicated candidate binary, alternating `200 / 3000` process-isolated arms; PERF-FA140 | 2026-09-01 19:56 PDT |
@@ -875,6 +876,7 @@ tree throughput can be ranked for production.
 | PERF-A126 | Interleave four rows of unchanged raw 32-bit BF16 scale/bias pairs to isolate locality from A125's reconstruction cost. | Selected A100 affine-Q5 kernel across all three profiled K families | Runtime-correct and rejected | K=17,408 improves **0.4315079725 -> 0.4295822229 ms**, only **0.446284%** with five of ten pair wins. K=5,120 and K=6,144 regress **1.032193% / 7.512710%**. The mixed shape result rejects general adoption; see PERF-FA141. |
 | PERF-A127 | Gate raw four-row parameter interleaving to only K=17,408 Q5 projections and measure the complete mixed model. | Sixty-four Q5 gate/up projections, duplicate decode metadata retained beside prefill tensors | Runtime-correct and rejected | Same-dylib order/reverse controls give **19.4281991915** control versus **19.3109191455 tok/s** candidate, a **0.603659%** regression. All four samples preserve digest `d0193f6d413b68c1` and last token 11406. Exact A117/A100 source restored; see PERF-FA141. |
 | PERF-A128 | Combine each fused Q4 MLP pair's unchanged gate/up scale/bias bits into two aligned four-row parameter bundles. | All 64 fused Q4 gate/up/SwiGLU decode kernels; original planes retained for prefill; explicit opt-in | Qualified and retained; capacity pending | Ten micro pairs improve **0.5601321469 -> 0.5542401462 ms**, **1.051895%**, with every pair exact and faster. Forward/reversed full-model windows improve **19.439523730 -> 19.639348219** and **19.454291289 -> 19.611393731 tok/s**; aggregate **+0.178463465 / +0.917696%**, all outputs canonical. Signed `f2fcce0c73`; 680 MiB duplicate residency requires the exact 131K gate before default selection. |
+| PERF-A129 | Bound recycled MLX buffers and halve target-only internal prefill chunks so A128's duplicate parameter stream can serve long prompts. | Native mixed-Q5 A128 SGLang server, real 131,072 admission metadata, one outer request | 8K gate passed; 32K and exact capacity pending | Uncapped 2,048- and 1,024-token forms both OOM on `8192+16`. With `SGLANG_MLX_CACHE_LIMIT_GB=1` and internal 1,024-token chunks, the same request completes at **108.664 prompt tok/s**, **75.388639 s TTFT**, and **17.797 tok/s** over the non-steady 16-token decode tail. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -5766,3 +5768,35 @@ tree throughput can be ranked for production.
   generic prefill still owns the original planes, so exact 131K serving and
   real-client qualification are required before selecting it by default. The
   direct gap is now **0.374629025 tok/s / 1.908902%**.
+
+### 2026-09-01 21:08 PDT - PERF-A129 first long-prefill residency gate
+
+- Change: kept every A128 decode switch and the real 131,072 SGLang context,
+  total-token limit, and one-request surface. The selected residency arm sets
+  `SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=1024` and the existing
+  pre-load `SGLANG_MLX_CACHE_LIMIT_GB=1`; the outer SGLang admission remains
+  one 131,072-token chunk so native continuation never falls through the
+  generic `SimpleNamespace` model stub.
+- Benchmark evidence: the rebuilt server dylib hashes to
+  `bd61c37362a9dce99de8bd8ab368a5f587326bbb5a4b6bf49eb12a891bf77bbd`.
+  It first reproduced the canonical direct output at **19.700245627 tok/s**,
+  digest `d0193f6d413b68c1`, and last token 11406. An uncapped server completed a
+  sampled `128+128` request at **19.596 tok/s**. Real `8192+16` then failed
+  with Metal insufficient-memory errors at both 2,048- and 1,024-token
+  internal chunks. The 1,024-token engine itself passed the same 8,192-token
+  prefill directly, isolating the remaining peak to full-server residency.
+  Adding only the one-GiB recycled-buffer cap made the served `8192+16`
+  request pass at **108.664 prompt tok/s**, **75.388639 s TTFT**,
+  **76.231461 s E2E**, and **17.797 tok/s** over its non-steady 16-token tail.
+- Correctness evidence: the successful request reports exact 8,192 prompt and
+  16 completion tokens, `finish_reason=length`, preserved reasoning content,
+  and a healthy listener afterward. Startup resolved `context_length=131072`,
+  `max_total_tokens=131072`, `max_running_requests=1`, language-only metadata,
+  and image/audio understanding false. After 8K, system memory remained 18%
+  free, swap stayed about 348 MiB, throttled pages stayed zero, and macOS
+  reported no thermal or performance warning.
+- Decision: retain the one-GiB cache cap and 1,024-token internal prefill as
+  the active A128 capacity configuration. The 2,048-token default is not safe
+  beside A128's 680 MiB duplicate stream, and internal chunk reduction alone
+  is insufficient in the full server. Raise the watchdog for the 32K and exact
+  131K gates; do not treat the 16-token long-context tail as steady throughput.
