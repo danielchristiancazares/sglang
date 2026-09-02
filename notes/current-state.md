@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-02
-02:20 PDT.
+02:45 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -173,21 +173,25 @@ The current speed target is the immutable 4.951-bpw mixed-Q5 checkpoint at
 revision `596b8067f7cf429007bb668874ffee7e917c8340`. The selected direct path
 uses A100 aligned-word affine-Q5, stock-exact A111 affine-Q4, A114/A117 fused
 Q4 gate/up/SwiGLU with lane-parallel epilogues, A113's redundant token-
-evaluation removal, A128's aligned raw parameter bundles, A130 fixed-memory
-long-prefill attention, A131 on-demand embedding, and now A137's exact fast
-sigmoid. A137's two independent five-pair direct windows improve matched
-precise-exp control **19.640965505 -> 19.667930618 tok/s**, a
-**+0.026965113 / +0.137290%** gain. Every arm retains digest
-`d0193f6d413b68c1`, last token 11406, and exact length; the strict final-source
-smoke reaches **19.729345617 tok/s**. The current qualified mean remains
-**0.332069382 tok/s / 1.660347%** below the requested floor.
+evaluation removal, A128's aligned raw parameter bundles, A137's exact fast
+sigmoid, and A149/A150/A163's shared two-row standard-MTP verifier kernels.
+A163 is the first direct standard-MTP composition to clear the required floor
+in repeated evidence: independent five-sample means are **20.109963672** and
+**20.107849480 tok/s**, combined **20.108906576**, and all ten samples range
+from **20.075602549 to 20.132668649 tok/s**. Every process preserves 75
+refills, width **1.706666667**, digest `6bd687fb75c4f5a9`, last token 1467,
+and exact requested length. Signed `94ca4ff7fa` retains the opt-in kernel.
+This clears the short direct execution gate; it does not yet qualify the
+6,237-token actual-work shape, exact served 131K, or a real Responses/Codex
+`xhigh` coding turn.
 
 The representative selected direct `6237 / 32 warm / 256 timed` window is
 lower: five clean processes measure **19.049906088, 19.052370326,
 19.013470487, 19.046250807, and 19.032662806 tok/s**, mean
 **19.038932103 tok/s**. Every process has identical digest
-`9ec00ec01f8781e1` and last token 20. This actual-work shape needs
-**0.961067897 tok/s / 5.047909%** over current execution to reach 20. A
+`9ec00ec01f8781e1` and last token 20. This pre-A149/A150/A163 actual-work
+baseline needs **0.961067897 tok/s / 5.047909%** over its recorded execution
+to reach 20 and must now be rerun with the qualified verifier composition. A
 bounded A137 long-history trace maps **58,739 / 59,372** sampled PCs:
 affine-Q5 owns **49.061847%**, fused raw-parameter Q4 SwiGLU **35.227%**,
 ordinary Q4 **6.051674%**, and two-pass SDPA **3.863774%**. Streamed Q5
@@ -236,18 +240,18 @@ count, target probabilities, and acceptance path, but measures
 spends approximately **103 ms** in two-token target verification; dense q
 construction/retention is not the owner.
 
-PERF-A149/A150 specialize that M=2 owner and are now retained behind opt-in
-switches in signed `6b6d0d15ea`. Q5 loads each packed weight once while
-accumulating both verifier rows; fused Q4 shares gate/up weights and raw
-parameters across the same two rows. Production micros improve **19.8--29.3%**
-for Q5 and **33.803365%** for fused Q4. The full sampled block-two path
-improves **15.204721403 -> 19.795886878 tok/s**; a clean committed-source
-rebuild reaches **19.785495602 tok/s**, 75 refills, width **1.706666667**,
-digest `6bd687fb75c4f5a9`, and last token 1467. Focused two-row tests plus the
-existing batch-one and exhaustive fused-Q4 tests pass. The durable 20 tok/s
-floor remains open by **0.204113122 tok/s / 1.031089%** at the best full
-window; exact 131K capacity and the real Responses/Codex `xhigh` gate remain
-separate unresolved requirements.
+PERF-A149/A150 specialize the Q5 and fused-MLP portions of that M=2 owner
+behind opt-in switches in signed `6b6d0d15ea`. PERF-A163 completes the
+ordinary Q4 vocabulary head: it loads each packed word once but preserves
+independent scalar arithmetic order for both rows. The exact production head
+micro improves **4.195437500 -> 3.440243000 ms** in the final rebuild. Its
+two independent full-model windows supersede A150's **19.795886878 tok/s**
+best with a combined **20.108906576 tok/s** mean, and every sample clears 20.
+The rejected A162 `float2` form was faster in isolation but produced 10,703
+mismatches, changed acceptance, and regressed the model to **19.561130627
+tok/s**. Focused two-row, dispatch, invalid-shape, batch-one, fused-Q4, and
+exhaustive-domain tests pass. Exact served 131K and the real Responses/Codex
+`xhigh` gate remain unresolved.
 
 A128's 680 MiB duplicate parameter stream remains opt-in. A130 plus A131
 completes an independent exact `32768+16` server request at
@@ -256,8 +260,8 @@ completes an independent exact `32768+16` server request at
 allocation fits; its current long-history composition reaches only
 **3.515167775 tok/s** and is rejected for promotion. Exact served 131K,
 steady sampled serving, and Responses/Codex `xhigh` qualification remain
-pending behind a faster compressed-cache design and a direct result above
-20 tok/s with margin.
+pending behind a faster compressed-cache design and a new long-history/
+real-client window using the direct threshold winner.
 
 The fresh-session candidate matrix is resolved through A111. A100 is promoted:
 five aligned 16-bit loads reconstruct the same three bit windows and retain the

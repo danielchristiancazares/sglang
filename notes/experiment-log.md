@@ -24774,3 +24774,102 @@ mean 13.929045  17.125658 446.051        39.730
   is good. The next handoff must close the remaining durable throughput gap
   without target-sampling changes, then requalify exact 131K served capacity
   and a real Responses/Codex `xhigh` coding turn.
+
+### 2026-09-02 02:45 PDT - A162 rejection and A163 direct 20 tok/s qualification
+
+- Main remained at signed `7d362c4987b1146ac9c05d7908626466ae664d0f`
+  throughout isolated implementation and measurement, 122 commits ahead of
+  `origin/main`, with an empty index and only Daniel's three protected
+  user-owned paths modified. Their Git blob hashes remained exactly
+  `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. Work occurred only in clean
+  detached worktree
+  `/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-a150-promote`.
+- The measured remaining ordinary-Q4 standard-MTP owner was the
+  `K=5120,N=248320,M=2` vocabulary head at approximately 4.17 ms per
+  refill. A162 loaded each packed four-bit word once for both rows through
+  `float2` inputs/results. It improved the micro from samples
+  **4.170897167 / 4.166262958 / 4.166254333 ms** to approximately
+  **2.675539958 / 2.672906750 / 2.673431542 ms**, but production output had
+  maximum absolute error **0.0078125** and 10,703 mismatches. Its full sampled
+  result regressed to **19.561130627 tok/s** in **6.543589041 s**, with 76
+  refills, width **1.684210526**, a changed digest, and last token 12. The
+  arithmetic form is rejected. Its dylib and benchmark SHA-256 values are
+  `302e551be114bd137e98177555a67cec9b205f087eaaba00fadaf47e07a1e56d`
+  and
+  `a2004cec2482853a1e855c79a4985c7bc426aeaa58a9df8667cc853e496c21cb`.
+- A163 retains the shared packed-word load but stores both input fragments and
+  both result sets in separate scalar arrays. It invokes the selected load
+  helper independently for each row, accumulates every scalar expression in
+  the established order, reduces each row separately, and writes the same BF16
+  boundaries. Small `K=512,N=64` and production `K=5120,N=248320` are
+  bit-exact. The first production run reached **3.332995625 ms** with zero
+  mismatches and digest `4c39efa4fe19a88a`. The final-source benchmark
+  measures stock/shared **4.195437500 / 3.440243000 ms**, an
+  **18.000375%** reduction with the same exact digest.
+- Added `SGLANG_MLX_NATIVE_Q4_BATCH_TWO_QMV` as an explicit opt-in. The
+  lowest shared behavior owner, `QLinear::operator()`, dispatches only
+  `[1,2,K]` BF16 affine-Q4/G64 inputs with unsigned packed words, K divisible
+  by 512, N divisible by 16, and exact weight/parameter shapes. The helper
+  fails closed on invalid or unsupported calls. Other formats, dimensions,
+  row counts, and upstream/non-Mac paths remain unchanged.
+- Extended strict native test
+  `test_qwen38_affine_batch_two_qmv.cpp`. Direct and public-dispatch Q4
+  outputs are bit-exact at `512x64` and `5120x128`; invalid and unsupported
+  helper contracts reject. Existing Q5 two-row output remains exact, fused Q4
+  stays within **0.000488281 / 0.0078125**, and the `-6.84375` sigmoid
+  boundary remains exact. Independently rebuilt neighboring tests report:
+  - Q4 batch-one `512x64`, `5120x128`, and `5120x17408`: zero
+    mismatches;
+  - fused Q4 `512x64` and `5120x17408`, the exceptional sigmoid boundary,
+    and all 65,280 finite BF16 patterns: zero mismatches;
+  - Q5 batch-one maximum errors **0.03125 / 0.03125 / 0.0234375**.
+- Strict C++20/O3 `-Wall -Wextra -Werror` builds passed for the shared
+  library, focused test, Q4/Q5 neighboring tests, and standalone benchmark.
+  Only the established macOS 26.0 versus MLX 26.2 deployment-target linker
+  warning appeared. Final source/artifact SHA-256 values are:
+  - engine:
+    `aaa439cfd82f4d626bea774c21ee7f9a711f47365c6d4a15e6f2eb8ef353890c`;
+  - header:
+    `8fd90b40de1547b910d5b9bc75098d92080abe52e3b4c167a6c8ca92f5de3bb1`;
+  - focused test source:
+    `786b66ca7fcd22590a769cc6e0edb83537c5aae9577403a9039a71ef3dcc38b2`;
+  - benchmark source:
+    `f93b7d35fbf597685c6e7ea3fb3b2a8a4ef9803a4eaf19de012fa2b9cac891d4`;
+  - strict dylib:
+    `c923d0901b1e9e2f157bb36c2cc1d1804ac89173283bc6ce75530e8f9d1c070d`;
+  - strict focused test:
+    `297ac6459ae4e6eb2407b3a5249e0157e5d631d9ee3c776b86128396ec79ea26`;
+  - strict benchmark:
+    `0f648c1e0bf7be97cb6d03abb72d3dab94d86581899fcd24f7113cd90e0170d0`.
+- Every compiler and Metal gate was sequential. Immediately before each,
+  `pgrep` found no benchmark/server/user compiler process, port 30000 had no
+  listener, memory pressure reported 94% free and zero throttled pages, and
+  `pmset -g therm` reported no thermal or performance warning. Ordinary
+  macOS Metal compiler services were left untouched. One mistyped MTP directory
+  command failed immediately before model loading or Metal work; a fresh
+  preflight preceded its corrected replacement.
+- The exact full-model command, changing only the new Q4 switch and artifact
+  from the selected A150 composition, was:
+
+  ```text
+  /usr/bin/env -u SGLANG_MLX_NATIVE_ATTN_CACHE_BITS MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=1024 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q5_BATCH_TWO_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_TWO_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO=1 SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1 SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION=1 SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE=0 SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT=0 SGLANG_MLX_NATIVE_MTP_POST_NORM_SEED=1 SGLANG_MLX_NATIVE_MTP_BLOCK_SIZE=2 /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 600s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a163_promote.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128 /Users/dcazares/.cache/huggingface/hub/models--lukaskremla--Qwen3.8-27B-MTP-5bit-MLX/snapshots/1faa5a803c972c57cfc1beed606184e726ad3d85
+  ```
+
+- The initial discovery sample was **20.136147231 tok/s** and is not counted
+  in either qualification window. The first five consecutive samples are
+  **20.097217280 / 20.122611948 / 20.125047691 / 20.111538909 /
+  20.093402533 tok/s**, mean **20.109963672**. The independent clean rebuilt-
+  artifact window is **20.125666970 / 20.120359570 / 20.132668649 /
+  20.075602549 / 20.084949662 tok/s**, mean **20.107849480**. Combined mean is
+  **20.108906576 tok/s** and all ten samples exceed 20. Every sample has 128
+  prompt tokens, 32 warm tokens, 128 timed tokens, 75 refills, width
+  **1.706666667**, digest `6bd687fb75c4f5a9`, and last token 1467.
+- Signed commit `94ca4ff7facbf3b1ba094d56b453c3e9aadb0ce0`
+  (`perf(mlx): share q4 verifier weight loads`) retains the implementation,
+  C++ benchmark, and focused coverage. Signature verification is good. This is
+  the first durable direct standard-MTP result above 20 tok/s. It does not
+  complete the user objective: next rerun the 6,237-token actual-work shape,
+  integrate/launch the exact 131,072-token served composition, and pass real
+  Responses/Codex `xhigh`, reasoning, and tool behavior gates.

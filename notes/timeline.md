@@ -1107,6 +1107,35 @@ code changes, or process state matter.
   launcher default. NEXTN, sparse/truncated DSpark experiments, tree/SWOR, and
   the independent native-controller lane remain preserved but unselected.
 
+## 2026-09-02
+
+### Official coding settings align the Apple qualification contract
+
+- The pinned upstream Qwen3.8 sources select thinking and preserved thinking,
+  `reasoning_effort=xhigh`, temperature **1.0**, top-p **0.95**, top-k
+  **20**, min-p **0.0**, presence **0.0**, and repetition **1.0**. Native
+  context is 262,144, so the 131,072-token lane uses no YaRN.
+- The direct native sampler already implements that target distribution.
+  Presence **1.5** is retained only for Qwen's separate non-thinking profile.
+  Qwen publishes no recommended internal MTP proposal temperature.
+
+### Exact shared Q4 head loads clear 20 tok/s directly
+
+- A149/A150 first reduce standard-MTP M=2 verification from generic
+  **15.204721403** to **19.795886878 tok/s** by sharing Q5 and fused-Q4 MLP
+  loads across both verifier rows.
+- A163 adds the remaining ordinary Q4 vocabulary head while preserving each
+  row's scalar arithmetic order. The exact production micro improves
+  **4.195437500 -> 3.440243000 ms**; the faster A162 vector form is rejected
+  for 10,703 mismatches and changed acceptance.
+- Two independent five-sample A163 windows average **20.109963672** and
+  **20.107849480 tok/s**. Every sample clears 20 and preserves digest
+  `6bd687fb75c4f5a9`, last token 1467, 75 refills, and width
+  **1.706666667**. Signed `94ca4ff7fa` retains the opt-in win.
+- The short direct floor is cleared. The 6,237-token actual-work window, exact
+  served 131K composition, and a real Responses/Codex `xhigh` coding turn
+  remain the active qualification sequence.
+
 ## 2026-09-08
 
 ### 18:57-19:26 - install and benchmark NVIDIA's stock mixed-precision checkpoint
