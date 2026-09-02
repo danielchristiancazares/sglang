@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-02
-00:13 PDT.
+00:31 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -181,6 +181,18 @@ precise-exp control **19.640965505 -> 19.667930618 tok/s**, a
 `d0193f6d413b68c1`, last token 11406, and exact length; the strict final-source
 smoke reaches **19.729345617 tok/s**. The current qualified mean remains
 **0.332069382 tok/s / 1.660347%** below the requested floor.
+
+The representative selected direct `6237 / 32 warm / 256 timed` window is
+lower: five clean processes measure **19.049906088, 19.052370326,
+19.013470487, 19.046250807, and 19.032662806 tok/s**, mean
+**19.038932103 tok/s**. Every process has identical digest
+`9ec00ec01f8781e1` and last token 20. This actual-work shape needs
+**0.961067897 tok/s / 5.047909%** over current execution to reach 20. A
+bounded A137 long-history trace maps **58,739 / 59,372** sampled PCs:
+affine-Q5 owns **49.061847%**, fused raw-parameter Q4 SwiGLU **35.227%**,
+ordinary Q4 **6.051674%**, and two-pass SDPA **3.863774%**. Streamed Q5
+bytes/instructions remain the first optimization owner; attention alone
+cannot close the measured gap at this history.
 
 A128's 680 MiB duplicate parameter stream remains opt-in. A130 plus A131
 completes an independent exact `32768+16` server request at
