@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max real-checkpoint Q5 entropy and selective-Q4 ceiling | 5.000000 stored bits/code across 240 Q5 tensors | **4.722514 Shannon / 4.748775 ideal static-Huffman bits/code**; top-15 coverage **73.562622%** | even a zero-cost ideal decoder removes only about **5.0%** of Q5 bytes, or roughly **2.5%** end to end at the measured **49.061847%** Q5 owner; actual block range/palette/sparse-high opportunities are **0.000000% / 0.000726% / 0.091079%**; Q4 helps only the down shape enough to project about **1.67%** end to end | strict CPU-only C++ checkpoint analyzer, four separated 4,096-group windows per tensor; fresh Q5/Q4 production-shape micros; PERF-A145 | 2026-09-02 01:04 PDT |
 | M1 Max affine-Q5 exact representation/layout follow-ups, production `K=17408, N=5120` micro | selected A100 continuous row stream | A141 nibble/high-plane **+5.800641%**; A142 16-row block layout **+1.508948%**; A143 four-row block layout **+0.515803%**; A144 combined weight/parameter stream **+3.662772%** | all four regress while preserving digest `d05378cc8066dc41`; A143's six-per-arm window is **0.432163523 / 0.434392635 ms** and wins only one pair | strict standalone C++/Metal candidate binaries; `regular|CANDIDATE 17408 5120 1000 10000`; PERF-A141--A144 | 2026-09-02 00:55 PDT |
 | M1 Max affine-Q5 lossless weight-window layouts, production `K=17408, N=5120` micro | selected A100 continuous 5-bit stream **0.435539514 ms** across six balanced controls | A139 four-row assembled windows **0.441254344 ms**; A140 row-local windows **0.453039271 ms** in its first matched arm | A139 regresses **0.005714830 ms / 1.312127%**; A140 regresses **0.034508500 ms / 8.245152%** against its adjacent **0.418530771 ms** control; all outputs remain exact | standalone strict C++/Metal benchmark, `regular|window 17408 5120 1000 10000`; PERF-A139/A140 | 2026-09-02 00:42 PDT |
 | M1 Max A137 selected mixed-Q5 actual-work decode, sampled direct `6237 / 32 warm / 256 timed` | selected short-history mean **19.667930618 tok/s** | five clean long-history samples mean **19.038932103 tok/s** | exact samples **19.049906088 / 19.052370326 / 19.013470487 / 19.046250807 / 19.032662806**; all share digest `9ec00ec01f8781e1` and last token 20; **0.961067897 tok/s / 5.047909%** improvement over current execution remains to 20 | final signed A137 dylib, selected mixed-Q5 environment, exact direct harness; PERF-A138 | 2026-09-02 00:31 PDT |
@@ -186,6 +187,32 @@ tree throughput can be ranked for production.
 - Median: `32.953 TPS`; median wall time `7.769 s`.
 
 ## Deltas
+
+### 2026-09-02 01:04 PDT - PERF-A145 real-checkpoint Q5 entropy ceiling
+
+- Change: added a standalone C++ diagnostic that samples four separated
+  4,096-group windows from every affine-Q5 tensor in the immutable mixed
+  checkpoint and measures symbol entropy plus block-local lossless forms.
+- Benchmark evidence: all 240 Q5 tensors contribute **983,040 groups /
+  62,914,560 codes**. Aggregate Shannon entropy is **4.722514 bits/code**
+  and an ideal static Huffman code needs **4.748775 bits/code**. Only
+  **0.319824%** of sampled groups use at most sixteen symbols; zero groups
+  fit a four-code range; optimistic palette and sparse-high-plane reductions
+  are only **0.000726% / 0.091079%**. Q5 accounts for **49.061847%** of
+  selected actual-work shader PCs, so a zero-cost ideal decoder projects to
+  only about **2.5%** end-to-end improvement, below the **5.047909%** gap.
+- Precision screen: a fresh exact custom-Q4 comparison changes the dominant
+  down shape `K=17408, N=5120` from **0.440694188 to 0.406988542 ms**
+  (**7.648307%** faster), but `K=5120, N=10240` improves only **0.836249%**
+  and `K=6144, N=5120` regresses **2.054733%**. Down-only substitution
+  projects to about **1.6658%** end to end and changes model precision.
+- Correctness evidence: the analyzer is read-only and visits all named Q5
+  tensors without modifying either source checkpoint or production code.
+  The Q4/Q5 micros use their existing deterministic exact-output harnesses.
+- Decision: reject practical lossless-Q5 compression and do not promote a
+  precision-changing Q4 substitution. Continue with an algorithmic owner
+  whose ceiling exceeds the complete actual-work gap.
+- Commit: record-only; see PERF-FA156.
 
 ### 2026-09-02 00:55 PDT - PERF-A144 combined Q5 weight/parameter stream
 
@@ -1210,6 +1237,7 @@ tree throughput can be ranked for production.
 | PERF-A142 | Interleave unchanged Q5 K blocks across all sixteen output rows owned by one threadgroup. | Selected A100 production `K=17408, N=5120` affine-Q5 QMV micro | Runtime-correct and rejected | Order/reverse means regress **0.429063712 -> 0.435538062 ms**, **1.508948%**; see PERF-FA153. |
 | PERF-A143 | Interleave unchanged Q5 K blocks across the four output rows owned by one SIMD group. | Selected A100 production `K=17408, N=5120` affine-Q5 QMV micro | Runtime-correct and rejected | Six-per-arm means regress **0.432163523 -> 0.434392635 ms**, **0.515803%**, with only one candidate win; see PERF-FA154. |
 | PERF-A144 | Co-locate each unchanged Q5 block with its raw BF16 scale/bias pairs and consume one combined stream. | Selected A100 production `K=17408, N=5120` affine-Q5 QMV micro | Runtime-correct and rejected | The exact adjacent pair regresses **0.426560525 -> 0.442184463 ms**, **3.662772%**; see PERF-FA155. |
+| PERF-A145 | Measure real affine-Q5 code entropy and block compressibility before funding another representation; bound selective Q4 as a fallback. | All 240 Q5 tensors in the immutable mixed checkpoint plus three production projection shapes | Diagnostic complete; both routes rejected | Aggregate entropy is **4.722514 Shannon / 4.748775 Huffman bits/code** and practical block reductions are effectively zero. Q4 improves only the down shape materially and projects to about **1.6658%** end to end while changing precision; see PERF-FA156. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
