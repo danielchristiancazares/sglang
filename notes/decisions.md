@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-09-02 02:06 PDT.
+**Reconciled through:** 2026-09-02 02:20 PDT.
 
 ## Selected production choices
 
@@ -77,6 +77,7 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Affine-Q5 lossless compression and selective Q4 | Reject as standalone routes; retain A100 mixed precision | Real-checkpoint entropy is **4.722514 Shannon / 4.748775 ideal-Huffman bits/code**, making the zero-cost end-to-end ceiling only about **2.5%**. Q4 is **7.648307%** faster only on down projections and projects to about **1.6658%** overall while changing model precision; see PERF-FA156 |
 | MTP contract order | Retain the signed post-norm seed correction; keep target-only selected | Mixed-target Q4-head screens reach at most **11.341033334 tok/s**; accepted width and verification cost leave the composition below target-only |
 | Standard-MTP proposal representation | Retain dense q; reject A146/A147 sparse-only forms | Probability-ordered sparse q changes the seeded inverse-CDF path and regresses **54.151044%**. Vocabulary ordering restores exact digest/acceptance but measures **15.222551699** versus **15.230953312 tok/s** control. The approximately 103 ms M=2 target verifier is the measured owner; see PERF-FA157/158 |
+| Standard-MTP batch-two verifier | Retain PERF-A149 shared-load Q5 and PERF-A150 shared-load fused Q4 as opt-in kernels | Production Q5 projections improve **19.8--29.3%** and fused Q4 improves **33.803365%**. Full sampled throughput improves **15.204721403 -> 19.795886878 tok/s**; strict focused/existing tests pass and clean source reproduces **19.785495602 tok/s**. Signed `6b6d0d15ea`; the durable 20 tok/s and capacity/client gates remain open. |
 | MTP history staging | Decode-only accepted-prefix history before prompt-seeded history | Exact source trace proves the `cycle_base + 1` rollback/accepted-prefix pairing; prompt history adds a 512 MiB exact-capacity cache and a one-layer causal prefill pass |
 | Additional Q5 downloads | Keep the pinned uniform and mixed artifacts | Current published uniform alternatives repeat affine-five-bit/group-64 text layout or add BF16 vision; the OptiQ candidate reports a larger 5.50-BPW allocation |
 | Metal recovery boundary | Keep one sequential Metal workload and preserve foreground remote access | IT's restart restored custom and stock MLX execution. A later indexing/file-provider incident contaminated one timing tail; matched clean windows resumed after host activity settled |

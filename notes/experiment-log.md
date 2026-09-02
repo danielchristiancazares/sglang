@@ -24700,3 +24700,77 @@ mean 13.929045  17.125658 446.051        39.730
   coding knob. It remains outside the selected source: exact p/q rejection can
   preserve the target distribution under a changed draft q, but its measured
   cross-seed robustness still governs promotion.
+
+### 2026-09-02 02:20 PDT - A149/A150 source promotion and focused coverage
+
+- Main began at signed `3f768e9964c8b714d1af6c772dfee79eb58d9d92`,
+  120 commits ahead of `origin/main`, with an empty index and only Daniel's
+  three protected user-owned paths modified. Their Git blob hashes remained
+  `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. All implementation and testing
+  occurred in clean detached worktree
+  `/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-a150-promote`.
+- Every Metal gate was sequential. Before each run, port 30000, server/model,
+  benchmark, and user compiler searches were clear; memory pressure reported
+  94% free with zero throttled pages, and `pmset -g therm` reported no thermal
+  or performance warning. Ordinary system Metal compiler services were not
+  stopped.
+- The isolated engine/header SHA-256 values are
+  `e9981dd20fcde04ada22f74a1896d87c8d43d1444b73581faee4848a2b8ecc80`
+  and `9cde05ebd3f5466a8f82f37360409e5ec9f4333537522b890844cf232780f58f`.
+  They exactly match the source-at-measurement A150 snapshot and exclude the
+  later proposal-temperature and confidence-trace experiments.
+- Added C++ test
+  `test_qwen38_affine_batch_two_qmv.cpp`. The first strict compile failed only
+  because the test omitted `mlx/transforms.h`; adding that required header
+  made the unchanged strict build pass:
+
+  ```text
+  clang++ -std=c++20 -O3 -Wall -Wextra -Werror -isystem /Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/include -Ipython/sglang/srt/hardware_backend/mlx/native test/registered/unit/hardware_backend/mlx/test_qwen38_affine_batch_two_qmv.cpp python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp -L/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -Wl,-rpath,/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o /Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a150_batch_two_qmv
+  /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 180s /Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a150_batch_two_qmv
+  ```
+
+  The run exits zero. Q5 `512x64` and `5120x128` are exact and the public
+  `QLinear` dispatch matches the helper bit-for-bit. Fused Q4 is within
+  **0.000488281 / 0.0078125** at the same shapes, the two-row `-6.84375`
+  sigmoid boundary is exact, and invalid/unsupported inputs reject.
+- Existing strict Q5 batch-one and Q4 batch-one/fused tests were rebuilt
+  against the candidate source and both exit zero. Q5 maximum errors are
+  **0.03125 / 0.03125 / 0.0234375**. Q4 batch-one and fused outputs are exact;
+  all 65,280 finite BF16 patterns and the exceptional sigmoid boundary retain
+  zero mismatches.
+- The strict shared-library command exits zero with only the established
+  macOS 26.0 versus MLX 26.2 link warning:
+
+  ```text
+  clang++ -std=c++20 -O3 -fPIC -shared -Wall -Wextra -Werror -isystem /Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/include -Ipython/sglang/srt/hardware_backend/mlx/native -L/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -Wl,-rpath,/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a150_promote.dylib python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp python/sglang/srt/hardware_backend/mlx/native/qwen38_c_api.cpp
+  ```
+
+- The clean source was then gated with the official thinking target sampler,
+  selected mixed-Q5 target, official five-bit MTP, post-norm seed, and block
+  two. The exact resolved command was:
+
+  ```text
+  /usr/bin/env -u SGLANG_MLX_NATIVE_ATTN_CACHE_BITS MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=1024 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q5_BATCH_TWO_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO=1 SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1 SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION=1 SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE=0 SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT=0 SGLANG_MLX_NATIVE_MTP_POST_NORM_SEED=1 SGLANG_MLX_NATIVE_MTP_BLOCK_SIZE=2 /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 600s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a150_promote.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128 /Users/dcazares/.cache/huggingface/hub/models--lukaskremla--Qwen3.8-27B-MTP-5bit-MLX/snapshots/1faa5a803c972c57cfc1beed606184e726ad3d85
+  ```
+
+  It reaches **19.785495602 tok/s** in **6.469385583 s**, 75 refills, mean
+  width **1.706666667**, digest `6bd687fb75c4f5a9`, and last token 1467. This
+  reproduces the prior **19.795886878 tok/s** A150 window within 0.053% but
+  remains below the durable floor by **0.214504398 tok/s / 1.084193%** for
+  this sample and by **0.204113122 tok/s / 1.031089%** at the recorded best.
+- Artifact SHA-256 values are
+  `b438ad731104a9ef925c03a729e5287734677974e891151856422f26cb82a3ac`
+  for the dylib,
+  `5d91b127322ae38f3a67d91e1ec8f443579ec3293d1f819dbcca8defbdced500`
+  for the batch-two test,
+  `ec1ba7fb9439163a3792484b9973683052fd4a1bbc46510453e892b1397a1af9`
+  for the Q5 batch-one test, and
+  `227ce6187d445c0e941e92ffbdabd1e45a7fb05c8136d1816d7168c8b606b65a`
+  for the Q4 batch-one/fused test.
+- Signed commit `6b6d0d15eaa80551ff45f28a371372ac34d5f1cb` retains the
+  two kernels and focused test as an opt-in foundation. Signature verification
+  is good. The next handoff must close the remaining durable throughput gap
+  without target-sampling changes, then requalify exact 131K served capacity
+  and a real Responses/Codex `xhigh` coding turn.

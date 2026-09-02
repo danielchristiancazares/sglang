@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-02
-01:17 PDT.
+02:20 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -234,8 +234,20 @@ support by vocabulary ID restores the exact digest, last token, width, refill
 count, target probabilities, and acceptance path, but measures
 **15.222551699 tok/s**, a **0.055161%** regression. A traced steady cycle
 spends approximately **103 ms** in two-token target verification; dense q
-construction/retention is not the owner. A137 source is restored. The next
-candidate specializes that M=2 target execution without changing arithmetic.
+construction/retention is not the owner.
+
+PERF-A149/A150 specialize that M=2 owner and are now retained behind opt-in
+switches in signed `6b6d0d15ea`. Q5 loads each packed weight once while
+accumulating both verifier rows; fused Q4 shares gate/up weights and raw
+parameters across the same two rows. Production micros improve **19.8--29.3%**
+for Q5 and **33.803365%** for fused Q4. The full sampled block-two path
+improves **15.204721403 -> 19.795886878 tok/s**; a clean committed-source
+rebuild reaches **19.785495602 tok/s**, 75 refills, width **1.706666667**,
+digest `6bd687fb75c4f5a9`, and last token 1467. Focused two-row tests plus the
+existing batch-one and exhaustive fused-Q4 tests pass. The durable 20 tok/s
+floor remains open by **0.204113122 tok/s / 1.031089%** at the best full
+window; exact 131K capacity and the real Responses/Codex `xhigh` gate remain
+separate unresolved requirements.
 
 A128's 680 MiB duplicate parameter stream remains opt-in. A130 plus A131
 completes an independent exact `32768+16` server request at
