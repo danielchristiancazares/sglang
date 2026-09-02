@@ -3828,3 +3828,33 @@ option, or serving dispatch was added.
   both concatenation and split, or new profiling proves those costs absent.
 - Related commit or revert: candidate remained outside `main`; A117 source was
   restored byte-for-byte after the screen.
+
+## PERF-FA137 - Native two-output Q5 `qkv`/`z` dispatches
+
+- Hypothesis: one custom Metal dispatch over the two original affine-Q5/G64
+  matrices can retain A119's launch saving while removing copied weights and
+  the runtime split graph.
+- Scope: production `K=5120`, `Nqkv=10240`, `Nz=6144`; exact A100 unpack/FMA
+  order and deterministic `200 / 2000` process-isolated microbenchmarks.
+- Attempted change: A120 uses four-SIMD/16-row threadgroups across one combined
+  grid and makes a threadgroup-uniform choice between the original matrices
+  and outputs. A121 instead maps the exact 5:3 row ratio into every eight-SIMD
+  threadgroup: five groups emit 20 qkv rows and three emit 12 z rows.
+- Benchmark evidence: A120 aggregate separate/paired is
+  **0.421745535 / 0.427401865 ms**, a **1.341171%** regression with all ten
+  pairs negative. A121 aggregate is
+  **0.423397846 / 0.426008156 ms**, a **0.616515%** regression. Forward and
+  reverse windows agree for both.
+- Correctness evidence: first-compile smoke and every timed arm are byte-exact
+  for both outputs with joined digest `555793dfc2cf896f`.
+- Failure mode: the second-output ABI, buffer/output selection, and larger
+  eight-SIMD topology consume more than the saved submission. Neither form
+  reduces the dominant streamed Q5 weight bytes or per-row arithmetic.
+- Why not to retry unchanged: both split-free representations regress in two
+  order directions before any model integration, while A119's only isolated
+  win already failed the full-model gate.
+- Reopen only if: a kernel shares staged activation or decoded weight work
+  across the two products, reduces total weight-side instructions, or a new
+  compiler removes the measured selection cost.
+- Related commit or revert: both candidates stayed outside `main`; exact A117
+  engine/header content was restored against signed `00d09138ce`.

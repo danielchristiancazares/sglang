@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-18:57 PDT.
+19:09 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -256,8 +256,13 @@ linear-attention `qkv`/`z` pair reduces the isolated two-launch aggregate
 **0.426645998 -> 0.420592346 ms**, but the copied-weight plus runtime-split
 implementation reaches only **19.441971742 / 19.406059113 tok/s** around an
 adjacent disabled control at **19.469521945**. Exact A117 is restored. The
-shared-input route is open only as a native one-dispatch, two-output kernel
-over the original matrices; it must avoid both concatenation and split.
+split-free A120 and A121 follow-ups are also exact and slower. A120's direct
+four-SIMD/two-output aggregate regresses **0.421745535 -> 0.427401865 ms**;
+A121's exact-ratio five-plus-three/eight-SIMD topology regresses
+**0.423397846 -> 0.426008156 ms**. The launch-sharing family is closed under
+copied/split, direct four-SIMD, and 5:3 eight-SIMD representations. Exact A117
+is restored. Further Q5 work must reduce weight-side bytes, instructions, or
+dependency cost rather than submission count alone.
 
 The requested Q5 lane now serves through a provenance-pinned derived artifact.
 Bartowski's immutable `Qwen3.8-27B-Q5_K_S.gguf` source is pinned at revision

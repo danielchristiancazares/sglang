@@ -1,6 +1,6 @@
 # Qwen3.8-27B Q5 SGLang performance handoff
 
-**Snapshot:** 2026-09-01 18:57 PDT
+**Snapshot:** 2026-09-01 19:09 PDT
 
 **Repository:** `/Users/dcazares/sglang`
 
@@ -345,10 +345,11 @@ The linker emits the known macOS 26.0 versus MLX 26.2 deployment warning.
 5. Treat signed A113 commit `ad11696f2e` as selected.
 6. Treat A117 in signed `00d09138ce` as selected; keep four-SIMD and dynamic
    epilogue variants closed by PERF-FA133/FA134.
-7. Keep A118's explicit fused-Q4 vector load and A119's copied-weight/runtime-
-   split Q5 `qkv`/`z` fusion closed by PERF-FA135/FA136. The next distinct
-   admission route is one native Q5 dispatch over the original two matrices
-   with two direct outputs and no concatenation or split.
+7. Keep A118's explicit fused-Q4 vector load and A119--A121's Q5 `qkv`/`z`
+   launch-sharing forms closed by PERF-FA135--137. Copied/split, direct
+   four-SIMD/two-output, and exact-ratio 5:3/eight-SIMD forms are all measured.
+   The next distinct Q5 route must reduce weight-side bytes, instructions, or
+   dependency cost rather than submission count alone.
 8. Continue native C++/Metal hotspot work until direct performance clears 20
    with margin.
 9. Run exact 131K SGLang serving, behavior, Responses API, and Codex `xhigh`
