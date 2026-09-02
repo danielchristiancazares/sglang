@@ -44,6 +44,12 @@ mlx::core::array affine_q5_qmv_batch_one(
     const QLinear& linear, const mlx::core::array& x);
 mlx::core::array quantized_embedding_rows(
     const QLinear& embedding, const mlx::core::array& tokens);
+mlx::core::array fixed_prefill_attention(
+    const mlx::core::array& queries,
+    const mlx::core::array& key_cache,
+    const mlx::core::array& value_cache,
+    int prefix_length,
+    int active_cache_length);
 mlx::core::array dspark_yarn_rope(
     const mlx::core::array& x, int offset);
 mlx::core::array dspark_confidence(

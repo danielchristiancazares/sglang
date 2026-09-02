@@ -140,6 +140,13 @@ bool native_quantized_embedding_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_fixed_prefill_attention_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 int native_target_only_prefill_chunk_size() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE");
@@ -803,6 +810,264 @@ constexpr const char* kFullAttnQkNormRopeSource = R"(
               x1 * costheta - x2 * sintheta);
           output[index_2] = static_cast<InT>(
               x1 * sintheta + x2 * costheta);
+        }
+)";
+
+constexpr const char* kFixedPrefillAttentionHeader = R"(
+#include <metal_simdgroup>
+
+inline float sglang_attention_simd_max_16(float value) {
+  value = max(value, simd_shuffle_xor(value, 8));
+  value = max(value, simd_shuffle_xor(value, 4));
+  value = max(value, simd_shuffle_xor(value, 2));
+  return max(value, simd_shuffle_xor(value, 1));
+}
+
+inline float sglang_attention_simd_sum_16(float value) {
+  value += simd_shuffle_xor(value, 8);
+  value += simd_shuffle_xor(value, 4);
+  value += simd_shuffle_xor(value, 2);
+  return value + simd_shuffle_xor(value, 1);
+}
+)";
+
+// This bounded Q8/C64 online-softmax geometry is the contiguous-cache MLX
+// form of SGLang's existing extend_gqa_bf16_tiled_256 Metal kernel. That
+// kernel adapts llama.cpp's kernel_flash_attn_ext_impl at commit
+// 749f688fcaa4c472ec034b08cb8a907c45cfaa02; see THIRDPARTYNOTICES.txt.
+constexpr const char* kFixedPrefillAttentionSource = R"(
+        constexpr ushort QueryTile = 8;
+        constexpr ushort KeyTile = 64;
+        constexpr ushort HeadsPerKv = 6;
+        constexpr ushort HeadDim = 256;
+
+        threadgroup float shared_query[QueryTile * HeadDim];
+        threadgroup float shared_output[QueryTile * HeadDim];
+        threadgroup float shared_scores[QueryTile * KeyTile];
+        threadgroup float shared_stats[QueryTile * 2];
+
+        const ushort tid = thread_index_in_threadgroup;
+        const ushort lane = thread_index_in_simdgroup;
+        const ushort simd_id = simdgroup_index_in_threadgroup;
+        const uint kv_head = threadgroup_position_in_grid.y;
+        const uint attention_row_start =
+            threadgroup_position_in_grid.x * QueryTile;
+        const uint query_count = uint(query_tokens);
+        const uint prefix = uint(prefix_length);
+        const uint capacity = uint(cache_capacity);
+        const uint active_length = uint(active_cache_length);
+        const uint attention_rows = query_count * HeadsPerKv;
+        const uint last_attention_row = min(
+            attention_rows - 1, attention_row_start + QueryTile - 1);
+        const uint group_kv_length = min(
+            active_length,
+            prefix + last_attention_row / HeadsPerKv + 1);
+
+        for (uint index = tid; index < QueryTile * HeadDim; index += 128) {
+          const uint row = index / HeadDim;
+          const uint dimension = index - row * HeadDim;
+          const uint attention_row = attention_row_start + row;
+          float value = 0.0f;
+          if (attention_row < attention_rows) {
+            const uint query_token = attention_row / HeadsPerKv;
+            const uint query_head =
+                kv_head * HeadsPerKv + attention_row % HeadsPerKv;
+            value = static_cast<float>(query[
+                (query_head * query_count + query_token) * HeadDim +
+                dimension]);
+          }
+          shared_query[index] = value;
+          shared_output[index] = 0.0f;
+        }
+        if (tid < QueryTile) {
+          shared_stats[2 * tid] = -INFINITY;
+          shared_stats[2 * tid + 1] = 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint key_start = 0; key_start < group_kv_length;
+             key_start += KeyTile) {
+          simdgroup_float8x8 score_left =
+              make_filled_simdgroup_matrix<float, 8>(0.0f);
+          simdgroup_float8x8 score_right =
+              make_filled_simdgroup_matrix<float, 8>(0.0f);
+          for (ushort dimension_start = 0; dimension_start < HeadDim;
+               dimension_start += 16) {
+            simdgroup_float8x8 query_low;
+            simdgroup_float8x8 query_high;
+            simdgroup_load(
+                query_low,
+                shared_query + dimension_start,
+                HeadDim,
+                0,
+                false);
+            simdgroup_load(
+                query_high,
+                shared_query + dimension_start + 8,
+                HeadDim,
+                0,
+                false);
+
+#pragma unroll
+            for (ushort key_half = 0; key_half < 2; ++key_half) {
+              const uint key_base =
+                  (kv_head * capacity + key_start + simd_id * 16 +
+                   key_half * 8) * HeadDim + dimension_start;
+              const device bfloat* key_run = key_cache + key_base;
+              simdgroup_bfloat8x8 key_low;
+              simdgroup_bfloat8x8 key_high;
+              simdgroup_barrier(mem_flags::mem_none);
+              simdgroup_load(key_low, key_run, HeadDim, 0, true);
+              simdgroup_load(key_high, key_run + 8, HeadDim, 0, true);
+              simdgroup_barrier(mem_flags::mem_none);
+              if (key_half == 0) {
+                simdgroup_multiply_accumulate(
+                    score_left, query_low, key_low, score_left);
+                simdgroup_multiply_accumulate(
+                    score_left, query_high, key_high, score_left);
+              } else {
+                simdgroup_multiply_accumulate(
+                    score_right, query_low, key_low, score_right);
+                simdgroup_multiply_accumulate(
+                    score_right, query_high, key_high, score_right);
+              }
+            }
+          }
+
+          simdgroup_store(
+              score_left,
+              shared_scores + simd_id * 16,
+              KeyTile,
+              0,
+              false);
+          simdgroup_store(
+              score_right,
+              shared_scores + simd_id * 16 + 8,
+              KeyTile,
+              0,
+              false);
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+
+          const ushort softmax_row = tid / 16;
+          const ushort softmax_lane = tid & 15;
+          const uint attention_row = attention_row_start + softmax_row;
+          const bool row_valid = attention_row < attention_rows;
+          const uint query_token = row_valid
+              ? attention_row / HeadsPerKv
+              : 0;
+          const uint causal_limit = row_valid
+              ? min(active_length, prefix + query_token + 1)
+              : 0;
+
+          float row_max = -INFINITY;
+          float scaled_scores[4];
+#pragma unroll
+          for (ushort index = 0; index < 4; ++index) {
+            const ushort key_column = softmax_lane + 16 * index;
+            const uint logical_token = key_start + key_column;
+            const float score = row_valid && logical_token < causal_limit
+                ? shared_scores[softmax_row * KeyTile + key_column] * 0.0625f
+                : -INFINITY;
+            scaled_scores[index] = score;
+            row_max = max(row_max, score);
+          }
+          row_max = sglang_attention_simd_max_16(row_max);
+
+          const float old_max = shared_stats[2 * softmax_row];
+          const float old_sum = shared_stats[2 * softmax_row + 1];
+          const bool block_valid = row_max != -INFINITY;
+          const float next_max = block_valid ? max(old_max, row_max) : old_max;
+          const float old_scale = old_sum == 0.0f
+              ? 0.0f
+              : (block_valid ? exp(old_max - next_max) : 1.0f);
+          float block_sum = 0.0f;
+#pragma unroll
+          for (ushort index = 0; index < 4; ++index) {
+            const ushort key_column = softmax_lane + 16 * index;
+            const float probability = scaled_scores[index] == -INFINITY
+                ? 0.0f
+                : exp(scaled_scores[index] - next_max);
+            shared_scores[softmax_row * KeyTile + key_column] = probability;
+            block_sum += probability;
+          }
+          block_sum = sglang_attention_simd_sum_16(block_sum);
+          for (ushort dimension = softmax_lane; dimension < HeadDim;
+               dimension += 16) {
+            shared_output[softmax_row * HeadDim + dimension] *= old_scale;
+          }
+          if (softmax_lane == 0 && row_valid) {
+            shared_stats[2 * softmax_row] = next_max;
+            shared_stats[2 * softmax_row + 1] =
+                old_sum * old_scale + block_sum;
+          }
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+
+          simdgroup_float8x8 output_fragments[8];
+#pragma unroll
+          for (ushort output_block = 0; output_block < 8; ++output_block) {
+            simdgroup_load(
+                output_fragments[output_block],
+                shared_output + simd_id * 64 + output_block * 8,
+                HeadDim,
+                0,
+                false);
+          }
+          for (ushort key_block = 0; key_block < KeyTile; key_block += 8) {
+            simdgroup_float8x8 probability_fragment;
+            simdgroup_load(
+                probability_fragment,
+                shared_scores + key_block,
+                KeyTile,
+                0,
+                false);
+            const uint value_base =
+                (kv_head * capacity + key_start + key_block) * HeadDim +
+                simd_id * 64;
+#pragma unroll
+            for (ushort output_block = 0; output_block < 8; ++output_block) {
+              simdgroup_bfloat8x8 value_fragment;
+              simdgroup_barrier(mem_flags::mem_none);
+              simdgroup_load(
+                  value_fragment,
+                  value_cache + value_base + output_block * 8,
+                  HeadDim,
+                  0,
+                  false);
+              simdgroup_barrier(mem_flags::mem_none);
+              simdgroup_multiply_accumulate(
+                  output_fragments[output_block],
+                  probability_fragment,
+                  value_fragment,
+                  output_fragments[output_block]);
+            }
+          }
+#pragma unroll
+          for (ushort output_block = 0; output_block < 8; ++output_block) {
+            simdgroup_store(
+                output_fragments[output_block],
+                shared_output + simd_id * 64 + output_block * 8,
+                HeadDim,
+                0,
+                false);
+          }
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+
+        for (uint index = tid; index < QueryTile * HeadDim; index += 128) {
+          const uint row = index / HeadDim;
+          const uint dimension = index - row * HeadDim;
+          const uint attention_row = attention_row_start + row;
+          if (attention_row < attention_rows) {
+            const uint query_token = attention_row / HeadsPerKv;
+            const uint query_head =
+                kv_head * HeadsPerKv + attention_row % HeadsPerKv;
+            const float denominator = shared_stats[2 * row + 1];
+            output[(query_head * query_count + query_token) * HeadDim +
+                   dimension] = static_cast<bfloat>(
+                denominator == 0.0f
+                    ? 0.0f
+                    : shared_output[index] / denominator);
+          }
         }
 )";
 
@@ -1675,6 +1940,22 @@ const mx::fast::CustomKernelFunction& full_attn_qk_norm_rope_metal() {
   return kernel;
 }
 
+const mx::fast::CustomKernelFunction& fixed_prefill_attention_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_fixed_prefill_attention",
+      {"query",
+       "key_cache",
+       "value_cache",
+       "query_tokens",
+       "prefix_length",
+       "cache_capacity",
+       "active_cache_length"},
+      {"output"},
+      kFixedPrefillAttentionSource,
+      kFixedPrefillAttentionHeader);
+  return kernel;
+}
+
 const mx::fast::CustomKernelFunction& gated_delta_norm_gate_metal() {
   static const auto kernel = mx::fast::metal_kernel(
       "sglang_gated_delta_norm_gate",
@@ -2261,6 +2542,61 @@ array quantized_embedding_rows(
       "affine",
       std::nullopt,
       mx::bfloat16);
+}
+
+array fixed_prefill_attention(
+    const array& queries,
+    const array& key_cache,
+    const array& value_cache,
+    int prefix_length,
+    int active_cache_length) {
+  constexpr int kQueryHeads = 24;
+  constexpr int kKeyValueHeads = 4;
+  constexpr int kHeadDimension = 256;
+  constexpr int kHeadsPerKeyValue = kQueryHeads / kKeyValueHeads;
+  constexpr int kQueryTile = 8;
+  constexpr int kKeyTile = 64;
+  constexpr int kThreads = 128;
+  if (queries.ndim() != 4 || key_cache.ndim() != 4 ||
+      value_cache.ndim() != 4 || queries.dtype() != mx::bfloat16 ||
+      key_cache.dtype() != mx::bfloat16 ||
+      value_cache.dtype() != mx::bfloat16 ||
+      queries.shape()[0] != 1 || queries.shape()[1] != kQueryHeads ||
+      queries.shape()[3] != kHeadDimension ||
+      key_cache.shape()[0] != 1 ||
+      key_cache.shape()[1] != kKeyValueHeads ||
+      key_cache.shape()[3] != kHeadDimension ||
+      key_cache.shape() != value_cache.shape()) {
+    throw std::runtime_error("invalid fixed prefill attention inputs");
+  }
+  const int query_tokens = queries.shape()[2];
+  const int cache_capacity = key_cache.shape()[2];
+  if (query_tokens < 1 || query_tokens > 1024 || prefix_length < 0 ||
+      active_cache_length != prefix_length + query_tokens ||
+      active_cache_length > cache_capacity ||
+      cache_capacity % kKeyTile != 0) {
+    throw std::runtime_error("unsupported fixed prefill attention shape");
+  }
+  const int attention_rows = query_tokens * kHeadsPerKeyValue;
+  const int query_tiles =
+      (attention_rows + kQueryTile - 1) / kQueryTile;
+  auto outputs = fixed_prefill_attention_metal()(
+      {queries,
+       key_cache,
+       value_cache,
+       array(query_tokens, mx::int32),
+       array(prefix_length, mx::int32),
+       array(cache_capacity, mx::int32),
+       array(active_cache_length, mx::int32)},
+      {queries.shape()},
+      {queries.dtype()},
+      {query_tiles * kThreads, kKeyValueHeads, 1},
+      {kThreads, 1, 1},
+      {},
+      std::nullopt,
+      false,
+      {});
+  return outputs[0];
 }
 
 array affine_qmm_small_batch(const QLinear& linear, const array& x) {
@@ -2980,7 +3316,8 @@ array Engine::full_attn(FullAttn& attn, const array& x) {
   }
   values = transpose(values, {0, 2, 1, 3});
 
-  const int needed = attn.cache_length + L;
+  const int prefix_length = attn.cache_length;
+  const int needed = prefix_length + L;
   if (attn.cache_capacity < needed) {
     int capacity = std::max(256, attn.cache_capacity);
     while (capacity < needed) {
@@ -3022,12 +3359,24 @@ array Engine::full_attn(FullAttn& attn, const array& x) {
   attn.cache_length = needed;
   attn.offset += L;
 
-  keys = slice(attn.keys, {0, 0, 0, 0}, {B, n_kv, needed, hd});
-  values = slice(attn.values, {0, 0, 0, 0}, {B, n_kv, needed, hd});
-
-  std::string mask_mode = (L > 1) ? "causal" : "";
-  array output = mx::fast::scaled_dot_product_attention(
-      queries, keys, values, 1.0f / std::sqrt(static_cast<float>(hd)), mask_mode);
+  array output(0);
+  constexpr int kFixedAttentionMinimumActiveTokens = 8192;
+  if (native_fixed_prefill_attention_enabled() &&
+      needed > kFixedAttentionMinimumActiveTokens && L > 1 && B == 1 &&
+      n_q == 24 && n_kv == 4 && hd == 256 && L <= 1024) {
+    output = fixed_prefill_attention(
+        queries, attn.keys, attn.values, prefix_length, needed);
+  } else {
+    keys = slice(attn.keys, {0, 0, 0, 0}, {B, n_kv, needed, hd});
+    values = slice(attn.values, {0, 0, 0, 0}, {B, n_kv, needed, hd});
+    std::string mask_mode = (L > 1) ? "causal" : "";
+    output = mx::fast::scaled_dot_product_attention(
+        queries,
+        keys,
+        values,
+        1.0f / std::sqrt(static_cast<float>(hd)),
+        mask_mode);
+  }
   output = reshape(transpose(output, {0, 2, 1, 3}), {B, L, n_q * hd});
   return attn.o_proj(output * sigmoid(gate));
 }
