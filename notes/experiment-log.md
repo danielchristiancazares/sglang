@@ -23228,3 +23228,72 @@ mean 13.929045  17.125658 446.051        39.730
   distinct reduction in streamed weight work, instruction count, or dependency
   depth. No full-model reload ran in this batch; no benchmark/server/compiler
   process or port-30000 listener remained afterward.
+
+### 2026-09-01 19:18 PDT - A122 fused-Q4 gate/up row interleaving loses every paired micro
+
+- Main started at signed `946ae054e85657b645b79996af86849e324d5763`,
+  94 commits ahead of `origin/main`, with only Daniel's three known source/test
+  paths modified and an empty index. Their Git blobs remained
+  `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`.
+- The detached candidate began with engine/header content exactly matching
+  selected signed A117 (`00d09138ce`). PERF-A122 changed only the fused Metal
+  body's row issue order: the four gate dots and four up dots became four
+  adjacent gate/up pairs. Geometry, loads, parameter reads, each accumulator's
+  K-order, reductions, BF16 boundaries, and compile-time lane-selected precise
+  epilogue were unchanged. Candidate engine blob was
+  `c71b9b7f3f1ec32c285b4e7b9d4c2456693b5525`.
+- The strict C++20/O3 warnings-as-errors focused build completed with only the
+  established macOS 26.0 / MLX 26.2 linker warning. Its exact command was:
+
+  ```text
+  clang++ -std=c++20 -O3 -Wall -Wextra -Werror -isystem /Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/include -I/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native -L/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -Wl,-rpath,/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o /Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a122_q4_fused_swiglu_interleaved_rows /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/test/registered/unit/hardware_backend/mlx/test_qwen38_affine_q4_batch_one_qmv.cpp /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp
+  ```
+
+  The bounded test reports zero mismatch for ordinary Q4 `512/64`,
+  `5120/128`, and `5120/17408`; fused Q4 `512/64` and `5120/17408`; and the
+  `-6.84375` sigmoid boundary.
+- The dedicated candidate benchmark used the preserved
+  `bench_qwen38_a114_q4_fused_swiglu.cpp` source and the same strict flags.
+  Test and benchmark SHA-256 values are:
+
+  ```text
+  f8e329a7bc5914ab34a5f74b908b6da2a6a952653d3fee7d044e8650749ebfff  /Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a122_q4_fused_swiglu_interleaved_rows
+  a4f27b8ae76fbc6a26aa2f43e22bc32103b6a20736510dbb856855a703269a79  /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a122_q4_fused_swiglu_interleaved_rows
+  ```
+
+- Every arm ran bounded as `fused 5120 17408 1000 10000`. Forward results:
+
+  ```text
+  pair  A117 control  A122 candidate
+  1     0.560007912   0.571120129
+  2     0.561037125   0.568554238
+  3     0.563631438   0.571336221
+  4     0.563311225   0.571623521
+  5     0.558790271   0.569333146
+  mean  0.561355594   0.570393451 ms
+  ```
+
+  Reversed results:
+
+  ```text
+  pair  A122 candidate  A117 control
+  1     0.571445554     0.562222950
+  2     0.568540188     0.554239904
+  3     0.566990900     0.554393271
+  4     0.566587954     0.554645475
+  5     0.565136275     0.554914913
+  mean  0.567740174     0.556083303 ms
+  ```
+
+  Aggregate A117/A122 is **0.558719448 / 0.569066813 ms**. A122 is
+  **0.010347364 ms / 1.851979% slower** and loses all ten pairs. Every one of
+  the twenty arms reports first value `0.875` and exact digest
+  `8a9031349585365a`.
+- A122 was rejected before building a full-model dylib or loading the model.
+  A reverse `apply_patch` restored engine blob
+  `5912bc2fe9b1e8f34bdace0b1a009f8aa1223d04`; engine/header diff against
+  signed A117 is empty and `git diff --check` passes. PERF-FA138 closes this
+  source-order-only form. Port 30000 remained free and no benchmark/server or
+  compiler workload remained after the batch.

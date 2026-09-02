@@ -264,6 +264,13 @@ copied/split, direct four-SIMD, and 5:3 eight-SIMD representations. Exact A117
 is restored. Further Q5 work must reduce weight-side bytes, instructions, or
 dependency cost rather than submission count alone.
 
+A122 also closes source-order alternation inside the selected fused-Q4 body.
+Issuing each gate row immediately before its matching up row preserves every
+arithmetic and BF16 boundary but regresses production-shape aggregate latency
+**0.558719448 -> 0.569066813 ms** (**1.851979%**) and loses all ten
+order/reverse pairs. Exact A117 is restored. Further fused-Q4 work must remove
+instructions or bytes, not merely reorder the same eight row dots.
+
 The requested Q5 lane now serves through a provenance-pinned derived artifact.
 Bartowski's immutable `Qwen3.8-27B-Q5_K_S.gguf` source is pinned at revision
 `f0eec4a4bb4975114a030d048952d83c0a53c034`, occupies exactly

@@ -5,6 +5,7 @@
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
 | M1 Max mixed 4.951-bpw Q5-class target, sampled direct `128 / 32 warm / 128 timed` | generic MLX QMM **18.121698566 tok/s** | selected A100+A111+A114+A113+A117 ten-sample mean **19.453092367 tok/s** | **+1.331393801 tok/s / +7.347%** over generic and **+0.184616727 / +0.958%** over matched serial-epilogue control **19.268475640**; exact digest stable; **0.546907633 tok/s / 2.811%** remains to the floor | pinned mixed revision `596b8067...8340`, seed 42, selected command-buffer controls, Q5/Q4/fused-MLP switches | 2026-09-01 18:36 PDT |
+| M1 Max fused affine-Q4 gate/up/SwiGLU source-order scheduling micro | selected A117 gate rows then up rows **0.558719448 ms** | A122 interleaved gate/up rows **0.569066813 ms** | **+0.010347364 ms / +1.851979%** regression; loses all ten order/reverse pairs while retaining exact digest `8a9031349585365a` | production `K=5120`, `N=17408`, `1000 / 10000`; preserved A117 and dedicated A122 executables | 2026-09-01 19:18 PDT |
 | M1 Max linear-attention affine-Q5 `qkv` plus `z`, deterministic batch-one direct micro and sampled full model | separate A100 launches **0.421745535--0.426645998 ms** aggregate by harness/window | row-concatenated A119 reaches **0.420592346 ms** but loses full-model; direct two-output A120/A121 reach **0.427401865 / 0.426008156 ms** | A119's isolated launch win does not survive its split graph; split-free 4-SIMD and exact-ratio 5:3 kernels regress **1.341171% / 0.616515%**; all exact; launch-only family closed | production K/N `5120/(10240+6144)`, order/reverse 2,000-iteration windows; PERF-FA136/137 | 2026-09-01 19:09 PDT |
 | M1 Max fused affine-Q4 gate/up/SwiGLU epilogue, sampled direct `128 / 32 warm / 128 timed` | A114+A113 serial four-result epilogue **19.268475640 tok/s** | A117 four-lane register-selected epilogue **19.453092367 tok/s** | forward/reversed windows improve **+0.947541% / +0.968716%**, aggregate **+0.184616727 tok/s / +0.958128%**; all 20 clean runs retain canonical digest/last token; a separate reload-churn window is excluded | same exact direct contract and artifacts differing only in the fused Metal epilogue | 2026-09-01 18:36 PDT |
 | M1 Max mixed-target Q4 gate/up/SwiGLU, sampled direct `128 / 32 warm / 128 timed` | matched A100+A111 control **19.228720305 tok/s** | precise-exp A114 **19.268407916 tok/s** | two independent five-pair windows improve **+0.145685% / +0.267156%**, aggregate **+0.039687612 tok/s / +0.206398%**; all 20 runs retain canonical digest/last token; boundary regression rejects the old fast-exp artifact in all 32 rows | same direct contract with `SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=0/1` as the only variable | 2026-09-01 17:56 PDT |
@@ -863,6 +864,7 @@ tree throughput can be ranked for production.
 | PERF-A119 | Share one affine-Q5 input launch across linear-attention `qkv` and `z` by concatenating their output rows at load time. | Forty-eight selected Q5/G64 linear-attention layer pairs | Runtime-correct and rejected | Ten order/reverse micros improve **0.426645998 -> 0.420592346 ms** with exact BF16 output. Full-model fusion produces **19.441971742 / 19.406059113 tok/s** around an adjacent same-dylib control at **19.469521945**. The copied tensor plus split-graph form is rejected; only a direct two-output kernel is materially different. See PERF-FA136. |
 | PERF-A120 | Consume the two original affine-Q5 projections in one four-SIMD custom kernel and emit two direct outputs. | Production `qkv`/`z` pair, original packed tensors, no concatenation or split | Runtime-correct and rejected | Ten exact order/reverse samples regress **0.421745535 -> 0.427401865 ms**, **1.341171%**. Every pair is slower; no model wiring or reload ran. See PERF-FA137. |
 | PERF-A121 | Map the exact `qkv:z = 5:3` row ratio to five plus three SIMD groups in each eight-SIMD threadgroup. | Production `10240/6144` two-output Q5 pair | Runtime-correct and rejected | Ten exact order/reverse samples regress **0.423397846 -> 0.426008156 ms**, **0.616515%**. The topology reduces threadgroups but does not overcome eight-SIMD and per-output selection cost. See PERF-FA137. |
+| PERF-A122 | Interleave each fused-Q4 gate row with its matching up row to expose two independent weight streams sooner. | Selected A117 production `5120/17408` fused Metal kernel | Runtime-correct and rejected | Ten order/reverse pairs regress **0.558719448 -> 0.569066813 ms**, **1.851979%**, with every pair slower and every digest exact. Exact A117 restored; see PERF-FA138. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -5640,3 +5642,21 @@ tree throughput can be ranked for production.
   digest `555793dfc2cf896f`.
 - Decision: reject and restore exact A117. Further Q5 work must reduce
   weight-side work or dependencies rather than submission count alone.
+
+### 2026-09-01 19:18 PDT - PERF-A122 fused-Q4 row-interleaving rejection
+
+- Change: combined A117's separate four-row gate and up loops into one loop
+  that issues each gate dot immediately before the matching up dot. Geometry,
+  packed loads, reductions, per-accumulator update order, and the lane-parallel
+  precise BF16 epilogue were unchanged.
+- Benchmark evidence: forward A117/A122 means are
+  **0.561355594 / 0.570393451 ms**; reversed A122/A117 means are
+  **0.567740174 / 0.556083303 ms**. Aggregate control/candidate is
+  **0.558719448 / 0.569066813 ms**, a **0.010347364 ms / 1.851979%**
+  regression. The candidate loses all ten pairs.
+- Correctness evidence: the strict focused suite passes every ordinary and
+  fused Q4 shape plus the `-6.84375` sigmoid boundary bit-exactly. All twenty
+  timed arms report digest `8a9031349585365a` and first value `0.875`.
+- Decision: reject before a dylib or model reload and restore exact A117.
+  Source-order alternation does not reduce work and disrupts the compiler's
+  faster grouped-stream schedule; close it as PERF-FA138.
