@@ -5,6 +5,7 @@
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
 | M1 Max mixed 4.951-bpw Q5-class target, sampled direct `128 / 32 warm / 128 timed` | generic MLX QMM **18.121698566 tok/s** | selected A100+A111+A114+A113+A117 ten-sample mean **19.453092367 tok/s** | **+1.331393801 tok/s / +7.347%** over generic and **+0.184616727 / +0.958%** over matched serial-epilogue control **19.268475640**; exact digest stable; **0.546907633 tok/s / 2.811%** remains to the floor | pinned mixed revision `596b8067...8340`, seed 42, selected command-buffer controls, Q5/Q4/fused-MLP switches | 2026-09-01 18:36 PDT |
+| M1 Max affine-Q5 four-row and two-row read-ahead scheduling | selected A100; decisive K=17,408 control **0.428486222 ms** | A123 four-row prefetch regresses K=17,408/K=5,120 **0.431270% / 0.727663%**; A124 two-row decisive K=17,408 **0.429494958 ms** | A124 regresses decisive K=17,408 **0.001008736 ms / 0.235419%** and wins only four of ten long pairs; all shapes exact; both restored | direct Q5 micro, production K families, order/reverse windows; PERF-FA139 | 2026-09-01 19:35 PDT |
 | M1 Max fused affine-Q4 gate/up/SwiGLU source-order scheduling micro | selected A117 gate rows then up rows **0.558719448 ms** | A122 interleaved gate/up rows **0.569066813 ms** | **+0.010347364 ms / +1.851979%** regression; loses all ten order/reverse pairs while retaining exact digest `8a9031349585365a` | production `K=5120`, `N=17408`, `1000 / 10000`; preserved A117 and dedicated A122 executables | 2026-09-01 19:18 PDT |
 | M1 Max linear-attention affine-Q5 `qkv` plus `z`, deterministic batch-one direct micro and sampled full model | separate A100 launches **0.421745535--0.426645998 ms** aggregate by harness/window | row-concatenated A119 reaches **0.420592346 ms** but loses full-model; direct two-output A120/A121 reach **0.427401865 / 0.426008156 ms** | A119's isolated launch win does not survive its split graph; split-free 4-SIMD and exact-ratio 5:3 kernels regress **1.341171% / 0.616515%**; all exact; launch-only family closed | production K/N `5120/(10240+6144)`, order/reverse 2,000-iteration windows; PERF-FA136/137 | 2026-09-01 19:09 PDT |
 | M1 Max fused affine-Q4 gate/up/SwiGLU epilogue, sampled direct `128 / 32 warm / 128 timed` | A114+A113 serial four-result epilogue **19.268475640 tok/s** | A117 four-lane register-selected epilogue **19.453092367 tok/s** | forward/reversed windows improve **+0.947541% / +0.968716%**, aggregate **+0.184616727 tok/s / +0.958128%**; all 20 clean runs retain canonical digest/last token; a separate reload-churn window is excluded | same exact direct contract and artifacts differing only in the fused Metal epilogue | 2026-09-01 18:36 PDT |
@@ -865,6 +866,8 @@ tree throughput can be ranked for production.
 | PERF-A120 | Consume the two original affine-Q5 projections in one four-SIMD custom kernel and emit two direct outputs. | Production `qkv`/`z` pair, original packed tensors, no concatenation or split | Runtime-correct and rejected | Ten exact order/reverse samples regress **0.421745535 -> 0.427401865 ms**, **1.341171%**. Every pair is slower; no model wiring or reload ran. See PERF-FA137. |
 | PERF-A121 | Map the exact `qkv:z = 5:3` row ratio to five plus three SIMD groups in each eight-SIMD threadgroup. | Production `10240/6144` two-output Q5 pair | Runtime-correct and rejected | Ten exact order/reverse samples regress **0.423397846 -> 0.426008156 ms**, **0.616515%**. The topology reduces threadgroups but does not overcome eight-SIMD and per-output selection cost. See PERF-FA137. |
 | PERF-A122 | Interleave each fused-Q4 gate row with its matching up row to expose two independent weight streams sooner. | Selected A117 production `5120/17408` fused Metal kernel | Runtime-correct and rejected | Ten order/reverse pairs regress **0.558719448 -> 0.569066813 ms**, **1.851979%**, with every pair slower and every digest exact. Exact A117 restored; see PERF-FA138. |
+| PERF-A123 | Prefetch all four Q5 result rows' weights and parameters before their unpack/FMA chains. | Selected A100 across profiled K=17,408/5,120/6,144 families | Runtime-correct and rejected | Long order/reverse aggregates regress K=17,408 **0.432488694 -> 0.434353889 ms** and K=5,120 **0.360067748 -> 0.362687827 ms**. K=6,144's **0.140840%** apparent gain reverses by order. See PERF-FA139. |
+| PERF-A124 | Limit Q5 read-ahead to two rows to reduce live register state. | Same selected A100 production families | Runtime-correct and rejected | Short balanced aggregates were noise-sized; the decisive K=17,408 ten-pair window regresses **0.428486222 -> 0.429494958 ms**, **0.235419%**, and wins only four pairs. Exact A100 restored; see PERF-FA139. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -5660,3 +5663,24 @@ tree throughput can be ranked for production.
 - Decision: reject before a dylib or model reload and restore exact A117.
   Source-order alternation does not reduce work and disrupts the compiler's
   faster grouped-stream schedule; close it as PERF-FA138.
+
+### 2026-09-01 19:35 PDT - PERF-A123/A124 Q5 row-prefetch rejections
+
+- Change: A123 loaded all four result rows' packed words, trailing word, scale,
+  and bias before running the unchanged unpack and sixteen-FMA chains. A124
+  reduced live state by prefetching two rows at a time. Both retain A100's
+  geometry, bytes, FMA order, and BF16 output.
+- Benchmark evidence: A123 control/candidate aggregates are
+  **0.432488694 / 0.434353889 ms** at K=17,408,
+  **0.360067748 / 0.362687827 ms** at K=5,120, and
+  **0.327001153 / 0.326540605 ms** at K=6,144. The last apparent
+  **0.140840%** gain has opposing order means and is unselected. A124's
+  decisive K=17,408 ten-pair control/candidate is
+  **0.428486222 / 0.429494958 ms**, a **0.235419%** regression with only four
+  candidate wins.
+- Correctness evidence: both strict focused executables reproduce the
+  established three Q5 parity bounds; every timed shape reports its exact A100
+  digest and first output.
+- Decision: reject both before full-model loading and restore exact A117/A100.
+  Explicit row read-ahead adds live state without reducing streamed bytes; the
+  compiler/order noise is larger than any residual scheduling effect.

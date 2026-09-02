@@ -271,6 +271,14 @@ arithmetic and BF16 boundary but regresses production-shape aggregate latency
 order/reverse pairs. Exact A117 is restored. Further fused-Q4 work must remove
 instructions or bytes, not merely reorder the same eight row dots.
 
+A123/A124 close Q5 result-row read-ahead. Prefetching all four rows regresses
+the two largest K families by **0.431270% / 0.727663%**; prefetching only two
+rows still regresses the decisive K=17,408 aggregate
+**0.428486222 -> 0.429494958 ms** and wins only four of ten long pairs. Every
+shape is exact and A100/A117 is restored. Further Q5 kernel work must remove
+streamed bytes or unpack/arithmetic instructions rather than merely extend
+the number of live row loads.
+
 The requested Q5 lane now serves through a provenance-pinned derived artifact.
 Bartowski's immutable `Qwen3.8-27B-Q5_K_S.gguf` source is pinned at revision
 `f0eec4a4bb4975114a030d048952d83c0a53c034`, occupies exactly

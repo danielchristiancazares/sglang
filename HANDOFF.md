@@ -1,6 +1,6 @@
 # Qwen3.8-27B Q5 SGLang performance handoff
 
-**Snapshot:** 2026-09-01 19:18 PDT
+**Snapshot:** 2026-09-01 19:35 PDT
 
 **Repository:** `/Users/dcazares/sglang`
 
@@ -86,14 +86,14 @@ active; label their performance as externally exposed to contention.
 ### Main checkout
 
 - Branch: `main`
-- Latest evidence commit at the start of PERF-A122: `946ae054e8`
-  (`docs(perf): close q5 launch fusion`), signed with a verified good EDDSA
-  signature. This A122 record update follows it.
+- Latest evidence commit at the start of PERF-A123: `17598e7d6b`
+  (`docs(perf): close q4 row interleaving`), signed with a verified good EDDSA
+  signature. This A123/A124 record update follows it.
 - Latest selected code commit: `00d09138ce`
   (`perf(mlx): parallelize fused Q4 SwiGLU epilogue`), signed with a verified
   good EDDSA signature. This documentation update follows it.
-- Tracking state at the start of PERF-A122:
-  `main...origin/main [ahead 94]`.
+- Tracking state at the start of PERF-A123:
+  `main...origin/main [ahead 95]`.
 - Index: empty.
 - Selected code commit: `00d09138ce`.
 
@@ -349,11 +349,12 @@ The linker emits the known macOS 26.0 versus MLX 26.2 deployment warning.
 6. Treat A117 in signed `00d09138ce` as selected; keep four-SIMD and dynamic
    epilogue variants closed by PERF-FA133/FA134.
 7. Keep A118's explicit fused-Q4 vector load, A119--A121's Q5 `qkv`/`z`
-   launch-sharing forms, and A122's fused-Q4 gate/up row interleaving closed
-   by PERF-FA135--138. Copied/split, direct four-SIMD/two-output, exact-ratio
-   5:3/eight-SIMD, and source-order alternation are all measured. The next
-   distinct route must remove weight-side bytes or instructions, shorten a
-   real dependency, or attack another measured hotspot.
+   launch-sharing forms, A122's fused-Q4 gate/up row interleaving, and
+   A123/A124's four-/two-row Q5 read-ahead closed by PERF-FA135--139.
+   Submission-only fusion and source-order/load-scheduling forms are measured.
+   The next distinct route must remove weight-side bytes or unpack arithmetic,
+   shorten a real producer/consumer dependency, or attack another measured
+   hotspot.
 8. Continue native C++/Metal hotspot work until direct performance clears 20
    with margin.
 9. Run exact 131K SGLang serving, behavior, Responses API, and Codex `xhigh`

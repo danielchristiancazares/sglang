@@ -23297,3 +23297,89 @@ mean 13.929045  17.125658 446.051        39.730
   signed A117 is empty and `git diff --check` passes. PERF-FA138 closes this
   source-order-only form. Port 30000 remained free and no benchmark/server or
   compiler workload remained after the batch.
+
+### 2026-09-01 19:35 PDT - A123/A124 Q5 row read-ahead is exact but order-sensitive and negative
+
+- Main began at signed `17598e7d6bd42f1f53101a8bf3936f5d51bfd667`,
+  95 commits ahead of `origin/main`, with only Daniel's three unchanged
+  user-owned source/test paths and an empty index. The detached candidate
+  engine/header began exactly at signed A117/A100 content.
+- PERF-A123 split the Q5 row loop into a four-row load phase and the unchanged
+  four-row unpack/FMA phase. Packed words, trailing words, scales, and biases
+  stayed live in thread-local arrays. Candidate engine blob was
+  `d529a6f8e246c57cc7656210d1914faacde248dd`. Strict C++20/O3 warning-as-error
+  test and benchmark builds completed with only the established macOS 26.0 /
+  MLX 26.2 link warning. Artifacts hash as:
+
+  ```text
+  8be3865de91a34b81ed16f9f74700d34925f560c9751a7191b6ef6390a8ab008  /Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a123_q5_row_prefetch
+  a087b8bcc6261de8447028e5db6aeae9f56f848b95560b639933efca59fe7a35  /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a123_q5_row_prefetch
+  ```
+
+  The focused test preserves maximum errors **0.03125 / 0.03125 /
+  0.0234375** at K/N `512/64`, `5120/128`, and `17408/32`.
+- A123 ran A100/A123 forward then A123/A100 reverse, each at `200 / 5000`.
+  Raw means in milliseconds were:
+
+  ```text
+  K=17408,N=5120
+  forward A100: 0.432425642,0.433904133,0.430307100,0.424865042,0.435927275
+  forward A123: 0.436090808,0.436683342,0.430389917,0.434630367,0.438655800
+  reverse A123: 0.433376575,0.432352725,0.437953467,0.429532258,0.433873633
+  reverse A100: 0.436633225,0.431029558,0.433060183,0.433586050,0.433148733
+  aggregate A100/A123: 0.432488694 / 0.434353889
+
+  K=5120,N=10240
+  forward A100: 0.366576333,0.356443892,0.360990858,0.354834900,0.359238217
+  forward A123: 0.366862725,0.363972783,0.364416542,0.358598367,0.364602900
+  reverse A123: 0.366116700,0.360698233,0.360381908,0.359183942,0.362044175
+  reverse A100: 0.357643008,0.359675492,0.358628700,0.366115700,0.360530375
+  aggregate A100/A123: 0.360067748 / 0.362687827
+
+  K=6144,N=5120
+  forward A100: 0.336184167,0.331181050,0.330194433,0.324591467,0.326653667
+  forward A123: 0.326221733,0.320891617,0.327223267,0.325607233,0.332574875
+  reverse A123: 0.324509458,0.329518892,0.329712600,0.325933317,0.323213058
+  reverse A100: 0.323251775,0.323578750,0.326722000,0.326483008,0.321171208
+  aggregate A100/A123: 0.327001153 / 0.326540605
+  ```
+
+  The first two families regress **0.431270% / 0.727663%**. K=6,144's
+  **0.140840%** aggregate apparent gain changes sign by order and is rejected.
+- PERF-A124 reduced read-ahead to two rows. Candidate engine blob was
+  `450cb8684046bc6d4f3de9211da5d98b30d1f5c1`; strict test/benchmark hashes
+  are:
+
+  ```text
+  44a521c22715478aff3b81d733d5f329d57dc42296d0156d86994ca09968e19c  /Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a124_q5_pair_prefetch
+  4cb3ab5d586eed4bc6a6ff61a41f1a854fe360ac74176ced4cbf6a66876b420f  /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a124_q5_pair_prefetch
+  ```
+
+  Three `200 / 3000` pairs in each order produced aggregate A100/A124
+  **0.437263234 / 0.434687447 ms** at K=17,408,
+  **0.361529461 / 0.360986766 ms** at K=5,120, and
+  **0.329603047 / 0.329044789 ms** at K=6,144. Every family showed a large
+  second-process penalty, so these sub-percent aggregates were admission-only.
+- The decisive K=17,408 window used `500 / 10000`. Forward A100/A124:
+
+  ```text
+  A100: 0.431496517,0.436403529,0.438822167,0.428393187,0.426883350
+  A124: 0.430808346,0.438137233,0.435578479,0.434901733,0.418224812
+  means: 0.432399750 / 0.431530121 ms
+  ```
+
+  Reversed A124/A100:
+
+  ```text
+  A124: 0.426805412,0.437145450,0.428239204,0.419155846,0.425953067
+  A100: 0.429680367,0.427148500,0.427273654,0.416626908,0.422134042
+  means: 0.427459796 / 0.424572694 ms
+  ```
+
+  Aggregate A100/A124 is **0.428486222 / 0.429494958 ms**. A124 regresses
+  **0.001008736 ms / 0.235419%**, winning four of ten pairs. Every arm retains
+  digest `d05378cc8066dc41` and first value `2.03125`.
+- Both candidates were rejected without a model load. An `apply_patch`
+  restoration returns engine blob
+  `5912bc2fe9b1e8f34bdace0b1a009f8aa1223d04`; engine/header diff against
+  signed A117 is empty and `git diff --check` passes. Port 30000 remained free.

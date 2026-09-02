@@ -3889,3 +3889,39 @@ option, or serving dispatch was added.
   removes work while interleaving it.
 - Related commit or revert: candidate stayed outside `main`; exact signed-A117
   engine/header content was restored before the next experiment.
+
+## PERF-FA139 - Affine-Q5 result-row read-ahead
+
+- Hypothesis: issuing packed-weight, scale, and bias reads for later output
+  rows before the current row's long unpack/FMA chain can expose more memory
+  latency while preserving A100's exact arithmetic.
+- Scope: selected four-SIMD/four-row/two-pack Q5/G64 kernel and the traced
+  K=17,408, K=5,120, and K=6,144 production families.
+- Attempted change: A123 prefetches all four rows into thread-local arrays.
+  A124 prefetches two rows at a time to halve the extra live state. Neither
+  changes weight bytes, unpack expressions, per-result FMA order, reductions,
+  or BF16 stores.
+- Benchmark evidence: A123's ten-pair order/reverse aggregates are A100/A123
+  **0.432488694 / 0.434353889 ms** at K=17,408 and
+  **0.360067748 / 0.362687827 ms** at K=5,120, regressions of
+  **0.431270% / 0.727663%**. K=6,144 measures
+  **0.327001153 / 0.326540605 ms**, but the forward order favors A123 while
+  reverse order favors A100, leaving only a noise-sized **0.140840%**
+  aggregate. A124's decisive K=17,408 `500 / 10000` window measures
+  **0.428486222 / 0.429494958 ms**, a **0.235419%** regression; A124 wins four
+  of ten pairs.
+- Correctness evidence: both strict focused builds pass Q5 K/N `512/64`,
+  `5120/128`, and `17408/32` at the exact A100 maximum errors
+  **0.03125 / 0.03125 / 0.0234375**. Every micro retains the corresponding
+  exact digest and first output.
+- Failure mode: additional live packed words and parameters consume registers
+  without changing dominant weight traffic. Process-order effects exceed the
+  residual scheduling movement, and the longer balanced gate is negative.
+- Why not to retry unchanged: both four-row and reduced-state two-row forms
+  have been measured across every traced K family; the decisive largest-owner
+  window rejects the narrower form.
+- Reopen only if: generated Metal evidence shows materially different load
+  issuance/register allocation under a new compiler, or read-ahead also
+  removes bytes or unpack work.
+- Related commit or revert: both candidates stayed outside `main`; exact A117
+  engine/header content was restored against signed `00d09138ce`.
