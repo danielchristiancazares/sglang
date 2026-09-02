@@ -23514,3 +23514,128 @@ mean 13.929045  17.125658 446.051        39.730
   signed `00d09138ce`. The pre-existing detached Q4 test modification remains
   untouched. `git diff --check` passes. Port 30000 is free and no model or
   benchmark process remains.
+
+### 2026-09-01 20:50 PDT - A128 combined raw Q4 parameters qualify and commit
+
+- Main began at signed `d058654c2726b88242857a3d54f66144a5cb4bc3`,
+  98 commits ahead of `origin/main`, with an empty index and Daniel's three
+  user-owned blobs unchanged at `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. The detached candidate began
+  with engine/header content exactly matching selected signed A117/A100.
+- Production reachability was already measured: the selected fused Q4
+  gate/up/SwiGLU shader owns **42.141%** of mapped target-process PCs. Its
+  existing ABI reads four independent BF16 parameter planes. A128 adds a C++
+  load-time packer that preserves every original scale/bias bit and orders
+  each group as four gate row codes followed by four up row codes. The new
+  fused Metal owner replaces sixteen scalar BF16 reads with two aligned
+  `uint4` reads. Quantized weights, activation traversal, FP32 dot order,
+  reductions, precise sigmoid, staged BF16 operations, and output stores are
+  unchanged. Preparation requires both the existing fused switch and the new
+  subordinate `SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS=1` switch.
+- One production MLP pair contributes **11,141,120 bytes** of combined raw
+  parameter data. Across 64 layers the opt-in stream duplicates exactly
+  **713,031,680 bytes / 680 MiB** because generic prefill retains its original
+  four planes. This residency cost is explicit and remains subject to the
+  exact-capacity gate.
+- Strict C++20/O3 warnings-as-errors test, benchmark, and shared-library builds
+  used the established MLX 0.32.2 include/library paths; the only diagnostic
+  was the established macOS 26.0 / MLX 26.2 linker warning. The final focused
+  executable reports zero mismatch for ordinary Q4 K/N `512/64`,
+  `5120/128`, and `5120/17408`; fused Q4 `512/64` and `5120/17408`; and the
+  `-6.84375` precise-sigmoid boundary. Final source/artifact hashes are:
+
+  ```text
+  686aa5c138bb9094b8db3e7a1a6080fdf3d50a01  qwen38_engine.cpp Git blob
+  f6be290147e665ef1df2f1c6539f9cfe7e31355e  qwen38_engine.h Git blob
+  add57f85edf764f026d889d42ab67052c336ceed  focused test Git blob
+  4309514fa59df87faad8709a1f748830fbc49dd7d3bcfb67ba1b7dda368f4157  libqwen38_a128_q4_fused_raw_params_final.dylib
+  aa67bfc258e21d16037e5f3304c19e74a3ef0084e81669c2572f564adaf453ce  test_qwen38_a128_q4_fused_raw_params_final
+  5c8efc16ec646e7607fb7da993936192fa4291c38370de9a02e90a7a053cd797  bench_qwen38_a128_q4_fused_raw_params
+  2198df927c566c8252fb2005d16fc55d43f0c4f98e51563b26b51744c14e52d0  bench_qwen38_a128_q4_fused_raw_params.cpp
+  ```
+
+- The dedicated micro invoked each artifact as
+  `<binary> regular|raw 5120 17408 1000 10000`. Forward milliseconds were:
+
+  ```text
+  pair  A117 regular  A128 raw
+  1     0.559946396   0.558260654
+  2     0.560418175   0.553608817
+  3     0.561379887   0.554873571
+  4     0.563647958   0.555109383
+  5     0.566376812   0.559565579
+  mean  0.562353846   0.556283601
+  ```
+
+  Reversed milliseconds were:
+
+  ```text
+  pair  A128 raw      A117 regular
+  1     0.555047625   0.564603858
+  2     0.553226146   0.557858812
+  3     0.550708342   0.555093171
+  4     0.553314208   0.555607492
+  5     0.548687137   0.556388908
+  mean  0.552196692   0.557910448
+  ```
+
+  Aggregate regular/raw is **0.5601321469 / 0.5542401462 ms**, a
+  **0.0058920007 ms / 1.051895%** latency reduction. A128 wins every pair;
+  all 20 arms report first value `0.875` and digest `8a9031349585365a`.
+- Full-model qualification used one dylib, pinned mixed revision
+  `596b8067...8340`, `128 / 32 warm / 128 timed`, and the exact selected
+  environment, changing only
+  `SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS=0/1`:
+
+  ```text
+  MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS=<0-or-1> bench_qwen38_native <A128-dylib> <checkpoint> 128 32 128
+  ```
+
+  Forward control/candidate tok/s were:
+
+  ```text
+  19.456515060 / 19.637976963
+  19.440895047 / 19.575138817
+  19.473466254 / 19.659267647
+  19.419140878 / 19.665005606
+  19.407601413 / 19.659352064
+  means 19.4395237304 / 19.6393482194
+  ```
+
+  The first two reversed candidate/control pairs were clean at
+  **19.550352460/19.432604881** and
+  **19.664408057/19.423137251**. Repeated 18.5 GB process reloads then
+  coincided with six live `mdworker_shared` processes: candidates remained
+  **19.579256313 / 19.567108302 / 19.592773638**, while second-position
+  controls collapsed to **15.202523971 / 17.620645469 / 14.934890513**. Those
+  three controls are externally contaminated and excluded. System memory
+  remained 94% free and `pmset -g therm` reported no warning. A short recovery
+  control was still low at **18.458939567**; after a three-minute idle interval
+  it recovered to **19.454231175**.
+- Replacement reversed pairs inserted 60-second idle intervals between every
+  process. The complete clean reversed candidate/control window is:
+
+  ```text
+  19.550352460 / 19.432604881
+  19.664408057 / 19.423137251
+  19.586795508 / 19.461597440
+  19.664686121 / 19.469126976
+  19.590726508 / 19.484989897
+  means 19.6113937308 / 19.4542912890
+  ```
+
+  Forward and reversed gains are **1.027929% / 0.807546%**. Aggregate matched
+  control/candidate is **19.4469075097 / 19.6253709751 tok/s**, a
+  **+0.1784634654 / +0.917696%** qualified win. Every one of the 20 clean arms
+  retains 128 timed tokens, digest `d0193f6d413b68c1`, and last token 11406.
+  The final hardened dylib differs only in load-time validation/gating and
+  produces a canonical **19.662460455 tok/s** smoke.
+- Candidate blobs were written to the index without replacing Daniel's
+  overlapping working files. Signed commit `f2fcce0c73`
+  (`perf(mlx): interleave fused Q4 parameters`) contains only the opt-in C++ /
+  Metal implementation and focused test delta. After the commit, the main
+  worktree again contains only Daniel's three original modified paths at their
+  exact original blobs; the index is empty. Exact 131K serving, sampled
+  behavior, and Codex `xhigh` remain pending. The direct gap is now
+  **0.374629025 tok/s / 1.908902%**.

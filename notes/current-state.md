@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-19:09 PDT.
+20:50 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -174,15 +174,17 @@ revision `596b8067f7cf429007bb668874ffee7e917c8340`, with the A100 aligned-word
 affine-Q5 batch-one Metal kernel and the stock-exact A111 affine-Q4 batch-one
 kernel explicitly enabled, A114's precise fused Q4 gate/up/SwiGLU route, and
 A113's redundant token-evaluation removal, plus A117's lane-parallel precise
-fused epilogue. Two independent A117 five-pair windows give a selected
-aggregate mean of **19.453092367 tok/s** on sampled
-direct `128 / 32 warm / 128 timed`, with digest `d0193f6d413b68c1` and last
-token 11406. Matched A114+A113 serial-epilogue control is
-**19.268475640 tok/s**, so A117 contributes
-**+0.184616727 / +0.958128%**. The direct gap is
-**0.546907633 tok/s / 2.811417%**. The generic mixed target reaches
-**18.121698566 tok/s**, making the selected cumulative gain
-**+1.331393801 / +7.346959%**.
+fused epilogue. A128 then combines each fused Q4 MLP pair's unchanged gate/up
+scale/bias bits into two aligned four-row decode bundles. Two independent
+A128 five-pair windows give a committed opt-in aggregate mean of
+**19.625370975 tok/s** on sampled direct `128 / 32 warm / 128 timed`, with
+digest `d0193f6d413b68c1` and last token 11406. Matched A117 control is
+**19.446907510 tok/s**, so A128 contributes
+**+0.178463465 / +0.917696%**. The direct gap is now
+**0.374629025 tok/s / 1.908902%**. The generic mixed target reaches
+**18.121698566 tok/s**, making the cumulative candidate gain
+**+1.503672409 / +8.297635%**. A128 remains opt-in while its 680 MiB duplicate
+parameter stream awaits exact 131K serving and real-client qualification.
 
 The fresh-session candidate matrix is resolved through A111. A100 is promoted:
 five aligned 16-bit loads reconstruct the same three bit windows and retain the
@@ -248,6 +250,26 @@ control/candidate is **19.268475640 / 19.453092367**, a
 11--14 tok/s is explicitly excluded after extreme page-in/swap churn; a
 60-second idle interval restored the selected control to **19.203472228**
 before the replacement reverse window.
+
+A128 is qualified and retained as an opt-in in signed `f2fcce0c73`. The fused
+Q4 kernel previously read gate scale, gate bias, up scale, and up bias as four
+independent BF16 planes. A128 preserves the raw BF16 bits but interleaves four
+gate row pairs followed by four up row pairs in one group-local stream. Each
+iteration therefore issues two aligned `uint4` loads while keeping quantized
+weights, FP32 dot order, reductions, the precise sigmoid, and every BF16
+boundary unchanged. Ten order/reverse production-shape micro pairs improve
+**0.5601321469 -> 0.5542401462 ms** (**1.051895%**) with every pair faster and
+digest `8a9031349585365a`. Forward and cooled reversed complete-model windows
+improve **19.439523730 -> 19.639348219** and
+**19.454291289 -> 19.611393731 tok/s**. Aggregate matched throughput is
+**19.446907510 -> 19.625370975**, a **+0.917696%** win; all 20 clean outputs
+are canonical. Three second-position controls at **15.202523971**,
+**17.620645469**, and **14.934890513 tok/s** coincided with a Spotlight worker
+wave and repeated 18.5 GB reloads, are excluded, and were replaced after
+enforced idle intervals. The final hardened source smoke reaches
+**19.662460455 tok/s**. The extra decode stream duplicates
+**713,031,680 bytes / 680 MiB**; exact 131K capacity, sampled serving, and
+Codex `xhigh` remain gates before default selection.
 
 A118 and A119 are closed in their measured forms. Replacing A117's fused-Q4
 packed-word reads with one explicit `packed_ushort4` transaction is exact but
