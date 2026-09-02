@@ -223,8 +223,8 @@ and audio disabled, preserved separate reasoning, and returned final `703` for
 `37 * 19`. A promoted SGLang route must also retain:
 
 - the exact 32,768-token context and token-pool allocation;
-- sampled reasoning at temperature `1.0`, top-p `0.95`, top-k `20`, and
-  presence penalty `1.5`;
+- sampled reasoning at temperature `1.0`, top-p `0.95`, top-k `20`, min-p
+  `0.0`, presence penalty `0.0`, and repetition penalty `1.0`;
 - thinking-disabled exact `READY` with zero reasoning tokens;
 - exactly one parsed `multiply({"a":37,"b":19})` tool call;
 - preserved reasoning through the tool-result continuation;

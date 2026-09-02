@@ -190,6 +190,29 @@ tree throughput can be ranked for production.
 
 ## Deltas
 
+### 2026-09-02 02:06 PDT - PERF-A160 official Qwen3.8 coding profile audit
+
+- Change: aligned the active thinking/coding contract and probe defaults with
+  the upstream Qwen3.8-27B model card: thinking on, `reasoning_effort=xhigh`,
+  preserved thinking, temperature `1.0`, top-p `0.95`, top-k `20`, min-p
+  `0.0`, presence `0.0`, and repetition `1.0`. The former presence `1.5`
+  remains only in the separately documented non-thinking profile.
+- Runtime evidence: no Metal benchmark was needed for the active direct lane.
+  Its native sampler already uses temperature one, top-k 20, top-p 0.95,
+  implicit min-p zero, and no penalties, so the selected A150 timing and token
+  evidence are unchanged. SGLang's general MLX sampler also documents that it
+  ignores penalties; neutral official penalties remove the prior request/
+  execution mismatch.
+- Correctness evidence: pinned upstream revision
+  `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` carries the same
+  `1.0 / 0.95 / 20` generation config, a chat template defaulting to `xhigh`
+  and preserved thinking, and native context 262,144. The official SGLang
+  recipe selects the Qwen3 reasoning and Qwen3 Coder tool parsers.
+- Decision: use the official thinking profile for every new promotion gate.
+  Historical presence-1.5 measurements remain valid only under their recorded
+  contract and require a new official-profile window before current promotion.
+  No Qwen recommendation exists for the internal MTP proposal temperature.
+
 ### 2026-09-02 01:36 PDT - PERF-A148--A150 shared M=2 target verification
 
 - Change: A148 compared MLX's stock two-row quantized matmul with two
@@ -1306,6 +1329,7 @@ tree throughput can be ranked for production.
 | PERF-A148 | Execute stock M=2 target projections as two selected batch-one QMV rows or through the existing generic small-batch kernel. | Mixed-Q5 block-two verifier and production Q4/Q5 projection shapes | Runtime-correct and rejected | Rowwise Q5 is faster but rereads every weight; rowwise Q4 head is neutral/slower, and the existing small-batch Q4 kernel takes **1.111526333 ms** versus **0.584932708 ms** stock. See PERF-FA159. |
 | PERF-A149 | Decode each affine-Q5 weight once while accumulating both M=2 verifier rows in vector registers. | Every Q5/G64 projection reached by standard MTP block two | Material opt-in win; qualification active | Production Q5 shapes improve **19.8--29.3%**; full sampled throughput improves **15.204721403 -> 16.497732109 tok/s** despite lower acceptance. Small parity is exact and production error is at most **0.015625**. |
 | PERF-A150 | Fuse Q4 gate/up/SwiGLU for M=2 and share each packed weight/parameter load across both verifier rows. | Every Q4/G64 MLP gate/up pair under standard MTP block two | Material opt-in win; qualification active | Production fused MLP improves **0.868540187 -> 0.574944375 ms**; A149+A150 reaches **19.795886878 tok/s** over 128 tokens and **20.104683630** in the traced 16-token smoke. Durable floor remains open. |
+| PERF-A160 | Align coding/thinking request knobs with the pinned upstream Qwen3.8 profile. | Benchmark contract, native/served sampling interpretation, and bounded client probes | Contract corrected; requalification active | Official target sampling is temperature **1.0**, top-p **0.95**, top-k **20**, min-p **0.0**, presence **0.0**, repetition **1.0**, with `xhigh` and preserved thinking. The direct Mac sampler already matches; historical presence-1.5 served windows need remeasurement. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |

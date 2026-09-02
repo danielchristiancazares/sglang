@@ -20,7 +20,7 @@ def main() -> int:
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--min-p", type=float, default=0.0)
-    parser.add_argument("--presence-penalty", type=float, default=1.5)
+    parser.add_argument("--presence-penalty", type=float, default=0.0)
     parser.add_argument("--repetition-penalty", type=float, default=1.0)
     parser.add_argument(
         "prompt",

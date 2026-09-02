@@ -4,7 +4,7 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-09-01 15:39 PDT.
+**Reconciled through:** 2026-09-02 02:06 PDT.
 
 ## Selected production choices
 
@@ -16,6 +16,7 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Primary performance scoreboard | Uncached exact `6213+512` ordinary sampling: temperature 1.0, top-p 0.95, top-k 20, presence penalty 1.5 | Python authority windows **155.961** and **162.500 tok/s** independently clear the requested 150; exact counts, length finish, reasoning/content, process brackets, and client implementation are recorded |
 | Next performance milestone | None active; reopen native-Windows throughput only by explicit request or a newly measured gap | The requested 150 tok/s objective is qualified on the literal launcher default, including capacity, behavior, OpenCode2, and Codex gates |
 | Model surface | Language-only with Qwen3 reasoning and Qwen3 Coder tools | Preserves required behavior and VRAM; image/audio remain disabled |
+| Coding sampling profile | Thinking on, `reasoning_effort=xhigh`, preserved thinking, temperature `1.0`, top-p `0.95`, top-k `20`, min-p `0.0`, presence `0.0`, repetition `1.0` | Qwen's upstream Qwen3.8-27B model card and pinned generation config select this profile. Presence `1.5` belongs to non-thinking mode; older measurements retain their recorded contract and require remeasurement for current promotion. |
 | FlashInfer | Clean native-Windows port of 0.6.17 | Passed JIT/kernel tests, fixed long-prefill correctness, and satisfies the SGLang version contract |
 | Prefill | FlashInfer, launcher-default chunk size 4096 | Exact 200K DSpark-v2 capacity and both sampled windows pass; chunk 7680 remains the historical NEXTN/selective-checkpoint control |
 | Default long-context profile | `AttnNVFP4` target + DSpark-v2 online-FP8 draft + five FP32 Mamba slots | Literal argument-free launch captures the intended graphs, keeps exact 200K pools, clears 150 tok/s, and survives the real multi-chunk clients |

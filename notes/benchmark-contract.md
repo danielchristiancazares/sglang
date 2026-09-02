@@ -83,7 +83,7 @@ temperature, free VRAM, listener, process tree, and competing WDDM clients.
 | Historical control | `6213/128`, temperature 0 | Compare early GGUF and base-NVFP4 results |
 | Current fixed control | `6213/512`, temperature 0, simulated accepted length 3 | Attribute deterministic execution and dispatch cost on the selected linear topology |
 | Primary production scoreboard | `6213/512`, normal rejection sampling | Measure production generation throughput over repeated clean windows |
-| Sampled profile | Temperature `1.0`, top-p `0.95`, top-k `20`, presence `1.5` | Match the selected Qwen reasoning workload |
+| Sampled thinking profile | Temperature `1.0`, top-p `0.95`, top-k `20`, min-p `0.0`, presence `0.0`, repetition `1.0` | Match Qwen3.8's official thinking/coding recommendation |
 | Native acceptance | The qualified Python probe, with the C++23 candidate matched against it under sampled production settings | Pair TPS with emitted/accepted length, proposal counts, histograms, and verify cycles |
 | Long ladder | `32768/16`, `32768/512`, `65536/16` | Catch prefill, residency, repeated-request, and long-decode regressions |
 | Exact capacity and near-limit prefill gate | `199000/16` | Prove exact total `199016` inside the selected 200K pools and track prefill/TTFT; short decode is telemetry |
@@ -145,7 +145,9 @@ Primary ordinary-sampling production scoreboard:
   --temperature 1.0 `
   --top-p 0.95 `
   --top-k 20 `
-  --presence-penalty 1.5
+  --min-p 0.0 `
+  --presence-penalty 0.0 `
+  --repetition-penalty 1.0
 ```
 
 Reasoning-disabled sampled control:
@@ -160,10 +162,12 @@ Reasoning-disabled sampled control:
   --warmup-output-tokens 16 `
   --warmup-runs 1 `
   --timeout 600 `
-  --temperature 1.0 `
-  --top-p 0.95 `
+  --temperature 0.7 `
+  --top-p 0.80 `
   --top-k 20 `
+  --min-p 0.0 `
   --presence-penalty 1.5 `
+  --repetition-penalty 1.0 `
   --disable-thinking
 ```
 
@@ -184,10 +188,15 @@ Native speculative acceptance counters:
   --temperature 1.0 `
   --top-p 0.95 `
   --top-k 20 `
-  --presence-penalty 1.5
+  --presence-penalty 0.0
 ```
 
-Add `--disable-thinking` to take the matching non-thinking acceptance probe.
+For a non-thinking acceptance probe, also pass `--temperature 0.7 --top-p
+0.80 --top-k 20 --presence-penalty 1.5 --disable-thinking`. Qwen's official
+model card assigns presence `1.5` to that non-thinking profile, not to thinking
+mode. Measurements recorded before 2026-09-02 with thinking enabled and
+presence `1.5` remain historical evidence under their stated contract and need
+a fresh official-profile window before they can qualify a new default.
 
 ## Native C++23 client candidate
 
@@ -272,7 +281,7 @@ absolute executable path:
   --temperature 1.0 `
   --top-p 0.95 `
   --top-k 20 `
-  --presence-penalty 1.5
+  --presence-penalty 0.0
 
 .\sglang_bench_openai_stream.exe `
   --base-url http://127.0.0.1:30000 `
@@ -295,7 +304,7 @@ absolute executable path:
   --temperature 1.0 `
   --top-p 0.95 `
   --top-k 20 `
-  --presence-penalty 1.5
+  --presence-penalty 0.0
 ```
 
 Add `--disable-thinking` to both members of a paired profile when qualifying

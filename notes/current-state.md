@@ -2053,7 +2053,8 @@ Every promoted candidate retains all of these:
   when memory layout, graph coverage, cache dtype, workspace, or sampling
   residency changes;
 - Qwen's selected sampled reasoning profile: temperature `1.0`, top-p `0.95`,
-  top-k `20`, and presence penalty `1.5`;
+  top-k `20`, min-p `0.0`, presence penalty `0.0`, and repetition penalty
+  `1.0`;
 - preserved `reasoning_content`, coherent thinking, and ordinary completion
   behavior;
 - arithmetic probe result `703` for `37 * 19`;

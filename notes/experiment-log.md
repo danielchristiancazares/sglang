@@ -24653,3 +24653,50 @@ mean 13.929045  17.125658 446.051        39.730
   focused committed tests plus complete behavior/capacity/client gates. The
   next experiment tunes the materially changed vector-register geometry;
   favorable-seed selection and target sampling changes are excluded.
+
+## 2026-09-02 02:06 PDT - Official Qwen3.8 coding-setting audit
+
+- Trigger: the user asked to check Qwen3.8's recommended coding settings for
+  every active knob before more proposal tuning. Main was signed
+  `a5d15afb0cac4462c90d9457a476fde1a7c25688` with the three protected
+  user-owned native source/test modifications unchanged. No listener, server,
+  compiler, or Metal benchmark process was active during the read-only audit.
+- Primary sources inspected on 2026-09-02:
+  - upstream model card: `https://huggingface.co/Qwen/Qwen3.8-27B`;
+  - upstream generation config at the same model repository;
+  - official SGLang cookbook:
+    `https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B`;
+  - pinned local upstream snapshot
+    `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`.
+- The upstream thinking/coding profile is `do_sample=true`, temperature
+  **1.0**, top-p **0.95**, top-k **20**, min-p **0.0**, presence penalty
+  **0.0**, and repetition penalty **1.0**. Thinking and preserved thinking are
+  enabled by default; `reasoning_effort=xhigh` is the default tier for complex
+  tasks. Presence **1.5** belongs to Qwen's non-thinking profile, paired with
+  temperature **0.7** and top-p **0.80**. The model is native through 262,144
+  tokens, so the required 131,072-token lane must not use YaRN.
+- The official SGLang integration uses `qwen3` reasoning and `qwen3_coder`
+  tool parsing. Its CUDA MTP recipe uses EAGLE, three steps, EAGLE top-k one,
+  and four draft tokens; those are backend execution settings rather than
+  target sampling parameters and do not override the native Metal evidence.
+- Current-source reachability audit:
+  - `Engine::sampling_probabilities` in the direct C++ lane already fixes
+    target temperature at one, top-k 20, top-p 0.95, implicit min-p zero, and
+    applies no penalties. Its A137/A149/A150 measurements therefore already
+    use the official target distribution.
+  - `MlxSamplingParams` honors request temperature/top-k/top-p/min-p and warns
+    that frequency/presence/repetition penalties are ignored. The official
+    neutral penalty values make the documented and executed Mac distributions
+    agree; the previous presence-1.5 contract did not.
+  - `/v1/responses` maps `reasoning.effort` to chat `reasoning_effort`, and the
+    pinned chat template defaults to `xhigh` while retaining historical
+    reasoning unless explicitly disabled.
+- Changed the active benchmark/qualification documents, Windows probe
+  defaults, and OpenCode thinking overlay to presence zero. The canonical
+  non-thinking command now explicitly uses Qwen's separate 0.7/0.80/20/1.5
+  profile. Historical measurements were not rewritten; any presence-1.5
+  thinking result needs a fresh official-profile window before promotion.
+- The experimental MTP proposal-temperature override is not a Qwen-recommended
+  coding knob. It remains outside the selected source: exact p/q rejection can
+  preserve the target distribution under a changed draft q, but its measured
+  cross-seed robustness still governs promotion.
