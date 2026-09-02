@@ -24922,3 +24922,70 @@ mean 13.929045  17.125658 446.051        39.730
 - Next handoff: implement PERF-A164 as an opt-in C++ committed-history path,
   stream prompt history in bounded chunks, preserve exact p/q sampling, add
   focused C++ alignment coverage, and rerun both short and 6,237-token gates.
+
+### 2026-09-02 03:35 PDT - A164 committed-history implementation and actual-work selection
+
+- Main remained at signed `3e4773f0b4e38a2fbf79c9cdf1d529df49dd6835`,
+  124 commits ahead of `origin/main`, with an empty index and only Daniel's
+  three protected user-owned paths modified. Their Git blob hashes remained
+  exactly `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. Implementation, builds, and
+  measurements occurred in detached worktree
+  `/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-a150-promote`.
+- Added `SGLANG_MLX_NATIVE_MTP_COMMITTED_HISTORY` at the native standard-MTP
+  state owner. Prompt prefill streams aligned MTP history in bounded
+  1,024-token chunks. Each speculative cycle snapshots and restores MTP KV,
+  then appends only the target-committed input/hidden pairs; target-only
+  fallback advances the same state. The MTP cache remains exactly one token
+  behind target history. The absent switch preserves the prior path and the
+  mode fails closed unless native sampling is enabled. No Python was added.
+- Added strict C++ test
+  `test/registered/unit/hardware_backend/mlx/test_qwen38_mtp_committed_history.cpp`.
+  It passes initial prompt shift, incremental pairing, post-normalization,
+  single-token, and invalid-input cases. Strict C++20/O3
+  `-Wall -Wextra -Werror` builds pass for the dylib and test; only the
+  established macOS 26.0 versus MLX 26.2 linker warning appears. Rebuilt
+  adjacent Q4/Q5 batch-one, batch-two, fused-SwiGLU, A149/A150/A163, and
+  exhaustive sigmoid coverage preserves exact output or its established
+  tolerances. A runtime trace proves target/MTP history lengths `N / N-1`
+  through prompt, speculative restore, accepted-width-two commit, and
+  target-only fallback.
+- The exact selected benchmark environment adds
+  `SGLANG_MLX_NATIVE_MTP_COMMITTED_HISTORY=1` to the A163 environment and uses
+  target revision `596b8067f7cf429007bb668874ffee7e917c8340`, optimized Q4
+  MTP revision `123db8bcc7101455b00d9aad36c0e760c6e7de02`, post-norm seed,
+  block two, and ordinary seeded native p/q sampling. The exact workload tail
+  is `bench_qwen38_native libqwen38_a164_rebuild.dylib <target> 6237 32 256
+  <optimized-mtp>`.
+- Short `128 / 32 / 128` reaches **27.843696830 tok/s**, 64 refills, width
+  **2.000000000**, digest `d777be2b45d6e725`, and last token 471. Five
+  consecutive actual-work samples reach **23.816926450 / 23.795889548 /
+  23.800057113 / 23.825786407 / 23.870112277 tok/s**, mean
+  **23.821754359**, range **23.795889548--23.870112277**. Every sample has
+  131 refills, width **1.961832061**, digest `d468c7e1b0d274b3`, last token 20,
+  and the exact requested length.
+- A clean post-commit rebuild produced **23.819226864** and
+  **23.811460300 tok/s** with identical acceptance/output. One intervening
+  sample reached **19.724760551 tok/s** while `fileproviderd` consumed about
+  12.2% CPU and host indexing/Codex activity was present. Identical refill,
+  width, digest, and last-token metadata identify execution contention rather
+  than an MTP quality change. Daniel explicitly accepted this labeled sample;
+  it is retained rather than excluded from the recovery record.
+- Source-at-measurement SHA-256 values are
+  `fa4f024c34666a19975eb220c912b7b667a0eb4a7b2bc894e821b5b19d48e46a`
+  for the engine, `1f1e36f790f246e2c0a663811cea0ee61b657e7c7e213247a1c758e5df023800`
+  for the header, and `192160d5009b9e8be510e19bf9dac6da92aa01a003dfd23f54bd952b6833907d`
+  for the new test. The first strict dylib/test hashes are
+  `ecd038142a94d83c5ffbf165c0ee3a8ebeb3f2914bb5dc8acc734858aa04744a`
+  and `0ac7d261bbc0c61ddbd972f1181da885e42698be1c395e06e36ba0c9b1b96bcf`;
+  the combined batch test is
+  `3e080bafa5bf45c1d09c564df5f51122b0cc389998dfb97408c82d0d9bf2c04d`.
+  The clean post-commit rebuilt dylib is
+  `490bfedd0b9cc8688b3c4953142006ac77c6c4c948882b2abf17e096692fe394`.
+- Signed commit `b92c21d69d93e05ecb3083d2b8e0b00958afbce6`
+  (`perf(mlx): retain committed mtp history`) retains the implementation and
+  focused C++ coverage. The clean worktree rebuild reproduces the selected
+  behavior. The user accepted the labeled contention observation and directed
+  work to continue; exact served 131K and a real Responses/Codex `xhigh`
+  coding turn are now the critical path.

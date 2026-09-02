@@ -4743,7 +4743,9 @@ the stock full-attention mechanism a 32K or 131K solution.
   **1.003921569** under the same state policy.
 - Reopen only if: the native engine constructs one-token-shifted prompt
   history and retains only target-committed MTP state across cycles.
-- Related commit or revert: no source change; PERF-A164 owns the repair.
+- Related commit or revert: no source change in this failed arm; signed
+  `b92c21d69d` subsequently implements PERF-A164 and improves the optimized-
+  Q4-MTP long workload to a clean **23.821754359 tok/s** mean.
 
 ## PERF-FA171 - Uniform-Q5 target as the MTP acceptance repair
 

@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-02
-03:09 PDT.
+03:35 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -181,23 +181,25 @@ in repeated evidence: independent five-sample means are **20.109963672** and
 from **20.075602549 to 20.132668649 tok/s**. Every process preserves 75
 refills, width **1.706666667**, digest `6bd687fb75c4f5a9`, last token 1467,
 and exact requested length. Signed `94ca4ff7fa` retains the opt-in kernel.
-This clears the short direct execution gate; it does not yet qualify the
-6,237-token actual-work shape, exact served 131K, or a real Responses/Codex
-`xhigh` coding turn.
+This clears the short direct execution gate. Signed A164 commit `b92c21d69d`
+also clears the 6,237-token actual-work gate by retaining prompt-shifted and
+accepted-prefix MTP history. Exact served 131K and a real Responses/Codex
+`xhigh` coding turn remain open.
 
-The A163 actual-work rerun isolates a state defect rather than a verifier
-kernel gap. Target-only `6237 / 32 warm / 256 timed` reproduces
-**19.057906040 tok/s**, digest `9ec00ec01f8781e1`, and last token 20. The
-official five-bit MTP falls to **7.839819833 tok/s**, 248 refills, and width
-**1.032258065**. The optimized Q4 MTPLX checkpoint reaches
-**26.491661416 tok/s** and width **1.954545455** on the short shape, then
-falls to **7.516953814 tok/s**, 255 refills, and width **1.003921569** after
-the same long prompt. Native `mtp_reset()` currently clears MTP KV before
-every proposal at the target's absolute position, and prefill never builds
-the one-token-shifted prompt history. Official MTPLX retains that history and
-appends only target-committed prefixes. PERF-A164 now owns an opt-in native
-committed-history repair; no checkpoint or sampler change can substitute for
-it.
+The A163 actual-work rerun isolated a state defect rather than a verifier
+kernel gap. A164 repairs it at the native standard-MTP state owner: prompt
+hidden rows pair with the following prompt tokens in bounded chunks, decode
+restores speculative KV and appends only target-committed prefixes, and the
+MTP cache remains exactly one token behind target history. With the optimized
+Q4 MTPLX checkpoint, five consecutive `6237 / 32 warm / 256 timed` samples
+reach **23.816926450 / 23.795889548 / 23.800057113 / 23.825786407 /
+23.870112277 tok/s**, mean **23.821754359**. Every run has 131 refills, width
+**1.961832061**, digest `d468c7e1b0d274b3`, and last token 20. Independent
+rebuilt-artifact checks reach **23.819226864 / 23.811460300 tok/s**; one
+intervening FileProvider/indexing-contended observation reaches
+**19.724760551** with identical acceptance/output and remains explicitly
+recorded. The user accepted that labeled host-noise sample. A164 is selected;
+the current blocker is capacity/serving integration, not long-history decode.
 
 PERF-A139/A140 close lossless preassembled Q5 windows. A139's four-row form
 regresses the dominant `K=17408, N=5120` micro
@@ -252,7 +254,8 @@ The rejected A162 `float2` form was faster in isolation but produced 10,703
 mismatches, changed acceptance, and regressed the model to **19.561130627
 tok/s**. Focused two-row, dispatch, invalid-shape, batch-one, fused-Q4, and
 exhaustive-domain tests pass. Exact served 131K and the real Responses/Codex
-`xhigh` gate remain unresolved.
+`xhigh` gate remain unresolved; direct actual-work decode now has
+approximately 19.1% mean margin over the 20 tok/s floor.
 
 A128's 680 MiB duplicate parameter stream remains opt-in. A130 plus A131
 completes an independent exact `32768+16` server request at
