@@ -3858,3 +3858,34 @@ option, or serving dispatch was added.
   compiler removes the measured selection cost.
 - Related commit or revert: both candidates stayed outside `main`; exact A117
   engine/header content was restored against signed `00d09138ce`.
+
+## PERF-FA138 - Interleaved gate/up issue order in fused Q4 SwiGLU
+
+- Hypothesis: alternating each gate-row dot with the corresponding up-row dot
+  can expose the two independent weight streams sooner and shorten the fused
+  kernel's dependency chain without changing arithmetic.
+- Scope: selected A117 affine-Q4/G64 gate/up/SwiGLU at production shape
+  `K=5120`, `N=17408`; eight SIMD groups, scalar packed-word loads, unchanged
+  reductions, and the compile-time lane-parallel precise epilogue.
+- Attempted change: replaced the separate four-row gate and four-row up loops
+  with one four-row loop that issues gate then up. Each accumulator retains
+  its exact per-K update order and expression.
+- Benchmark evidence: five forward A117/A122 pairs average
+  **0.561355594 / 0.570393451 ms**. Five reversed A122/A117 pairs average
+  **0.567740174 / 0.556083303 ms**. Aggregate A117/A122 is
+  **0.558719448 / 0.569066813 ms**, a **1.851979%** regression; all ten
+  paired deltas are negative.
+- Correctness evidence: the strict C++/Metal suite passes ordinary Q4
+  `512/64`, `5120/128`, and `5120/17408`, fused `512/64` and `5120/17408`,
+  and the `-6.84375` precise-sigmoid boundary exactly. Every timed arm reports
+  digest `8a9031349585365a` and first output `0.875`.
+- Failure mode: alternation reduces neither weight traffic nor arithmetic and
+  produces a consistently worse compiler schedule, plausibly by disrupting
+  grouped-stream locality or extending live state across the two products.
+- Why not to retry unchanged: two complete order directions lose every pair
+  by an aggregate **0.010347364 ms**, far outside the local noise scale.
+- Reopen only if: a Metal compiler change or generated-shader evidence proves
+  different register/load scheduling, or a materially different fused body
+  removes work while interleaving it.
+- Related commit or revert: candidate stayed outside `main`; exact signed-A117
+  engine/header content was restored before the next experiment.
