@@ -31,6 +31,10 @@ mlx::core::array affine_qmm_m8_ksplit(
     const QLinear& linear, const mlx::core::array& x);
 mlx::core::array affine_q4_qmv_batch_one(
     const QLinear& linear, const mlx::core::array& x);
+mlx::core::array affine_q4_fused_swiglu_batch_one(
+    const QLinear& gate,
+    const QLinear& up,
+    const mlx::core::array& x);
 mlx::core::array affine_q5_qmv_batch_one(
     const QLinear& linear, const mlx::core::array& x);
 mlx::core::array dspark_yarn_rope(
