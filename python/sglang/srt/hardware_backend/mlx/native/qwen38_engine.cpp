@@ -98,6 +98,13 @@ bool native_q4_batch_one_qmv_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_q4_batch_two_qmv_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_Q4_BATCH_TWO_QMV");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 bool native_q4_fused_swiglu_enabled() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU");
@@ -1272,6 +1279,97 @@ constexpr const char* kAffineQ4BatchOneQmvSource = R"(
         }
 )";
 
+constexpr const char* kAffineQ4BatchTwoQmvSource = R"(
+        constexpr int PacksPerThread = 2;
+        constexpr int SimdGroups = 4;
+        constexpr int ResultsPerSimdgroup = 4;
+        constexpr int ValuesPerThread = 8 * PacksPerThread;
+        constexpr int BlockSize = ValuesPerThread * 32;
+        constexpr int ScaleStep = 64 / ValuesPerThread;
+        constexpr int InputFeatures = KConst;
+        constexpr int OutputFeatures = NConst;
+        constexpr int WeightRowBytes = InputFeatures / 2;
+        constexpr int GroupsPerRow = InputFeatures / 64;
+
+        thread float input0_values[ValuesPerThread];
+        thread float input1_values[ValuesPerThread];
+        thread float results0[ResultsPerSimdgroup] = {0};
+        thread float results1[ResultsPerSimdgroup] = {0};
+
+        const int lane = thread_index_in_simdgroup;
+        const int output_start =
+            threadgroup_position_in_grid.y *
+                (SimdGroups * ResultsPerSimdgroup) +
+            simdgroup_index_in_threadgroup * ResultsPerSimdgroup;
+        const device uchar* weight_cursor =
+            reinterpret_cast<const device uchar*>(w) +
+            output_start * WeightRowBytes + lane * PacksPerThread * 4;
+        const device bfloat* scale_cursor =
+            scales + output_start * GroupsPerRow + lane / ScaleStep;
+        const device bfloat* bias_cursor =
+            biases + output_start * GroupsPerRow + lane / ScaleStep;
+        const device bfloat* input0_cursor =
+            x + lane * ValuesPerThread;
+        const device bfloat* input1_cursor =
+            x + InputFeatures + lane * ValuesPerThread;
+
+        for (int k = 0; k < InputFeatures; k += BlockSize) {
+          const float sum0 =
+              sglang_q4_load_vector<bfloat, float, ValuesPerThread>(
+                  input0_cursor, input0_values);
+          const float sum1 =
+              sglang_q4_load_vector<bfloat, float, ValuesPerThread>(
+                  input1_cursor, input1_values);
+
+#pragma unroll
+          for (int row = 0; row < ResultsPerSimdgroup; ++row) {
+            const float scale = static_cast<float>(
+                scale_cursor[row * GroupsPerRow]);
+            const float bias = static_cast<float>(
+                bias_cursor[row * GroupsPerRow]);
+            const device ushort* packed =
+                reinterpret_cast<const device ushort*>(
+                    weight_cursor + row * WeightRowBytes);
+            float accumulator0 = 0.0f;
+            float accumulator1 = 0.0f;
+#pragma unroll
+            for (int index = 0; index < ValuesPerThread / 4; ++index) {
+              const ushort code = packed[index];
+              accumulator0 +=
+                  input0_values[4 * index] * (code & 0x000f) +
+                  input0_values[4 * index + 1] * (code & 0x00f0) +
+                  input0_values[4 * index + 2] * (code & 0x0f00) +
+                  input0_values[4 * index + 3] * (code & 0xf000);
+              accumulator1 +=
+                  input1_values[4 * index] * (code & 0x000f) +
+                  input1_values[4 * index + 1] * (code & 0x00f0) +
+                  input1_values[4 * index + 2] * (code & 0x0f00) +
+                  input1_values[4 * index + 3] * (code & 0xf000);
+            }
+            results0[row] += scale * accumulator0 + sum0 * bias;
+            results1[row] += scale * accumulator1 + sum1 * bias;
+          }
+
+          weight_cursor += BlockSize / 2;
+          scale_cursor += BlockSize / 64;
+          bias_cursor += BlockSize / 64;
+          input0_cursor += BlockSize;
+          input1_cursor += BlockSize;
+        }
+
+#pragma unroll
+        for (int row = 0; row < ResultsPerSimdgroup; ++row) {
+          const float result0 = simd_sum(results0[row]);
+          const float result1 = simd_sum(results1[row]);
+          if (lane == 0) {
+            y[output_start + row] =
+                static_cast<bfloat>(result0);
+            y[OutputFeatures + output_start + row] =
+                static_cast<bfloat>(result1);
+          }
+        }
+)";
+
 constexpr const char* kAffineQ4FusedSwiGluSource = R"(
         constexpr int PacksPerThread = 2;
         constexpr int SimdGroups = 8;
@@ -2256,6 +2354,16 @@ const mx::fast::CustomKernelFunction& affine_q4_batch_one_qmv_metal() {
   return kernel;
 }
 
+const mx::fast::CustomKernelFunction& affine_q4_batch_two_qmv_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_affine_q4_batch_two_qmv",
+      {"w", "scales", "biases", "x"},
+      {"y"},
+      kAffineQ4BatchTwoQmvSource,
+      kAffineQ4BatchOneQmvHeader);
+  return kernel;
+}
+
 const mx::fast::CustomKernelFunction& affine_q4_fused_swiglu_metal() {
   static const auto kernel = mx::fast::metal_kernel(
       "sglang_affine_q4_fused_swiglu",
@@ -2743,6 +2851,28 @@ array QLinear::operator()(const array& x) const {
       return affine_q4_qmv_batch_one(*this, x);
     }
   }
+  if (native_q4_batch_two_qmv_enabled() && x.ndim() == 3 &&
+      x.shape()[0] == 1 && x.shape()[1] == 2 &&
+      x.dtype() == mx::bfloat16 && w.ndim() == 2 && scales.ndim() == 2 &&
+      biases.ndim() == 2 && scales.dtype() == mx::bfloat16 &&
+      biases.dtype() == mx::bfloat16 && group_size == 64 && bits == 4) {
+    const int input_features = static_cast<int>(x.shape()[2]);
+    const int output_features = static_cast<int>(w.shape()[0]);
+    if (input_features > 0 && output_features > 0 &&
+        input_features % 512 == 0 && output_features % 16 == 0 &&
+        w.shape()[1] * 8 == input_features &&
+        scales.shape() == mx::Shape{output_features, input_features / 64} &&
+        biases.shape() == scales.shape()) {
+      if (native_qmm_trace_enabled()) {
+        std::fprintf(
+            stderr,
+            "qwen38_qmv q4 rows=2 K=%d N=%d geometry=4x4x2-shared\n",
+            input_features,
+            output_features);
+      }
+      return affine_q4_qmv_batch_two(*this, x);
+    }
+  }
   if (native_small_batch_qmm_enabled() && x.ndim() == 3 &&
       x.shape()[0] == 1 && x.shape()[1] >= 6 && x.shape()[1] <= 8) {
     const int input_features = static_cast<int>(x.shape()[2]);
@@ -3039,6 +3169,51 @@ array affine_q4_qmv_batch_one(const QLinear& linear, const array& x) {
       {kThreads, output_features / kOutputTile, 1},
       {kThreads, 1, 1},
       {{"KConst", mx::fast::TemplateArg{input_features}}},
+      std::nullopt,
+      false,
+      {});
+  return outputs[0];
+}
+
+array affine_q4_qmv_batch_two(const QLinear& linear, const array& x) {
+  constexpr int kSimdGroups = 4;
+  constexpr int kResultsPerSimdgroup = 4;
+  constexpr int kPacksPerThread = 2;
+  constexpr int kOutputTile = kSimdGroups * kResultsPerSimdgroup;
+  constexpr int kBlockSize = kPacksPerThread * 8 * 32;
+  if (!linear.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
+      x.shape()[1] != 2 || x.dtype() != mx::bfloat16 ||
+      linear.w.ndim() != 2 || linear.w.dtype() != mx::uint32 ||
+      linear.scales.ndim() != 2 || linear.biases.ndim() != 2 ||
+      linear.scales.dtype() != mx::bfloat16 ||
+      linear.biases.dtype() != mx::bfloat16 || linear.group_size != 64 ||
+      linear.bits != 4) {
+    throw std::runtime_error("invalid batch-two affine Q4 QMV inputs");
+  }
+
+  const int input_features = static_cast<int>(x.shape()[2]);
+  const int output_features = static_cast<int>(linear.w.shape()[0]);
+  if (input_features <= 0 || output_features <= 0 ||
+      input_features % kBlockSize != 0 ||
+      output_features % kOutputTile != 0 ||
+      linear.w.shape()[1] * 8 != input_features ||
+      linear.scales.shape() !=
+          mx::Shape{output_features, input_features / linear.group_size} ||
+      linear.biases.shape() != linear.scales.shape()) {
+    throw std::runtime_error("unsupported batch-two affine Q4 QMV shape");
+  }
+
+  constexpr int kThreads = kSimdGroups * 32;
+  auto outputs = affine_q4_batch_two_qmv_metal()(
+      {linear.w, linear.scales, linear.biases, x},
+      {{1, 2, output_features}},
+      {x.dtype()},
+      {kThreads, output_features / kOutputTile, 1},
+      {kThreads, 1, 1},
+      {
+          {"KConst", mx::fast::TemplateArg{input_features}},
+          {"NConst", mx::fast::TemplateArg{output_features}},
+      },
       std::nullopt,
       false,
       {});
