@@ -4,6 +4,7 @@
 
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
+| M1 Max A163 actual-work `6237 / 32 warm / 256 timed`, sampled direct | target-only **19.057906040 tok/s**, digest `9ec00ec01f8781e1`, last token 20 | official five-bit MTP **7.839819833 tok/s**, width **1.032258065**; optimized Q4 MTP **7.516953814 tok/s**, width **1.003921569** | both MTP heads collapse to essentially one committed token per verify after the prompt; source trace finds every draft clears MTP KV while retaining the absolute 6,237-token position | A163 strict dylib, selected mixed-Q5 target, block two; official and MTPLX-optimized MTP revisions; PERF-A164 | 2026-09-02 03:09 PDT |
 | M1 Max mixed-Q5 plus 5-bit MTP block-two, shared M=2 verifier kernels, sampled direct `128 / 32 warm / 128 timed` | same-binary generic M=2 **15.204721403 tok/s**, width **1.802816901**, digest `b10401e93371a45e`; A150 best **19.795886878 tok/s** | A163 independent five-sample means **20.109963672 / 20.107849480 tok/s**; combined **20.108906576**, range **20.075602549--20.132668649**, width **1.706666667**, digest `6bd687fb75c4f5a9` | all ten qualification samples exceed 20 and preserve identical output/acceptance; **+0.313019698 tok/s / +1.581236%** over A150 and **+32.254357%** over generic M=2 | signed `94ca4ff7fa`, selected mixed-Q5 environment, official five-bit MTP, ordinary p/q rejection sampling; PERF-A162/A163 | 2026-09-02 02:45 PDT |
 | M1 Max mixed-Q5 plus 5-bit MTP block-two sparse-q proposals, sampled direct `128 / 32 warm / 128 timed` | dense q **15.230953312 tok/s**, width **1.802816901**, digest `b10401e93371a45e` | unordered sparse CDF **6.983233096 tok/s**, width **1.196261682**; vocabulary-ordered exact sparse CDF **15.222551699 tok/s**, width **1.802816901** | unordered support changes seeded CDF order and regresses **54.151044%**; vocabulary order restores exact digest/acceptance but remains **0.055161%** slower, so dense proposal storage is not the cycle owner | A146/A147 strict opt-in dylibs, official 5-bit MTP revision, selected mixed-Q5 environment; PERF-A146/A147 | 2026-09-02 01:17 PDT |
 | M1 Max real-checkpoint Q5 entropy and selective-Q4 ceiling | 5.000000 stored bits/code across 240 Q5 tensors | **4.722514 Shannon / 4.748775 ideal static-Huffman bits/code**; top-15 coverage **73.562622%** | even a zero-cost ideal decoder removes only about **5.0%** of Q5 bytes, or roughly **2.5%** end to end at the measured **49.061847%** Q5 owner; actual block range/palette/sparse-high opportunities are **0.000000% / 0.000726% / 0.091079%**; Q4 helps only the down shape enough to project about **1.67%** end to end | strict CPU-only C++ checkpoint analyzer, four separated 4,096-group windows per tensor; fresh Q5/Q4 production-shape micros; PERF-A145 | 2026-09-02 01:04 PDT |
@@ -189,6 +190,35 @@ tree throughput can be ranked for production.
 - Median: `32.953 TPS`; median wall time `7.769 s`.
 
 ## Deltas
+
+### 2026-09-02 03:09 PDT - PERF-A164 committed MTP history diagnosis
+
+- Change: reran A163 on the `6237 / 32 warm / 256 timed` actual-work shape
+  with the official five-bit MTP, target-only control, a uniform five-bit
+  target, and the MTPLX-optimized Q4 MTP checkpoint. This was measurement and
+  source diagnosis only; no runtime source changed.
+- Benchmark evidence: the selected mixed target plus official MTP reaches
+  **7.839819833 tok/s**, 248 refills, and width **1.032258065**. The same A163
+  artifact target-only reaches **19.057906040 tok/s** with the established
+  digest `9ec00ec01f8781e1` and last token 20. A uniform-Q5 target plus official
+  MTP reaches **14.606495312 tok/s**, width **1.488372093**, and 86 refills on
+  the short workload, so changing the target is not the selected route. The
+  optimized Q4 MTP is strong on the short workload at **26.491661416 tok/s**,
+  width **1.954545455**, but falls to **7.516953814 tok/s**, 255 refills, and
+  width **1.003921569** after the 6,237-token prompt.
+- Root cause: `Engine::mtp_reset()` clears the MTP attention cache before each
+  proposal while setting its RoPE offset to the target's absolute sequence
+  length. `Engine::prefill()` never constructs the prompt's one-token-shifted
+  MTP history. The pinned official MTPLX v2.9.0 source instead pairs target
+  hidden rows `0..N-2` with prompt tokens `1..N-1`, retains that cache, and
+  restores then appends only target-committed input/hidden pairs each cycle.
+  Both independent checkpoints collapsing at long history localizes the
+  defect to native state management rather than checkpoint quality.
+- Decision: retain A163 and make committed MTP history PERF-A164's active
+  implementation candidate. It must be opt-in, owned by the standard-MTP
+  state path, stream prompt history in bounded chunks, restore speculative
+  MTP state before appending the accepted target prefix, and fail closed on
+  unsupported greedy use. Exact target sampling remains unchanged.
 
 ### 2026-09-02 02:45 PDT - PERF-A162/A163 exact shared-load Q4 vocabulary head
 
@@ -1418,6 +1448,7 @@ tree throughput can be ranked for production.
 | PERF-A161 | Productize the measured A149/A150 shared M=2 verifier path with focused native coverage. | Direct MLX target verification under block-two standard MTP | Committed opt-in foundation | Clean source reproduces **19.785495602 tok/s**, width **1.706666667**, and canonical A150 digest/last token. New batch-two and existing batch-one tests pass; signed `6b6d0d15ea`. |
 | PERF-A162 | Share Q4 vocabulary-head loads across two rows with `float2` arithmetic. | Standard-MTP `K=5120,N=248320,M=2` target head | Faster micro, arithmetic-invalid and rejected | **4.167805 -> 2.673959 ms**, but maximum error **0.0078125**, 10,703 mismatches, changed acceptance, and only **19.561130627 tok/s**; see PERF-FA169. |
 | PERF-A163 | Share Q4 vocabulary-head loads while preserving independent scalar row arithmetic. | Same standard-MTP target head and complete mixed-Q5 model | Qualified and retained in `94ca4ff7fa` | Final micro **4.195437500 -> 3.440243000 ms** exactly. Two independent five-sample windows mean **20.109963672 / 20.107849480 tok/s**; all ten exceed 20 with identical digest, last token, refill count, and width. |
+| PERF-A164 | Retain one-token-shifted committed MTP KV history across prompt prefill and accepted decode prefixes. | Standard-MTP state owner under sampled native decode | Diagnosed; implementation active | Both official five-bit and optimized Q4 MTP heads collapse to widths **1.032258065 / 1.003921569** after 6,237 tokens because native code clears MTP KV every cycle. Official MTPLX retains prompt and accepted-prefix history. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |

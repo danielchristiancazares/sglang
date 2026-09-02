@@ -4722,3 +4722,43 @@ the stock full-attention mechanism a 32K or 131K solution.
   `a2004cec2482853a1e855c79a4985c7bc426aeaa58a9df8667cc853e496c21cb`.
   A163 replaced it with independent scalar row arithmetic in signed
   `94ca4ff7fa`.
+
+## PERF-FA170 - Empty-cache standard MTP at actual-work history
+
+- Hypothesis: A163's qualified short standard-MTP path would retain its
+  acceptance and clear 20 tok/s after a 6,237-token coding-shaped prompt.
+- Scope: selected mixed-Q5 target, official five-bit MTP, block two, sampled
+  `6237 / 32 warm / 256 timed` direct workload.
+- Attempted change: no code change; reran the exact qualified A163 artifact on
+  the actual-work shape.
+- Benchmark evidence: MTP reaches **7.839819833 tok/s**, 248 refills, and mean
+  width **1.032258065**. The same artifact target-only reaches
+  **19.057906040 tok/s**, digest `9ec00ec01f8781e1`, and last token 20.
+- Correctness evidence: requests complete at their exact requested lengths;
+  ordinary exact p/q verification remains active.
+- Failure mode: every proposal starts with an empty MTP KV cache at the
+  target's absolute long-history position, so draft/target agreement collapses.
+- Why not to retry unchanged: an independent optimized Q4 MTP checkpoint also
+  falls from **26.491661416** short to **7.516953814 tok/s** long and width
+  **1.003921569** under the same state policy.
+- Reopen only if: the native engine constructs one-token-shifted prompt
+  history and retains only target-committed MTP state across cycles.
+- Related commit or revert: no source change; PERF-A164 owns the repair.
+
+## PERF-FA171 - Uniform-Q5 target as the MTP acceptance repair
+
+- Hypothesis: the uniform five-bit target might align better with the official
+  five-bit MTP and avoid changing MTP state management.
+- Scope: pinned uniform-Q5 target revision `2568951b...c2f05`, official MTP,
+  short sampled direct workload.
+- Attempted change: changed only the target checkpoint.
+- Benchmark evidence: **14.606495312 tok/s**, 86 refills, and width
+  **1.488372093**, below the selected mixed-target A163 short result.
+- Correctness evidence: the request completed at the exact requested length.
+- Failure mode: checkpoint substitution neither beats the selected route nor
+  addresses the long-history empty-cache defect.
+- Why not to retry unchanged: it is already slower on the favorable short
+  workload and does not provide committed history.
+- Reopen only if: a materially different matched target/MTP checkpoint clears
+  the full behavior, actual-work, and 131K contracts.
+- Related commit or revert: none; immutable checkpoint left unchanged.
