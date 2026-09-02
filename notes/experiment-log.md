@@ -24575,3 +24575,82 @@ mean 13.929045  17.125658 446.051        39.730
   byte-for-byte with an empty tracked diff. The next candidate targets the
   actual approximately 103 ms owner: exact row-wise/native batch-one
   execution for the M=2 target verification matrices.
+
+### 2026-09-02 01:36 PDT - A149/A150 remove 35% of M=2 verify cost and approach 20
+
+- Main remained at signed `42323212922e2688855d3243904b6a88909b613b`,
+  118 commits ahead of `origin/main`, with an empty index before record edits.
+  Daniel's three protected working blobs remained exact at Git hashes
+  `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. Production changes and the
+  standalone benchmark stayed isolated in detached worktree
+  `/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-a137-promote` at signed
+  A137 commit `24d745ff38`.
+- Every Metal workload was sequential. Before each gate, port 30000 and
+  model/server/benchmark/user-compiler searches were clear; the persistent
+  `MTLCompilerService` processes were ordinary macOS services and were left
+  alone. Memory pressure remained 94% free with zero throttled pages, and
+  `pmset -g therm` reported no thermal or performance warning.
+- A148 first compared stock M=2 quantized matmul with two selected batch-one
+  calls. Q5 rowwise timings are **0.631188333 / 0.510780958 /
+  0.455329792 ms** for `17408x5120`, `5120x10240`, and `6144x5120`; initial
+  stock values are **0.650288541 / 0.515946083 / 0.462342208 ms**. The
+  production Q5 maximum difference is **0.015625**. Q4 rowwise gate/up shape
+  is **0.605062208 ms** versus **0.584932708 ms** stock; Q4 head is neutral at
+  **4.183139590 / 4.184156250 ms**; existing generic small-batch Q4 takes
+  **1.111526333 ms**. PERF-FA159 rejects all duplicate-weight forms.
+- A149 adds no Python. Its opt-in
+  `SGLANG_MLX_NATIVE_Q5_BATCH_TWO_QMV=1` path uses the selected four-SIMD,
+  four-output, two-pack Q5 geometry but loads each packed weight once and
+  accumulates both `[1,2,K]` rows in `float2`. Small `512x64` parity is exact.
+  Adjacent production candidate/stock timings from the same artifact are:
+
+  ```text
+  K      N      shared ms    stock ms     maximum absolute error
+  17408  5120   0.469182125  0.663691042  0.015625
+   5120 10240   0.387915292  0.515420166  0.015625
+   6144  5120   0.368433708  0.459246083  0.015625
+  ```
+
+  The strict full dylib build exits zero with only the established macOS
+  26.0 versus MLX 26.2 link warning. Artifact SHA-256 is
+  `12b503f656f5f0b721af8b8a381090ca2145a121093207fe58e0ade6e941ee25`.
+- A149's traced `128 / 4 warm / 16 timed` smoke reduces steady target verify
+  from about **102--104 ms** to **82.9--84.0 ms** and reaches
+  **16.954403648 tok/s**. Different BF16 reduction order changes the seeded
+  trajectory to nine refills, width **1.777777778**, digest
+  `ffe2203aefc7fa1f`, and last token 424. The same A149 binary with the switch
+  disabled reaches **15.204721403 tok/s**, 71 refills, width
+  **1.802816901**, digest `b10401e93371a45e`, and last token 2466 in the full
+  `128 / 32 / 128` workload. Enabled A149 reaches **16.497732109 tok/s**, 75
+  refills, width **1.706666667**, digest `f31c3945b7eb6286`, and last token
+  8734: an **8.504008%** end-to-end gain despite worse acceptance.
+- A150 adds an opt-in
+  `SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO=1` raw-parameter kernel. It
+  decodes each gate/up Q4 weight once into two-row vector accumulators,
+  preserves the selected corrected BF16 sigmoid/SiLU rounding boundaries,
+  writes `[1,2,N]`, and lets A149 consume the Q5 down projection. Small
+  `512x64` parity is bit-exact. Production `5120x17408` complete gate/up/
+  SwiGLU changes **0.868540187 -> 0.574944375 ms**, a **33.803365%**
+  reduction, with maximum error **0.0078125**. Strict dylib and micro artifacts
+  have SHA-256 values
+  `52a9e0a8831b69fd046a9285768f9520c6ab35a1ecb6e71138c95d9de7cf7bea`
+  and `704dcbf8011ed1ddb624f378cc160e83f533ffe6f6a8eae7bac9609170accabc`.
+- The combined traced 16-token smoke reaches **20.104683630 tok/s**. Warm
+  verify is **66.7--67.7 ms**, about 35% below the A147 baseline, with the
+  same acceptance decisions/digest as the A149-only smoke. The decisive full
+  `128 / 32 / 128` candidate reaches **19.795886878 tok/s** in
+  **6.465989667 s**, 75 refills, width **1.706666667**, digest
+  `6bd687fb75c4f5a9`, and last token 1467. This is **30.195657%** above its
+  same-binary generic-M=2 control, but remains **0.204113122 tok/s /
+  1.031089%** below the durable floor.
+- The common full-model command retained the selected mixed-Q5 controls,
+  ordinary temperature/top-p/top-k/presence-penalty-compatible native p/q
+  rejection sampling, mixed checkpoint revision
+  `596b8067f7cf429007bb668874ffee7e917c8340`, official five-bit MTP revision
+  `1faa5a803c972c57cfc1beed606184e726ad3d85`, post-norm seed, block two,
+  and changed only the two new M=2 switches. A149/A150 remain opt-in and need
+  focused committed tests plus complete behavior/capacity/client gates. The
+  next experiment tunes the materially changed vector-register geometry;
+  favorable-seed selection and target sampling changes are excluded.

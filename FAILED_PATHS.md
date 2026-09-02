@@ -4510,3 +4510,41 @@ the stock full-attention mechanism a 32K or 131K solution.
   SHA-256 values are
   `8fb728c107d57d942313f32e28b3fd145994b3519d51807762fb7dafe345911a` and
   `d560ac0942d6b9cc7c295b012f91110464ab4c78dba0ff3e82308be8d8500ec9`.
+
+## PERF-FA159 - Rowwise and generic-small-batch M=2 verification
+
+- Hypothesis: applying the selected batch-one Q4/Q5 kernels independently to
+  each of the two target-verification rows, or reusing the existing generic
+  small-batch kernel, might outperform MLX's stock M=2 quantized matmul with
+  no new production kernel.
+- Scope: affine-Q4/Q5 G64 projections under standard block-two MTP at the
+  production `17408x5120`, `5120x10240`, `6144x5120`, `5120x17408`, and
+  `5120x248320` shapes.
+- Attempted change: a standalone strict C++ benchmark sliced `[1,2,K]` into
+  two `[1,1,K]` views and invoked the selected exact QMV kernels, then also
+  tested the existing affine small-batch Q4 implementation.
+- Benchmark evidence: rowwise Q5 reaches **0.631188333 / 0.510780958 /
+  0.455329792 ms** on the three production shapes versus stock M=2
+  **0.650288541 / 0.515946083 / 0.462342208 ms** in the initial window.
+  It still reads all Q5 weights twice. Rowwise Q4 at `5120x17408` is
+  **0.605062208 ms** versus stock **0.584932708 ms**, and the vocabulary head
+  is effectively neutral at **4.183139590 / 4.184156250 ms**. The existing
+  small-batch Q4 kernel takes **1.111526333 ms** at `5120x17408`, almost twice
+  stock cost.
+- Correctness evidence: the small Q4/Q5 cases are bit-exact. Production Q5
+  rowwise output differs from stock by at most **0.015625** because its
+  reduction order matches batch-one rather than MLX's generic M=2 kernel;
+  the Q4 head remains exact. All outputs are finite and correctly shaped.
+- Failure mode: rowwise execution cannot share weight bytes or unpack work,
+  while the generic small-batch matrix kernel stages/dequantizes far more
+  work than M=2 can amortize. Q4 is neutral or materially slower.
+- Why not to retry unchanged: the measured forms leave the main cost intact
+  or regress. A149/A150 are materially different: they decode each Q5/Q4
+  weight once into two-row vector accumulators and fuse the Q4 MLP.
+- Reopen only if: a later MLX scheduler makes the two row slices overlap
+  without duplicate weight traffic, or the generic small-batch tile is
+  redesigned specifically for M=2 and beats the shared kernels.
+- Related commit or revert: no production source retained from A148. The
+  standalone source-at-measurement evolved into the A149/A150 harness; its
+  current SHA-256 is
+  `225db31626fb18ebe27ec68f5b6b149ff9a5d8e54576fb8903f6c2c0b97b2b7d`.
