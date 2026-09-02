@@ -40,7 +40,13 @@ mlx::core::array affine_q4_fused_swiglu_batch_one(
     const QLinear& gate,
     const QLinear& up,
     const mlx::core::array& x);
+mlx::core::array affine_q4_fused_swiglu_batch_two(
+    const QLinear& gate,
+    const QLinear& up,
+    const mlx::core::array& x);
 mlx::core::array affine_q5_qmv_batch_one(
+    const QLinear& linear, const mlx::core::array& x);
+mlx::core::array affine_q5_qmv_batch_two(
     const QLinear& linear, const mlx::core::array& x);
 mlx::core::array quantized_embedding_rows(
     const QLinear& embedding, const mlx::core::array& tokens);
