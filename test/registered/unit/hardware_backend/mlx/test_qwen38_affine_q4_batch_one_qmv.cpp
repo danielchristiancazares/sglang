@@ -266,6 +266,94 @@ bool CheckQ4FusedSwiGluSigmoidBoundary() {
   return mismatches == 0;
 }
 
+bool CheckQ4FusedSwiGluFiniteBfloatDomain() {
+  constexpr int kInputFeatures = 512;
+  constexpr int kOutputFeatures = 65280;
+  constexpr int kParameterColumns = kInputFeatures / 64;
+  constexpr std::uint16_t kBfloatOne = UINT16_C(0x3f80);
+  const std::size_t packed_columns = kInputFeatures / 8;
+  const std::size_t packed_elements =
+      static_cast<std::size_t>(kOutputFeatures) * packed_columns;
+  const std::size_t parameter_elements =
+      static_cast<std::size_t>(kOutputFeatures) * kParameterColumns;
+
+  std::vector<std::uint16_t> finite_patterns;
+  finite_patterns.reserve(kOutputFeatures);
+  for (unsigned int pattern = 0; pattern <= UINT16_MAX; ++pattern) {
+    if ((pattern & 0x7f80U) != 0x7f80U) {
+      finite_patterns.push_back(static_cast<std::uint16_t>(pattern));
+    }
+  }
+  if (finite_patterns.size() != kOutputFeatures) {
+    std::cerr << "unexpected finite BF16 pattern count\n";
+    return false;
+  }
+
+  std::vector<std::uint32_t> packed(packed_elements, 0);
+  std::vector<std::uint16_t> zero_scale_bits(parameter_elements, 0);
+  std::vector<std::uint16_t> gate_bias_bits(parameter_elements);
+  std::vector<std::uint16_t> up_bias_bits(parameter_elements, kBfloatOne);
+  for (int row = 0; row < kOutputFeatures; ++row) {
+    for (int column = 0; column < kParameterColumns; ++column) {
+      gate_bias_bits[static_cast<std::size_t>(row) * kParameterColumns +
+                     column] = finite_patterns[static_cast<std::size_t>(row)];
+    }
+  }
+  std::vector<float> input_values(kInputFeatures, 0.0f);
+  input_values[0] = 1.0f;
+
+  const mx::array weights(
+      packed.data(),
+      {kOutputFeatures, static_cast<int>(packed_columns)},
+      mx::uint32);
+  const mx::Shape parameter_shape{kOutputFeatures, kParameterColumns};
+  const mx::array scales = mx::view(
+      mx::array(zero_scale_bits.data(), parameter_shape, mx::uint16),
+      mx::bfloat16);
+  const mx::array gate_bias = mx::view(
+      mx::array(gate_bias_bits.data(), parameter_shape, mx::uint16),
+      mx::bfloat16);
+  const mx::array up_bias = mx::view(
+      mx::array(up_bias_bits.data(), parameter_shape, mx::uint16),
+      mx::bfloat16);
+  const mx::array input = mx::astype(
+      mx::array(input_values.data(), {1, 1, kInputFeatures}, mx::float32),
+      mx::bfloat16);
+  sglang::mlx_qwen38::QLinear gate{
+      weights, scales, gate_bias, 64, 4, true};
+  sglang::mlx_qwen38::QLinear up{
+      weights, scales, up_bias, 64, 4, true};
+  if (!sglang::mlx_qwen38::prepare_fused_q4_raw_decode_parameters(gate, up)) {
+    std::cerr << "failed to prepare exhaustive fused Q4 parameters\n";
+    return false;
+  }
+
+  const mx::array gate_output =
+      sglang::mlx_qwen38::affine_q4_qmv_batch_one(gate, input);
+  const mx::array expected = sglang::mlx_qwen38::silu(gate_output);
+  const mx::array actual =
+      sglang::mlx_qwen38::affine_q4_fused_swiglu_batch_one(gate, up, input);
+  mx::eval(gate_output, expected, actual);
+
+  const auto *gate_output_bits = reinterpret_cast<const std::uint16_t *>(
+      gate_output.data<mx::bfloat16_t>());
+  const auto *expected_bits = reinterpret_cast<const std::uint16_t *>(
+      expected.data<mx::bfloat16_t>());
+  const auto *actual_bits = reinterpret_cast<const std::uint16_t *>(
+      actual.data<mx::bfloat16_t>());
+  std::size_t changed_gate_patterns = 0;
+  std::size_t mismatches = 0;
+  for (std::size_t index = 0; index < finite_patterns.size(); ++index) {
+    changed_gate_patterns += gate_output_bits[index] != finite_patterns[index];
+    mismatches += expected_bits[index] != actual_bits[index];
+  }
+  std::cout << "Q4 fused SwiGLU finite BF16 patterns="
+            << finite_patterns.size()
+            << " changed_by_qmv=" << changed_gate_patterns
+            << " mismatches=" << mismatches << '\n';
+  return mismatches == 0;
+}
+
 bool RejectsUnsupportedQ4BatchOneShape() {
   constexpr int kInputFeatures = 256;
   constexpr int kOutputFeatures = 32;
@@ -305,6 +393,7 @@ int main() {
       !CheckQ4FusedSwiGluParity(512, 64) ||
       !CheckQ4FusedSwiGluParity(5120, 17408) ||
       !CheckQ4FusedSwiGluSigmoidBoundary() ||
+      !CheckQ4FusedSwiGluFiniteBfloatDomain() ||
       !RejectsUnsupportedQ4BatchOneShape()) {
     return 1;
   }
