@@ -1183,7 +1183,14 @@ inline U sglang_q4_dot(
 
 template <typename T>
 inline T sglang_q4_sigmoid(T x) {
-  auto y = 1 / (1 + metal::precise::exp(metal::abs(x)));
+  // Fast exp differs from precise exp at only BF16 -6.84375 (0xc0db).
+  constexpr ushort FastMismatchInput = 0xc0db;
+  constexpr ushort PreciseSigmoidResult = 0x3a8b;
+  const ushort pattern = as_type<ushort>(x);
+  if (pattern == FastMismatchInput) {
+    return as_type<T>(PreciseSigmoidResult);
+  }
+  auto y = 1 / (1 + metal::exp(metal::abs(x)));
   return (x < 0) ? y : 1 - y;
 }
 )";
