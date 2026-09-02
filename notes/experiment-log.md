@@ -22834,3 +22834,168 @@ mean 13.929045  17.125658 446.051        39.730
   **0.710500222 tok/s / 3.683352%**. Profile this exact A100+A111+A114+A113
   path next; exact 131K serving and Codex `xhigh` stay deferred until direct
   decode clears 20 with margin.
+
+### 2026-09-01 18:40 PDT - selected profile, A115/A116 rejection, and A117 promotion
+
+- Resumed from signed documentation HEAD `bd54f1793a`; `main` was 90 commits
+  ahead of `origin/main`, the index was empty, and Daniel's three user-owned
+  working-copy blobs remained engine `0260ff7140`, header `40e375e39c`, and
+  small-batch test `bb42de39fb`. The detached candidate worktree remained
+  `/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4` at base
+  `22408c50c4`. An analysis-only subagent launch required by the active
+  performance skill was attempted and returned `agent thread limit reached`;
+  all source review, builds, measurements, and edits therefore remained local
+  to the primary agent.
+- Captured the exact selected A114+A113 path under Metal System Trace and GPU
+  shader counters with Q5 QMV, Q4 QMV, and fused SwiGLU all enabled. The
+  instrumented run completed in **6.643391208 s** at
+  **19.267268176 tok/s**, digest `d0193f6d413b68c1`, last token 11406.
+  Trace bundle and exports are:
+
+  ```text
+  /Users/dcazares/.cache/sglang-qwen38/artifacts/qwen38-mixed-a114-a113-shaders.trace
+  /Users/dcazares/.cache/sglang-qwen38/artifacts/qwen38-mixed-a114-a113-toc.xml
+  /Users/dcazares/.cache/sglang-qwen38/artifacts/qwen38-mixed-a114-a113-shader-list.xml
+  /Users/dcazares/.cache/sglang-qwen38/artifacts/qwen38-mixed-a114-a113-shader-samples.xml
+  ```
+
+  Export SHA-256 values are respectively
+  `3ad2fcbec8d876434773d723b9e78eb1f49b740d5e50baf5ee42f1d12b56054f`,
+  `e75da939274fca9373f984f48205927ef743679d0de985f51bcf491da22533a9`,
+  and `ce111e7bc09733d86b6b5f374442864f9248eb19aa3e76a7dcac2d5cbc267b7f`.
+- The strict analyzer reports **87 shaders**, **37,168 total PCs**,
+  **36,768 mapped**, zero ambiguous, and 400 unmapped. The fused Q4
+  gate/up/SwiGLU shader owns **15,663 / 42.141%**. Custom Q5 K=17408,
+  K=5120, and K=6144 own **7,535 / 20.273%**,
+  **5,868 / 15.788%**, and **3,149 / 8.472%**. Total custom Q5 is
+  **44.533%**. Remaining stock/custom ordinary Q4 is **6.804%**. Recurrent
+  `gated_delta_step` is **2.066%**; each of recurrent norm/gate and SDPA is
+  **0.552%**. The fused Q4 path is therefore the largest single shader.
+- PERF-A115 changed only fused shader/host `SimdGroups` from eight to four.
+  Strict compilation and all focused exact tests passed. Balanced
+  5,000-iteration production-shape micro samples were control
+  **0.567918008, 0.564163733 ms**, mean **0.566040871**, and candidate
+  **0.566923292, 0.567484408 ms**, mean **0.567203850**. The candidate is
+  about **0.205% slower** and was rejected before a full-model run. The
+  selected eight-SIMD geometry was restored.
+- PERF-A116 reduced all four gate/up rows, then assigned lanes 0--3 to the
+  epilogues by dynamically indexing the two thread-local result arrays.
+  Focused parity and the real `-6.84375` sigmoid boundary remained exact. A
+  shorter balanced window appeared favorable: control
+  **0.565815125, 0.566632275 ms**, mean **0.566223700**, versus candidate
+  **0.561634567, 0.566493008 ms**, mean **0.564063788**. The longer reversed
+  10,000-iteration window overturned it: candidate
+  **0.563820017, 0.564379071 ms**, mean **0.564099544**, versus control
+  **0.563613254, 0.561521804 ms**, mean **0.562567529**. Dynamic selection is
+  about **0.272% slower** in the decisive window and was rejected.
+- PERF-A117 retains eight SIMD groups and selects each epilogue lane's
+  already-reduced values through named compile-time ternaries. An initial
+  A117 artifact accidentally still carried A115's fused 4-SIMD geometry and
+  an unintended ordinary-Q4 8-SIMD change. Its apparent 10,000-iteration
+  control/candidate means **0.567127621 / 0.565364602 ms** are confounded and
+  excluded. A diff against selected `ad11696f2e` exposed both geometry
+  differences before a second window. They were restored with `apply_patch`;
+  the corrected final diff changes only epilogue ownership.
+- The corrected strict dylib build was:
+
+  ```text
+  clang++ -std=c++20 -O3 -fPIC -shared -Wall -Wextra -Werror -isystem /Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/include -I/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native -L/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -Wl,-rpath,/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a117_q4_fused_swiglu_parallel_select.dylib /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native/qwen38_c_api.cpp
+  ```
+
+  The focused test and microbenchmark used the same strict flags, the
+  detached engine, and respectively the repository Q4 test and preserved
+  `bench_qwen38_a114_q4_fused_swiglu.cpp`. All three builds exited zero with
+  only the established macOS 26.0 / MLX 26.2 linker warning. Dylib, test, and
+  benchmark SHA-256 values are
+  `c8ed45122f36a700b588d93f7a227d31003a01f3b4370d9195367ee7c255f36e`,
+  `b1383f99fd2d73ae48753605aee3318652df489d75436da08dc85ae62166f0ef`,
+  and `b7829284af06cf2bc290ec8ab2659b69fbc9c1e0d3f024308b87160dff80fb15`.
+- The exact focused command:
+
+  ```text
+  /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 180s /Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a117_q4_fused_swiglu_parallel_select
+  ```
+
+  reports Q4 QMV K/N `512/64`, `5120/128`, and `5120/17408`; fused SwiGLU
+  `512/64` and `5120/17408`; and gate `-6.84375` precise sigmoid boundary all
+  with zero mismatch.
+- Corrected production-shape micro commands used `fused 5120 17408 1000
+  10000` on the A117 and selected A114 benchmark executables. Candidate
+  samples are **0.556409946, 0.556899100 ms**, mean **0.556654523**. Control
+  samples are **0.566113429, 0.563282721 ms**, mean **0.564698075**. A117
+  reduces kernel latency **1.4243%**. All four arms report digest
+  `8a9031349585365a` and first value `0.875`.
+- Exact full-model command shape, changing only the dylib between arms:
+
+  ```text
+  /usr/bin/env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 240s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native <A114+A113-control-or-A117-candidate.dylib> /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128
+  ```
+
+  One adjacent screen improves control/candidate
+  **19.276941020 -> 19.410146375 tok/s**, canonical in both arms.
+- First five-pair control/candidate qualification window:
+
+  ```text
+  pair  control       candidate
+  1     19.275163985  19.368736679
+  2     19.255827337  19.482499777
+  3     19.315313630  19.464807390
+  4     19.244643242  19.468935480
+  5     19.250769815  19.469615480
+  mean  19.268343602  19.450918961
+  ```
+
+  A117 gains **+0.182575359 tok/s / +0.947541%** and wins all five pairs.
+- An immediately following reversed batch was invalid from its first pair:
+
+  ```text
+  pair  candidate     control
+  1     13.714429104  11.590838117
+  2     12.027167068  12.514447985
+  3     13.735694082  12.855306421
+  4     13.943209814  14.195206575
+  5     14.360129325  14.342583926
+  ```
+
+  Both artifacts left the established 19.2--19.5 band and drifted throughout.
+  Across the window, host-reported disk reads rose from about **2,683 to
+  2,837 GB**, swapouts from **77,212 to 79,816**, and page-ins from about
+  **171,606,406 to 181,521,189** 16-KiB pages. Output remained canonical.
+  This is retained as externally contaminated process-reload/residency
+  evidence and excluded from every code comparison.
+- After a deliberate 60-second idle interval, a selected-control probe
+  recovered to **19.203472228 tok/s**. The replacement reverse window ran two
+  pairs, idled another 60 seconds, then completed three pairs. Pre-block state
+  was 95--96% aggregate idle, 95% memory free, zero throttled pages, and no
+  thermal/performance warning. Replacement candidate/control results are:
+
+  ```text
+  pair  candidate     control
+  1     19.449756511  19.249257165
+  2     19.457791537  19.284351927
+  3     19.446175454  19.238727679
+  4     19.462623411  19.311370484
+  5     19.459981955  19.259331137
+  mean  19.455265774  19.268607678
+  ```
+
+  Reversed movement is **+0.186658095 / +0.968716%**. Aggregate clean
+  control/candidate is **19.268475640 / 19.453092367 tok/s**, a
+  **+0.184616727 / +0.958128%** exact win. All 20 clean qualification runs
+  produce 128 timed tokens, digest `d0193f6d413b68c1`, and last token 11406.
+- Candidate engine blob is
+  `5912bc2fe9b1e8f34bdace0b1a009f8aa1223d04`. It was inserted directly into
+  the main index. Daniel's working-copy engine/header/small-batch test blobs
+  remained exactly `0260ff7140`, `40e375e39c`, and `bb42de39fb`. Signed
+  commit `00d09138ce8e0d3c41e64da7fa88627b02315ed8`
+  (`perf(mlx): parallelize fused Q4 SwiGLU epilogue`) contains only the
+  18-addition/10-deletion Metal epilogue change and has a verified good EDDSA
+  signature. `git diff --check` and commit diff checks pass.
+- Post-window state at 18:40 PDT had no benchmark/server/xctrace workload and
+  no port-30000 listener. Aggregate CPU reached 96.81% idle, memory pressure
+  reported 95% free with zero throttled pages, and thermals were normal.
+  FileProvider remained intermittently active and all system processes were
+  left untouched. A117 is selected at **19.453092367 tok/s**. The remaining
+  direct gap is **0.546907633 tok/s / 2.811417%**. Continue native hotspot
+  work; exact 131K serving and Codex `xhigh` remain gated on clearing 20 with
+  margin.

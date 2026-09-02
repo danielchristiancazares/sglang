@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-18:10 PDT.
+18:36 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -173,13 +173,16 @@ The current speed target is the immutable 4.951-bpw mixed-Q5 checkpoint at
 revision `596b8067f7cf429007bb668874ffee7e917c8340`, with the A100 aligned-word
 affine-Q5 batch-one Metal kernel and the stock-exact A111 affine-Q4 batch-one
 kernel explicitly enabled, A114's precise fused Q4 gate/up/SwiGLU route, and
-A113's redundant token-evaluation removal. Two independent A113 five-pair
-windows give a selected aggregate mean of **19.289499778 tok/s** on sampled
+A113's redundant token-evaluation removal, plus A117's lane-parallel precise
+fused epilogue. Two independent A117 five-pair windows give a selected
+aggregate mean of **19.453092367 tok/s** on sampled
 direct `128 / 32 warm / 128 timed`, with digest `d0193f6d413b68c1` and last
-token 11406. Matched A114 control is **19.278381518 tok/s**, so A113
-contributes **+0.011118260 / +0.057672%**. The direct gap is
-**0.710500222 tok/s / 3.683352%**. The generic mixed target reaches
-**18.121698566 tok/s**.
+token 11406. Matched A114+A113 serial-epilogue control is
+**19.268475640 tok/s**, so A117 contributes
+**+0.184616727 / +0.958128%**. The direct gap is
+**0.546907633 tok/s / 2.811417%**. The generic mixed target reaches
+**18.121698566 tok/s**, making the selected cumulative gain
+**+1.331393801 / +7.346959%**.
 
 The fresh-session candidate matrix is resolved through A111. A100 is promoted:
 five aligned 16-bit loads reconstruct the same three bit windows and retain the
@@ -226,7 +229,25 @@ five-pair windows improve **19.270942164 -> 19.277656005** and
 **19.285820872 -> 19.301343552 tok/s**. Aggregate matched control/candidate is
 **19.278381518 / 19.289499778**, a **+0.057672%** win. Signed
 `ad11696f2e` contains the one-line deletion. The selected gap is now
-**0.710500222 tok/s / 3.683352%**.
+superseded by A117 below.
+
+A117 is qualified and retained in signed `00d09138ce`. A selected-path Metal
+trace attributes **42.141%** of sampled target shader PCs to the fused Q4
+gate/up/SwiGLU kernel, making it the largest single shader. A117 keeps A114's
+eight-SIMD geometry and exact BF16 boundaries, reduces all four rows as before,
+then lets lanes 0--3 execute the four `metal::precise::exp`/SiLU/product chains
+concurrently. Compile-time-named ternaries select each lane's already-reduced
+register values; the dynamically indexed precursor is slower and closed by
+PERF-FA134. General-shape and `-6.84375` boundary parity remain bit-exact.
+Forward and reversed five-pair windows improve
+**19.268343602 -> 19.450918961** and
+**19.268607678 -> 19.455265774 tok/s**. Aggregate matched
+control/candidate is **19.268475640 / 19.453092367**, a
+**+0.184616727 / +0.958128%** win. The selected direct gap is now
+**0.546907633 tok/s / 2.811417%**. One separate process-reload window at
+11--14 tok/s is explicitly excluded after extreme page-in/swap churn; a
+60-second idle interval restored the selected control to **19.203472228**
+before the replacement reverse window.
 
 The requested Q5 lane now serves through a provenance-pinned derived artifact.
 Bartowski's immutable `Qwen3.8-27B-Q5_K_S.gguf` source is pinned at revision

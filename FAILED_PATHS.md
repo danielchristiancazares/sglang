@@ -3718,3 +3718,56 @@ option, or serving dispatch was added.
   materially distinct from this failed arm. Its 64-layer trace, dedicated
   boundary negative control, focused parity, and two paired throughput windows
   pass; precise-exp A114 is promoted while the fast-exp source stays closed.
+
+## PERF-FA133 - Four-SIMD fused affine-Q4 gate/up/SwiGLU geometry
+
+- Hypothesis: halving A114's threadgroup from eight to four SIMD groups may
+  reduce per-threadgroup register pressure and improve occupancy enough to
+  offset twice as many threadgroups.
+- Scope: the selected precise-exp fused Q4/G64 gate/up/SwiGLU kernel at the
+  production K/N shape `5120/17408`.
+- Attempted change: change only shader and host `SimdGroups` from eight to
+  four while retaining two packs per lane and four paired results per SIMD
+  group.
+- Benchmark evidence: balanced 5,000-iteration control samples are
+  **0.567918008, 0.564163733 ms**, mean **0.566040871**. Candidate samples are
+  **0.566923292, 0.567484408 ms**, mean **0.567203850**, about **0.205% slower**.
+- Correctness evidence: the focused Q4 QMV, fused SwiGLU, and precise
+  sigmoid-boundary tests all pass bit-exactly.
+- Failure mode: doubling the output-grid threadgroup count outweighs any
+  register/occupancy benefit at the measured production shape.
+- Why not to retry unchanged: the exact geometry and production shape have a
+  balanced microbenchmark regression; a full-model launch has no supporting
+  mechanism or signal.
+- Reopen only if: new shader counters or a materially different fused kernel
+  changes register pressure, occupancy, or per-threadgroup work.
+- Related commit or revert: candidate stayed outside `main`; selected A114
+  eight-SIMD geometry remains in signed `ca524c3282`.
+
+## PERF-FA134 - Dynamically indexed lane-parallel fused-Q4 epilogue
+
+- Hypothesis: lanes 0--3 can execute A114's four precise sigmoid/SiLU/product
+  chains concurrently after the SIMD reductions, removing four serial
+  `metal::precise::exp` operations from lane zero.
+- Scope: the selected eight-SIMD/four-result fused Q4/G64 gate/up/SwiGLU
+  kernel at production shape `5120/17408`.
+- Attempted change: reduce all four gate/up accumulators first, then use
+  `thread_index_in_simdgroup` as a dynamic index into the two four-element
+  thread-local result arrays for lanes 0--3.
+- Benchmark evidence: an initial balanced 5,000-iteration window appeared to
+  improve control/candidate **0.566223700 -> 0.564063788 ms**, but the longer
+  reversed 10,000-iteration window averages candidate
+  **0.564099544 ms** versus control **0.562567529 ms**, about **0.272% slower**.
+- Correctness evidence: all focused production shapes and the `-6.84375`
+  precise sigmoid boundary pass bit-exactly.
+- Failure mode: dynamic thread-local array selection likely adds addressing,
+  register-spill, or compiler-selection cost that exceeds the parallel
+  epilogue benefit.
+- Why not to retry unchanged: the longer order-reversed microbenchmark
+  overturns the shorter apparent gain.
+- Reopen only if: generated-shader evidence proves the dynamic arrays stay in
+  registers under a new compiler, or the result storage/layout changes
+  materially.
+- Related commit or revert: candidate stayed outside `main`; PERF-A117's
+  compile-time register selection is materially different and is retained in
+  signed `00d09138ce`.
