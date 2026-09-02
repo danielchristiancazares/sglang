@@ -23117,3 +23117,114 @@ mean 13.929045  17.125658 446.051        39.730
   thermals are normal. Three full-model reloads increased page-ins and caused
   164 swapouts, but did not enter the prior 11--14 tok/s churn band. System
   indexing and FileProvider processes were left untouched.
+
+### 2026-09-01 19:09 PDT - A120/A121 direct two-output Q5 kernels reject launch-only fusion
+
+- Started from exact restored A117 engine/header content in the detached
+  `/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4` worktree.
+  Main was at signed `2f1ee059299813da32caea3e147630766487b28d`, 93
+  commits ahead of `origin/main`, with only Daniel's three user-owned source
+  paths modified and an empty index.
+- PERF-A120 added a generic C++/Metal-only
+  `affine_q5_pair_qmv_batch_one`. It consumes the original two QLinear weight,
+  scale, and bias buffers and returns two custom-kernel outputs. The Metal body
+  preserves A100's aligned Q5 windows and exact sixteen sequential FP32 FMAs.
+  Four-SIMD/16-row threadgroups span the combined grid; each group makes a
+  uniform matrix/output choice, resets its local row, and writes directly to
+  `qkv` or `z`. There is no load-time copy and no split node.
+- The dedicated artifact harness is
+  `/Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a120_q5_pair_multi_output.cpp`.
+  It uses deterministic production dimensions `K=5120`, `Nqkv=10240`,
+  `Nz=6144`, computes separate and paired paths before timing, and requires
+  byte-exact BF16 output for each tensor. Strict C++20/O3 warnings-as-errors
+  compilation passed with only the established macOS 26.0 / MLX 26.2 linker
+  warning. Source and executable SHA-256 values are:
+
+  ```text
+  bd9c9ef9fbaf9ca2c4885937cf8df5840bcf42bd179fed94ce9ded06eb4ec0c2  /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a120_q5_pair_multi_output.cpp
+  97687ba481569f92f1e71bffc3660897320165863374a921c20ab2b1d5219884  /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a120_q5_pair_multi_output
+  ```
+
+- A120 paired smoke `10 / 20` compiled the Metal function, passed exact
+  parity, and reported digest `555793dfc2cf896f`. Decisive command shape was:
+
+  ```text
+  /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 180s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a120_q5_pair_multi_output <separate|paired> 200 2000
+  ```
+
+  Forward results:
+
+  ```text
+  pair  separate     paired
+  1     0.429037291  0.429216708
+  2     0.417287562  0.423784354
+  3     0.424177417  0.430499958
+  4     0.423538146  0.426355437
+  5     0.422170896  0.423429479
+  mean  0.423242262  0.426657187 ms
+  ```
+
+  Reversed results:
+
+  ```text
+  pair  paired       separate
+  1     0.429223980  0.422373396
+  2     0.426990229  0.419480146
+  3     0.431003458  0.419520312
+  4     0.427598417  0.416740125
+  5     0.425916625  0.423130063
+  mean  0.428146542  0.420248808 ms
+  ```
+
+  Aggregate separate/paired is **0.421745535 / 0.427401865 ms**. A120 is
+  **0.005656329 ms / 1.341171% slower**, loses all ten pairs, and is rejected
+  before engine wiring or a model reload.
+- PERF-A121 retained the two original buffers and two direct outputs but
+  changed the grid to the exact production ratio. Each 256-thread group has
+  eight SIMD groups: five always emit four qkv rows and three always emit four
+  z rows. Each group therefore writes 20/12 rows, exactly matching
+  `10240:6144`, and grid threadgroups fall from 1,024 to 512 without changing
+  total SIMD work. The strict artifact is
+  `/Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a121_q5_pair_5x3`,
+  SHA-256
+  `cce9a7e58466925f55915014fa5ea40f4196b147e678516c8ed95a93f1e9eb64`.
+  Its paired smoke also passes exact parity and digest `555793dfc2cf896f`.
+- A121 used the same command with its artifact path. Forward results:
+
+  ```text
+  pair  separate     paired
+  1     0.429594417  0.428364937
+  2     0.429887813  0.426605500
+  3     0.414735438  0.423862083
+  4     0.426232459  0.426577041
+  5     0.424977042  0.429370604
+  mean  0.425085434  0.426956033 ms
+  ```
+
+  Reversed results:
+
+  ```text
+  pair  paired       separate
+  1     0.429266188  0.423605604
+  2     0.419187188  0.419908583
+  3     0.422775104  0.420105542
+  4     0.431785979  0.424623166
+  5     0.422286938  0.420308395
+  mean  0.425060279  0.421710258 ms
+  ```
+
+  Aggregate separate/paired is **0.423397846 / 0.426008156 ms**. A121 is
+  **0.002610310 ms / 0.616515% slower**. Every arm remains byte-exact.
+- Candidate engine/header blobs before restoration were
+  `a59f7afc254c6bfa65f1daf05d983431fe5c62b5` and
+  `63d7b93bf8abe655060007fe2a6d85cf5a1a6169`. A reverse diff was applied
+  through `apply_patch`; the first generated patch was rejected atomically
+  because its Git-numbered hunk headers were unsupported, then normalized
+  `@@` headers applied successfully. The final engine/header diff against
+  signed `00d09138ce` is empty and `git diff --check` passes.
+- PERF-FA137 closes both direct two-output forms. Together with A119, the
+  tested launch-only family now covers concatenated/split, four-SIMD direct,
+  and exact-ratio 5:3/eight-SIMD representations. Future Q5 work needs a
+  distinct reduction in streamed weight work, instruction count, or dependency
+  depth. No full-model reload ran in this batch; no benchmark/server/compiler
+  process or port-30000 listener remained afterward.
