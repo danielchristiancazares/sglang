@@ -24269,3 +24269,77 @@ mean 13.929045  17.125658 446.051        39.730
   returns to weight-side Q4/Q5 bytes and instruction ownership while the A134
   compressed-cache composition remains capacity-only and performance-
   ineligible.
+
+### 2026-09-02 00:31 PDT - selected A137 actual-work baseline and attribution
+
+- Main began at signed `b6aca4130d`, 113 commits ahead of `origin/main`, with
+  an empty index and only Daniel's three protected working blobs at exact Git
+  hashes `0260ff714075fd6dc01619a544d7071870d75955`,
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. Port 30000 was free; no model,
+  server, benchmark, trace, or user compiler process overlapped the sequential
+  Metal work. Ordinary macOS `MTLCompilerService` processes were left alone.
+  Memory pressure began at 94% free with zero throttled pages, and macOS
+  reported no thermal or performance warning before or after the window.
+- The final source artifact remained
+  `/Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a137_promote_final.dylib`,
+  SHA-256
+  `61d0d1e704fc417ee15be16054af21a01474fe1f7c274e7666b5382554a61577`.
+  Each baseline process used the selected mixed-Q5 environment and this exact
+  shape:
+
+  ```text
+  /usr/bin/env -u SGLANG_MLX_NATIVE_ATTN_CACHE_BITS MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=1024 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS=1 SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1 SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION=1 SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE=0 SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT=0 /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 600s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a137_promote_final.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 6237 32 256
+  ```
+
+- Five clean process-isolated samples are:
+
+  ```text
+  sample  seconds       tokens_per_second  digest            last_token
+  1       13.438386458  19.049906088       9ec00ec01f8781e1  20
+  2       13.436648334  19.052370326       9ec00ec01f8781e1  20
+  3       13.464138500  19.013470487       9ec00ec01f8781e1  20
+  4       13.440965500  19.046250807       9ec00ec01f8781e1  20
+  5       13.450561417  19.032662806       9ec00ec01f8781e1  20
+  mean                   19.038932103
+  ```
+
+  All emit exact 256-token output and exit zero. The mean is
+  **0.628998515 tok/s / 3.198092%** below the selected A137 short-history
+  mean. Reaching 20 requires **0.961067897 tok/s / 5.047909%** over current
+  long-history execution.
+- Captured a bounded 16-second-window Metal System Trace with GPU counters
+  around the same selected path, changing warmup only to one while retaining
+  256 timed tokens. Instrumented throughput is **17.470245101 tok/s** and is
+  diagnostic only; output remains exact with digest `247566722868b413`, last
+  token 17, and exit zero. The trace and exports are:
+
+  ```text
+  /Users/dcazares/.cache/sglang-qwen38/artifacts/qwen38-mixed-a137-long-shaders.trace
+  /Users/dcazares/.cache/sglang-qwen38/artifacts/qwen38-mixed-a137-long-toc.xml
+  /Users/dcazares/.cache/sglang-qwen38/artifacts/qwen38-mixed-a137-long-shader-list.xml
+  /Users/dcazares/.cache/sglang-qwen38/artifacts/qwen38-mixed-a137-long-shader-samples.xml
+  ```
+
+  The three XML SHA-256 values are respectively
+  `3261f95f37369700101df2581d3d5b85c109f6a8f960c7b9f5f1a2cd21d43804`,
+  `9f908923aa7c6c01fdd505c87435f9da861e1e2e08eecdec9abc1bf64dd98309`,
+  and `fa9b077a13b538178ead440c8ecfce96b1ce0a7e1f9fb5df6d6c796f04926180`.
+- The existing strict analyzer maps **58,739 / 59,372** sampled program
+  counters uniquely across 93 target-process shaders, with zero ambiguity and
+  633 unmapped. Ranked owners are:
+
+  ```text
+  49.061847%  three affine-Q5 batch-one families
+  35.227%     fused raw-parameter affine-Q4 gate/up/SwiGLU
+   6.051674%  ordinary custom plus stock affine-Q4 QMV
+   3.863774%  two-pass BF16 SDPA
+   1.961%     recurrent gated-delta state update
+  ```
+
+- The representative gap is therefore not an attention-only problem. Q5
+  alone owns enough execution that approximately ten percent lower Q5 kernel
+  cost can cover the complete current gap. The next candidate must reduce
+  streamed weight bytes or unpack/instruction work; prior launch-only fusion,
+  activation-load widening, parameter broadcast, row read-ahead, and unchanged
+  raw-parameter interleave remain closed.
