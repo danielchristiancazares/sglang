@@ -4138,3 +4138,30 @@ the stock full-attention mechanism a 32K or 131K solution.
 - Related commit or revert: record-only A133 checkpoint; its metadata-only
   snapshot mechanism is retained provisionally for PERF-A134's affine-Q8/G64
   cache.
+
+## PERF-FA146 - 128 MiB command buffers for the mixed-Q5 target
+
+- Hypothesis: the 128 MiB MLX command-buffer budget that improved the earlier
+  Q2/full-Q4 native lane would reduce submission stalls enough to close the
+  mixed-Q5 target's remaining 1.3% short-decode gap.
+- Scope: pinned mixed 4.951-bpw target, selected A100/A111/A114/A113/A117/A128/
+  A130/A131 controls, sampled direct `128 / 32 warm / 128 timed`, and process-
+  start command-buffer configuration.
+- Attempted change: changed only `MLX_MAX_MB_PER_BUFFER=256` to `128`; retained
+  64 SDPA blocks, 100 operations per buffer, fast synchronization, native
+  sampling seed 42, and every selected model/kernel switch.
+- Benchmark evidence: 128 MiB reaches **19.422060304 tok/s**. Adjacent 256 MiB
+  forward/reverse controls reach **19.738568824** and **19.641604528 tok/s**,
+  mean **19.690086676**. The candidate regresses
+  **0.268026372 tok/s / 1.361225%**.
+- Correctness evidence: all three arms emit exact 128-token timed output,
+  canonical digest `d0193f6d413b68c1`, last token 11406, and exit zero.
+- Failure mode: this mixed Q4/Q5 projection and fused-MLP schedule benefits
+  from the larger command-buffer budget; the earlier model-specific result
+  does not transfer.
+- Why not to retry unchanged: the regression exceeds the complete gap to the
+  requested floor and reproduces against controls on both sides of the arm.
+- Reopen only if: model/kernel composition changes materially or a Metal trace
+  identifies a new submission boundary specifically addressed by 128 MiB.
+- Related commit or revert: record-only PERF-FA146 checkpoint; no source
+  changed.
