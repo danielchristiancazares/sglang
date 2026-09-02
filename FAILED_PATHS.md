@@ -3771,3 +3771,60 @@ option, or serving dispatch was added.
 - Related commit or revert: candidate stayed outside `main`; PERF-A117's
   compile-time register selection is materially different and is retained in
   signed `00d09138ce`.
+
+## PERF-FA135 - Explicit vector transaction in the fused-Q4 load helper
+
+- Hypothesis: one `packed_ushort4` transaction can replace the fused Q4
+  helper's two packed-word reads and reduce load-instruction cost across the
+  gate and up streams.
+- Scope: selected A117 exact fused affine-Q4/G64 gate/up/SwiGLU at production
+  shape `5120/17408`; ordinary Q4 execution is unchanged.
+- Attempted change: load the same eight packed bytes through one explicit
+  four-element 16-bit vector, then preserve the existing MLX-compatible
+  nibble unpack, FP32 reduction, and lane-parallel precise epilogue.
+- Benchmark evidence: two 10,000-iteration candidate samples are
+  **0.563729096 / 0.558256000 ms**, mean **0.560992548**. A117 controls are
+  **0.558807537 / 0.556857937 ms**, mean **0.557832737**. Candidate latency
+  increases **0.003159811 ms / about 0.566%**.
+- Correctness evidence: all focused Q4 QMV shapes, both fused shapes, and the
+  `-6.84375` precise sigmoid boundary pass exactly.
+- Failure mode: the wider source transaction does not reduce the dominant
+  paired weight stream or arithmetic and lowers less efficiently than the
+  compiler-selected scalar form in this two-stream fused shader.
+- Why not to retry unchanged: the exact selected production shape regresses
+  in two long samples despite bit-exact output.
+- Reopen only if: generated shader evidence shows a compiler or alignment
+  change that removes the current vector-lowering cost, or the load is shared
+  across materially more arithmetic.
+- Related commit or revert: candidate remained outside `main`; exact A117 was
+  restored before the next experiment.
+
+## PERF-FA136 - Load-time row concatenation of Q5 `qkv` and `z`
+
+- Hypothesis: the 48 linear-attention layers can replace two affine-Q5/G64
+  input-projection launches with one `N=16384` launch because `qkv` and `z`
+  consume the same BF16 hidden state.
+- Scope: production `K=5120`, `Nqkv=10240`, `Nz=6144`; selected A100 Q5
+  kernel, A111/A114/A113/A117 target, and exact sampled direct benchmark.
+- Attempted change: concatenate each projection pair's packed weights,
+  scales, and biases by output row during model load, execute the resulting
+  QLinear once, and split its output at row 10240. The path is opt-in through
+  `SGLANG_MLX_NATIVE_Q5_QKV_Z_FUSION`.
+- Benchmark evidence: ten order/reverse 2,000-iteration micros improve
+  two-launch/one-launch aggregate **0.426645998 -> 0.420592346 ms**
+  (**1.418893%**). Full-model fusion then reaches
+  **19.441971742 / 19.406059113 tok/s** around adjacent same-dylib disabled
+  control **19.469521945**; both candidate comparisons lose.
+- Correctness evidence: micro output is byte-exact with digest
+  `555793dfc2cf896f`; the focused Q5 suite passes; every full-model arm
+  retains digest `d0193f6d413b68c1` and last token 11406.
+- Failure mode: the isolated launch saving does not survive the load-time
+  copied tensor representation and runtime split graph in the full target.
+- Why not to retry unchanged: the implementation is exact but negative in
+  both adjacent full-model comparisons, and temporarily adds copied-weight
+  residency during model load.
+- Reopen only if: the implementation consumes the two original matrices and
+  writes the original two outputs directly in one native dispatch, removing
+  both concatenation and split, or new profiling proves those costs absent.
+- Related commit or revert: candidate remained outside `main`; A117 source was
+  restored byte-for-byte after the screen.

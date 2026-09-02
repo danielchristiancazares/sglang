@@ -22998,3 +22998,122 @@ mean 13.929045  17.125658 446.051        39.730
   direct gap is **0.546907633 tok/s / 2.811417%**. Continue native hotspot
   work; exact 131K serving and Codex `xhigh` remain gated on clearing 20 with
   margin.
+
+### 2026-09-01 18:57 PDT - A118 vector-load and A119 Q5 row-fusion rejection
+
+- Resumed from signed documentation HEAD
+  `5a908c09ddd8f591554630fc59989ec80793dd3b`, 92 commits ahead of
+  `origin/main`, with an empty index. Main retained only Daniel's three
+  user-owned modified paths. The detached candidate worktree remained at
+  `/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4`; its engine
+  and header were exact to selected A117 when compared with signed
+  `00d09138ce8e0d3c41e64da7fa88627b02315ed8`.
+- PERF-A118 changed only the fused-Q4 helper's two scalar packed-word reads
+  to one explicit `packed_ushort4` load. Ordinary Q4 and A117's
+  compile-time-selected lane-parallel epilogue were unchanged. Strict
+  C++20/O3 warnings-as-errors builds passed with only the established macOS
+  26.0 / MLX 26.2 linker warning. The focused executable passed the three Q4
+  QMV shapes, both fused-chain shapes, and the `-6.84375` precise sigmoid
+  boundary exactly.
+- A118 production-shape `fused 5120 17408 1000 10000` candidate samples are
+  **0.563729096 / 0.558256000 ms**, mean **0.560992548**. Exact A117 control
+  samples are **0.558807537 / 0.556857937 ms**, mean **0.557832737**. The
+  candidate is **0.003159811 ms / about 0.566% slower** and was restored
+  before full-model execution. Preserved artifact identities are:
+
+  ```text
+  a8c83b5f18f646f08e187d654c6fca8a499d5ea7c617a9f5c8567104edb29988  /Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a118_q4_fused_swiglu_vector_load
+  fc326ef5ae6b0a643e972fab1b6649f659c86d15b19433fdf46c888ce5353318  /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a118_q4_fused_swiglu_vector_load
+  ```
+
+- PERF-A119 first isolated the production-reachable shared-input pair with a
+  new C++-only artifact harness at
+  `/Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a119_q5_qkv_z_concat.cpp`.
+  It generates one deterministic Q5/G64 parameter buffer at `K=5120`, exposes
+  rows `0..10239` and `10240..16383` as the original `qkv`/`z` projections,
+  and compares two launches with one `N=16384` launch. Every process computes
+  both paths first and requires byte-exact BF16 prefix/suffix equality before
+  timing its selected mode. Strict build command:
+
+  ```text
+  clang++ -std=c++20 -O3 -Wall -Wextra -Werror -isystem /Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/include -I/Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a119_q5_qkv_z_concat.cpp /Users/dcazares/.cache/sglang-qwen38/worktrees/perf-q4-packs4/python/sglang/srt/hardware_backend/mlx/native/qwen38_engine.cpp -L/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -Wl,-rpath,/Users/dcazares/sglang/.venv/lib/python3.11/site-packages/mlx/lib -lmlx -o /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a119_q5_qkv_z_concat
+  ```
+
+  Source and executable SHA-256 values are
+  `d503f76491d9dcb1685ec918e18cf3e1c7eb20f62155f264f80469feb74d4bf1`
+  and
+  `157659d92450816b8a7e1b5246fa8fcc46f67f53480728b4d2337420c7f061c7`.
+  Smoke modes `separate 10 20` and `combined 10 20` pass exact parity with
+  digest `555793dfc2cf896f`.
+- The A119 decisive command shape was:
+
+  ```text
+  /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 180s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_a119_q5_qkv_z_concat <separate|combined> 200 2000
+  ```
+
+  Forward order results are:
+
+  ```text
+  pair  separate     combined
+  1     0.427768563  0.418105333
+  2     0.430888229  0.420336188
+  3     0.426397167  0.411895125
+  4     0.430618917  0.424527792
+  5     0.426526021  0.421577354
+  mean  0.428439779  0.419288358 ms
+  ```
+
+  Reversed results are:
+
+  ```text
+  pair  combined     separate
+  1     0.434727208  0.423989396
+  2     0.409900771  0.424483917
+  3     0.421657792  0.427011167
+  4     0.420655021  0.421344500
+  5     0.422540875  0.427432104
+  mean  0.421896333  0.424852217 ms
+  ```
+
+  Aggregate two-launch/one-launch is
+  **0.426645998 / 0.420592346 ms**, a
+  **0.006053652 ms / 1.418893%** reduction. Nine of ten pairs win and all 20
+  arms preserve exact BF16 output and digest `555793dfc2cf896f`.
+- The full candidate placed the rule at `Engine::load_weights`: behind
+  `SGLANG_MLX_NATIVE_Q5_QKV_Z_FUSION`, it row-concatenated packed weights,
+  scales, and biases for all 48 affine-Q5 `in_proj_qkv`/`in_proj_z` pairs,
+  materialized them while the source map remained alive, synchronized before
+  releasing source references, and marked each linear-attention layer for one
+  projection plus an output split at `conv_dim=10240`. The disabled path was
+  unchanged. `git diff --check` and strict builds passed. Candidate dylib and
+  focused Q5-test SHA-256 values are:
+
+  ```text
+  c38d74d51ae67db21edd5ecdd12fc31f10f76bd986f36b4a76301e699f24abef  /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a119_q5_qkv_z_fusion.dylib
+  62d35e980c862f4f3a0bcb38dd833480efec68167927097cf6a1790d7e893875  /Users/dcazares/.cache/sglang-qwen38/artifacts/test_qwen38_a119_affine_q5_batch_one_qmv
+  ```
+
+  The focused Q5 test passes shapes `512/64`, `5120/128`, and `17408/32` at
+  maximum errors **0.03125 / 0.03125 / 0.0234375**.
+- Exact full-model command, with the fusion environment variable omitted for
+  control:
+
+  ```text
+  /usr/bin/env MLX_SDPA_BLOCKS=64 MLX_MAX_MB_PER_BUFFER=256 MLX_MAX_OPS_PER_BUFFER=100 MLX_METAL_FAST_SYNCH=1 SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048 SGLANG_MLX_NATIVE_SAMPLING=1 SGLANG_MLX_NATIVE_SAMPLING_SEED=42 SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS=256 SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_BATCH_ONE_QMV=1 SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=1 SGLANG_MLX_NATIVE_Q5_QKV_Z_FUSION=1 /opt/homebrew/bin/gtimeout --signal=TERM --kill-after=10s 240s /Users/dcazares/.cache/sglang-qwen38/artifacts/bench_qwen38_native /Users/dcazares/.cache/sglang-qwen38/artifacts/libqwen38_a119_q5_qkv_z_fusion.dylib /Users/dcazares/.cache/huggingface/hub/models--maglun--Qwen3.8-27B-MLX-Mixed-4.95bpw/snapshots/596b8067f7cf429007bb668874ffee7e917c8340 128 32 128
+  ```
+
+  Candidate/control/candidate results are
+  **19.441971742 / 19.469521945 / 19.406059113 tok/s**. Both candidate
+  comparisons are negative. All three runs preserve 128 timed tokens, digest
+  `d0193f6d413b68c1`, and last token 11406. A119 is rejected at the
+  full-model screen despite its isolated win.
+- The A119 source was removed with `apply_patch`; candidate engine/header now
+  have an empty diff against signed `00d09138ce`, and `git diff --check`
+  passes. The next distinct candidate is a native one-dispatch Q5 kernel that
+  consumes both original matrices and writes two outputs directly, avoiding
+  both copied weights and a runtime split.
+- Post-screen state has no benchmark/server/xctrace/compiler workload and no
+  port-30000 listener. Memory reports 95% free with zero throttled pages and
+  thermals are normal. Three full-model reloads increased page-ins and caused
+  164 swapouts, but did not enter the prior 11--14 tok/s churn band. System
+  indexing and FileProvider processes were left untouched.

@@ -1,7 +1,7 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-01
-18:36 PDT.
+18:57 PDT.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
 is free. All verified SGLang, benchmark, and CUDA compiler processes are
@@ -248,6 +248,16 @@ control/candidate is **19.268475640 / 19.453092367**, a
 11--14 tok/s is explicitly excluded after extreme page-in/swap churn; a
 60-second idle interval restored the selected control to **19.203472228**
 before the replacement reverse window.
+
+A118 and A119 are closed in their measured forms. Replacing A117's fused-Q4
+packed-word reads with one explicit `packed_ushort4` transaction is exact but
+regresses **0.557832737 -> 0.560992548 ms**. Row-concatenating each affine-Q5
+linear-attention `qkv`/`z` pair reduces the isolated two-launch aggregate
+**0.426645998 -> 0.420592346 ms**, but the copied-weight plus runtime-split
+implementation reaches only **19.441971742 / 19.406059113 tok/s** around an
+adjacent disabled control at **19.469521945**. Exact A117 is restored. The
+shared-input route is open only as a native one-dispatch, two-output kernel
+over the original matrices; it must avoid both concatenation and split.
 
 The requested Q5 lane now serves through a provenance-pinned derived artifact.
 Bartowski's immutable `Qwen3.8-27B-Q5_K_S.gguf` source is pinned at revision

@@ -5,6 +5,7 @@
 | Benchmark | Baseline | Current | Delta | Command | Last Updated |
 |---|---:|---:|---:|---|---|
 | M1 Max mixed 4.951-bpw Q5-class target, sampled direct `128 / 32 warm / 128 timed` | generic MLX QMM **18.121698566 tok/s** | selected A100+A111+A114+A113+A117 ten-sample mean **19.453092367 tok/s** | **+1.331393801 tok/s / +7.347%** over generic and **+0.184616727 / +0.958%** over matched serial-epilogue control **19.268475640**; exact digest stable; **0.546907633 tok/s / 2.811%** remains to the floor | pinned mixed revision `596b8067...8340`, seed 42, selected command-buffer controls, Q5/Q4/fused-MLP switches | 2026-09-01 18:36 PDT |
+| M1 Max linear-attention affine-Q5 `qkv` plus `z`, deterministic batch-one direct micro and sampled full model | two exact launches **0.426645998 ms** aggregate | row-concatenated one-launch micro **0.420592346 ms**, but full-model candidate **19.441971742 / 19.406059113 tok/s** loses to adjacent same-dylib control **19.469521945** | isolated **-0.006053652 ms / -1.418893%** does not survive the load-time concatenation plus runtime split graph; exact digest retained; A119 rejected and A117 restored | production K/N `5120/(10240+6144)`, ten order/reverse 2,000-iteration samples; selected direct contract changes only `SGLANG_MLX_NATIVE_Q5_QKV_Z_FUSION` | 2026-09-01 18:57 PDT |
 | M1 Max fused affine-Q4 gate/up/SwiGLU epilogue, sampled direct `128 / 32 warm / 128 timed` | A114+A113 serial four-result epilogue **19.268475640 tok/s** | A117 four-lane register-selected epilogue **19.453092367 tok/s** | forward/reversed windows improve **+0.947541% / +0.968716%**, aggregate **+0.184616727 tok/s / +0.958128%**; all 20 clean runs retain canonical digest/last token; a separate reload-churn window is excluded | same exact direct contract and artifacts differing only in the fused Metal epilogue | 2026-09-01 18:36 PDT |
 | M1 Max mixed-target Q4 gate/up/SwiGLU, sampled direct `128 / 32 warm / 128 timed` | matched A100+A111 control **19.228720305 tok/s** | precise-exp A114 **19.268407916 tok/s** | two independent five-pair windows improve **+0.145685% / +0.267156%**, aggregate **+0.039687612 tok/s / +0.206398%**; all 20 runs retain canonical digest/last token; boundary regression rejects the old fast-exp artifact in all 32 rows | same direct contract with `SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU=0/1` as the only variable | 2026-09-01 17:56 PDT |
 | M1 Max affine-Q5/G64 target-only batch-one decode, sampled direct `128 / 32 warm / 128 timed` | native affine-Q5 target **16.322505765 tok/s** | opt-in direct Q5 QMV **17.823163930 tok/s** | **+1.500658165 tok/s / +9.194%** in the first complete screen; representative parity passes; **2.176836070 tok/s** remains to the floor and a repeated matched window is pending | pinned Q5 target, selected command-buffer controls, and `SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV=1`; PERF-A094/FA122/FA123/FA124 | 2026-09-01 12:43 PDT |
@@ -858,6 +859,8 @@ tree throughput can be ranked for production.
 | PERF-A115 | Halve the fused-Q4 threadgroup from eight to four SIMD groups. | A114 fused gate/up/SwiGLU production shape | Rejected | The exact 4-SIMD/four-result form averages **0.567203850 ms** against **0.566040871 ms** for selected 8-SIMD, about **0.205% slower**. See PERF-FA133. |
 | PERF-A116 | Assign each fused-Q4 epilogue row to one lane through dynamically indexed result arrays. | A114 fused gate/up/SwiGLU precise epilogue | Rejected | Focused parity passes, but a reversed 10,000-iteration window averages **0.564099544 ms** against **0.562567529 ms** for the serial control, about **0.272% slower**. See PERF-FA134. |
 | PERF-A117 | Execute the four precise fused-Q4 epilogues on lanes 0--3 with compile-time register selection. | A114+A113 fused gate/up/SwiGLU decode path | Qualified and retained | Exact general-shape and `-6.84375` boundary tests pass. Two clean five-pair windows improve **19.268343602 -> 19.450918961** and **19.268607678 -> 19.455265774 tok/s**; aggregate gain is **+0.184616727 / +0.958128%**, with every output canonical. Signed `00d09138ce` retains the source. |
+| PERF-A118 | Replace the fused-Q4 helper's two scalar packed-word reads with one explicit `packed_ushort4` transaction. | Selected A117 fused gate/up/SwiGLU kernel | Runtime-correct and rejected | Focused Q4, fused-chain, and precise-boundary parity pass. Two 10,000-iteration candidate samples average **0.560992548 ms** versus **0.557832737 ms** for A117, about **0.566% slower**. See PERF-FA135. |
+| PERF-A119 | Share one affine-Q5 input launch across linear-attention `qkv` and `z` by concatenating their output rows at load time. | Forty-eight selected Q5/G64 linear-attention layer pairs | Runtime-correct and rejected | Ten order/reverse micros improve **0.426645998 -> 0.420592346 ms** with exact BF16 output. Full-model fusion produces **19.441971742 / 19.406059113 tok/s** around an adjacent same-dylib control at **19.469521945**. The copied tensor plus split-graph form is rejected; only a direct two-output kernel is materially different. See PERF-FA136. |
 | PERF-A017 | Replace shape-growing BF16-cache gather/GQA-repeat/score materialization with fixed-memory native Metal EXTEND attention. | `gguf_q4_0.mm` Q8/C64 BF16 paged GQA kernel and caller-owned pybind surface | Native mechanism qualified; production dispatch pending | At `E=17,L=131072`, the final-source native median is **137.906625 ms** with **0 MiB** measured driver-residency growth; dense MPS SDPA is **424.528292 ms** with **+8,088.515625 MiB**. Maximum error is `4.3120235e-07`. A lazy isolated Metal library keeps the new shader outside ordinary extension initialization. The raw binding is outside `TorchNativeAttnBackend`; the no-new-Python boundary requires an owner-approved dispatch seam before served gates. |
 | PERF-008 | Build a deeper tree only after an oracle projection clears 200 TPS plus margin. | sparse p/q replay and topology optimizer | Fail-closed | Current capture is selected-tree only; measured D2/D4 shapes fail the impossible oracle. Funding requires complete lattice and conservative >=215 TPS. |
 | PERF-009 | Recover graph-tail scheduling time. | async CUDA event probe and graph boundaries | Closed | Best repeatable conservative p10 is 0.658355 ms, below the 0.75 ms admission gate. |
@@ -5567,3 +5570,40 @@ tree throughput can be ranked for production.
   **0.546907633 tok/s / 2.811417%**. Signed commit `00d09138ce`
   (`perf(mlx): parallelize fused Q4 SwiGLU epilogue`) contains only the Metal
   epilogue change; user-owned overlapping working-copy hashes remain intact.
+
+### 2026-09-01 18:48 PDT - PERF-A118 fused-Q4 vector-load rejection
+
+- Change: replaced only the selected A117 fused-Q4 helper's two scalar
+  packed-word reads with one explicit `packed_ushort4` load. Ordinary Q4
+  execution and the lane-parallel precise epilogue remained unchanged.
+- Benchmark evidence: candidate 10,000-iteration samples are
+  **0.563729096 / 0.558256000 ms**, mean **0.560992548**. Selected A117
+  control samples are **0.558807537 / 0.556857937 ms**, mean
+  **0.557832737**. The vector form is **0.003159811 ms / about 0.566%**
+  slower.
+- Correctness evidence: the strict focused executable passes all selected Q4
+  QMV shapes, both fused-chain shapes, and the `-6.84375` precise sigmoid
+  boundary exactly.
+- Decision: reject and restore A117 before full-model work. Preserve the
+  artifacts and close this exact transaction-width change as PERF-FA135.
+
+### 2026-09-01 18:57 PDT - PERF-A119 row-concatenated Q5 `qkv`/`z` rejection
+
+- Change: admitted one Q5/G64 launch for production dimensions
+  `K=5120`, `Nqkv=10240`, and `Nz=6144`, then implemented opt-in load-time
+  row concatenation for the 48 linear-attention `in_proj_qkv`/`in_proj_z`
+  pairs. Runtime split the combined result at the original output boundary.
+- Benchmark evidence: forward two-launch/one-launch means are
+  **0.428439779 / 0.419288358 ms**; reversed means are
+  **0.424852217 / 0.421896333 ms**. Aggregate is
+  **0.426645998 / 0.420592346 ms**, a **1.418893%** isolated reduction.
+  Full-model candidate samples are **19.441971742** and
+  **19.406059113 tok/s** around an adjacent same-dylib disabled control at
+  **19.469521945 tok/s**. Both candidate comparisons are negative.
+- Correctness evidence: all 20 micro arms report exact BF16 parity and digest
+  `555793dfc2cf896f`; the existing Q5 focused suite passes; all three full
+  runs retain target digest `d0193f6d413b68c1` and last token 11406.
+- Decision: reject the copied-weight plus output-split implementation and
+  restore exact A117. A native one-dispatch kernel that consumes the two
+  original matrices and emits two outputs directly is materially different
+  and is the next admission candidate.
