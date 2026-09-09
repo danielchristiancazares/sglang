@@ -345,8 +345,6 @@ def stream_request(
             "".join(content_fragments).encode("utf-8")
         ).hexdigest(),
     }
-
-
 def validate_result_counts(
     result: dict[str, Any],
     *,
