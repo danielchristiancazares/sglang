@@ -3509,6 +3509,123 @@ kernel void decode_gqa_bf16_online_256(
         }
     }
 }
+
+kernel void decode_gqa_online_f32(
+        device const float * query,
+        device const float * key_cache,
+        device const float * value_cache,
+        device const int * req_to_token,
+        device const long * req_pool_indices,
+        device const long * seq_lens,
+        device float * output,
+        constant AttentionArgs & args,
+        threadgroup float * scratch [[threadgroup(0)]],
+        uint group [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr uint tile_size = 8;
+    constexpr uint running_max_index = 8;
+    constexpr uint running_sum_index = 9;
+    constexpr uint alpha_index = 10;
+    constexpr uint weights_index = 11;
+    constexpr uint slots_index = 19;
+
+    const uint batch = group / args.num_q_heads;
+    const uint query_head = group - batch * args.num_q_heads;
+    if (batch >= args.batch_size) {
+        return;
+    }
+    const uint kv_head = query_head / (args.num_q_heads / args.num_kv_heads);
+    const uint seq_limit = min(args.cache_slots, args.req_stride);
+    const uint seq_len = uint(min(
+        ulong(max(seq_lens[batch], long(0))), ulong(seq_limit)));
+    const long req_slot = req_pool_indices[batch];
+    if (req_slot < 0 || ulong(req_slot) >= ulong(args.req_rows) ||
+            seq_len == 0) {
+        return;
+    }
+
+    device const float * q_row = query +
+        (batch * args.num_q_heads + query_head) * args.head_dim;
+    const uint cache_row_size = args.num_kv_heads * args.head_dim;
+    float result = 0.0f;
+    if (tid == 0) {
+        scratch[running_max_index] = -INFINITY;
+        scratch[running_sum_index] = 0.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint token_base = 0; token_base < seq_len; token_base += tile_size) {
+        const uint token = token_base + simd_id;
+        int cache_slot = -1;
+        float dot_value = 0.0f;
+        bool valid_cache_slot = false;
+        if (token < seq_len) {
+            cache_slot = req_to_token[
+                uint(req_slot) * args.req_stride + token];
+            valid_cache_slot =
+                cache_slot >= 0 && uint(cache_slot) < args.cache_slots;
+            if (valid_cache_slot) {
+                device const float * k_row = key_cache +
+                    uint(cache_slot) * cache_row_size + kv_head * args.head_dim;
+                for (uint dim = lane; dim < args.head_dim; dim += 32) {
+                    dot_value += q_row[dim] * k_row[dim];
+                }
+            }
+        }
+        dot_value = simd_sum(dot_value) * args.scale;
+        if (lane == 0) {
+            scratch[simd_id] = valid_cache_slot ? dot_value : -INFINITY;
+            scratch[slots_index + simd_id] =
+                valid_cache_slot ? float(cache_slot) : -1.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (tid == 0) {
+            float tile_max = -INFINITY;
+            for (uint index = 0; index < tile_size; ++index) {
+                tile_max = max(tile_max, scratch[index]);
+            }
+            const float old_max = scratch[running_max_index];
+            const float new_max = max(old_max, tile_max);
+            const float alpha = isfinite(old_max)
+                ? exp(old_max - new_max)
+                : 0.0f;
+            float running_sum = scratch[running_sum_index] * alpha;
+            for (uint index = 0; index < tile_size; ++index) {
+                const float weight = isfinite(scratch[index])
+                    ? exp(scratch[index] - new_max)
+                    : 0.0f;
+                scratch[weights_index + index] = weight;
+                running_sum += weight;
+            }
+            scratch[running_max_index] = new_max;
+            scratch[running_sum_index] = running_sum;
+            scratch[alpha_index] = alpha;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (tid < args.head_dim) {
+            result *= scratch[alpha_index];
+            for (uint index = 0; index < tile_size; ++index) {
+                const int slot = int(scratch[slots_index + index]);
+                if (slot >= 0 && uint(slot) < args.cache_slots) {
+                    const uint value_index = uint(slot) * cache_row_size +
+                        kv_head * args.head_dim + tid;
+                    result += scratch[weights_index + index] *
+                        value_cache[value_index];
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (tid < args.head_dim) {
+        output[(batch * args.num_q_heads + query_head) * args.head_dim + tid] =
+            result / scratch[running_sum_index];
+    }
+}
 )METAL";
 
 struct Q4Args {
@@ -3641,6 +3758,7 @@ struct Pipelines {
     id<MTLComputePipelineState> store_decode_kv_bf16 = nil;
     id<MTLComputePipelineState> decode_gqa = nil;
     id<MTLComputePipelineState> decode_gqa_bf16 = nil;
+    id<MTLComputePipelineState> decode_gqa_online = nil;
     id<MTLComputePipelineState> gemma_rmsnorm = nil;
     id<MTLComputePipelineState> gemma_fused_add_rmsnorm = nil;
     id<MTLComputePipelineState> silu_and_mul = nil;
@@ -3747,6 +3865,7 @@ Pipelines & pipelines() {
         value.store_decode_kv_bf16 = compile(@"store_decode_kv_bf16");
         value.decode_gqa = compile(@"decode_gqa_f32");
         value.decode_gqa_bf16 = compile(@"decode_gqa_bf16_online_256");
+        value.decode_gqa_online = compile(@"decode_gqa_online_f32");
         value.gemma_rmsnorm = compile(@"gemma_rmsnorm_f32");
         value.gemma_fused_add_rmsnorm = compile(@"gemma_fused_add_rmsnorm_f32");
         value.silu_and_mul = compile(@"silu_and_mul_f32");
@@ -5108,8 +5227,8 @@ torch::Tensor decode_gqa(
                 "native Metal decode attention requires head_dim <= 256");
     TORCH_CHECK(cache_slots > 0,
                 "native Metal decode attention requires a non-empty cache");
-    TORCH_CHECK(!cache_is_f32 || cache_slots <= 7936,
-                "native Metal float32 decode attention supports at most 7936 cache slots");
+    TORCH_CHECK(!cache_is_f32 || cache_slots <= 262144,
+                "native Metal float32 decode attention supports at most 262144 cache slots");
     TORCH_CHECK(!cache_is_bf16 || head_dim == 256,
                 "native Metal bfloat16 decode attention requires head_dim 256");
     TORCH_CHECK(!cache_is_bf16 || cache_slots <= 131073,
@@ -5147,6 +5266,7 @@ torch::Tensor decode_gqa(
 
     at::mps::MPSStream * stream = at::mps::getCurrentMPSStream();
     Pipelines & p = pipelines();
+    const bool use_online_attention = cache_is_f32 && cache_slots > 7936;
     dispatch_sync(stream->queue(), ^{
         id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
         [encoder setComputePipelineState:
@@ -5164,7 +5284,9 @@ torch::Tensor decode_gqa(
         [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 
         [encoder setComputePipelineState:
-            cache_is_bf16 ? p.decode_gqa_bf16 : p.decode_gqa];
+            cache_is_bf16
+                ? p.decode_gqa_bf16
+                : (use_online_attention ? p.decode_gqa_online : p.decode_gqa)];
         [encoder setBuffer:buffer_of(query) offset:offset_of(query) atIndex:0];
         [encoder setBuffer:buffer_of(key_cache) offset:offset_of(key_cache) atIndex:1];
         [encoder setBuffer:buffer_of(value_cache) offset:offset_of(value_cache) atIndex:2];
@@ -5174,10 +5296,12 @@ torch::Tensor decode_gqa(
         [encoder setBuffer:buffer_of(seq_lens) offset:offset_of(seq_lens) atIndex:5];
         [encoder setBuffer:buffer_of(output) offset:offset_of(output) atIndex:6];
         [encoder setBytes:&args length:sizeof(args) atIndex:7];
-        const NSUInteger scratch_bytes = cache_is_bf16
-            ? (4 * 256 + 8) * sizeof(float)
-            : (cache_slots + 256) * sizeof(float);
-        [encoder setThreadgroupMemoryLength:scratch_bytes atIndex:0];
+        const NSUInteger scratch_floats =
+            cache_is_bf16
+                ? 4 * 256 + 8
+                : (use_online_attention ? 32 : cache_slots + 256);
+        [encoder setThreadgroupMemoryLength:scratch_floats * sizeof(float)
+                                    atIndex:0];
         [encoder dispatchThreadgroups:MTLSizeMake(batch_size * num_q_heads, 1, 1)
                     threadsPerThreadgroup:MTLSizeMake(cache_is_bf16 ? 128 : 256,
                                                       1, 1)];
