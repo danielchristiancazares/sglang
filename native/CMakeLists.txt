@@ -17,9 +17,12 @@ if(CUDAToolkit_VERSION VERSION_LESS 13.3 OR
       "sglang-native requires the qualified CUDA 13.3 toolkit; found ${CUDAToolkit_VERSION}")
 endif()
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# CMake 4.3 does not model CUDA C++23, and the qualified NVCC 13.3/MSVC 19.51
+# pair rejects --std=c++23.  Keep host translation units on C++23 and compile
+# device translation units in the latest qualified CUDA dialect.
 set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_EXTENSIONS OFF)
@@ -45,6 +48,18 @@ target_include_directories(
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 sglang_native_target(sglang_native_tensor)
 
+add_library(
+  sglang_native_model_io
+  STATIC
+    src/json_value.cpp
+    src/qwen35_checkpoint.cpp
+    src/safetensors_file.cpp
+    src/sha256.cpp)
+target_include_directories(
+  sglang_native_model_io
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+sglang_native_target(sglang_native_model_io)
+
 add_library(sglang_native_cuda_runtime STATIC src/cuda_graph_resources.cpp)
 target_include_directories(
   sglang_native_cuda_runtime
@@ -57,6 +72,14 @@ sglang_native_target(sglang_native_cuda_runtime)
 add_library(
   sglang_native_kernels
   STATIC
+    src/dspark_proposal.cpp
+    src/dspark_proposal.cu
+    src/dspark_target_verify.cpp
+    src/dspark_target_verify.cu
+    src/dspark_cycle_controller.cpp
+    src/dspark_cycle_controller.cu
+    src/gdn_replayssm_commit.cpp
+    src/gdn_replayssm_commit.cu
     src/linear_rejection_sampling.cpp
     src/linear_rejection_sampling.cu
     src/linear_verify_rng.cpp
@@ -70,7 +93,8 @@ target_link_libraries(
 sglang_native_target(sglang_native_kernels)
 
 add_library(sglang_native INTERFACE)
-target_link_libraries(sglang_native INTERFACE sglang_native_kernels)
+target_link_libraries(
+  sglang_native INTERFACE sglang_native_kernels sglang_native_model_io)
 
 add_executable(sglang_native_probe src/native_probe.cpp)
 target_link_libraries(sglang_native_probe PRIVATE sglang_native)
@@ -112,6 +136,27 @@ if(BUILD_TESTING)
   sglang_native_target(sglang_native_cuda_runtime_host_test)
 
   add_executable(
+    sglang_native_safetensors_file_host_test
+    test/safetensors_file_host_test.cpp)
+  target_link_libraries(
+    sglang_native_safetensors_file_host_test PRIVATE sglang_native_model_io)
+  sglang_native_target(sglang_native_safetensors_file_host_test)
+
+  add_executable(
+    sglang_native_json_value_host_test
+    test/json_value_host_test.cpp)
+  target_link_libraries(
+    sglang_native_json_value_host_test PRIVATE sglang_native_model_io)
+  sglang_native_target(sglang_native_json_value_host_test)
+
+  add_executable(
+    sglang_native_qwen35_checkpoint_host_test
+    test/qwen35_checkpoint_host_test.cpp)
+  target_link_libraries(
+    sglang_native_qwen35_checkpoint_host_test PRIVATE sglang_native_model_io)
+  sglang_native_target(sglang_native_qwen35_checkpoint_host_test)
+
+  add_executable(
     sglang_native_linear_rejection_host_test
     test/linear_rejection_sampling_host_test.cpp)
   target_link_libraries(
@@ -126,6 +171,34 @@ if(BUILD_TESTING)
     sglang_native_linear_verify_rng_host_test
     PRIVATE sglang_native_kernels)
   sglang_native_target(sglang_native_linear_verify_rng_host_test)
+
+  add_executable(
+    sglang_native_dspark_proposal_host_test
+    test/dspark_proposal_host_test.cpp)
+  target_link_libraries(
+    sglang_native_dspark_proposal_host_test PRIVATE sglang_native_kernels)
+  sglang_native_target(sglang_native_dspark_proposal_host_test)
+
+  add_executable(
+    sglang_native_dspark_cycle_controller_host_test
+    test/dspark_cycle_controller_host_test.cpp)
+  target_link_libraries(
+    sglang_native_dspark_cycle_controller_host_test PRIVATE sglang_native_kernels)
+  sglang_native_target(sglang_native_dspark_cycle_controller_host_test)
+
+  add_executable(
+    sglang_native_dspark_target_verify_host_test
+    test/dspark_target_verify_host_test.cpp)
+  target_link_libraries(
+    sglang_native_dspark_target_verify_host_test PRIVATE sglang_native_kernels)
+  sglang_native_target(sglang_native_dspark_target_verify_host_test)
+
+  add_executable(
+    sglang_native_gdn_replayssm_commit_host_test
+    test/gdn_replayssm_commit_host_test.cpp)
+  target_link_libraries(
+    sglang_native_gdn_replayssm_commit_host_test PRIVATE sglang_native_kernels)
+  sglang_native_target(sglang_native_gdn_replayssm_commit_host_test)
 
   add_executable(
     sglang_native_cuda_runtime_test
@@ -151,17 +224,66 @@ if(BUILD_TESTING)
     PRIVATE sglang_native_kernels)
   sglang_native_target(sglang_native_linear_verify_rng_test)
 
+  add_executable(
+    sglang_native_dspark_proposal_test
+    test/dspark_proposal_test.cu)
+  target_link_libraries(
+    sglang_native_dspark_proposal_test PRIVATE sglang_native_kernels)
+  sglang_native_target(sglang_native_dspark_proposal_test)
+
+  add_executable(
+    sglang_native_dspark_cycle_controller_test
+    test/dspark_cycle_controller_test.cu)
+  target_link_libraries(
+    sglang_native_dspark_cycle_controller_test PRIVATE sglang_native_kernels)
+  sglang_native_target(sglang_native_dspark_cycle_controller_test)
+
+  add_executable(
+    sglang_native_dspark_cycle_composition_test
+    test/dspark_cycle_composition_test.cu)
+  target_link_libraries(
+    sglang_native_dspark_cycle_composition_test PRIVATE sglang_native_kernels)
+  sglang_native_target(sglang_native_dspark_cycle_composition_test)
+
+  add_executable(
+    sglang_native_gdn_replayssm_commit_test
+    test/gdn_replayssm_commit_test.cu)
+  target_link_libraries(
+    sglang_native_gdn_replayssm_commit_test PRIVATE sglang_native_kernels)
+  sglang_native_target(sglang_native_gdn_replayssm_commit_test)
+
   add_test(NAME native.tensor COMMAND sglang_native_tensor_test)
   add_test(NAME native.tensor_pack1 COMMAND sglang_native_tensor_pack1_test)
   add_test(
     NAME native.cuda_runtime_host
     COMMAND sglang_native_cuda_runtime_host_test)
   add_test(
+    NAME native.safetensors_file_host
+    COMMAND sglang_native_safetensors_file_host_test)
+  add_test(
+    NAME native.json_value_host
+    COMMAND sglang_native_json_value_host_test)
+  add_test(
+    NAME native.qwen35_checkpoint_host
+    COMMAND sglang_native_qwen35_checkpoint_host_test)
+  add_test(
     NAME native.linear_rejection_host
     COMMAND sglang_native_linear_rejection_host_test)
   add_test(
     NAME native.linear_verify_rng_host
     COMMAND sglang_native_linear_verify_rng_host_test)
+  add_test(
+    NAME native.dspark_proposal_host
+    COMMAND sglang_native_dspark_proposal_host_test)
+  add_test(
+    NAME native.dspark_cycle_controller_host
+    COMMAND sglang_native_dspark_cycle_controller_host_test)
+  add_test(
+    NAME native.dspark_target_verify_host
+    COMMAND sglang_native_dspark_target_verify_host_test)
+  add_test(
+    NAME native.gdn_replayssm_commit_host
+    COMMAND sglang_native_gdn_replayssm_commit_host_test)
   add_test(
     NAME native.cuda_runtime
     COMMAND sglang_native_cuda_runtime_test)
@@ -171,20 +293,43 @@ if(BUILD_TESTING)
   add_test(
     NAME native.linear_verify_rng
     COMMAND sglang_native_linear_verify_rng_test)
+  add_test(
+    NAME native.dspark_proposal
+    COMMAND sglang_native_dspark_proposal_test)
+  add_test(
+    NAME native.dspark_cycle_controller
+    COMMAND sglang_native_dspark_cycle_controller_test)
+  add_test(
+    NAME native.dspark_cycle_composition
+    COMMAND sglang_native_dspark_cycle_composition_test)
+  add_test(
+    NAME native.gdn_replayssm_commit
+    COMMAND sglang_native_gdn_replayssm_commit_test)
   add_test(NAME native.probe COMMAND sglang_native_probe)
 
   set_tests_properties(
     native.tensor
     native.tensor_pack1
     native.cuda_runtime_host
+    native.safetensors_file_host
+    native.json_value_host
+    native.qwen35_checkpoint_host
     native.linear_rejection_host
     native.linear_verify_rng_host
+    native.dspark_proposal_host
+    native.dspark_cycle_controller_host
+    native.dspark_target_verify_host
+    native.gdn_replayssm_commit_host
     native.probe
     PROPERTIES LABELS host)
   set_tests_properties(
     native.cuda_runtime
     native.linear_rejection
     native.linear_verify_rng
+    native.dspark_proposal
+    native.dspark_cycle_controller
+    native.dspark_cycle_composition
+    native.gdn_replayssm_commit
     PROPERTIES
       LABELS "cuda;sm120"
       RESOURCE_LOCK sglang_native_cuda
@@ -219,6 +364,34 @@ if(BUILD_TESTING)
         "${SGLANG_NATIVE_COMPUTE_SANITIZER}" --tool memcheck
         --error-exitcode 99 $<TARGET_FILE:sglang_native_linear_verify_rng_test>
       DEPENDS sglang_native_linear_verify_rng_test
+      USES_TERMINAL)
+    add_custom_target(
+      sglang_native_dspark_proposal_memcheck
+      COMMAND
+        "${SGLANG_NATIVE_COMPUTE_SANITIZER}" --tool memcheck
+        --error-exitcode 99 $<TARGET_FILE:sglang_native_dspark_proposal_test>
+      DEPENDS sglang_native_dspark_proposal_test
+      USES_TERMINAL)
+    add_custom_target(
+      sglang_native_dspark_cycle_controller_memcheck
+      COMMAND
+        "${SGLANG_NATIVE_COMPUTE_SANITIZER}" --tool memcheck
+        --error-exitcode 99 $<TARGET_FILE:sglang_native_dspark_cycle_controller_test>
+      DEPENDS sglang_native_dspark_cycle_controller_test
+      USES_TERMINAL)
+    add_custom_target(
+      sglang_native_dspark_cycle_composition_memcheck
+      COMMAND
+        "${SGLANG_NATIVE_COMPUTE_SANITIZER}" --tool memcheck
+        --error-exitcode 99 $<TARGET_FILE:sglang_native_dspark_cycle_composition_test>
+      DEPENDS sglang_native_dspark_cycle_composition_test
+      USES_TERMINAL)
+    add_custom_target(
+      sglang_native_gdn_replayssm_commit_memcheck
+      COMMAND
+        "${SGLANG_NATIVE_COMPUTE_SANITIZER}" --tool memcheck
+        --error-exitcode 99 $<TARGET_FILE:sglang_native_gdn_replayssm_commit_test>
+      DEPENDS sglang_native_gdn_replayssm_commit_test
       USES_TERMINAL)
   endif()
 endif()

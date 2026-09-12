@@ -19,10 +19,13 @@
 
 namespace {
 
+using sglang::native::capture_seeded_linear_verify_rng_graph;
+using sglang::native::capture_stateful_linear_verify_rng_graph;
 using sglang::native::ConstFloat32Matrix;
 using sglang::native::ConstFloat32Tensor3;
 using sglang::native::ConstFloat32Vector;
 using sglang::native::ConstInt64Matrix;
+using sglang::native::CudaCapturedGraph;
 using sglang::native::CudaExecutionContext;
 using sglang::native::CudaGraphExecutable;
 using sglang::native::CudaStream;
@@ -34,7 +37,9 @@ using sglang::native::is_ok;
 using sglang::native::kLinearVerifyRngStateDescriptorV1;
 using sglang::native::launch_linear_rejection_sampling_if_ready;
 using sglang::native::launch_seeded_linear_verify_rng;
+using sglang::native::launch_seeded_linear_verify_rng_if_ready;
 using sglang::native::launch_stateful_linear_verify_rng;
+using sglang::native::launch_stateful_linear_verify_rng_if_ready;
 using sglang::native::LinearRejectionSamplingBuffers;
 using sglang::native::LinearVerifyConstUInt64Vector;
 using sglang::native::LinearVerifyMutableFloat32Matrix;
@@ -461,6 +466,11 @@ public:
            copy_to_mutable(*device_status_, std::span<const uint32_t>(status));
   }
 
+  [[nodiscard]] bool write_status(uint32_t status) noexcept {
+    return copy_to_mutable(*device_status_,
+                           std::span<const uint32_t>(&status, 1));
+  }
+
   [[nodiscard]] bool read_coins(HostCoins *coins) const noexcept {
     if (coins == nullptr) {
       return false;
@@ -796,6 +806,148 @@ private:
   return true;
 }
 
+[[nodiscard]] bool GuardedEntrypointsPreservePublishedState() {
+  VerifyFixture fixture(3, 8);
+  CHECK(fixture.initialize());
+  const LinearVerifyRngStateV1 initial =
+      make_linear_verify_rng_state_v1(11U, 13U, 17U);
+  CHECK(fixture.copy_seeded_inputs(19U, 23U));
+  CHECK(fixture.copy_state(initial));
+  CHECK(fixture.reset_coins());
+  constexpr uint32_t kUpstreamStatus = 0xabcddcbaU;
+  CHECK(fixture.write_status(kUpstreamStatus));
+
+  CHECK_STATUS(launch_seeded_linear_verify_rng_if_ready(
+      fixture.context(), fixture.seeded_buffers()));
+  CHECK_STATUS(fixture.context().synchronize());
+  HostCoins seeded{};
+  CHECK(fixture.read_coins(&seeded));
+  CHECK(seeded.accept == std::vector<float>(3, kCoinSentinel));
+  CHECK(seeded.bonus[0] == kCoinSentinel);
+  CHECK(seeded.status[0] == kUpstreamStatus);
+
+  CHECK_STATUS(launch_stateful_linear_verify_rng_if_ready(
+      fixture.context(), fixture.stateful_buffers()));
+  CHECK_STATUS(fixture.context().synchronize());
+  HostCoins stateful{};
+  LinearVerifyRngStateV1 after{};
+  CHECK(fixture.read_coins(&stateful));
+  CHECK(fixture.read_state(&after));
+  CHECK(stateful.accept == std::vector<float>(3, kCoinSentinel));
+  CHECK(stateful.bonus[0] == kCoinSentinel);
+  CHECK(stateful.status[0] == kUpstreamStatus);
+  CHECK(after.descriptor == initial.descriptor);
+  CHECK(after.seed == initial.seed);
+  CHECK(after.subsequence == initial.subsequence);
+  CHECK(after.counter == initial.counter);
+  return true;
+}
+
+[[nodiscard]] bool CapturedGuardedRngFactoriesReplayAndRetainResources() {
+  constexpr uint32_t kNumSlots = 3;
+  VerifyFixture fixture(kNumSlots, 8);
+  CHECK(fixture.initialize());
+  CHECK(fixture.copy_seeded_inputs(12345U, 17U));
+  const LinearVerifyRngStateV1 initial =
+      make_linear_verify_rng_state_v1(19U, 23U, 29U);
+  CHECK(fixture.copy_state(initial));
+  CHECK(fixture.reset_coins());
+
+  std::optional<CudaCapturedGraph> seeded_graph;
+  CHECK(take_result(
+      capture_seeded_linear_verify_rng_graph(fixture.context(), fixture.lease(),
+                                             fixture.seeded_buffers()),
+      &seeded_graph));
+  std::optional<CudaGraphExecutable> seeded_executable;
+  CHECK(take_result(CudaGraphExecutable::instantiate(seeded_graph->graph(),
+                                                     fixture.context(),
+                                                     fixture.lease()),
+                    &seeded_executable));
+  CHECK_STATUS(seeded_graph->close());
+  seeded_graph.reset();
+  CHECK(fixture.write_status(0U));
+  CHECK_STATUS(seeded_executable->launch());
+  CHECK_STATUS(seeded_executable->synchronize());
+  HostCoins seeded{};
+  CHECK(fixture.read_coins(&seeded));
+  CHECK(seeded.status[0] == 0U);
+  for (uint32_t slot = 0; slot < kNumSlots; ++slot) {
+    CHECK(seeded.accept[slot] == reference_seeded_coin(12345U, 17U, slot));
+  }
+  CHECK(seeded.bonus[0] == reference_seeded_coin(12345U, 17U, kNumSlots));
+  CHECK_STATUS(seeded_executable->close());
+  seeded_executable.reset();
+
+  std::optional<CudaCapturedGraph> stateful_graph;
+  CHECK(take_result(
+      capture_stateful_linear_verify_rng_graph(
+          fixture.context(), fixture.lease(), fixture.stateful_buffers()),
+      &stateful_graph));
+  std::optional<CudaGraphExecutable> stateful_executable;
+  CHECK(take_result(CudaGraphExecutable::instantiate(stateful_graph->graph(),
+                                                     fixture.context(),
+                                                     fixture.lease()),
+                    &stateful_executable));
+  CHECK_STATUS(stateful_graph->close());
+  stateful_graph.reset();
+  CHECK(fixture.copy_state(initial));
+  CHECK(fixture.write_status(0U));
+  CHECK_STATUS(stateful_executable->launch());
+  CHECK_STATUS(stateful_executable->synchronize());
+  HostCoins stateful{};
+  CHECK(fixture.read_coins(&stateful));
+  CHECK(coins_equal(stateful, reference_stateful_coins(initial, kNumSlots)));
+  LinearVerifyRngStateV1 advanced{};
+  CHECK(fixture.read_state(&advanced));
+  CHECK(advanced.counter == initial.counter + 1U);
+
+  CHECK_STATUS(stateful_executable->close());
+  stateful_executable.reset();
+  return true;
+}
+
+[[nodiscard]] bool RngCaptureRejectsForeignArena() {
+  VerifyFixture fixture(3, 8);
+  CHECK(fixture.initialize());
+  std::optional<GraphMemoryArena> other_arena;
+  std::optional<GraphArenaLease> other_lease;
+  CHECK(take_result(GraphMemoryArena::allocate(fixture.context(), 256),
+                    &other_arena));
+  CHECK_STATUS(other_arena->seal());
+  CHECK(take_result(other_arena->acquire_lease(), &other_lease));
+
+  NativeRuntimeError seeded_error = sglang::native::native_runtime_ok();
+  CHECK(
+      std::move(capture_seeded_linear_verify_rng_graph(
+                    fixture.context(), *other_lease, fixture.seeded_buffers()))
+          .match([](CudaCapturedGraph &&) noexcept { return false; },
+                 [&seeded_error](NativeRuntimeError &&error) noexcept {
+                   seeded_error = error;
+                   return true;
+                 }));
+  CHECK(seeded_error.code == NativeRuntimeCode::kForeignSlice);
+  CHECK(seeded_error.operation == NativeRuntimeOperation::kGraphCaptureBegin);
+  CHECK(seeded_error.detail ==
+        static_cast<uint32_t>(LinearVerifyRngArgument::kSeed));
+
+  NativeRuntimeError stateful_error = sglang::native::native_runtime_ok();
+  CHECK(std::move(
+            capture_stateful_linear_verify_rng_graph(
+                fixture.context(), *other_lease, fixture.stateful_buffers()))
+            .match([](CudaCapturedGraph &&) noexcept { return false; },
+                   [&stateful_error](NativeRuntimeError &&error) noexcept {
+                     stateful_error = error;
+                     return true;
+                   }));
+  CHECK(stateful_error.code == NativeRuntimeCode::kForeignSlice);
+  CHECK(stateful_error.operation == NativeRuntimeOperation::kGraphCaptureBegin);
+  CHECK(stateful_error.detail ==
+        static_cast<uint32_t>(LinearVerifyRngArgument::kState));
+  other_lease.reset();
+  CHECK_STATUS(other_arena->close());
+  return true;
+}
+
 void set_probability(std::vector<float> *probabilities, uint32_t row,
                      uint32_t vocab_size, uint32_t token, float probability) {
   (*probabilities)[static_cast<uint64_t>(row) * vocab_size + token] =
@@ -977,6 +1129,11 @@ constexpr TestCase kTests[]{
     {"MetadataAndDeviceFailuresAreClosed", MetadataAndDeviceFailuresAreClosed},
     {"SeededCudaMatchesMurmurOracle", SeededCudaMatchesMurmurOracle},
     {"StatefulCudaMatchesPhiloxOracle", StatefulCudaMatchesPhiloxOracle},
+    {"GuardedEntrypointsPreservePublishedState",
+     GuardedEntrypointsPreservePublishedState},
+    {"CapturedGuardedRngFactoriesReplayAndRetainResources",
+     CapturedGuardedRngFactoriesReplayAndRetainResources},
+    {"RngCaptureRejectsForeignArena", RngCaptureRejectsForeignArena},
     {"ProductionShapeGraphComposesRngAndSampler",
      ProductionShapeGraphComposesRngAndSampler},
 };

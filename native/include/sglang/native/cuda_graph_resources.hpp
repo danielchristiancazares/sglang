@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -62,6 +63,26 @@ enum class NativeRuntimeOperation : uint32_t {
   kValidateLinearVerifyRng = 21,
   kLaunchSeededLinearVerifyRng = 22,
   kLaunchStatefulLinearVerifyRng = 23,
+  kValidateDsparkProposal = 24,
+  kLaunchDsparkProposal = 25,
+  kValidateGdnReplaySsmCommit = 26,
+  kLaunchGdnReplaySsmCommit = 27,
+  kGraphCreate = 28,
+  kGraphAddChild = 29,
+  kGraphClone = 30,
+  kGraphGetNodes = 31,
+  kGraphNodeType = 32,
+  kGraphMemcpyParams = 33,
+  kGraphMemcpyParamsSet = 34,
+  kHostAllocate = 35,
+  kHostFree = 36,
+  kValidateDsparkCycle = 37,
+  kLaunchDsparkCycleCompactResult = 38,
+  kGraphAddMemset = 39,
+  kGraphCaptureBegin = 40,
+  kGraphCaptureEnd = 41,
+  kValidateDsparkTargetVerify = 42,
+  kLaunchDsparkTargetVerify = 43,
 };
 
 struct NativeRuntimeError final {
@@ -82,94 +103,94 @@ struct NativeRuntimeError final {
   return status.code == NativeRuntimeCode::kOk;
 }
 
-[[nodiscard]] std::string_view native_runtime_code_name(
-    NativeRuntimeCode code) noexcept;
-[[nodiscard]] std::string_view native_runtime_operation_name(
-    NativeRuntimeOperation operation) noexcept;
+[[nodiscard]] std::string_view
+native_runtime_code_name(NativeRuntimeCode code) noexcept;
+[[nodiscard]] std::string_view
+native_runtime_operation_name(NativeRuntimeOperation operation) noexcept;
 
-template <typename T>
-using NativeRuntimeResult = Result<T, NativeRuntimeError>;
+template <typename T> using NativeRuntimeResult = Result<T, NativeRuntimeError>;
 
 namespace detail {
 struct CudaStreamState;
 struct GraphArenaState;
 
-[[nodiscard]] NativeRuntimeError tensor_binding_error(
-    TensorValidationError error) noexcept;
-}  // namespace detail
+[[nodiscard]] NativeRuntimeError
+tensor_binding_error(TensorValidationError error) noexcept;
+} // namespace detail
 
 class CudaStream;
 class GraphMemoryArena;
 class GraphArenaLease;
 class GraphMemorySlice;
 class CudaGraphExecutable;
+class CudaPinnedHostBuffer;
+class CudaCapturedGraph;
 
 template <DType D, uint32_t Rank, TensorAccess Access>
 class GraphStableTensorView;
 
 class CudaExecutionContext final {
- public:
-  CudaExecutionContext(const CudaExecutionContext& other) noexcept;
-  CudaExecutionContext(CudaExecutionContext&& other) noexcept;
-  CudaExecutionContext& operator=(const CudaExecutionContext&) = delete;
-  CudaExecutionContext& operator=(CudaExecutionContext&&) = delete;
+public:
+  CudaExecutionContext(const CudaExecutionContext &other) noexcept;
+  CudaExecutionContext(CudaExecutionContext &&other) noexcept;
+  CudaExecutionContext &operator=(const CudaExecutionContext &) = delete;
+  CudaExecutionContext &operator=(CudaExecutionContext &&) = delete;
   ~CudaExecutionContext() noexcept;
 
   [[nodiscard]] bool valid() const noexcept;
   [[nodiscard]] int32_t device_ordinal() const noexcept;
   [[nodiscard]] cudaStream_t stream() const noexcept;
-  [[nodiscard]] NativeRuntimeResult<unsigned int> stream_flags()
-      const noexcept;
+  [[nodiscard]] NativeRuntimeResult<unsigned int> stream_flags() const noexcept;
   [[nodiscard]] NativeRuntimeError synchronize() const noexcept;
 
- private:
-  explicit CudaExecutionContext(detail::CudaStreamState* state) noexcept;
+private:
+  explicit CudaExecutionContext(detail::CudaStreamState *state) noexcept;
 
-  detail::CudaStreamState* state_;
+  detail::CudaStreamState *state_;
 
   friend class CudaStream;
   friend class CudaGraphExecutable;
 };
 
 class CudaStream final {
- public:
-  CudaStream(const CudaStream&) = delete;
-  CudaStream& operator=(const CudaStream&) = delete;
-  CudaStream(CudaStream&& other) noexcept;
-  CudaStream& operator=(CudaStream&&) = delete;
+public:
+  CudaStream(const CudaStream &) = delete;
+  CudaStream &operator=(const CudaStream &) = delete;
+  CudaStream(CudaStream &&other) noexcept;
+  CudaStream &operator=(CudaStream &&) = delete;
   ~CudaStream() noexcept;
 
-  [[nodiscard]] static NativeRuntimeResult<CudaStream> create_nonblocking()
-      noexcept;
-  [[nodiscard]] NativeRuntimeResult<CudaExecutionContext> context()
-      const noexcept;
+  [[nodiscard]] static NativeRuntimeResult<CudaStream>
+  create_nonblocking() noexcept;
+  [[nodiscard]] NativeRuntimeResult<CudaExecutionContext>
+  context() const noexcept;
   [[nodiscard]] NativeRuntimeError close() noexcept;
   [[nodiscard]] bool valid() const noexcept;
   [[nodiscard]] int32_t device_ordinal() const noexcept;
 
- private:
-  explicit CudaStream(detail::CudaStreamState* state) noexcept;
+private:
+  explicit CudaStream(detail::CudaStreamState *state) noexcept;
 
-  detail::CudaStreamState* state_;
+  detail::CudaStreamState *state_;
 };
 
 class GraphMemorySlice final {
- public:
-  GraphMemorySlice(const GraphMemorySlice& other) noexcept;
-  GraphMemorySlice(GraphMemorySlice&& other) noexcept;
-  GraphMemorySlice& operator=(const GraphMemorySlice&) = delete;
-  GraphMemorySlice& operator=(GraphMemorySlice&&) = delete;
+public:
+  GraphMemorySlice(const GraphMemorySlice &other) noexcept;
+  GraphMemorySlice(GraphMemorySlice &&other) noexcept;
+  GraphMemorySlice &operator=(const GraphMemorySlice &) = delete;
+  GraphMemorySlice &operator=(GraphMemorySlice &&) = delete;
   ~GraphMemorySlice() noexcept;
 
   [[nodiscard]] bool valid() const noexcept;
   [[nodiscard]] uint64_t offset_bytes() const noexcept;
   [[nodiscard]] uint64_t size_bytes() const noexcept;
 
- private:
-  GraphMemorySlice(detail::GraphArenaState* state, uint64_t offset_bytes,
+private:
+  GraphMemorySlice(detail::GraphArenaState *state, uint64_t offset_bytes,
                    uint64_t size_bytes) noexcept;
 
-  detail::GraphArenaState* state_;
+  detail::GraphArenaState *state_;
   uint64_t offset_bytes_;
   uint64_t size_bytes_;
 
@@ -178,65 +199,73 @@ class GraphMemorySlice final {
 };
 
 class GraphArenaLease final {
- public:
-  GraphArenaLease(const GraphArenaLease& other) noexcept;
-  GraphArenaLease(GraphArenaLease&& other) noexcept;
-  GraphArenaLease& operator=(const GraphArenaLease&) = delete;
-  GraphArenaLease& operator=(GraphArenaLease&&) = delete;
+public:
+  GraphArenaLease(const GraphArenaLease &other) noexcept;
+  GraphArenaLease(GraphArenaLease &&other) noexcept;
+  GraphArenaLease &operator=(const GraphArenaLease &) = delete;
+  GraphArenaLease &operator=(GraphArenaLease &&) = delete;
   ~GraphArenaLease() noexcept;
 
   [[nodiscard]] bool valid() const noexcept;
   [[nodiscard]] int32_t device_ordinal() const noexcept;
   [[nodiscard]] uint64_t capacity_bytes() const noexcept;
+  // Process-local identity for stable-address provenance checks.  The value
+  // is opaque: callers may compare it for equality but must not dereference it.
+  [[nodiscard]] const void *owner_identity() const noexcept;
 
   template <DType D, uint32_t Rank>
   [[nodiscard]] NativeRuntimeResult<
       GraphStableTensorView<D, Rank, TensorAccess::kReadOnly>>
-  bind_const(const GraphMemorySlice& slice,
+  bind_const(const GraphMemorySlice &slice,
              SglNativeTensorMetadataV1 metadata) const noexcept;
 
   template <DType D, uint32_t Rank>
   [[nodiscard]] NativeRuntimeResult<
       GraphStableTensorView<D, Rank, TensorAccess::kReadWrite>>
-  bind_mutable(const GraphMemorySlice& slice,
+  bind_mutable(const GraphMemorySlice &slice,
                SglNativeTensorMetadataV1 metadata) const noexcept;
 
- private:
-  explicit GraphArenaLease(detail::GraphArenaState* state) noexcept;
+private:
+  explicit GraphArenaLease(detail::GraphArenaState *state) noexcept;
 
-  [[nodiscard]] NativeRuntimeError prepare_binding(
-      const GraphMemorySlice& slice, SglNativeTensorMetadataV1* metadata,
-      const void** allocation_base) const noexcept;
-  [[nodiscard]] NativeRuntimeError prepare_const_binding(
-      const GraphMemorySlice& slice, SglNativeTensorMetadataV1 metadata,
-      SglNativeConstTensorViewV1* raw) const noexcept;
-  [[nodiscard]] NativeRuntimeError prepare_mutable_binding(
-      const GraphMemorySlice& slice, SglNativeTensorMetadataV1 metadata,
-      SglNativeMutableTensorViewV1* raw) const noexcept;
+  [[nodiscard]] NativeRuntimeError
+  prepare_binding(const GraphMemorySlice &slice,
+                  SglNativeTensorMetadataV1 *metadata,
+                  const void **allocation_base) const noexcept;
+  [[nodiscard]] NativeRuntimeError
+  prepare_const_binding(const GraphMemorySlice &slice,
+                        SglNativeTensorMetadataV1 metadata,
+                        SglNativeConstTensorViewV1 *raw) const noexcept;
+  [[nodiscard]] NativeRuntimeError
+  prepare_mutable_binding(const GraphMemorySlice &slice,
+                          SglNativeTensorMetadataV1 metadata,
+                          SglNativeMutableTensorViewV1 *raw) const noexcept;
 
-  detail::GraphArenaState* state_;
+  detail::GraphArenaState *state_;
 
   friend class GraphMemoryArena;
   friend class CudaGraphExecutable;
+  friend class CudaCapturedGraph;
   template <DType D, uint32_t Rank, TensorAccess Access>
   friend class GraphStableTensorView;
 };
 
 class GraphMemoryArena final {
- public:
-  GraphMemoryArena(const GraphMemoryArena&) = delete;
-  GraphMemoryArena& operator=(const GraphMemoryArena&) = delete;
-  GraphMemoryArena(GraphMemoryArena&& other) noexcept;
-  GraphMemoryArena& operator=(GraphMemoryArena&&) = delete;
+public:
+  GraphMemoryArena(const GraphMemoryArena &) = delete;
+  GraphMemoryArena &operator=(const GraphMemoryArena &) = delete;
+  GraphMemoryArena(GraphMemoryArena &&other) noexcept;
+  GraphMemoryArena &operator=(GraphMemoryArena &&) = delete;
   ~GraphMemoryArena() noexcept;
 
-  [[nodiscard]] static NativeRuntimeResult<GraphMemoryArena> allocate(
-      const CudaExecutionContext& context, uint64_t capacity_bytes) noexcept;
-  [[nodiscard]] NativeRuntimeResult<GraphMemorySlice> reserve(
-      uint64_t size_bytes, uint64_t alignment_bytes) noexcept;
+  [[nodiscard]] static NativeRuntimeResult<GraphMemoryArena>
+  allocate(const CudaExecutionContext &context,
+           uint64_t capacity_bytes) noexcept;
+  [[nodiscard]] NativeRuntimeResult<GraphMemorySlice>
+  reserve(uint64_t size_bytes, uint64_t alignment_bytes) noexcept;
   [[nodiscard]] NativeRuntimeError seal() noexcept;
-  [[nodiscard]] NativeRuntimeResult<GraphArenaLease> acquire_lease()
-      const noexcept;
+  [[nodiscard]] NativeRuntimeResult<GraphArenaLease>
+  acquire_lease() const noexcept;
   [[nodiscard]] NativeRuntimeError close() noexcept;
 
   [[nodiscard]] bool valid() const noexcept;
@@ -245,10 +274,77 @@ class GraphMemoryArena final {
   [[nodiscard]] uint64_t capacity_bytes() const noexcept;
   [[nodiscard]] uint64_t used_bytes() const noexcept;
 
- private:
-  explicit GraphMemoryArena(detail::GraphArenaState* state) noexcept;
+private:
+  explicit GraphMemoryArena(detail::GraphArenaState *state) noexcept;
 
-  detail::GraphArenaState* state_;
+  detail::GraphArenaState *state_;
+};
+
+class CudaPinnedHostBuffer final {
+public:
+  CudaPinnedHostBuffer(const CudaPinnedHostBuffer &) = delete;
+  CudaPinnedHostBuffer &operator=(const CudaPinnedHostBuffer &) = delete;
+  CudaPinnedHostBuffer(CudaPinnedHostBuffer &&other) noexcept;
+  CudaPinnedHostBuffer &operator=(CudaPinnedHostBuffer &&) = delete;
+  ~CudaPinnedHostBuffer() noexcept;
+
+  [[nodiscard]] static NativeRuntimeResult<CudaPinnedHostBuffer>
+  allocate(uint64_t size_bytes) noexcept;
+  [[nodiscard]] NativeRuntimeError close() noexcept;
+  [[nodiscard]] bool valid() const noexcept;
+  [[nodiscard]] void *data() const noexcept;
+  [[nodiscard]] uint64_t size_bytes() const noexcept;
+
+private:
+  CudaPinnedHostBuffer(void *data, uint64_t size_bytes) noexcept;
+
+  void *data_;
+  uint64_t size_bytes_;
+};
+
+// Owns a source CUDA graph together with the stream context, graph-arena lease,
+// and optional external owner required by every address recorded in that graph.
+// It is intentionally distinct from CudaGraphExecutable: composition clones
+// source graphs, whereas standalone execution instantiates them.
+class CudaCapturedGraph final {
+public:
+  using CaptureBody = NativeRuntimeError (*)(void *) noexcept;
+
+  CudaCapturedGraph(const CudaCapturedGraph &) = delete;
+  CudaCapturedGraph &operator=(const CudaCapturedGraph &) = delete;
+  CudaCapturedGraph(CudaCapturedGraph &&other) noexcept;
+  CudaCapturedGraph &operator=(CudaCapturedGraph &&) = delete;
+  ~CudaCapturedGraph() noexcept;
+
+  [[nodiscard]] static NativeRuntimeResult<CudaCapturedGraph>
+  capture(const CudaExecutionContext &context, const GraphArenaLease &arena,
+          CaptureBody body, void *user_data) noexcept;
+  [[nodiscard]] static NativeRuntimeResult<CudaCapturedGraph>
+  capture_retaining(const CudaExecutionContext &context,
+                    const GraphArenaLease &arena,
+                    std::shared_ptr<const void> retained_owner,
+                    CaptureBody body, void *user_data) noexcept;
+  [[nodiscard]] NativeRuntimeError close() noexcept;
+  [[nodiscard]] bool valid() const noexcept;
+  [[nodiscard]] int32_t device_ordinal() const noexcept;
+  [[nodiscard]] cudaGraph_t graph() const noexcept;
+  [[nodiscard]] bool belongs_to(const GraphArenaLease &arena) const noexcept;
+  [[nodiscard]] const void *retained_owner_identity() const noexcept;
+
+private:
+  CudaCapturedGraph(cudaGraph_t graph, CudaExecutionContext context,
+                    GraphArenaLease arena,
+                    std::shared_ptr<const void> retained_owner) noexcept;
+  [[nodiscard]] static NativeRuntimeResult<CudaCapturedGraph>
+  capture_impl(const CudaExecutionContext &context,
+               const GraphArenaLease &arena,
+               std::shared_ptr<const void> retained_owner, CaptureBody body,
+               void *user_data) noexcept;
+
+  cudaGraph_t graph_;
+  std::optional<CudaExecutionContext> context_;
+  std::optional<GraphArenaLease> arena_;
+  std::shared_ptr<const void> retained_owner_;
 };
 
 template <DType D, uint32_t Rank, TensorAccess Access>
@@ -256,11 +352,11 @@ class GraphStableTensorView final {
   static_assert(dtype_element_bits(D) != 0);
   static_assert(Rank <= SGL_NATIVE_TENSOR_MAX_RANK);
 
- public:
-  GraphStableTensorView(const GraphStableTensorView&) noexcept = default;
-  GraphStableTensorView(GraphStableTensorView&&) noexcept = default;
-  GraphStableTensorView& operator=(const GraphStableTensorView&) = delete;
-  GraphStableTensorView& operator=(GraphStableTensorView&&) = delete;
+public:
+  GraphStableTensorView(const GraphStableTensorView &) noexcept = default;
+  GraphStableTensorView(GraphStableTensorView &&) noexcept = default;
+  GraphStableTensorView &operator=(const GraphStableTensorView &) = delete;
+  GraphStableTensorView &operator=(GraphStableTensorView &&) = delete;
   ~GraphStableTensorView() noexcept = default;
 
   [[nodiscard]] constexpr DType dtype() const noexcept { return D; }
@@ -280,24 +376,35 @@ class GraphStableTensorView final {
   [[nodiscard]] uint64_t allocation_bytes() const noexcept {
     return view_.allocation_bytes();
   }
+  [[nodiscard]] uint64_t storage_offset_elements() const noexcept {
+    return view_.storage_offset_elements();
+  }
   [[nodiscard]] bool is_empty() const noexcept { return view_.is_empty(); }
   [[nodiscard]] bool is_row_major_contiguous() const noexcept {
     return view_.is_row_major_contiguous();
   }
+  // Process-local identity of the graph arena that owns this view.  The value
+  // is opaque and exists only for fail-closed provenance comparisons.
+  [[nodiscard]] const void *owner_identity() const noexcept {
+    return lease_.owner_identity();
+  }
+  [[nodiscard]] bool belongs_to(const GraphArenaLease &arena) const noexcept {
+    return lease_.state_ != nullptr && lease_.state_ == arena.state_;
+  }
 
-  [[nodiscard]] const std::byte* data_bytes() const noexcept
+  [[nodiscard]] const std::byte *data_bytes() const noexcept
     requires(Access == TensorAccess::kReadOnly)
   {
     return view_.data_bytes();
   }
 
-  [[nodiscard]] std::byte* data_bytes() const noexcept
+  [[nodiscard]] std::byte *data_bytes() const noexcept
     requires(Access == TensorAccess::kReadWrite)
   {
     return view_.data_bytes();
   }
 
- private:
+private:
   using TypedView = TypedTensorView<D, Rank, Access>;
 
   GraphStableTensorView(GraphArenaLease lease, TypedView view) noexcept
@@ -310,27 +417,46 @@ class GraphStableTensorView final {
 };
 
 class CudaGraphExecutable final {
- public:
-  CudaGraphExecutable(const CudaGraphExecutable&) = delete;
-  CudaGraphExecutable& operator=(const CudaGraphExecutable&) = delete;
-  CudaGraphExecutable(CudaGraphExecutable&& other) noexcept;
-  CudaGraphExecutable& operator=(CudaGraphExecutable&&) = delete;
+public:
+  CudaGraphExecutable(const CudaGraphExecutable &) = delete;
+  CudaGraphExecutable &operator=(const CudaGraphExecutable &) = delete;
+  CudaGraphExecutable(CudaGraphExecutable &&other) noexcept;
+  CudaGraphExecutable &operator=(CudaGraphExecutable &&) = delete;
   ~CudaGraphExecutable() noexcept;
 
-  [[nodiscard]] static NativeRuntimeResult<CudaGraphExecutable> instantiate(
-      cudaGraph_t graph, const CudaExecutionContext& context,
-      const GraphArenaLease& arena) noexcept;
+  [[nodiscard]] static NativeRuntimeResult<CudaGraphExecutable>
+  instantiate(cudaGraph_t graph, const CudaExecutionContext &context,
+              const GraphArenaLease &arena) noexcept;
+  // Builds and instantiates one parent graph whose child nodes execute in the
+  // supplied order. The CUDA runtime clones every child into the parent, so
+  // callers retain ownership of the source graph objects and all storage
+  // referenced by their nodes.
+  [[nodiscard]] static NativeRuntimeResult<CudaGraphExecutable>
+  instantiate_child_sequence(std::span<const cudaGraph_t> child_graphs,
+                             const CudaExecutionContext &context,
+                             const GraphArenaLease &arena) noexcept;
   [[nodiscard]] NativeRuntimeError launch() noexcept;
   [[nodiscard]] NativeRuntimeError synchronize() noexcept;
   [[nodiscard]] NativeRuntimeError close() noexcept;
   [[nodiscard]] bool valid() const noexcept;
   [[nodiscard]] int32_t device_ordinal() const noexcept;
+  // Returns a caller-owned clone suitable for child-graph composition. The
+  // caller must destroy the returned graph with cudaGraphDestroy.
+  [[nodiscard]] NativeRuntimeResult<cudaGraph_t> clone_graph() const noexcept;
+  // Retargets exactly one 1-D device-to-host memcpy node in the retained graph
+  // to a caller-owned pinned destination before the first launch.
+  [[nodiscard]] NativeRuntimeError
+  bind_compact_device_to_host_result(void *host_destination,
+                                     const void *device_source,
+                                     uint64_t size_bytes) noexcept;
 
- private:
-  CudaGraphExecutable(cudaGraphExec_t executable, cudaEvent_t completion_event,
+private:
+  CudaGraphExecutable(cudaGraph_t graph, cudaGraphExec_t executable,
+                      cudaEvent_t completion_event,
                       CudaExecutionContext context,
                       GraphArenaLease arena) noexcept;
 
+  cudaGraph_t graph_;
   cudaGraphExec_t executable_;
   cudaEvent_t completion_event_;
   std::optional<CudaExecutionContext> context_;
@@ -340,12 +466,10 @@ class CudaGraphExecutable final {
 };
 
 template <DType D, uint32_t Rank>
-NativeRuntimeResult<
-    GraphStableTensorView<D, Rank, TensorAccess::kReadOnly>>
-GraphArenaLease::bind_const(const GraphMemorySlice& slice,
+NativeRuntimeResult<GraphStableTensorView<D, Rank, TensorAccess::kReadOnly>>
+GraphArenaLease::bind_const(const GraphMemorySlice &slice,
                             SglNativeTensorMetadataV1 metadata) const noexcept {
-  using StableView =
-      GraphStableTensorView<D, Rank, TensorAccess::kReadOnly>;
+  using StableView = GraphStableTensorView<D, Rank, TensorAccess::kReadOnly>;
   using StableResult = NativeRuntimeResult<StableView>;
 
   SglNativeConstTensorViewV1 raw{};
@@ -355,33 +479,32 @@ GraphArenaLease::bind_const(const GraphMemorySlice& slice,
     return StableResult::failure(prepared);
   }
 
-  return std::move(validate(&raw)).match(
-      [this](ValidatedConstTensorView validated) noexcept -> StableResult {
-        return std::move(narrow<D, Rank>(validated))
-            .match(
-                [this](TypedConstTensorView<D, Rank> typed) noexcept
-                    -> StableResult {
-                  return StableResult::success(
-                      StableView(GraphArenaLease(*this), typed));
-                },
-                [](TensorValidationError error) noexcept -> StableResult {
-                  return StableResult::failure(
-                      detail::tensor_binding_error(error));
-                });
-      },
-      [](TensorValidationError error) noexcept -> StableResult {
-        return StableResult::failure(detail::tensor_binding_error(error));
-      });
+  return std::move(validate(&raw))
+      .match(
+          [this](ValidatedConstTensorView validated) noexcept -> StableResult {
+            return std::move(narrow<D, Rank>(validated))
+                .match(
+                    [this](TypedConstTensorView<D, Rank> typed) noexcept
+                        -> StableResult {
+                      return StableResult::success(
+                          StableView(GraphArenaLease(*this), typed));
+                    },
+                    [](TensorValidationError error) noexcept -> StableResult {
+                      return StableResult::failure(
+                          detail::tensor_binding_error(error));
+                    });
+          },
+          [](TensorValidationError error) noexcept -> StableResult {
+            return StableResult::failure(detail::tensor_binding_error(error));
+          });
 }
 
 template <DType D, uint32_t Rank>
-NativeRuntimeResult<
-    GraphStableTensorView<D, Rank, TensorAccess::kReadWrite>>
+NativeRuntimeResult<GraphStableTensorView<D, Rank, TensorAccess::kReadWrite>>
 GraphArenaLease::bind_mutable(
-    const GraphMemorySlice& slice,
+    const GraphMemorySlice &slice,
     SglNativeTensorMetadataV1 metadata) const noexcept {
-  using StableView =
-      GraphStableTensorView<D, Rank, TensorAccess::kReadWrite>;
+  using StableView = GraphStableTensorView<D, Rank, TensorAccess::kReadWrite>;
   using StableResult = NativeRuntimeResult<StableView>;
 
   SglNativeMutableTensorViewV1 raw{};
@@ -391,23 +514,25 @@ GraphArenaLease::bind_mutable(
     return StableResult::failure(prepared);
   }
 
-  return std::move(validate(&raw)).match(
-      [this](ValidatedMutableTensorView validated) noexcept -> StableResult {
-        return std::move(narrow<D, Rank>(validated))
-            .match(
-                [this](TypedMutableTensorView<D, Rank> typed) noexcept
-                    -> StableResult {
-                  return StableResult::success(
-                      StableView(GraphArenaLease(*this), typed));
-                },
-                [](TensorValidationError error) noexcept -> StableResult {
-                  return StableResult::failure(
-                      detail::tensor_binding_error(error));
-                });
-      },
-      [](TensorValidationError error) noexcept -> StableResult {
-        return StableResult::failure(detail::tensor_binding_error(error));
-      });
+  return std::move(validate(&raw))
+      .match(
+          [this](
+              ValidatedMutableTensorView validated) noexcept -> StableResult {
+            return std::move(narrow<D, Rank>(validated))
+                .match(
+                    [this](TypedMutableTensorView<D, Rank> typed) noexcept
+                        -> StableResult {
+                      return StableResult::success(
+                          StableView(GraphArenaLease(*this), typed));
+                    },
+                    [](TensorValidationError error) noexcept -> StableResult {
+                      return StableResult::failure(
+                          detail::tensor_binding_error(error));
+                    });
+          },
+          [](TensorValidationError error) noexcept -> StableResult {
+            return StableResult::failure(detail::tensor_binding_error(error));
+          });
 }
 
 static_assert(sizeof(NativeRuntimeError) == 32);
@@ -417,11 +542,11 @@ static_assert(std::is_trivially_copyable_v<NativeRuntimeError>);
 static_assert(!std::is_default_constructible_v<CudaExecutionContext>);
 static_assert(!std::is_default_constructible_v<GraphMemorySlice>);
 static_assert(!std::is_default_constructible_v<GraphArenaLease>);
-static_assert(!std::is_constructible_v<CudaExecutionContext, cudaStream_t,
-                                       int32_t>);
-static_assert(!std::is_constructible_v<GraphMemorySlice, void*, uint64_t,
-                                       uint64_t>);
+static_assert(
+    !std::is_constructible_v<CudaExecutionContext, cudaStream_t, int32_t>);
+static_assert(
+    !std::is_constructible_v<GraphMemorySlice, void *, uint64_t, uint64_t>);
 
-}  // namespace sglang::native
+} // namespace sglang::native
 
-#endif  // SGLANG_NATIVE_CUDA_GRAPH_RESOURCES_HPP_
+#endif // SGLANG_NATIVE_CUDA_GRAPH_RESOURCES_HPP_

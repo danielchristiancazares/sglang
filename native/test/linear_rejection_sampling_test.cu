@@ -1,5 +1,7 @@
 #include "sglang/native/linear_rejection_sampling.hpp"
 
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -19,10 +21,15 @@
 
 namespace {
 
+using sglang::native::
+    capture_linear_rejection_sampling_from_bfloat16_logits_graph;
+using sglang::native::
+    capture_linear_rejection_sampling_from_float16_logits_graph;
 using sglang::native::ConstFloat32Matrix;
 using sglang::native::ConstFloat32Tensor3;
 using sglang::native::ConstFloat32Vector;
 using sglang::native::ConstInt64Matrix;
+using sglang::native::CudaCapturedGraph;
 using sglang::native::CudaExecutionContext;
 using sglang::native::CudaGraphExecutable;
 using sglang::native::CudaStream;
@@ -30,28 +37,31 @@ using sglang::native::DType;
 using sglang::native::GraphArenaLease;
 using sglang::native::GraphMemoryArena;
 using sglang::native::GraphMemorySlice;
+using sglang::native::is_ok;
+using sglang::native::kLinearRejectionSamplingThreads;
+using sglang::native::launch_linear_rejection_sampling;
+using sglang::native::launch_linear_rejection_sampling_from_bfloat16_logits;
+using sglang::native::launch_linear_rejection_sampling_from_float16_logits;
 using sglang::native::LinearRejectionSamplingArgument;
 using sglang::native::LinearRejectionSamplingBuffers;
+using sglang::native::LinearRejectionSamplingCorrectedLogitBuffers;
 using sglang::native::LinearRejectionSamplingDeviceCode;
+using sglang::native::make_tensor_metadata_v1;
 using sglang::native::MutableInt32Matrix;
 using sglang::native::MutableInt32Vector;
 using sglang::native::MutableUInt32Vector;
+using sglang::native::native_runtime_code_name;
+using sglang::native::native_runtime_operation_name;
 using sglang::native::NativeRuntimeCode;
 using sglang::native::NativeRuntimeError;
 using sglang::native::NativeRuntimeOperation;
 using sglang::native::NativeRuntimeResult;
 using sglang::native::TensorAccess;
-using sglang::native::is_ok;
-using sglang::native::kLinearRejectionSamplingThreads;
-using sglang::native::launch_linear_rejection_sampling;
-using sglang::native::make_tensor_metadata_v1;
-using sglang::native::native_runtime_code_name;
-using sglang::native::native_runtime_operation_name;
 
 constexpr int32_t kOutputSentinel = -9137;
 constexpr uint32_t kStatusSentinel = 0xffffffffU;
 
-[[nodiscard]] bool record_check(bool passed, const char* expression,
+[[nodiscard]] bool record_check(bool passed, const char *expression,
                                 int line) noexcept {
   if (!passed) {
     std::printf("%s:%d: check failed: %s\n", __FILE__, line, expression);
@@ -62,37 +72,35 @@ constexpr uint32_t kStatusSentinel = 0xffffffffU;
 void print_error(NativeRuntimeError error) noexcept {
   const auto code = native_runtime_code_name(error.code);
   const auto operation = native_runtime_operation_name(error.operation);
-  std::printf(
-      "runtime error code=%.*s operation=%.*s native=%d detail=%u "
-      "actual=%llu required=%llu\n",
-      static_cast<int>(code.size()), code.data(),
-      static_cast<int>(operation.size()), operation.data(),
-      error.native_code, error.detail,
-      static_cast<unsigned long long>(error.actual),
-      static_cast<unsigned long long>(error.required));
+  std::printf("runtime error code=%.*s operation=%.*s native=%d detail=%u "
+              "actual=%llu required=%llu\n",
+              static_cast<int>(code.size()), code.data(),
+              static_cast<int>(operation.size()), operation.data(),
+              error.native_code, error.detail,
+              static_cast<unsigned long long>(error.actual),
+              static_cast<unsigned long long>(error.required));
 }
 
-#define CHECK(condition)                                                    \
-  do {                                                                      \
-    if (!record_check(static_cast<bool>(condition), #condition, __LINE__)) { \
-      return false;                                                         \
-    }                                                                       \
+#define CHECK(condition)                                                       \
+  do {                                                                         \
+    if (!record_check(static_cast<bool>(condition), #condition, __LINE__)) {   \
+      return false;                                                            \
+    }                                                                          \
   } while (false)
 
-#define CHECK_CUDA(expression)                                               \
-  do {                                                                       \
-    const cudaError_t cuda_status = (expression);                             \
-    if (cuda_status != cudaSuccess) {                                         \
-      std::printf("%s:%d: CUDA failure %d: %s\n", __FILE__, __LINE__,        \
-                  static_cast<int>(cuda_status),                              \
-                  cudaGetErrorString(cuda_status));                           \
-      return false;                                                          \
-    }                                                                        \
+#define CHECK_CUDA(expression)                                                 \
+  do {                                                                         \
+    const cudaError_t cuda_status = (expression);                              \
+    if (cuda_status != cudaSuccess) {                                          \
+      std::printf("%s:%d: CUDA failure %d: %s\n", __FILE__, __LINE__,          \
+                  static_cast<int>(cuda_status),                               \
+                  cudaGetErrorString(cuda_status));                            \
+      return false;                                                            \
+    }                                                                          \
   } while (false)
 
 [[nodiscard]] bool check_status(NativeRuntimeError status,
-                                const char* expression,
-                                int line) noexcept {
+                                const char *expression, int line) noexcept {
   if (is_ok(status)) {
     return true;
   }
@@ -101,29 +109,29 @@ void print_error(NativeRuntimeError error) noexcept {
   return false;
 }
 
-#define CHECK_STATUS(expression)                                             \
-  do {                                                                       \
-    if (!check_status((expression), #expression, __LINE__)) {                \
-      return false;                                                          \
-    }                                                                        \
+#define CHECK_STATUS(expression)                                               \
+  do {                                                                         \
+    if (!check_status((expression), #expression, __LINE__)) {                  \
+      return false;                                                            \
+    }                                                                          \
   } while (false)
 
 template <typename T>
 [[nodiscard]] bool take_result(NativeRuntimeResult<T> result,
-                               std::optional<T>* output) noexcept {
+                               std::optional<T> *output) noexcept {
   return std::move(result).match(
-      [output](T&& value) noexcept {
+      [output](T &&value) noexcept {
         output->emplace(std::move(value));
         return true;
       },
-      [](NativeRuntimeError&& error) noexcept {
+      [](NativeRuntimeError &&error) noexcept {
         print_error(error);
         return false;
       });
 }
 
-[[nodiscard]] SglNativeTensorMetadataV1 metadata_1d(
-    SglNativeDType dtype, int64_t first) noexcept {
+[[nodiscard]] SglNativeTensorMetadataV1 metadata_1d(SglNativeDType dtype,
+                                                    int64_t first) noexcept {
   auto metadata = make_tensor_metadata_v1();
   metadata.dtype = dtype;
   metadata.rank = 1;
@@ -132,8 +140,8 @@ template <typename T>
   return metadata;
 }
 
-[[nodiscard]] SglNativeTensorMetadataV1 metadata_2d(
-    SglNativeDType dtype, int64_t first, int64_t second) noexcept {
+[[nodiscard]] SglNativeTensorMetadataV1
+metadata_2d(SglNativeDType dtype, int64_t first, int64_t second) noexcept {
   auto metadata = make_tensor_metadata_v1();
   metadata.dtype = dtype;
   metadata.rank = 2;
@@ -144,9 +152,10 @@ template <typename T>
   return metadata;
 }
 
-[[nodiscard]] SglNativeTensorMetadataV1 metadata_3d(
-    SglNativeDType dtype, int64_t first, int64_t second,
-    int64_t third) noexcept {
+[[nodiscard]] SglNativeTensorMetadataV1 metadata_3d(SglNativeDType dtype,
+                                                    int64_t first,
+                                                    int64_t second,
+                                                    int64_t third) noexcept {
   auto metadata = make_tensor_metadata_v1();
   metadata.dtype = dtype;
   metadata.rank = 3;
@@ -178,16 +187,14 @@ struct HostOutputs final {
 };
 
 [[nodiscard]] HostOutputs sentinel_outputs(uint32_t num_slots) {
-  return HostOutputs{
-      std::vector<int32_t>(num_slots, kOutputSentinel),
-      std::vector<int32_t>(num_slots, kOutputSentinel),
-      {kOutputSentinel},
-      {kStatusSentinel}};
+  return HostOutputs{std::vector<int32_t>(num_slots, kOutputSentinel),
+                     std::vector<int32_t>(num_slots, kOutputSentinel),
+                     {kOutputSentinel},
+                     {kStatusSentinel}};
 }
 
-[[nodiscard]] float probability_mass(
-    const HostInputs& inputs, uint32_t row, uint32_t token,
-    bool all_drafts_correct) {
+[[nodiscard]] float probability_mass(const HostInputs &inputs, uint32_t row,
+                                     uint32_t token, bool all_drafts_correct) {
   const uint64_t offset =
       static_cast<uint64_t>(row) * inputs.vocab_size + token;
   const float target = inputs.target_probs[offset];
@@ -200,22 +207,19 @@ struct HostOutputs final {
   return difference > 0.0F ? difference : 0.0F;
 }
 
-[[nodiscard]] HostOutputs reference_sampling(const HostInputs& inputs) {
+[[nodiscard]] HostOutputs reference_sampling(const HostInputs &inputs) {
   HostOutputs outputs = sentinel_outputs(inputs.num_slots);
   LinearRejectionSamplingDeviceCode code =
       LinearRejectionSamplingDeviceCode::kOk;
   for (uint32_t slot = 0; slot < inputs.num_slots; ++slot) {
     const int64_t out_index = inputs.proposal_out_indices[slot];
-    if (out_index < 0 ||
-        out_index >= static_cast<int64_t>(inputs.num_slots)) {
-      code = LinearRejectionSamplingDeviceCode::
-          kProposalOutIndexOutOfRange;
+    if (out_index < 0 || out_index >= static_cast<int64_t>(inputs.num_slots)) {
+      code = LinearRejectionSamplingDeviceCode::kProposalOutIndexOutOfRange;
       break;
     }
     for (uint32_t prior = 0; prior < slot; ++prior) {
       if (inputs.proposal_out_indices[prior] == out_index) {
-        code =
-            LinearRejectionSamplingDeviceCode::kDuplicateProposalOutIndex;
+        code = LinearRejectionSamplingDeviceCode::kDuplicateProposalOutIndex;
         break;
       }
     }
@@ -225,8 +229,7 @@ struct HostOutputs final {
     const int64_t proposal_token = inputs.proposal_tokens[slot];
     if (proposal_token < 0 ||
         proposal_token >= static_cast<int64_t>(inputs.vocab_size)) {
-      code =
-          LinearRejectionSamplingDeviceCode::kProposalTokenOutOfRange;
+      code = LinearRejectionSamplingDeviceCode::kProposalTokenOutOfRange;
       break;
     }
   }
@@ -240,8 +243,7 @@ struct HostOutputs final {
   uint32_t last_accept_out_index =
       static_cast<uint32_t>(inputs.proposal_out_indices[0]);
   bool all_drafts_correct = true;
-  outputs.accept_indices[0] =
-      static_cast<int32_t>(last_accept_out_index);
+  outputs.accept_indices[0] = static_cast<int32_t>(last_accept_out_index);
   for (uint32_t step = 1; step < inputs.num_slots; ++step) {
     const uint32_t proposal_token =
         static_cast<uint32_t>(inputs.proposal_tokens[step]);
@@ -268,20 +270,18 @@ struct HostOutputs final {
 
   constexpr uint32_t kThreads = kLinearRejectionSamplingThreads;
   const uint64_t segment_size =
-      (static_cast<uint64_t>(inputs.vocab_size) + kThreads - 1) /
-      kThreads;
+      (static_cast<uint64_t>(inputs.vocab_size) + kThreads - 1) / kThreads;
   std::array<float, kThreads> partition_masses{};
   std::array<float, kThreads> partition_prefixes{};
   for (uint32_t thread = 0; thread < kThreads; ++thread) {
-    const uint64_t begin =
-        static_cast<uint64_t>(thread) * segment_size;
+    const uint64_t begin = static_cast<uint64_t>(thread) * segment_size;
     const uint64_t end =
         std::min<uint64_t>(begin + segment_size, inputs.vocab_size);
     float mass = 0.0F;
     for (uint64_t token = begin; token < end; ++token) {
-      mass += probability_mass(
-          inputs, current_prob_row, static_cast<uint32_t>(token),
-          all_drafts_correct);
+      mass +=
+          probability_mass(inputs, current_prob_row,
+                           static_cast<uint32_t>(token), all_drafts_correct);
     }
     partition_masses[thread] = mass;
   }
@@ -294,29 +294,26 @@ struct HostOutputs final {
   const float target_mass = inputs.bonus_uniforms[0] * total_mass;
   uint32_t bonus_token = inputs.vocab_size - 1;
   for (uint32_t thread = 0; thread < kThreads; ++thread) {
-    const uint64_t begin =
-        static_cast<uint64_t>(thread) * segment_size;
+    const uint64_t begin = static_cast<uint64_t>(thread) * segment_size;
     const uint64_t end =
         std::min<uint64_t>(begin + segment_size, inputs.vocab_size);
     float cumulative_mass = partition_prefixes[thread];
     for (uint64_t token = begin; token < end; ++token) {
-      cumulative_mass += probability_mass(
-          inputs, current_prob_row, static_cast<uint32_t>(token),
-          all_drafts_correct);
+      cumulative_mass +=
+          probability_mass(inputs, current_prob_row,
+                           static_cast<uint32_t>(token), all_drafts_correct);
       if (cumulative_mass > target_mass) {
-        bonus_token = std::min(
-            bonus_token, static_cast<uint32_t>(token));
+        bonus_token = std::min(bonus_token, static_cast<uint32_t>(token));
         break;
       }
     }
   }
-  outputs.out_tokens[last_accept_out_index] =
-      static_cast<int32_t>(bonus_token);
+  outputs.out_tokens[last_accept_out_index] = static_cast<int32_t>(bonus_token);
   return outputs;
 }
 
-[[nodiscard]] bool outputs_equal(const HostOutputs& actual,
-                                 const HostOutputs& expected) {
+[[nodiscard]] bool outputs_equal(const HostOutputs &actual,
+                                 const HostOutputs &expected) {
   CHECK(actual.out_tokens == expected.out_tokens);
   CHECK(actual.accept_indices == expected.accept_indices);
   CHECK(actual.num_correct_drafts == expected.num_correct_drafts);
@@ -325,40 +322,34 @@ struct HostOutputs final {
 }
 
 class SamplingFixture final {
- public:
-  SamplingFixture(const SamplingFixture&) = delete;
-  SamplingFixture& operator=(const SamplingFixture&) = delete;
-  SamplingFixture(SamplingFixture&&) = delete;
-  SamplingFixture& operator=(SamplingFixture&&) = delete;
+public:
+  SamplingFixture(const SamplingFixture &) = delete;
+  SamplingFixture &operator=(const SamplingFixture &) = delete;
+  SamplingFixture(SamplingFixture &&) = delete;
+  SamplingFixture &operator=(SamplingFixture &&) = delete;
 
-  explicit SamplingFixture(uint32_t num_slots,
-                           uint32_t vocab_size) noexcept
+  explicit SamplingFixture(uint32_t num_slots, uint32_t vocab_size) noexcept
       : num_slots_(num_slots), vocab_size_(vocab_size) {}
 
   [[nodiscard]] bool initialize() noexcept {
     const uint64_t slots = num_slots_;
     const uint64_t vocab = vocab_size_;
-    const uint64_t target_bytes =
-        slots * vocab * sizeof(float);
-    const uint64_t draft_bytes =
-        (slots - 1) * vocab * sizeof(float);
+    const uint64_t target_bytes = slots * vocab * sizeof(float);
+    const uint64_t draft_bytes = (slots - 1) * vocab * sizeof(float);
     const uint64_t capacity =
         target_bytes + draft_bytes +
-        slots * (2 * sizeof(int32_t) + 2 * sizeof(int64_t) +
-                 sizeof(float)) +
-        2 * sizeof(int32_t) + sizeof(float) + sizeof(uint32_t) +
-        10 * 256;
+        slots * (2 * sizeof(int32_t) + 2 * sizeof(int64_t) + sizeof(float)) +
+        2 * sizeof(int32_t) + sizeof(float) + sizeof(uint32_t) + 10 * 256;
 
     if (!take_result(CudaStream::create_nonblocking(), &stream_) ||
         !take_result(stream_->context(), &context_) ||
-        !take_result(
-            GraphMemoryArena::allocate(*context_, capacity), &arena_) ||
+        !take_result(GraphMemoryArena::allocate(*context_, capacity),
+                     &arena_) ||
         !reserve(slots * sizeof(int32_t), &out_tokens_slice_) ||
         !reserve(slots * sizeof(int32_t), &accept_indices_slice_) ||
         !reserve(sizeof(int32_t), &num_correct_drafts_slice_) ||
         !reserve(slots * sizeof(int64_t), &proposal_tokens_slice_) ||
-        !reserve(slots * sizeof(int64_t),
-                 &proposal_out_indices_slice_) ||
+        !reserve(slots * sizeof(int64_t), &proposal_out_indices_slice_) ||
         !reserve(slots * sizeof(float), &accept_uniforms_slice_) ||
         !reserve(sizeof(float), &bonus_uniforms_slice_) ||
         !reserve(target_bytes, &target_probs_slice_) ||
@@ -371,63 +362,47 @@ class SamplingFixture final {
       return false;
     }
 
-    if (!take_result(
-            lease_->bind_mutable<DType::kInt32, 1>(
-                *out_tokens_slice_,
-                metadata_1d(SGL_NATIVE_DTYPE_INT32, num_slots_)),
-            &out_tokens_) ||
-        !take_result(
-            lease_->bind_mutable<DType::kInt32, 2>(
-                *accept_indices_slice_,
-                metadata_2d(
-                    SGL_NATIVE_DTYPE_INT32, 1, num_slots_)),
-            &accept_indices_) ||
-        !take_result(
-            lease_->bind_mutable<DType::kInt32, 1>(
-                *num_correct_drafts_slice_,
-                metadata_1d(SGL_NATIVE_DTYPE_INT32, 1)),
-            &num_correct_drafts_) ||
-        !take_result(
-            lease_->bind_const<DType::kInt64, 2>(
-                *proposal_tokens_slice_,
-                metadata_2d(
-                    SGL_NATIVE_DTYPE_INT64, 1, num_slots_)),
-            &proposal_tokens_) ||
-        !take_result(
-            lease_->bind_const<DType::kInt64, 2>(
-                *proposal_out_indices_slice_,
-                metadata_2d(
-                    SGL_NATIVE_DTYPE_INT64, 1, num_slots_)),
-            &proposal_out_indices_) ||
-        !take_result(
-            lease_->bind_const<DType::kFloat32, 2>(
-                *accept_uniforms_slice_,
-                metadata_2d(
-                    SGL_NATIVE_DTYPE_FLOAT32, 1, num_slots_)),
-            &accept_uniforms_) ||
-        !take_result(
-            lease_->bind_const<DType::kFloat32, 1>(
-                *bonus_uniforms_slice_,
-                metadata_1d(SGL_NATIVE_DTYPE_FLOAT32, 1)),
-            &bonus_uniforms_) ||
+    if (!take_result(lease_->bind_mutable<DType::kInt32, 1>(
+                         *out_tokens_slice_,
+                         metadata_1d(SGL_NATIVE_DTYPE_INT32, num_slots_)),
+                     &out_tokens_) ||
+        !take_result(lease_->bind_mutable<DType::kInt32, 2>(
+                         *accept_indices_slice_,
+                         metadata_2d(SGL_NATIVE_DTYPE_INT32, 1, num_slots_)),
+                     &accept_indices_) ||
+        !take_result(lease_->bind_mutable<DType::kInt32, 1>(
+                         *num_correct_drafts_slice_,
+                         metadata_1d(SGL_NATIVE_DTYPE_INT32, 1)),
+                     &num_correct_drafts_) ||
+        !take_result(lease_->bind_const<DType::kInt64, 2>(
+                         *proposal_tokens_slice_,
+                         metadata_2d(SGL_NATIVE_DTYPE_INT64, 1, num_slots_)),
+                     &proposal_tokens_) ||
+        !take_result(lease_->bind_const<DType::kInt64, 2>(
+                         *proposal_out_indices_slice_,
+                         metadata_2d(SGL_NATIVE_DTYPE_INT64, 1, num_slots_)),
+                     &proposal_out_indices_) ||
+        !take_result(lease_->bind_const<DType::kFloat32, 2>(
+                         *accept_uniforms_slice_,
+                         metadata_2d(SGL_NATIVE_DTYPE_FLOAT32, 1, num_slots_)),
+                     &accept_uniforms_) ||
+        !take_result(lease_->bind_const<DType::kFloat32, 1>(
+                         *bonus_uniforms_slice_,
+                         metadata_1d(SGL_NATIVE_DTYPE_FLOAT32, 1)),
+                     &bonus_uniforms_) ||
         !take_result(
             lease_->bind_const<DType::kFloat32, 3>(
-                *target_probs_slice_,
-                metadata_3d(
-                    SGL_NATIVE_DTYPE_FLOAT32, 1, num_slots_,
-                    vocab_size_)),
+                *target_probs_slice_, metadata_3d(SGL_NATIVE_DTYPE_FLOAT32, 1,
+                                                  num_slots_, vocab_size_)),
             &target_probs_) ||
         !take_result(
             lease_->bind_const<DType::kFloat32, 3>(
-                *draft_probs_slice_,
-                metadata_3d(
-                    SGL_NATIVE_DTYPE_FLOAT32, 1, num_slots_ - 1,
-                    vocab_size_)),
+                *draft_probs_slice_, metadata_3d(SGL_NATIVE_DTYPE_FLOAT32, 1,
+                                                 num_slots_ - 1, vocab_size_)),
             &draft_probs_) ||
         !take_result(
             lease_->bind_mutable<DType::kUInt32, 1>(
-                *device_status_slice_,
-                metadata_1d(SGL_NATIVE_DTYPE_UINT32, 1)),
+                *device_status_slice_, metadata_1d(SGL_NATIVE_DTYPE_UINT32, 1)),
             &device_status_)) {
       return false;
     }
@@ -436,51 +411,33 @@ class SamplingFixture final {
 
   [[nodiscard]] LinearRejectionSamplingBuffers buffers() const noexcept {
     return LinearRejectionSamplingBuffers{
-        *out_tokens_,
-        *accept_indices_,
-        *num_correct_drafts_,
-        *proposal_tokens_,
-        *proposal_out_indices_,
-        *accept_uniforms_,
-        *bonus_uniforms_,
-        *target_probs_,
-        *draft_probs_,
+        *out_tokens_,      *accept_indices_,       *num_correct_drafts_,
+        *proposal_tokens_, *proposal_out_indices_, *accept_uniforms_,
+        *bonus_uniforms_,  *target_probs_,         *draft_probs_,
         *device_status_};
   }
 
-  [[nodiscard]] LinearRejectionSamplingBuffers buffers_with_status(
-      const MutableUInt32Vector& status) const noexcept {
+  [[nodiscard]] LinearRejectionSamplingBuffers
+  buffers_with_status(const MutableUInt32Vector &status) const noexcept {
     return LinearRejectionSamplingBuffers{
-        *out_tokens_,
-        *accept_indices_,
-        *num_correct_drafts_,
-        *proposal_tokens_,
-        *proposal_out_indices_,
-        *accept_uniforms_,
-        *bonus_uniforms_,
-        *target_probs_,
-        *draft_probs_,
-        status};
+        *out_tokens_,           *accept_indices_,
+        *num_correct_drafts_,   *proposal_tokens_,
+        *proposal_out_indices_, *accept_uniforms_,
+        *bonus_uniforms_,       *target_probs_,
+        *draft_probs_,          status};
   }
 
   [[nodiscard]] LinearRejectionSamplingBuffers buffers_with_accept_uniforms(
-      const ConstFloat32Matrix& uniforms) const noexcept {
+      const ConstFloat32Matrix &uniforms) const noexcept {
     return LinearRejectionSamplingBuffers{
-        *out_tokens_,
-        *accept_indices_,
-        *num_correct_drafts_,
-        *proposal_tokens_,
-        *proposal_out_indices_,
-        uniforms,
-        *bonus_uniforms_,
-        *target_probs_,
-        *draft_probs_,
+        *out_tokens_,      *accept_indices_,       *num_correct_drafts_,
+        *proposal_tokens_, *proposal_out_indices_, uniforms,
+        *bonus_uniforms_,  *target_probs_,         *draft_probs_,
         *device_status_};
   }
 
-  [[nodiscard]] bool copy_inputs(const HostInputs& inputs) noexcept {
-    if (inputs.num_slots != num_slots_ ||
-        inputs.vocab_size != vocab_size_ ||
+  [[nodiscard]] bool copy_inputs(const HostInputs &inputs) noexcept {
+    if (inputs.num_slots != num_slots_ || inputs.vocab_size != vocab_size_ ||
         inputs.proposal_tokens.size() != num_slots_ ||
         inputs.proposal_out_indices.size() != num_slots_ ||
         inputs.accept_uniforms.size() != num_slots_ ||
@@ -490,53 +447,42 @@ class SamplingFixture final {
             static_cast<uint64_t>(num_slots_ - 1) * vocab_size_) {
       return false;
     }
-    return copy_to_const(
-               *proposal_tokens_,
-               std::span<const int64_t>(inputs.proposal_tokens)) &&
+    return copy_to_const(*proposal_tokens_,
+                         std::span<const int64_t>(inputs.proposal_tokens)) &&
            copy_to_const(
                *proposal_out_indices_,
-               std::span<const int64_t>(
-                   inputs.proposal_out_indices)) &&
-           copy_to_const(
-               *accept_uniforms_,
-               std::span<const float>(inputs.accept_uniforms)) &&
-           copy_to_const(
-               *bonus_uniforms_,
-               std::span<const float>(inputs.bonus_uniforms)) &&
-           copy_to_const(
-               *target_probs_,
-               std::span<const float>(inputs.target_probs)) &&
-           copy_to_const(
-               *draft_probs_,
-               std::span<const float>(inputs.draft_probs));
+               std::span<const int64_t>(inputs.proposal_out_indices)) &&
+           copy_to_const(*accept_uniforms_,
+                         std::span<const float>(inputs.accept_uniforms)) &&
+           copy_to_const(*bonus_uniforms_,
+                         std::span<const float>(inputs.bonus_uniforms)) &&
+           copy_to_const(*target_probs_,
+                         std::span<const float>(inputs.target_probs)) &&
+           copy_to_const(*draft_probs_,
+                         std::span<const float>(inputs.draft_probs));
   }
 
   [[nodiscard]] bool reset_outputs() noexcept {
     const HostOutputs sentinels = sentinel_outputs(num_slots_);
-    return copy_to_mutable(
-               *out_tokens_,
-               std::span<const int32_t>(sentinels.out_tokens)) &&
-           copy_to_mutable(
-               *accept_indices_,
-               std::span<const int32_t>(sentinels.accept_indices)) &&
+    return copy_to_mutable(*out_tokens_,
+                           std::span<const int32_t>(sentinels.out_tokens)) &&
+           copy_to_mutable(*accept_indices_, std::span<const int32_t>(
+                                                 sentinels.accept_indices)) &&
            copy_to_mutable(
                *num_correct_drafts_,
-               std::span<const int32_t>(
-                   sentinels.num_correct_drafts)) &&
-           copy_to_mutable(
-               *device_status_,
-               std::span<const uint32_t>(sentinels.device_status));
+               std::span<const int32_t>(sentinels.num_correct_drafts)) &&
+           copy_to_mutable(*device_status_,
+                           std::span<const uint32_t>(sentinels.device_status));
   }
 
-  [[nodiscard]] bool run(const HostInputs& inputs,
-                         HostOutputs* outputs) noexcept {
+  [[nodiscard]] bool run(const HostInputs &inputs,
+                         HostOutputs *outputs) noexcept {
     if (outputs == nullptr || !copy_inputs(inputs) || !reset_outputs()) {
       return false;
     }
     const auto sampling_buffers = buffers();
     if (!check_status(
-            launch_linear_rejection_sampling(
-                *context_, sampling_buffers),
+            launch_linear_rejection_sampling(*context_, sampling_buffers),
             "launch_linear_rejection_sampling", __LINE__) ||
         !check_status(context_->synchronize(), "context_->synchronize()",
                       __LINE__)) {
@@ -545,39 +491,35 @@ class SamplingFixture final {
     return read_outputs(outputs);
   }
 
-  [[nodiscard]] bool read_outputs(HostOutputs* outputs) const noexcept {
+  [[nodiscard]] bool read_outputs(HostOutputs *outputs) const noexcept {
     if (outputs == nullptr) {
       return false;
     }
     *outputs = sentinel_outputs(num_slots_);
-    return copy_to_host(
-               std::span<int32_t>(outputs->out_tokens), *out_tokens_) &&
-           copy_to_host(
-               std::span<int32_t>(outputs->accept_indices),
-               *accept_indices_) &&
-           copy_to_host(
-               std::span<int32_t>(outputs->num_correct_drafts),
-               *num_correct_drafts_) &&
-           copy_to_host(
-               std::span<uint32_t>(outputs->device_status),
-               *device_status_);
+    return copy_to_host(std::span<int32_t>(outputs->out_tokens),
+                        *out_tokens_) &&
+           copy_to_host(std::span<int32_t>(outputs->accept_indices),
+                        *accept_indices_) &&
+           copy_to_host(std::span<int32_t>(outputs->num_correct_drafts),
+                        *num_correct_drafts_) &&
+           copy_to_host(std::span<uint32_t>(outputs->device_status),
+                        *device_status_);
   }
 
-  [[nodiscard]] const CudaExecutionContext& context() const noexcept {
+  [[nodiscard]] const CudaExecutionContext &context() const noexcept {
     return *context_;
   }
 
-  [[nodiscard]] const GraphArenaLease& lease() const noexcept {
+  [[nodiscard]] const GraphArenaLease &lease() const noexcept {
     return *lease_;
   }
 
-  [[nodiscard]] const GraphMemorySlice& num_correct_drafts_slice()
-      const noexcept {
+  [[nodiscard]] const GraphMemorySlice &
+  num_correct_drafts_slice() const noexcept {
     return *num_correct_drafts_slice_;
   }
 
-  [[nodiscard]] const GraphMemorySlice& accept_uniforms_slice()
-      const noexcept {
+  [[nodiscard]] const GraphMemorySlice &accept_uniforms_slice() const noexcept {
     return *accept_uniforms_slice_;
   }
 
@@ -585,24 +527,23 @@ class SamplingFixture final {
     return reinterpret_cast<uintptr_t>(out_tokens_->data_bytes());
   }
 
- private:
-  [[nodiscard]] bool reserve(
-      uint64_t bytes,
-      std::optional<GraphMemorySlice>* output) noexcept {
+private:
+  [[nodiscard]] bool reserve(uint64_t bytes,
+                             std::optional<GraphMemorySlice> *output) noexcept {
     return take_result(arena_->reserve(bytes, 256), output);
   }
 
   template <DType D, uint32_t Rank>
   [[nodiscard]] bool copy_to_const(
       const sglang::native::GraphStableTensorView<
-          D, Rank, TensorAccess::kReadOnly>& view,
-      std::span<const std::conditional_t<
-          D == DType::kInt64, int64_t, float>> values) noexcept {
+          D, Rank, TensorAccess::kReadOnly> &view,
+      std::span<const std::conditional_t<D == DType::kInt64, int64_t, float>>
+          values) noexcept {
     const std::size_t bytes = values.size_bytes();
     // Tests initialize owner-backed storage before exposing it as read-only
     // operator input; production adapters must perform the same ownership step.
     const cudaError_t result = cudaMemcpyAsync(
-        const_cast<std::byte*>(view.data_bytes()), values.data(), bytes,
+        const_cast<std::byte *>(view.data_bytes()), values.data(), bytes,
         cudaMemcpyHostToDevice, context_->stream());
     if (result != cudaSuccess) {
       std::printf("input copy failed: %s\n", cudaGetErrorString(result));
@@ -612,13 +553,13 @@ class SamplingFixture final {
   }
 
   template <DType D, uint32_t Rank, typename T>
-  [[nodiscard]] bool copy_to_mutable(
-      const sglang::native::GraphStableTensorView<
-          D, Rank, TensorAccess::kReadWrite>& view,
-      std::span<const T> values) noexcept {
-    const cudaError_t result = cudaMemcpyAsync(
-        view.data_bytes(), values.data(), values.size_bytes(),
-        cudaMemcpyHostToDevice, context_->stream());
+  [[nodiscard]] bool
+  copy_to_mutable(const sglang::native::GraphStableTensorView<
+                      D, Rank, TensorAccess::kReadWrite> &view,
+                  std::span<const T> values) noexcept {
+    const cudaError_t result =
+        cudaMemcpyAsync(view.data_bytes(), values.data(), values.size_bytes(),
+                        cudaMemcpyHostToDevice, context_->stream());
     if (result != cudaSuccess) {
       std::printf("output reset failed: %s\n", cudaGetErrorString(result));
       return false;
@@ -627,13 +568,13 @@ class SamplingFixture final {
   }
 
   template <typename T, DType D, uint32_t Rank>
-  [[nodiscard]] bool copy_to_host(
-      std::span<T> values,
-      const sglang::native::GraphStableTensorView<
-          D, Rank, TensorAccess::kReadWrite>& view) const noexcept {
-    const cudaError_t result = cudaMemcpy(
-        values.data(), view.data_bytes(), values.size_bytes(),
-        cudaMemcpyDeviceToHost);
+  [[nodiscard]] bool
+  copy_to_host(std::span<T> values,
+               const sglang::native::GraphStableTensorView<
+                   D, Rank, TensorAccess::kReadWrite> &view) const noexcept {
+    const cudaError_t result =
+        cudaMemcpy(values.data(), view.data_bytes(), values.size_bytes(),
+                   cudaMemcpyDeviceToHost);
     if (result != cudaSuccess) {
       std::printf("output copy failed: %s\n", cudaGetErrorString(result));
       return false;
@@ -669,8 +610,368 @@ class SamplingFixture final {
   std::optional<MutableUInt32Vector> device_status_;
 };
 
-[[nodiscard]] HostInputs empty_inputs(uint32_t num_slots,
-                                      uint32_t vocab_size) {
+template <DType LogitsDType> struct CorrectedLogitTypes;
+
+template <> struct CorrectedLogitTypes<DType::kBFloat16> final {
+  using ConstTensor3 = sglang::native::ConstBFloat16Tensor3;
+  static constexpr SglNativeDType kRawDtype = SGL_NATIVE_DTYPE_BFLOAT16;
+  [[nodiscard]] static uint16_t from_float(float value) noexcept {
+    return __bfloat16_as_ushort(__float2bfloat16(value));
+  }
+};
+
+template <> struct CorrectedLogitTypes<DType::kFloat16> final {
+  using ConstTensor3 = sglang::native::ConstFloat16Tensor3;
+  static constexpr SglNativeDType kRawDtype = SGL_NATIVE_DTYPE_FLOAT16;
+  [[nodiscard]] static uint16_t from_float(float value) noexcept {
+    return __half_as_ushort(__float2half(value));
+  }
+};
+
+template <DType LogitsDType> class CorrectedLogitFixture final {
+public:
+  using Types = CorrectedLogitTypes<LogitsDType>;
+  using ConstTensor3 = typename Types::ConstTensor3;
+
+  CorrectedLogitFixture(const CorrectedLogitFixture &) = delete;
+  CorrectedLogitFixture &operator=(const CorrectedLogitFixture &) = delete;
+  CorrectedLogitFixture(CorrectedLogitFixture &&) = delete;
+  CorrectedLogitFixture &operator=(CorrectedLogitFixture &&) = delete;
+
+  explicit CorrectedLogitFixture(uint32_t num_slots,
+                                 uint32_t vocab_size) noexcept
+      : num_slots_(num_slots), vocab_size_(vocab_size) {}
+
+  [[nodiscard]] bool initialize() noexcept {
+    const uint64_t slots = num_slots_;
+    const uint64_t vocab = vocab_size_;
+    const uint64_t target_bytes = slots * vocab * sizeof(float);
+    const uint64_t logits_bytes = (slots - 1) * vocab * sizeof(uint16_t);
+    const uint64_t capacity =
+        target_bytes + logits_bytes +
+        slots * (2 * sizeof(int32_t) + 2 * sizeof(int64_t) + sizeof(float)) +
+        2 * sizeof(int32_t) + 2 * sizeof(float) + (slots - 1) * sizeof(float) +
+        sizeof(uint32_t) + 12 * 256;
+
+    if (!take_result(CudaStream::create_nonblocking(), &stream_) ||
+        !take_result(stream_->context(), &context_) ||
+        !take_result(GraphMemoryArena::allocate(*context_, capacity),
+                     &arena_) ||
+        !reserve(slots * sizeof(int32_t), &out_tokens_slice_) ||
+        !reserve(slots * sizeof(int32_t), &accept_indices_slice_) ||
+        !reserve(sizeof(int32_t), &num_correct_drafts_slice_) ||
+        !reserve(slots * sizeof(int64_t), &proposal_tokens_slice_) ||
+        !reserve(slots * sizeof(int64_t), &proposal_out_indices_slice_) ||
+        !reserve(slots * sizeof(float), &accept_uniforms_slice_) ||
+        !reserve(sizeof(float), &bonus_uniforms_slice_) ||
+        !reserve(target_bytes, &target_probs_slice_) ||
+        !reserve(logits_bytes, &corrected_logits_slice_) ||
+        !reserve((slots - 1) * sizeof(float), &log_normalizers_slice_) ||
+        !reserve(sizeof(float), &temperatures_slice_) ||
+        !reserve(sizeof(uint32_t), &device_status_slice_)) {
+      return false;
+    }
+    if (!check_status(arena_->seal(), "arena_->seal()", __LINE__) ||
+        !take_result(arena_->acquire_lease(), &lease_)) {
+      return false;
+    }
+
+    if (!take_result(lease_->bind_mutable<DType::kInt32, 1>(
+                         *out_tokens_slice_,
+                         metadata_1d(SGL_NATIVE_DTYPE_INT32, num_slots_)),
+                     &out_tokens_) ||
+        !take_result(lease_->bind_mutable<DType::kInt32, 2>(
+                         *accept_indices_slice_,
+                         metadata_2d(SGL_NATIVE_DTYPE_INT32, 1, num_slots_)),
+                     &accept_indices_) ||
+        !take_result(lease_->bind_mutable<DType::kInt32, 1>(
+                         *num_correct_drafts_slice_,
+                         metadata_1d(SGL_NATIVE_DTYPE_INT32, 1)),
+                     &num_correct_drafts_) ||
+        !take_result(lease_->bind_const<DType::kInt64, 2>(
+                         *proposal_tokens_slice_,
+                         metadata_2d(SGL_NATIVE_DTYPE_INT64, 1, num_slots_)),
+                     &proposal_tokens_) ||
+        !take_result(lease_->bind_const<DType::kInt64, 2>(
+                         *proposal_out_indices_slice_,
+                         metadata_2d(SGL_NATIVE_DTYPE_INT64, 1, num_slots_)),
+                     &proposal_out_indices_) ||
+        !take_result(lease_->bind_const<DType::kFloat32, 2>(
+                         *accept_uniforms_slice_,
+                         metadata_2d(SGL_NATIVE_DTYPE_FLOAT32, 1, num_slots_)),
+                     &accept_uniforms_) ||
+        !take_result(lease_->bind_const<DType::kFloat32, 1>(
+                         *bonus_uniforms_slice_,
+                         metadata_1d(SGL_NATIVE_DTYPE_FLOAT32, 1)),
+                     &bonus_uniforms_) ||
+        !take_result(
+            lease_->bind_const<DType::kFloat32, 3>(
+                *target_probs_slice_, metadata_3d(SGL_NATIVE_DTYPE_FLOAT32, 1,
+                                                  num_slots_, vocab_size_)),
+            &target_probs_) ||
+        !take_result(
+            lease_->bind_const<LogitsDType, 3>(
+                *corrected_logits_slice_,
+                metadata_3d(Types::kRawDtype, 1, num_slots_ - 1, vocab_size_)),
+            &corrected_logits_) ||
+        !take_result(
+            lease_->bind_const<DType::kFloat32, 2>(
+                *log_normalizers_slice_,
+                metadata_2d(SGL_NATIVE_DTYPE_FLOAT32, 1, num_slots_ - 1)),
+            &log_normalizers_) ||
+        !take_result(
+            lease_->bind_const<DType::kFloat32, 1>(
+                *temperatures_slice_, metadata_1d(SGL_NATIVE_DTYPE_FLOAT32, 1)),
+            &temperatures_) ||
+        !take_result(
+            lease_->bind_mutable<DType::kUInt32, 1>(
+                *device_status_slice_, metadata_1d(SGL_NATIVE_DTYPE_UINT32, 1)),
+            &device_status_)) {
+      return false;
+    }
+    return true;
+  }
+
+  [[nodiscard]] LinearRejectionSamplingCorrectedLogitBuffers<LogitsDType>
+  buffers() const noexcept {
+    return {*out_tokens_,      *accept_indices_,       *num_correct_drafts_,
+            *proposal_tokens_, *proposal_out_indices_, *accept_uniforms_,
+            *bonus_uniforms_,  *target_probs_,         *corrected_logits_,
+            *log_normalizers_, *temperatures_,         *device_status_};
+  }
+
+  [[nodiscard]] bool copy_inputs(const HostInputs &inputs,
+                                 float temperature) noexcept {
+    if (inputs.num_slots != num_slots_ || inputs.vocab_size != vocab_size_ ||
+        inputs.proposal_tokens.size() != num_slots_ ||
+        inputs.proposal_out_indices.size() != num_slots_ ||
+        inputs.accept_uniforms.size() != num_slots_ ||
+        inputs.target_probs.size() !=
+            static_cast<uint64_t>(num_slots_) * vocab_size_ ||
+        inputs.draft_probs.size() !=
+            static_cast<uint64_t>(num_slots_ - 1) * vocab_size_) {
+      return false;
+    }
+    std::vector<uint16_t> logits(inputs.draft_probs.size());
+    std::vector<float> normalizers(num_slots_ - 1);
+    for (uint32_t row = 0; row + 1 < num_slots_; ++row) {
+      float sum = 0.0F;
+      for (uint32_t token = 0; token < vocab_size_; ++token) {
+        const uint64_t offset =
+            static_cast<uint64_t>(row) * vocab_size_ + token;
+        const float probability = inputs.draft_probs[offset];
+        const float logit = std::log(probability) * temperature;
+        logits[offset] = Types::from_float(logit);
+      }
+      for (uint32_t token = 0; token < vocab_size_; ++token) {
+        const uint64_t offset =
+            static_cast<uint64_t>(row) * vocab_size_ + token;
+        const uint16_t bits = logits[offset];
+        float stored = 0.0F;
+        if constexpr (LogitsDType == DType::kBFloat16) {
+          stored = __bfloat162float(__ushort_as_bfloat16(bits));
+        } else {
+          stored = __half2float(__ushort_as_half(bits));
+        }
+        if (std::isfinite(stored)) {
+          sum += std::exp(stored / temperature);
+        }
+      }
+      normalizers[row] = std::log(sum);
+    }
+    return copy_to_const(*proposal_tokens_,
+                         std::span<const int64_t>(inputs.proposal_tokens)) &&
+           copy_to_const(
+               *proposal_out_indices_,
+               std::span<const int64_t>(inputs.proposal_out_indices)) &&
+           copy_to_const(*accept_uniforms_,
+                         std::span<const float>(inputs.accept_uniforms)) &&
+           copy_to_const(*bonus_uniforms_,
+                         std::span<const float>(inputs.bonus_uniforms)) &&
+           copy_to_const(*target_probs_,
+                         std::span<const float>(inputs.target_probs)) &&
+           copy_raw(*corrected_logits_, logits) &&
+           copy_to_const(*log_normalizers_,
+                         std::span<const float>(normalizers)) &&
+           copy_to_const(*temperatures_,
+                         std::span<const float>(&temperature, 1));
+  }
+
+  [[nodiscard]] bool set_logit(uint32_t row, uint32_t token,
+                               float value) noexcept {
+    if (row + 1 >= num_slots_ || token >= vocab_size_)
+      return false;
+    const uint16_t bits = Types::from_float(value);
+    auto *destination =
+        const_cast<std::byte *>(corrected_logits_->data_bytes()) +
+        (static_cast<uint64_t>(row) * vocab_size_ + token) * sizeof(uint16_t);
+    return cudaMemcpy(destination, &bits, sizeof(bits),
+                      cudaMemcpyHostToDevice) == cudaSuccess;
+  }
+
+  [[nodiscard]] bool set_normalizer(uint32_t row, float value) noexcept {
+    if (row + 1 >= num_slots_)
+      return false;
+    auto *destination =
+        const_cast<std::byte *>(log_normalizers_->data_bytes()) +
+        static_cast<uint64_t>(row) * sizeof(float);
+    return cudaMemcpy(destination, &value, sizeof(value),
+                      cudaMemcpyHostToDevice) == cudaSuccess;
+  }
+
+  [[nodiscard]] bool reset_outputs() noexcept {
+    const HostOutputs sentinels = sentinel_outputs(num_slots_);
+    return copy_to_mutable(*out_tokens_, sentinels.out_tokens) &&
+           copy_to_mutable(*accept_indices_, sentinels.accept_indices) &&
+           copy_to_mutable(
+               *num_correct_drafts_,
+               std::span<const int32_t>(sentinels.num_correct_drafts)) &&
+           copy_to_mutable(*device_status_,
+                           std::span<const uint32_t>(sentinels.device_status));
+  }
+
+  [[nodiscard]] bool launch(bool if_ready = false) noexcept {
+    const auto values = buffers();
+    NativeRuntimeError status{};
+    if constexpr (LogitsDType == DType::kBFloat16) {
+      status =
+          if_ready
+              ? sglang::native::
+                    launch_linear_rejection_sampling_from_bfloat16_logits_if_ready(
+                        *context_, values)
+              : launch_linear_rejection_sampling_from_bfloat16_logits(*context_,
+                                                                      values);
+    } else {
+      status =
+          if_ready
+              ? sglang::native::
+                    launch_linear_rejection_sampling_from_float16_logits_if_ready(
+                        *context_, values)
+              : launch_linear_rejection_sampling_from_float16_logits(*context_,
+                                                                     values);
+    }
+    return check_status(status, "corrected-logit rejection launch", __LINE__);
+  }
+
+  [[nodiscard]] bool read_outputs(HostOutputs *outputs) const noexcept {
+    if (outputs == nullptr)
+      return false;
+    *outputs = sentinel_outputs(num_slots_);
+    return copy_to_host(outputs->out_tokens, *out_tokens_) &&
+           copy_to_host(outputs->accept_indices, *accept_indices_) &&
+           copy_to_host(std::span<int32_t>(outputs->num_correct_drafts),
+                        *num_correct_drafts_) &&
+           copy_to_host(std::span<uint32_t>(outputs->device_status),
+                        *device_status_);
+  }
+
+  [[nodiscard]] const CudaExecutionContext &context() const noexcept {
+    return *context_;
+  }
+
+  [[nodiscard]] const GraphArenaLease &lease() const noexcept {
+    return *lease_;
+  }
+
+  [[nodiscard]] bool arm_ready_status() noexcept {
+    const uint32_t ready = 0U;
+    return cudaMemcpy(device_status_->data_bytes(), &ready, sizeof(ready),
+                      cudaMemcpyHostToDevice) == cudaSuccess;
+  }
+
+  [[nodiscard]] uintptr_t out_tokens_address() const noexcept {
+    return reinterpret_cast<uintptr_t>(out_tokens_->data_bytes());
+  }
+
+private:
+  [[nodiscard]] bool reserve(uint64_t bytes,
+                             std::optional<GraphMemorySlice> *output) noexcept {
+    return take_result(arena_->reserve(bytes, 256), output);
+  }
+
+  template <DType D, uint32_t Rank, typename T>
+  [[nodiscard]] bool copy_to_const(const sglang::native::GraphStableTensorView<
+                                       D, Rank, TensorAccess::kReadOnly> &view,
+                                   std::span<const T> values) noexcept {
+    return cudaMemcpy(const_cast<std::byte *>(view.data_bytes()), values.data(),
+                      values.size_bytes(),
+                      cudaMemcpyHostToDevice) == cudaSuccess;
+  }
+
+  template <DType D, uint32_t Rank, typename T>
+  [[nodiscard]] bool copy_raw(const sglang::native::GraphStableTensorView<
+                                  D, Rank, TensorAccess::kReadOnly> &view,
+                              const std::vector<T> &values) noexcept {
+    return copy_to_const(view, std::span<const T>(values));
+  }
+
+  template <DType D, uint32_t Rank, typename T>
+  [[nodiscard]] bool
+  copy_to_mutable(const sglang::native::GraphStableTensorView<
+                      D, Rank, TensorAccess::kReadWrite> &view,
+                  std::span<const T> values) noexcept {
+    return cudaMemcpy(view.data_bytes(), values.data(), values.size_bytes(),
+                      cudaMemcpyHostToDevice) == cudaSuccess;
+  }
+
+  template <DType D, uint32_t Rank, typename T>
+  [[nodiscard]] bool
+  copy_to_mutable(const sglang::native::GraphStableTensorView<
+                      D, Rank, TensorAccess::kReadWrite> &view,
+                  const std::vector<T> &values) noexcept {
+    return copy_to_mutable(view, std::span<const T>(values));
+  }
+
+  template <typename T, DType D, uint32_t Rank>
+  [[nodiscard]] bool
+  copy_to_host(std::span<T> values,
+               const sglang::native::GraphStableTensorView<
+                   D, Rank, TensorAccess::kReadWrite> &view) const noexcept {
+    return cudaMemcpy(values.data(), view.data_bytes(), values.size_bytes(),
+                      cudaMemcpyDeviceToHost) == cudaSuccess;
+  }
+
+  template <typename T, DType D, uint32_t Rank>
+  [[nodiscard]] bool
+  copy_to_host(std::vector<T> &values,
+               const sglang::native::GraphStableTensorView<
+                   D, Rank, TensorAccess::kReadWrite> &view) const noexcept {
+    return copy_to_host(std::span<T>(values), view);
+  }
+
+  uint32_t num_slots_;
+  uint32_t vocab_size_;
+  std::optional<CudaStream> stream_;
+  std::optional<CudaExecutionContext> context_;
+  std::optional<GraphMemoryArena> arena_;
+  std::optional<GraphMemorySlice> out_tokens_slice_;
+  std::optional<GraphMemorySlice> accept_indices_slice_;
+  std::optional<GraphMemorySlice> num_correct_drafts_slice_;
+  std::optional<GraphMemorySlice> proposal_tokens_slice_;
+  std::optional<GraphMemorySlice> proposal_out_indices_slice_;
+  std::optional<GraphMemorySlice> accept_uniforms_slice_;
+  std::optional<GraphMemorySlice> bonus_uniforms_slice_;
+  std::optional<GraphMemorySlice> target_probs_slice_;
+  std::optional<GraphMemorySlice> corrected_logits_slice_;
+  std::optional<GraphMemorySlice> log_normalizers_slice_;
+  std::optional<GraphMemorySlice> temperatures_slice_;
+  std::optional<GraphMemorySlice> device_status_slice_;
+  std::optional<GraphArenaLease> lease_;
+  std::optional<MutableInt32Vector> out_tokens_;
+  std::optional<MutableInt32Matrix> accept_indices_;
+  std::optional<MutableInt32Vector> num_correct_drafts_;
+  std::optional<ConstInt64Matrix> proposal_tokens_;
+  std::optional<ConstInt64Matrix> proposal_out_indices_;
+  std::optional<ConstFloat32Matrix> accept_uniforms_;
+  std::optional<ConstFloat32Vector> bonus_uniforms_;
+  std::optional<ConstFloat32Tensor3> target_probs_;
+  std::optional<ConstTensor3> corrected_logits_;
+  std::optional<ConstFloat32Matrix> log_normalizers_;
+  std::optional<ConstFloat32Vector> temperatures_;
+  std::optional<MutableUInt32Vector> device_status_;
+};
+
+[[nodiscard]] HostInputs empty_inputs(uint32_t num_slots, uint32_t vocab_size) {
   HostInputs inputs{
       num_slots,
       vocab_size,
@@ -678,20 +979,17 @@ class SamplingFixture final {
       std::vector<int64_t>(num_slots),
       std::vector<float>(num_slots),
       {0.0F},
-      std::vector<float>(
-          static_cast<uint64_t>(num_slots) * vocab_size),
-      std::vector<float>(
-          static_cast<uint64_t>(num_slots - 1) * vocab_size)};
+      std::vector<float>(static_cast<uint64_t>(num_slots) * vocab_size),
+      std::vector<float>(static_cast<uint64_t>(num_slots - 1) * vocab_size)};
   for (uint32_t slot = 0; slot < num_slots; ++slot) {
     inputs.proposal_out_indices[slot] = slot;
   }
   return inputs;
 }
 
-void set_distribution(std::vector<float>* probabilities, uint32_t row,
-                      uint32_t vocab_size,
-                      std::initializer_list<std::pair<uint32_t, float>>
-                          values) {
+void set_distribution(
+    std::vector<float> *probabilities, uint32_t row, uint32_t vocab_size,
+    std::initializer_list<std::pair<uint32_t, float>> values) {
   const uint64_t offset = static_cast<uint64_t>(row) * vocab_size;
   for (const auto [token, probability] : values) {
     (*probabilities)[offset + token] = probability;
@@ -707,32 +1005,27 @@ void set_distribution(std::vector<float>* probabilities, uint32_t row,
   inputs.accept_uniforms = {0.5F, 0.5F, 0.0F};
   inputs.bonus_uniforms = {0.5F};
   for (uint32_t row = 0; row < 3; ++row) {
-    set_distribution(
-        &inputs.target_probs, row, 8, {{3, 0.5F}, {5, 0.5F}});
+    set_distribution(&inputs.target_probs, row, 8, {{3, 0.5F}, {5, 0.5F}});
   }
   for (uint32_t row = 0; row < 2; ++row) {
-    set_distribution(
-        &inputs.draft_probs, row, 8, {{3, 0.5F}, {5, 0.5F}});
+    set_distribution(&inputs.draft_probs, row, 8, {{3, 0.5F}, {5, 0.5F}});
   }
 
-  const std::array<std::pair<
-      LinearRejectionSamplingDeviceCode, std::vector<int64_t>>, 2>
+  const std::array<
+      std::pair<LinearRejectionSamplingDeviceCode, std::vector<int64_t>>, 2>
       invalid_indices{{
-          {LinearRejectionSamplingDeviceCode::
-               kProposalOutIndexOutOfRange,
+          {LinearRejectionSamplingDeviceCode::kProposalOutIndexOutOfRange,
            {0, 3, 2}},
-          {LinearRejectionSamplingDeviceCode::
-               kDuplicateProposalOutIndex,
+          {LinearRejectionSamplingDeviceCode::kDuplicateProposalOutIndex,
            {0, 0, 2}},
       }};
-  for (const auto& [expected_code, indices] : invalid_indices) {
+  for (const auto &[expected_code, indices] : invalid_indices) {
     inputs.proposal_out_indices = indices;
     HostOutputs actual = sentinel_outputs(3);
     CHECK(fixture.run(inputs, &actual));
     const HostOutputs expected = reference_sampling(inputs);
     CHECK(outputs_equal(actual, expected));
-    CHECK(actual.device_status[0] ==
-          static_cast<uint32_t>(expected_code));
+    CHECK(actual.device_status[0] == static_cast<uint32_t>(expected_code));
   }
 
   inputs.proposal_out_indices = {0, 1, 2};
@@ -743,20 +1036,16 @@ void set_distribution(std::vector<float>* probabilities, uint32_t row,
   CHECK(outputs_equal(actual, expected));
   CHECK(actual.device_status[0] ==
         static_cast<uint32_t>(
-            LinearRejectionSamplingDeviceCode::
-                kProposalTokenOutOfRange));
+            LinearRejectionSamplingDeviceCode::kProposalTokenOutOfRange));
 
   std::optional<MutableUInt32Vector> aliased_status;
-  CHECK(take_result(
-      fixture.lease().bind_mutable<DType::kUInt32, 1>(
-          fixture.num_correct_drafts_slice(),
-          metadata_1d(SGL_NATIVE_DTYPE_UINT32, 1)),
-      &aliased_status));
-  const auto aliased_buffers =
-      fixture.buffers_with_status(*aliased_status);
+  CHECK(take_result(fixture.lease().bind_mutable<DType::kUInt32, 1>(
+                        fixture.num_correct_drafts_slice(),
+                        metadata_1d(SGL_NATIVE_DTYPE_UINT32, 1)),
+                    &aliased_status));
+  const auto aliased_buffers = fixture.buffers_with_status(*aliased_status);
   const NativeRuntimeError alias_error =
-      launch_linear_rejection_sampling(
-          fixture.context(), aliased_buffers);
+      launch_linear_rejection_sampling(fixture.context(), aliased_buffers);
   CHECK(alias_error.code == NativeRuntimeCode::kInvalidArgument);
   CHECK(alias_error.operation ==
         NativeRuntimeOperation::kValidateLinearRejectionSampling);
@@ -764,26 +1053,23 @@ void set_distribution(std::vector<float>* probabilities, uint32_t row,
         static_cast<uint32_t>(
             LinearRejectionSamplingArgument::kNumCorrectDrafts));
   CHECK(alias_error.actual ==
-        static_cast<uint64_t>(
-            LinearRejectionSamplingArgument::kDeviceStatus));
+        static_cast<uint64_t>(LinearRejectionSamplingArgument::kDeviceStatus));
 
   std::optional<ConstFloat32Matrix> short_uniforms;
-  CHECK(take_result(
-      fixture.lease().bind_const<DType::kFloat32, 2>(
-          fixture.accept_uniforms_slice(),
-          metadata_2d(SGL_NATIVE_DTYPE_FLOAT32, 1, 2)),
-      &short_uniforms));
+  CHECK(take_result(fixture.lease().bind_const<DType::kFloat32, 2>(
+                        fixture.accept_uniforms_slice(),
+                        metadata_2d(SGL_NATIVE_DTYPE_FLOAT32, 1, 2)),
+                    &short_uniforms));
   const auto short_uniform_buffers =
       fixture.buffers_with_accept_uniforms(*short_uniforms);
-  const NativeRuntimeError shape_error =
-      launch_linear_rejection_sampling(
-          fixture.context(), short_uniform_buffers);
+  const NativeRuntimeError shape_error = launch_linear_rejection_sampling(
+      fixture.context(), short_uniform_buffers);
   CHECK(shape_error.code == NativeRuntimeCode::kInvalidArgument);
   CHECK(shape_error.operation ==
         NativeRuntimeOperation::kValidateLinearRejectionSampling);
-  CHECK(shape_error.detail ==
-        static_cast<uint32_t>(
-            LinearRejectionSamplingArgument::kAcceptUniforms));
+  CHECK(
+      shape_error.detail ==
+      static_cast<uint32_t>(LinearRejectionSamplingArgument::kAcceptUniforms));
   CHECK(shape_error.actual == 2);
   CHECK(shape_error.required == 3);
   return true;
@@ -799,94 +1085,69 @@ void set_distribution(std::vector<float>* probabilities, uint32_t row,
   all_correct.proposal_out_indices = {2, 0, 1};
   all_correct.accept_uniforms = {0.5F, 0.5F, 0.0F};
   all_correct.bonus_uniforms = {0.5F};
-  set_distribution(
-      &all_correct.target_probs, 0, 8, {{1, 0.5F}, {3, 0.5F}});
-  set_distribution(
-      &all_correct.target_probs, 1, 8, {{5, 0.5F}, {6, 0.5F}});
-  set_distribution(
-      &all_correct.target_probs, 2, 8, {{2, 0.25F}, {6, 0.75F}});
-  set_distribution(
-      &all_correct.draft_probs, 0, 8, {{1, 0.5F}, {3, 0.5F}});
-  set_distribution(
-      &all_correct.draft_probs, 1, 8, {{5, 0.5F}, {6, 0.5F}});
+  set_distribution(&all_correct.target_probs, 0, 8, {{1, 0.5F}, {3, 0.5F}});
+  set_distribution(&all_correct.target_probs, 1, 8, {{5, 0.5F}, {6, 0.5F}});
+  set_distribution(&all_correct.target_probs, 2, 8, {{2, 0.25F}, {6, 0.75F}});
+  set_distribution(&all_correct.draft_probs, 0, 8, {{1, 0.5F}, {3, 0.5F}});
+  set_distribution(&all_correct.draft_probs, 1, 8, {{5, 0.5F}, {6, 0.5F}});
   cases.push_back(all_correct);
 
   HostInputs first_reject = empty_inputs(3, 8);
   first_reject.proposal_tokens = {0, 1, 2};
   first_reject.accept_uniforms = {0.5F, 0.0F, 0.0F};
   first_reject.bonus_uniforms = {0.5F};
-  set_distribution(
-      &first_reject.target_probs, 0, 8,
-      {{1, 0.1F}, {4, 0.6F}, {7, 0.3F}});
-  set_distribution(
-      &first_reject.target_probs, 1, 8, {{0, 1.0F}});
-  set_distribution(
-      &first_reject.target_probs, 2, 8, {{0, 1.0F}});
-  set_distribution(
-      &first_reject.draft_probs, 0, 8,
-      {{1, 0.4F}, {3, 0.5F}, {7, 0.1F}});
-  set_distribution(
-      &first_reject.draft_probs, 1, 8, {{0, 1.0F}});
+  set_distribution(&first_reject.target_probs, 0, 8,
+                   {{1, 0.1F}, {4, 0.6F}, {7, 0.3F}});
+  set_distribution(&first_reject.target_probs, 1, 8, {{0, 1.0F}});
+  set_distribution(&first_reject.target_probs, 2, 8, {{0, 1.0F}});
+  set_distribution(&first_reject.draft_probs, 0, 8,
+                   {{1, 0.4F}, {3, 0.5F}, {7, 0.1F}});
+  set_distribution(&first_reject.draft_probs, 1, 8, {{0, 1.0F}});
   cases.push_back(first_reject);
 
   HostInputs accept_then_reject = empty_inputs(3, 8);
   accept_then_reject.proposal_tokens = {0, 2, 6};
   accept_then_reject.accept_uniforms = {0.25F, 1.0F, 0.0F};
   accept_then_reject.bonus_uniforms = {0.75F};
-  set_distribution(
-      &accept_then_reject.target_probs, 0, 8,
-      {{2, 0.5F}, {4, 0.5F}});
-  set_distribution(
-      &accept_then_reject.target_probs, 1, 8,
-      {{1, 0.6F}, {6, 0.2F}, {7, 0.2F}});
-  set_distribution(
-      &accept_then_reject.target_probs, 2, 8, {{0, 1.0F}});
-  set_distribution(
-      &accept_then_reject.draft_probs, 0, 8,
-      {{2, 0.5F}, {4, 0.5F}});
-  set_distribution(
-      &accept_then_reject.draft_probs, 1, 8,
-      {{1, 0.1F}, {6, 0.2F}, {5, 0.7F}});
+  set_distribution(&accept_then_reject.target_probs, 0, 8,
+                   {{2, 0.5F}, {4, 0.5F}});
+  set_distribution(&accept_then_reject.target_probs, 1, 8,
+                   {{1, 0.6F}, {6, 0.2F}, {7, 0.2F}});
+  set_distribution(&accept_then_reject.target_probs, 2, 8, {{0, 1.0F}});
+  set_distribution(&accept_then_reject.draft_probs, 0, 8,
+                   {{2, 0.5F}, {4, 0.5F}});
+  set_distribution(&accept_then_reject.draft_probs, 1, 8,
+                   {{1, 0.1F}, {6, 0.2F}, {5, 0.7F}});
   cases.push_back(accept_then_reject);
 
   HostInputs nan_draft = empty_inputs(3, 8);
   nan_draft.proposal_tokens = {0, 3, 4};
   nan_draft.accept_uniforms = {0.0F, 0.0F, 0.0F};
   nan_draft.bonus_uniforms = {0.1F};
-  set_distribution(
-      &nan_draft.target_probs, 0, 8,
-      {{1, 0.25F}, {3, 0.25F}, {5, 0.5F}});
-  set_distribution(
-      &nan_draft.target_probs, 1, 8, {{0, 1.0F}});
-  set_distribution(
-      &nan_draft.target_probs, 2, 8, {{0, 1.0F}});
+  set_distribution(&nan_draft.target_probs, 0, 8,
+                   {{1, 0.25F}, {3, 0.25F}, {5, 0.5F}});
+  set_distribution(&nan_draft.target_probs, 1, 8, {{0, 1.0F}});
+  set_distribution(&nan_draft.target_probs, 2, 8, {{0, 1.0F}});
   set_distribution(
       &nan_draft.draft_probs, 0, 8,
-      {{1, 0.5F}, {3, std::numeric_limits<float>::quiet_NaN()},
-       {5, 0.5F}});
-  set_distribution(
-      &nan_draft.draft_probs, 1, 8, {{0, 1.0F}});
+      {{1, 0.5F}, {3, std::numeric_limits<float>::quiet_NaN()}, {5, 0.5F}});
+  set_distribution(&nan_draft.draft_probs, 1, 8, {{0, 1.0F}});
   cases.push_back(nan_draft);
 
   HostInputs zero_residual = empty_inputs(3, 8);
   zero_residual.proposal_tokens = {0, 2, 3};
   zero_residual.accept_uniforms = {1.0F, 0.0F, 0.0F};
   zero_residual.bonus_uniforms = {0.5F};
-  set_distribution(
-      &zero_residual.target_probs, 0, 8,
-      {{2, 0.25F}, {3, 0.25F}, {4, 0.5F}});
-  set_distribution(
-      &zero_residual.target_probs, 1, 8, {{0, 1.0F}});
-  set_distribution(
-      &zero_residual.target_probs, 2, 8, {{0, 1.0F}});
-  set_distribution(
-      &zero_residual.draft_probs, 0, 8,
-      {{2, 0.25F}, {3, 0.25F}, {4, 0.5F}});
-  set_distribution(
-      &zero_residual.draft_probs, 1, 8, {{0, 1.0F}});
+  set_distribution(&zero_residual.target_probs, 0, 8,
+                   {{2, 0.25F}, {3, 0.25F}, {4, 0.5F}});
+  set_distribution(&zero_residual.target_probs, 1, 8, {{0, 1.0F}});
+  set_distribution(&zero_residual.target_probs, 2, 8, {{0, 1.0F}});
+  set_distribution(&zero_residual.draft_probs, 0, 8,
+                   {{2, 0.25F}, {3, 0.25F}, {4, 0.5F}});
+  set_distribution(&zero_residual.draft_probs, 1, 8, {{0, 1.0F}});
   cases.push_back(zero_residual);
 
-  for (const HostInputs& inputs : cases) {
+  for (const HostInputs &inputs : cases) {
     HostOutputs actual = sentinel_outputs(3);
     CHECK(fixture.run(inputs, &actual));
     CHECK(outputs_equal(actual, reference_sampling(inputs)));
@@ -896,7 +1157,7 @@ void set_distribution(std::vector<float>* probabilities, uint32_t row,
 }
 
 class DeterministicGenerator final {
- public:
+public:
   explicit DeterministicGenerator(uint64_t seed) noexcept : state_(seed) {}
 
   [[nodiscard]] uint64_t next() noexcept {
@@ -909,17 +1170,15 @@ class DeterministicGenerator final {
   }
 
   [[nodiscard]] float uniform() noexcept {
-    return static_cast<float>((next() >> 40) & 0xffffffU) /
-           16777216.0F;
+    return static_cast<float>((next() >> 40) & 0xffffffU) / 16777216.0F;
   }
 
- private:
+private:
   uint64_t state_;
 };
 
-void fill_distribution(std::vector<float>* probabilities, uint32_t row,
-                       uint32_t vocab_size,
-                       DeterministicGenerator* generator) {
+void fill_distribution(std::vector<float> *probabilities, uint32_t row,
+                       uint32_t vocab_size, DeterministicGenerator *generator) {
   const uint64_t offset = static_cast<uint64_t>(row) * vocab_size;
   float total = 0.0F;
   for (uint32_t token = 0; token < vocab_size; ++token) {
@@ -946,18 +1205,14 @@ void fill_distribution(std::vector<float>* probabilities, uint32_t row,
       inputs.proposal_tokens[slot] =
           static_cast<int64_t>(generator.next() % kVocabSize);
       inputs.accept_uniforms[slot] = generator.uniform();
-      fill_distribution(
-          &inputs.target_probs, slot, kVocabSize, &generator);
+      fill_distribution(&inputs.target_probs, slot, kVocabSize, &generator);
       if (slot + 1 < kNumSlots) {
-        fill_distribution(
-            &inputs.draft_probs, slot, kVocabSize, &generator);
+        fill_distribution(&inputs.draft_probs, slot, kVocabSize, &generator);
       }
     }
     inputs.bonus_uniforms[0] = generator.uniform();
-    std::swap(
-        inputs.proposal_out_indices[case_index % kNumSlots],
-        inputs.proposal_out_indices[
-            (case_index * 2 + 1) % kNumSlots]);
+    std::swap(inputs.proposal_out_indices[case_index % kNumSlots],
+              inputs.proposal_out_indices[(case_index * 2 + 1) % kNumSlots]);
     if (case_index % 31 == 0) {
       const uint32_t proposal_token =
           static_cast<uint32_t>(inputs.proposal_tokens[1]);
@@ -986,23 +1241,19 @@ void fill_distribution(std::vector<float>* probabilities, uint32_t row,
     if (slot != 0) {
       const uint32_t proposal_token =
           static_cast<uint32_t>(inputs.proposal_tokens[slot]);
-      set_distribution(
-          &inputs.target_probs, slot - 1, kVocabSize,
-          {{proposal_token, 1.0F}});
-      set_distribution(
-          &inputs.draft_probs, slot - 1, kVocabSize,
-          {{proposal_token, 1.0F}});
+      set_distribution(&inputs.target_probs, slot - 1, kVocabSize,
+                       {{proposal_token, 1.0F}});
+      set_distribution(&inputs.draft_probs, slot - 1, kVocabSize,
+                       {{proposal_token, 1.0F}});
     }
   }
-  set_distribution(
-      &inputs.target_probs, num_slots - 1, kVocabSize,
-      {{kVocabSize - 1, 1.0F}});
+  set_distribution(&inputs.target_probs, num_slots - 1, kVocabSize,
+                   {{kVocabSize - 1, 1.0F}});
 
   HostOutputs actual = sentinel_outputs(num_slots);
   CHECK(fixture.run(inputs, &actual));
   CHECK(outputs_equal(actual, reference_sampling(inputs)));
-  CHECK(actual.num_correct_drafts[0] ==
-        static_cast<int32_t>(num_slots - 1));
+  CHECK(actual.num_correct_drafts[0] == static_cast<int32_t>(num_slots - 1));
   return true;
 }
 
@@ -1029,21 +1280,16 @@ struct RawGraph final {
   inputs.proposal_out_indices = {2, 0, 1};
   inputs.accept_uniforms = {0.4F, 0.5F, 0.0F};
   inputs.bonus_uniforms = {0.5F};
-  set_distribution(
-      &inputs.target_probs, 0, kVocabSize,
-      {{12345, 0.75F}, {3, 0.25F}});
-  set_distribution(
-      &inputs.target_probs, 1, kVocabSize,
-      {{42, 0.9F}, {67890, 0.1F}});
-  set_distribution(
-      &inputs.target_probs, 2, kVocabSize,
-      {{99, 0.25F}, {150000, 0.75F}});
-  set_distribution(
-      &inputs.draft_probs, 0, kVocabSize,
-      {{12345, 0.5F}, {3, 0.5F}});
-  set_distribution(
-      &inputs.draft_probs, 1, kVocabSize,
-      {{67890, 0.8F}, {99, 0.2F}});
+  set_distribution(&inputs.target_probs, 0, kVocabSize,
+                   {{12345, 0.75F}, {3, 0.25F}});
+  set_distribution(&inputs.target_probs, 1, kVocabSize,
+                   {{42, 0.9F}, {67890, 0.1F}});
+  set_distribution(&inputs.target_probs, 2, kVocabSize,
+                   {{99, 0.25F}, {150000, 0.75F}});
+  set_distribution(&inputs.draft_probs, 0, kVocabSize,
+                   {{12345, 0.5F}, {3, 0.5F}});
+  set_distribution(&inputs.draft_probs, 1, kVocabSize,
+                   {{67890, 0.8F}, {99, 0.2F}});
   return inputs;
 }
 
@@ -1054,21 +1300,12 @@ struct RawGraph final {
   inputs.proposal_out_indices = {1, 2, 0};
   inputs.accept_uniforms = {0.0F, 0.0F, 0.0F};
   inputs.bonus_uniforms = {0.75F};
-  set_distribution(
-      &inputs.target_probs, 0, kVocabSize,
-      {{54321, 1.0F}});
-  set_distribution(
-      &inputs.target_probs, 1, kVocabSize,
-      {{77777, 1.0F}});
-  set_distribution(
-      &inputs.target_probs, 2, kVocabSize,
-      {{17, 0.25F}, {247000, 0.75F}});
-  set_distribution(
-      &inputs.draft_probs, 0, kVocabSize,
-      {{54321, 1.0F}});
-  set_distribution(
-      &inputs.draft_probs, 1, kVocabSize,
-      {{77777, 1.0F}});
+  set_distribution(&inputs.target_probs, 0, kVocabSize, {{54321, 1.0F}});
+  set_distribution(&inputs.target_probs, 1, kVocabSize, {{77777, 1.0F}});
+  set_distribution(&inputs.target_probs, 2, kVocabSize,
+                   {{17, 0.25F}, {247000, 0.75F}});
+  set_distribution(&inputs.draft_probs, 0, kVocabSize, {{54321, 1.0F}});
+  set_distribution(&inputs.draft_probs, 1, kVocabSize, {{77777, 1.0F}});
   return inputs;
 }
 
@@ -1084,19 +1321,17 @@ struct RawGraph final {
   CHECK_STATUS(fixture.context().synchronize());
 
   RawGraph graph;
-  CHECK_CUDA(cudaStreamBeginCapture(
-      fixture.context().stream(), cudaStreamCaptureModeThreadLocal));
+  CHECK_CUDA(cudaStreamBeginCapture(fixture.context().stream(),
+                                    cudaStreamCaptureModeThreadLocal));
   const auto capture_buffers = fixture.buffers();
-  CHECK_STATUS(launch_linear_rejection_sampling(
-      fixture.context(), capture_buffers));
-  CHECK_CUDA(cudaStreamEndCapture(
-      fixture.context().stream(), &graph.value));
+  CHECK_STATUS(
+      launch_linear_rejection_sampling(fixture.context(), capture_buffers));
+  CHECK_CUDA(cudaStreamEndCapture(fixture.context().stream(), &graph.value));
 
   std::optional<CudaGraphExecutable> executable;
-  CHECK(take_result(
-      CudaGraphExecutable::instantiate(
-          graph.value, fixture.context(), fixture.lease()),
-      &executable));
+  CHECK(take_result(CudaGraphExecutable::instantiate(
+                        graph.value, fixture.context(), fixture.lease()),
+                    &executable));
   CHECK_CUDA(cudaGraphDestroy(std::exchange(graph.value, nullptr)));
 
   CHECK(fixture.copy_inputs(first));
@@ -1124,25 +1359,283 @@ struct RawGraph final {
   return true;
 }
 
+template <DType LogitsDType>
+[[nodiscard]] bool CorrectedLogitPathMatchesProbabilityOracleForDtype() {
+  constexpr uint32_t kNumSlots = 3;
+  constexpr uint32_t kVocabSize = 257;
+  CorrectedLogitFixture<LogitsDType> fixture(kNumSlots, kVocabSize);
+  CHECK(fixture.initialize());
+
+  HostInputs inputs = empty_inputs(kNumSlots, kVocabSize);
+  inputs.proposal_tokens = {7, 11, 19};
+  inputs.proposal_out_indices = {2, 0, 1};
+  inputs.accept_uniforms = {0.25F, 0.75F, 0.0F};
+  inputs.bonus_uniforms = {0.625F};
+  set_distribution(&inputs.target_probs, 0, kVocabSize,
+                   {{11, 0.45F}, {17, 0.35F}, {200, 0.20F}});
+  set_distribution(&inputs.target_probs, 1, kVocabSize,
+                   {{19, 0.10F}, {3, 0.55F}, {251, 0.35F}});
+  set_distribution(&inputs.target_probs, 2, kVocabSize,
+                   {{4, 0.20F}, {99, 0.30F}, {256, 0.50F}});
+  set_distribution(&inputs.draft_probs, 0, kVocabSize,
+                   {{11, 0.50F}, {17, 0.25F}, {200, 0.25F}});
+  set_distribution(&inputs.draft_probs, 1, kVocabSize,
+                   {{19, 0.60F}, {3, 0.25F}, {251, 0.15F}});
+
+  constexpr float kTemperature = 0.75F;
+  CHECK(fixture.copy_inputs(inputs, kTemperature));
+  CHECK(fixture.reset_outputs());
+  CHECK(fixture.launch());
+  CHECK_STATUS(fixture.context().synchronize());
+  HostOutputs actual = sentinel_outputs(kNumSlots);
+  CHECK(fixture.read_outputs(&actual));
+  CHECK(outputs_equal(actual, reference_sampling(inputs)));
+  return true;
+}
+
+[[nodiscard]] bool CorrectedLogitNaNAndZeroResidualSemantics() {
+  constexpr uint32_t kNumSlots = 3;
+  constexpr uint32_t kVocabSize = 8;
+  CorrectedLogitFixture<DType::kBFloat16> fixture(kNumSlots, kVocabSize);
+  CHECK(fixture.initialize());
+
+  HostInputs nan_q = empty_inputs(kNumSlots, kVocabSize);
+  nan_q.proposal_tokens = {0, 3, 4};
+  nan_q.accept_uniforms = {0.0F, 0.0F, 0.0F};
+  nan_q.bonus_uniforms = {0.0F};
+  set_distribution(&nan_q.target_probs, 0, kVocabSize,
+                   {{1, 0.25F}, {3, 0.25F}, {5, 0.5F}});
+  set_distribution(&nan_q.target_probs, 1, kVocabSize, {{0, 1.0F}});
+  set_distribution(&nan_q.target_probs, 2, kVocabSize, {{0, 1.0F}});
+  set_distribution(&nan_q.draft_probs, 0, kVocabSize,
+                   {{1, 0.5F}, {3, 0.25F}, {5, 0.25F}});
+  set_distribution(&nan_q.draft_probs, 1, kVocabSize, {{0, 1.0F}});
+  CHECK(fixture.copy_inputs(nan_q, 1.0F));
+  CHECK(fixture.set_logit(0, 3, std::numeric_limits<float>::quiet_NaN()));
+  CHECK(fixture.set_normalizer(0, std::log(0.75F)));
+  CHECK(fixture.reset_outputs());
+  CHECK(fixture.launch());
+  CHECK_STATUS(fixture.context().synchronize());
+  HostOutputs actual = sentinel_outputs(kNumSlots);
+  CHECK(fixture.read_outputs(&actual));
+  CHECK(actual.num_correct_drafts[0] == 0);
+  CHECK(actual.accept_indices[0] == 0);
+  CHECK(actual.out_tokens[0] == 3);
+  CHECK(actual.device_status[0] == 0U);
+
+  HostInputs zero_residual = empty_inputs(kNumSlots, kVocabSize);
+  zero_residual.proposal_tokens = {0, 2, 3};
+  zero_residual.accept_uniforms = {1.0F, 0.0F, 0.0F};
+  zero_residual.bonus_uniforms = {0.5F};
+  set_distribution(&zero_residual.target_probs, 0, kVocabSize, {{2, 1.0F}});
+  set_distribution(&zero_residual.target_probs, 1, kVocabSize, {{0, 1.0F}});
+  set_distribution(&zero_residual.target_probs, 2, kVocabSize, {{0, 1.0F}});
+  set_distribution(&zero_residual.draft_probs, 0, kVocabSize, {{2, 1.0F}});
+  set_distribution(&zero_residual.draft_probs, 1, kVocabSize, {{0, 1.0F}});
+  CHECK(fixture.copy_inputs(zero_residual, 1.0F));
+  CHECK(fixture.reset_outputs());
+  CHECK(fixture.launch());
+  CHECK_STATUS(fixture.context().synchronize());
+  CHECK(fixture.read_outputs(&actual));
+  CHECK(actual.num_correct_drafts[0] == 0);
+  CHECK(actual.accept_indices[0] == 0);
+  CHECK(actual.device_status[0] == 0U);
+  CHECK(actual.out_tokens[0] == 7);
+  return true;
+}
+
+[[nodiscard]] bool CorrectedLogitProductionGraphReplay() {
+  constexpr uint32_t kNumSlots = 8;
+  constexpr uint32_t kVocabSize = 248320;
+  CorrectedLogitFixture<DType::kBFloat16> fixture(kNumSlots, kVocabSize);
+  CHECK(fixture.initialize());
+
+  HostInputs first = empty_inputs(kNumSlots, kVocabSize);
+  first.proposal_tokens[0] = 10;
+  first.bonus_uniforms = {0.0F};
+  for (uint32_t slot = 0; slot < kNumSlots; ++slot) {
+    first.accept_uniforms[slot] = 0.0F;
+    if (slot + 1 < kNumSlots) {
+      first.proposal_tokens[slot + 1] = static_cast<int64_t>(slot + 11U);
+      set_distribution(&first.target_probs, slot, kVocabSize,
+                       {{slot + 11U, 1.0F}});
+      set_distribution(&first.draft_probs, slot, kVocabSize,
+                       {{slot + 11U, 1.0F}});
+    } else {
+      set_distribution(&first.target_probs, slot, kVocabSize,
+                       {{slot + 11U, 1.0F}});
+    }
+  }
+  CHECK(fixture.copy_inputs(first, 1.0F));
+  CHECK(fixture.reset_outputs());
+  CHECK(fixture.arm_ready_status());
+  CHECK_STATUS(fixture.context().synchronize());
+  const uintptr_t stable_address = fixture.out_tokens_address();
+
+  RawGraph graph;
+  CHECK_CUDA(cudaStreamBeginCapture(fixture.context().stream(),
+                                    cudaStreamCaptureModeThreadLocal));
+  CHECK(fixture.launch(true));
+  CHECK_CUDA(cudaStreamEndCapture(fixture.context().stream(), &graph.value));
+  std::optional<CudaGraphExecutable> executable;
+  CHECK(take_result(CudaGraphExecutable::instantiate(
+                        graph.value, fixture.context(), fixture.lease()),
+                    &executable));
+  CHECK_CUDA(cudaGraphDestroy(std::exchange(graph.value, nullptr)));
+
+  CHECK_STATUS(executable->launch());
+  CHECK_STATUS(executable->synchronize());
+  HostOutputs first_actual = sentinel_outputs(kNumSlots);
+  CHECK(fixture.read_outputs(&first_actual));
+  CHECK(first_actual.num_correct_drafts[0] ==
+        static_cast<int32_t>(kNumSlots - 1));
+  CHECK(first_actual.device_status[0] == 0U);
+  CHECK(first_actual.out_tokens[kNumSlots - 1] == kNumSlots + 10);
+  CHECK(fixture.out_tokens_address() == stable_address);
+
+  HostInputs second = first;
+  second.proposal_tokens[1] = 1000;
+  second.accept_uniforms[0] = 1.0F;
+  std::fill(second.target_probs.begin(),
+            second.target_probs.begin() + kVocabSize, 0.0F);
+  std::fill(second.draft_probs.begin(), second.draft_probs.begin() + kVocabSize,
+            0.0F);
+  set_distribution(&second.target_probs, 0, kVocabSize, {{42, 1.0F}});
+  set_distribution(&second.draft_probs, 0, kVocabSize, {{1000, 1.0F}});
+  CHECK(fixture.copy_inputs(second, 1.0F));
+  CHECK(fixture.reset_outputs());
+  CHECK(fixture.arm_ready_status());
+  CHECK_STATUS(executable->launch());
+  CHECK_STATUS(executable->synchronize());
+  HostOutputs second_actual = sentinel_outputs(kNumSlots);
+  CHECK(fixture.read_outputs(&second_actual));
+  CHECK(second_actual.num_correct_drafts[0] == 0);
+  CHECK(second_actual.device_status[0] == 0U);
+  CHECK(second_actual.out_tokens[0] == 42);
+  CHECK(first_actual.out_tokens != second_actual.out_tokens);
+  CHECK(fixture.out_tokens_address() == stable_address);
+  CHECK_STATUS(executable->close());
+  executable.reset();
+  return true;
+}
+
+template <DType LogitsDType>
+[[nodiscard]] bool CapturedCorrectedLogitFactoryReplaysForDtype() {
+  constexpr uint32_t kNumSlots = 3;
+  constexpr uint32_t kVocabSize = 257;
+  CorrectedLogitFixture<LogitsDType> fixture(kNumSlots, kVocabSize);
+  CHECK(fixture.initialize());
+
+  HostInputs inputs = empty_inputs(kNumSlots, kVocabSize);
+  inputs.proposal_tokens = {7, 11, 19};
+  inputs.proposal_out_indices = {2, 0, 1};
+  inputs.accept_uniforms = {0.25F, 0.75F, 0.0F};
+  inputs.bonus_uniforms = {0.625F};
+  set_distribution(&inputs.target_probs, 0, kVocabSize,
+                   {{11, 0.45F}, {17, 0.35F}, {200, 0.20F}});
+  set_distribution(&inputs.target_probs, 1, kVocabSize,
+                   {{19, 0.10F}, {3, 0.55F}, {251, 0.35F}});
+  set_distribution(&inputs.target_probs, 2, kVocabSize,
+                   {{4, 0.20F}, {99, 0.30F}, {256, 0.50F}});
+  set_distribution(&inputs.draft_probs, 0, kVocabSize,
+                   {{11, 0.50F}, {17, 0.25F}, {200, 0.25F}});
+  set_distribution(&inputs.draft_probs, 1, kVocabSize,
+                   {{19, 0.60F}, {3, 0.25F}, {251, 0.15F}});
+  CHECK(fixture.copy_inputs(inputs, 0.75F));
+  CHECK(fixture.reset_outputs());
+  CHECK(fixture.arm_ready_status());
+
+  std::optional<CudaCapturedGraph> graph;
+  if constexpr (LogitsDType == DType::kBFloat16) {
+    CHECK(take_result(
+        capture_linear_rejection_sampling_from_bfloat16_logits_graph(
+            fixture.context(), fixture.lease(), fixture.buffers()),
+        &graph));
+  } else {
+    CHECK(
+        take_result(capture_linear_rejection_sampling_from_float16_logits_graph(
+                        fixture.context(), fixture.lease(), fixture.buffers()),
+                    &graph));
+  }
+  CHECK(graph->valid());
+  size_t node_count = 0;
+  CHECK_CUDA(cudaGraphGetNodes(graph->graph(), nullptr, &node_count));
+  CHECK(node_count == 1U);
+  std::optional<CudaGraphExecutable> executable;
+  CHECK(take_result(CudaGraphExecutable::instantiate(
+                        graph->graph(), fixture.context(), fixture.lease()),
+                    &executable));
+  CHECK_STATUS(graph->close());
+  graph.reset();
+  CHECK_STATUS(executable->launch());
+  CHECK_STATUS(executable->synchronize());
+  HostOutputs actual = sentinel_outputs(kNumSlots);
+  CHECK(fixture.read_outputs(&actual));
+  CHECK(outputs_equal(actual, reference_sampling(inputs)));
+  CHECK_STATUS(executable->close());
+  executable.reset();
+  return true;
+}
+
+[[nodiscard]] bool CorrectedLogitCaptureRejectsForeignArena() {
+  CorrectedLogitFixture<DType::kBFloat16> fixture(3, 8);
+  CHECK(fixture.initialize());
+  std::optional<GraphMemoryArena> other_arena;
+  std::optional<GraphArenaLease> other_lease;
+  CHECK(take_result(GraphMemoryArena::allocate(fixture.context(), 256),
+                    &other_arena));
+  CHECK_STATUS(other_arena->seal());
+  CHECK(take_result(other_arena->acquire_lease(), &other_lease));
+
+  NativeRuntimeError error = sglang::native::native_runtime_ok();
+  CHECK(std::move(capture_linear_rejection_sampling_from_bfloat16_logits_graph(
+                      fixture.context(), *other_lease, fixture.buffers()))
+            .match([](CudaCapturedGraph &&) noexcept { return false; },
+                   [&error](NativeRuntimeError &&value) noexcept {
+                     error = value;
+                     return true;
+                   }));
+  CHECK(error.code == NativeRuntimeCode::kForeignSlice);
+  CHECK(error.operation == NativeRuntimeOperation::kGraphCaptureBegin);
+  CHECK(error.detail ==
+        static_cast<uint32_t>(LinearRejectionSamplingArgument::kOutTokens));
+  other_lease.reset();
+  CHECK_STATUS(other_arena->close());
+  return true;
+}
+
 struct TestCase final {
-  const char* name;
+  const char *name;
   bool (*function)();
 };
 
 constexpr TestCase kTests[]{
-    {"LayoutAndContentFailuresAreClosed",
-     LayoutAndContentFailuresAreClosed},
+    {"LayoutAndContentFailuresAreClosed", LayoutAndContentFailuresAreClosed},
     {"HandCasesMatchOracle", HandCasesMatchOracle},
     {"RandomizedParity", RandomizedParity},
     {"SlotBoundariesMatchOracle", SlotBoundariesMatchOracle},
     {"ProductionShapeGraphReplay", ProductionShapeGraphReplay},
+    {"CorrectedLogitBfloat16MatchesProbabilityOracle",
+     CorrectedLogitPathMatchesProbabilityOracleForDtype<DType::kBFloat16>},
+    {"CorrectedLogitFloat16MatchesProbabilityOracle",
+     CorrectedLogitPathMatchesProbabilityOracleForDtype<DType::kFloat16>},
+    {"CorrectedLogitNaNAndZeroResidualSemantics",
+     CorrectedLogitNaNAndZeroResidualSemantics},
+    {"CorrectedLogitProductionGraphReplay",
+     CorrectedLogitProductionGraphReplay},
+    {"CapturedCorrectedLogitBfloat16FactoryReplays",
+     CapturedCorrectedLogitFactoryReplaysForDtype<DType::kBFloat16>},
+    {"CapturedCorrectedLogitFloat16FactoryReplays",
+     CapturedCorrectedLogitFactoryReplaysForDtype<DType::kFloat16>},
+    {"CorrectedLogitCaptureRejectsForeignArena",
+     CorrectedLogitCaptureRejectsForeignArena},
 };
 
-}  // namespace
+} // namespace
 
 int main() {
   uint32_t passed = 0;
-  for (const auto& test : kTests) {
+  for (const auto &test : kTests) {
     std::printf("[ RUN      ] %s\n", test.name);
     if (!test.function()) {
       std::printf("[  FAILED  ] %s\n", test.name);

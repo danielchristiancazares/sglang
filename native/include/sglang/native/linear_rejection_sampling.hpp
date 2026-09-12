@@ -26,6 +26,9 @@ enum class LinearRejectionSamplingArgument : uint32_t {
   kTargetProbs = 10,
   kDraftProbs = 11,
   kDeviceStatus = 12,
+  kCorrectedLogits = 13,
+  kLogNormalizers = 14,
+  kTemperatures = 15,
 };
 
 enum class LinearRejectionSamplingDeviceCode : uint32_t {
@@ -55,19 +58,49 @@ using ConstFloat32Matrix =
     GraphStableTensorView<DType::kFloat32, 2, TensorAccess::kReadOnly>;
 using ConstFloat32Tensor3 =
     GraphStableTensorView<DType::kFloat32, 3, TensorAccess::kReadOnly>;
+using ConstBFloat16Tensor3 =
+    GraphStableTensorView<DType::kBFloat16, 3, TensorAccess::kReadOnly>;
+using ConstFloat16Tensor3 =
+    GraphStableTensorView<DType::kFloat16, 3, TensorAccess::kReadOnly>;
 
 struct LinearRejectionSamplingBuffers final {
   // accept_indices includes the bonus destination; num_correct_drafts does not.
-  const MutableInt32Vector& out_tokens;
-  const MutableInt32Matrix& accept_indices;
-  const MutableInt32Vector& num_correct_drafts;
-  const ConstInt64Matrix& proposal_tokens;
-  const ConstInt64Matrix& proposal_out_indices;
-  const ConstFloat32Matrix& accept_uniforms;
-  const ConstFloat32Vector& bonus_uniforms;
-  const ConstFloat32Tensor3& target_probs;
-  const ConstFloat32Tensor3& draft_probs;
-  const MutableUInt32Vector& device_status;
+  const MutableInt32Vector &out_tokens;
+  const MutableInt32Matrix &accept_indices;
+  const MutableInt32Vector &num_correct_drafts;
+  const ConstInt64Matrix &proposal_tokens;
+  const ConstInt64Matrix &proposal_out_indices;
+  const ConstFloat32Matrix &accept_uniforms;
+  const ConstFloat32Vector &bonus_uniforms;
+  const ConstFloat32Tensor3 &target_probs;
+  const ConstFloat32Tensor3 &draft_probs;
+  const MutableUInt32Vector &device_status;
+};
+
+// Corrected-logit form of q.  The proposal producer publishes logits in their
+// runtime BF16/FP16 dtype plus the FP32 log-softmax normalizer for each draft
+// row.  Rejection reconstructs individual q values on demand, avoiding a
+// separate (num_slots - 1) * vocab_size FP32 probability tensor.
+template <DType LogitsDType>
+struct LinearRejectionSamplingCorrectedLogitBuffers final {
+  static_assert(LogitsDType == DType::kBFloat16 ||
+                LogitsDType == DType::kFloat16);
+
+  using ConstLogitsTensor3 =
+      GraphStableTensorView<LogitsDType, 3, TensorAccess::kReadOnly>;
+
+  const MutableInt32Vector &out_tokens;
+  const MutableInt32Matrix &accept_indices;
+  const MutableInt32Vector &num_correct_drafts;
+  const ConstInt64Matrix &proposal_tokens;
+  const ConstInt64Matrix &proposal_out_indices;
+  const ConstFloat32Matrix &accept_uniforms;
+  const ConstFloat32Vector &bonus_uniforms;
+  const ConstFloat32Tensor3 &target_probs;
+  const ConstLogitsTensor3 &corrected_logits;
+  const ConstFloat32Matrix &log_normalizers;
+  const ConstFloat32Vector &temperatures;
+  const MutableUInt32Vector &device_status;
 };
 
 [[nodiscard]] std::string_view linear_rejection_sampling_argument_name(
@@ -81,23 +114,58 @@ struct LinearRejectionSamplingBuffers final {
 // Metadata failures return synchronously. Content failures are published to
 // device_status and become host-visible after the context completes.
 [[nodiscard]] NativeRuntimeError launch_linear_rejection_sampling(
-    const CudaExecutionContext& context,
-    const LinearRejectionSamplingBuffers& buffers) noexcept;
+    const CudaExecutionContext &context,
+    const LinearRejectionSamplingBuffers &buffers) noexcept;
 
 // Preserves every sampler output and the existing device_status value when
 // device_status is nonzero on entry. Captured producer-consumer graphs use
 // this form so an upstream device failure cannot be overwritten or consumed.
 [[nodiscard]] NativeRuntimeError launch_linear_rejection_sampling_if_ready(
-    const CudaExecutionContext& context,
-    const LinearRejectionSamplingBuffers& buffers) noexcept;
+    const CudaExecutionContext &context,
+    const LinearRejectionSamplingBuffers &buffers) noexcept;
+
+[[nodiscard]] NativeRuntimeError
+launch_linear_rejection_sampling_from_bfloat16_logits(
+    const CudaExecutionContext &context,
+    const LinearRejectionSamplingCorrectedLogitBuffers<DType::kBFloat16>
+        &buffers) noexcept;
+[[nodiscard]] NativeRuntimeError
+launch_linear_rejection_sampling_from_bfloat16_logits_if_ready(
+    const CudaExecutionContext &context,
+    const LinearRejectionSamplingCorrectedLogitBuffers<DType::kBFloat16>
+        &buffers) noexcept;
+[[nodiscard]] NativeRuntimeError
+launch_linear_rejection_sampling_from_float16_logits(
+    const CudaExecutionContext &context,
+    const LinearRejectionSamplingCorrectedLogitBuffers<DType::kFloat16>
+        &buffers) noexcept;
+[[nodiscard]] NativeRuntimeError
+launch_linear_rejection_sampling_from_float16_logits_if_ready(
+    const CudaExecutionContext &context,
+    const LinearRejectionSamplingCorrectedLogitBuffers<DType::kFloat16>
+        &buffers) noexcept;
+
+// Captures the guarded corrected-logit consumer used by the native cycle.
+// All views must belong to arena; q remains represented by corrected logits
+// and FP32 log normalizers rather than a separate full probability tensor.
+[[nodiscard]] NativeRuntimeResult<CudaCapturedGraph>
+capture_linear_rejection_sampling_from_bfloat16_logits_graph(
+    const CudaExecutionContext &context, const GraphArenaLease &arena,
+    const LinearRejectionSamplingCorrectedLogitBuffers<DType::kBFloat16>
+        &buffers) noexcept;
+[[nodiscard]] NativeRuntimeResult<CudaCapturedGraph>
+capture_linear_rejection_sampling_from_float16_logits_graph(
+    const CudaExecutionContext &context, const GraphArenaLease &arena,
+    const LinearRejectionSamplingCorrectedLogitBuffers<DType::kFloat16>
+        &buffers) noexcept;
 
 static_assert(sizeof(LinearRejectionSamplingShape) == 24);
 static_assert(alignof(LinearRejectionSamplingShape) == 8);
 static_assert(std::is_standard_layout_v<LinearRejectionSamplingShape>);
 static_assert(std::is_trivially_copyable_v<LinearRejectionSamplingShape>);
-static_assert(
-    static_cast<uint32_t>(LinearRejectionSamplingDeviceCode::kOk) == 0);
+static_assert(static_cast<uint32_t>(LinearRejectionSamplingDeviceCode::kOk) ==
+              0);
 
-}  // namespace sglang::native
+} // namespace sglang::native
 
-#endif  // SGLANG_NATIVE_LINEAR_REJECTION_SAMPLING_HPP_
+#endif // SGLANG_NATIVE_LINEAR_REJECTION_SAMPLING_HPP_

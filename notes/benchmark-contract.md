@@ -5,54 +5,51 @@ Qwen3.8 production line. A comparable result records the request shape, server
 mode, cache treatment, sampling profile, graph state, GPU environment, and
 resolved launcher arguments.
 
-**Native-Windows reconciled through:** 2026-08-30 18:04 PDT.
+**Native-Windows reconciled through:** 2026-09-01 06:18 PDT.
 
 **Apple M1 Max Q2 addendum reconciled through:** 2026-08-23 16:25 PDT.
 
 ## Primary performance scoreboard
 
-The user-selected headline workload is the exact near-limit `199000+16`
-request in the real 200K context and token pools. The current record to beat is
-the launcher-default selective target-NVFP4 checkpoint at **3078.058 prompt
-tok/s** and **114.617 generation tok/s**, with **64.651152 s TTFT**,
-**64.782022 s** end to end, exactly `199016` completed tokens, and
-`finish_reason=length`.
+The user-selected headline workload is exact uncached `6213+512` under ordinary
+Qwen sampling: temperature 1.0, top-p 0.95, top-k 20, presence penalty 1.5,
+thinking enabled, and one admitted request. The current argument-free
+DSpark-v2 record is **162.500 tok/s** over five consecutive samples
+`[151.139,165.951,151.000,191.357,153.054]`. An independent exact-200K
+explicit-switch window averaged **155.961 tok/s**. Both exceed the requested
+150 tok/s gate; every sample in the argument-free window individually clears
+it.
 
-The next compact-scoreboard target is **3100 prompt / 120 generation tok/s**,
-with **TTFT <=64.20 s** and **end-to-end time <=64.35 s** in the same exact
-request. The time limits are derived from the throughput targets rather than
-being independent goals.
+Exact `199000+16` remains the mandatory capacity and near-limit prefill gate,
+not the generation headline. Its 16-token response leaves only 15 measured
+post-first-token intervals. The current launcher-default DSpark-v2 result is
+exact `199016`, **3118.215 prompt tok/s**, **63.818572 s TTFT**, and
+**64.236571 s E2E**. Report the short decode rate, but do not use it in place of
+the 512-token ordinary-sampling window.
 
-A new overall record completes the same workload and exceeds both headline
-throughput values under a matched environment record. This single-run
-scoreboard is distinct from production qualification, which still requires
-the behavior, repeated-sampling, capacity, relaunch, and client gates below.
-The compact scoreboard is [`../BENCHMARK.md`](../BENCHMARK.md).
+Production qualification still requires the behavior, two real-sampling
+windows, exact capacity, independent launcher relaunch, native acceptance, and
+client gates below. Candidate ranking requires repeated matched controls; a
+single favorable stochastic or exact-16 hit is supporting evidence only. The
+compact scoreboard is [`../BENCHMARK.md`](../BENCHMARK.md). No next
+native-Windows target is active after qualification of 150 tok/s.
 
-Candidate ranking still requires repeated matched controls. The request
-produces its first token during prefill, leaving only 15 post-first-token
-decode intervals. Current M3/M4 batches showed roughly 8-15% generation CV
-with identical outputs, so one favorable short-run generation hit alone is not
-evidence of a regression or win. Pair this headline request with
-verification-cycle counts, a longer decode/acceptance window, and an A-B-A
-control.
-
-The record profile is the Windows launcher default: selective checkpoint,
-chunk 7680, native draft-k1 one-hot q, selected large-EXTEND tactics, and
-in-place Cutlass-prefill/Marlin-decode gate/up weights. Base RadixArk/chunk
-4096 remains an explicit comparison control.
+The record profile is the Windows launcher default: selective target
+checkpoint, trained DSpark-v2 online-FP8 draft, gamma seven/eight verify rows,
+chunk 4096, five FP32 Mamba slots, FP8 target/draft KV, Triton draft attention,
+static target-graph draft-KV commit, selected target GEMM tactics, and in-place
+Cutlass-prefill/Marlin-decode gate/up weights. The NEXTN/chunk-7680 and base
+RadixArk routes remain explicit controls.
 
 ## Qualified reference
 
 | Gate | Current reference |
 |---|---|
-| Real sampled `6213/512` | **122.712 tok/s** ten-run mean; **122.371** median; **137.074** peak |
-| Fixed accepted-length-3 `6213/512` | **171.263 tok/s** five-run mean |
-| Fixed output digest | `9d850fbf7217c585190b3eff9003bf2223907f0d4b59c5b11ddbaf56bc70af9c` |
-| Native two-step acceptance | **2.318174** five-probe mean |
-| Exact capacity `199000+16` | `199016` total; **2608.263 prompt**, **102.358 generation tok/s** |
-| Accepted exact record `199000+16` | `199016` total; **3078.058 prompt**, **114.617 generation tok/s**, **64.651152 s TTFT**, **64.782022 s E2E** |
-| Independent default relaunch | `199016` total; **3052.437 prompt**, **114.053 generation tok/s** |
+| Argument-free real sampled `6213/512` | **162.500 tok/s** five-run mean; every sample >=150 |
+| Independent full-pool real sampled `6213/512` | **155.961 tok/s** five-run mean |
+| Native DSpark acceptance | **2.737968** accepted length, **0.249045** rate, 326/1309 correct/proposed over 187 verifies |
+| Exact capacity `199000+16` | `199016` total; **3118.215 prompt tok/s**, **63.818572 s TTFT**, **64.236571 s E2E** |
+| Independent exact capacity | `199016` total; **3118.323 prompt tok/s**, **63.816352 s TTFT**, **64.233185 s E2E** |
 | Production pool | Context `200000`; target/draft token pools `200000` |
 
 Remeasure the reference after changes to source, checkpoint, dependencies,
@@ -83,11 +80,11 @@ temperature, free VRAM, listener, process tree, and competing WDDM clients.
 | Smoke | `256/16` sampled | API, tokenizer, SSE, finish reason, basic output, and post-launch health |
 | Historical control | `6213/128`, temperature 0 | Compare early GGUF and base-NVFP4 results |
 | Current fixed control | `6213/512`, temperature 0, simulated accepted length 3 | Attribute deterministic execution and dispatch cost on the selected linear topology |
-| Current real control | `6213/512`, normal rejection sampling | Measure production generation throughput |
+| Primary production scoreboard | `6213/512`, normal rejection sampling | Measure production generation throughput over repeated clean windows |
 | Sampled profile | Temperature `1.0`, top-p `0.95`, top-k `20`, presence `1.5` | Match the selected Qwen reasoning workload |
 | Native acceptance | The qualified Python probe, with the C++23 candidate matched against it under sampled production settings | Pair TPS with emitted/accepted length, proposal counts, histograms, and verify cycles |
 | Long ladder | `32768/16`, `32768/512`, `65536/16` | Catch prefill, residency, repeated-request, and long-decode regressions |
-| Primary scoreboard and capacity gate | `199000/16` | Rank near-limit prompt/generation throughput and prove exact total `199016` inside the selected 200K pool |
+| Exact capacity and near-limit prefill gate | `199000/16` | Prove exact total `199016` inside the selected 200K pools and track prefill/TTFT; short decode is telemetry |
 | Real client | Standalone OpenCode2 with fixed provider/workload | Final reasoning, tool continuity, queue, parser, and wall-time integration |
 
 The streaming and acceptance clients synthesize their request from the exact
@@ -101,7 +98,7 @@ provenance.
 
 ## Standard commands
 
-Primary 200K scoreboard:
+Exact 200K capacity and near-limit prefill gate:
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py `
@@ -131,7 +128,7 @@ Greedy current-shape control:
   --temperature 0
 ```
 
-Sampled-profile control:
+Primary ordinary-sampling production scoreboard:
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py `

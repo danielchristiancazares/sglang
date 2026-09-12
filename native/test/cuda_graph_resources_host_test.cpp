@@ -9,20 +9,21 @@
 
 namespace {
 
+using sglang::native::CudaCapturedGraph;
 using sglang::native::CudaExecutionContext;
 using sglang::native::CudaGraphExecutable;
 using sglang::native::CudaStream;
 using sglang::native::GraphArenaLease;
 using sglang::native::GraphMemoryArena;
 using sglang::native::GraphMemorySlice;
+using sglang::native::native_runtime_code_name;
+using sglang::native::native_runtime_operation_name;
 using sglang::native::NativeRuntimeCode;
 using sglang::native::NativeRuntimeError;
 using sglang::native::NativeRuntimeOperation;
 using sglang::native::Result;
-using sglang::native::native_runtime_code_name;
-using sglang::native::native_runtime_operation_name;
 
-[[nodiscard]] bool record_check(bool passed, const char* expression,
+[[nodiscard]] bool record_check(bool passed, const char *expression,
                                 int line) noexcept {
   if (!passed) {
     std::printf("%s:%d: check failed: %s\n", __FILE__, line, expression);
@@ -30,25 +31,25 @@ using sglang::native::native_runtime_operation_name;
   return passed;
 }
 
-#define CHECK(condition)                                                    \
-  do {                                                                      \
-    if (!record_check(static_cast<bool>(condition), #condition, __LINE__)) { \
-      return false;                                                         \
-    }                                                                       \
+#define CHECK(condition)                                                       \
+  do {                                                                         \
+    if (!record_check(static_cast<bool>(condition), #condition, __LINE__)) {   \
+      return false;                                                            \
+    }                                                                          \
   } while (false)
 
 struct MoveProbe final {
-  int* destruction_count;
+  int *destruction_count;
   bool owns;
 
-  explicit MoveProbe(int* count) noexcept
+  explicit MoveProbe(int *count) noexcept
       : destruction_count(count), owns(true) {}
-  MoveProbe(const MoveProbe&) = delete;
-  MoveProbe& operator=(const MoveProbe&) = delete;
-  MoveProbe(MoveProbe&& other) noexcept
+  MoveProbe(const MoveProbe &) = delete;
+  MoveProbe &operator=(const MoveProbe &) = delete;
+  MoveProbe(MoveProbe &&other) noexcept
       : destruction_count(other.destruction_count),
         owns(std::exchange(other.owns, false)) {}
-  MoveProbe& operator=(MoveProbe&&) = delete;
+  MoveProbe &operator=(MoveProbe &&) = delete;
   ~MoveProbe() noexcept {
     if (owns) {
       ++*destruction_count;
@@ -59,31 +60,29 @@ struct MoveProbe final {
 [[nodiscard]] bool ResultOwnsExactlyOneAlternative() {
   int destructions = 0;
   {
-    auto result =
-        Result<MoveProbe, NativeRuntimeError>::success(MoveProbe(&destructions));
+    auto result = Result<MoveProbe, NativeRuntimeError>::success(
+        MoveProbe(&destructions));
     CHECK(result.has_value());
     const bool matched = std::move(result).match(
-        [](MoveProbe&& value) noexcept {
+        [](MoveProbe &&value) noexcept {
           return value.owns && value.destruction_count != nullptr;
         },
-        [](NativeRuntimeError&&) noexcept { return false; });
+        [](NativeRuntimeError &&) noexcept { return false; });
     CHECK(matched);
   }
   CHECK(destructions == 1);
 
-  const NativeRuntimeError expected{
-      NativeRuntimeCode::kInvalidArgument,
-      NativeRuntimeOperation::kReserve,
-      0,
-      0,
-      3,
-      1};
-  auto failure =
-      Result<MoveProbe, NativeRuntimeError>::failure(expected);
+  const NativeRuntimeError expected{NativeRuntimeCode::kInvalidArgument,
+                                    NativeRuntimeOperation::kReserve,
+                                    0,
+                                    0,
+                                    3,
+                                    1};
+  auto failure = Result<MoveProbe, NativeRuntimeError>::failure(expected);
   CHECK(!failure.has_value());
   return std::move(failure).match(
-      [](MoveProbe&&) noexcept { return false; },
-      [expected](NativeRuntimeError&& error) noexcept {
+      [](MoveProbe &&) noexcept { return false; },
+      [expected](NativeRuntimeError &&error) noexcept {
         return error.code == expected.code &&
                error.operation == expected.operation &&
                error.actual == expected.actual &&
@@ -107,7 +106,7 @@ struct MoveProbe final {
       "owner_metadata_conflict",
       "cuda_runtime_failure",
       "tensor_validation_failure"};
-  constexpr std::array<std::string_view, 24> operation_names{
+  constexpr std::array<std::string_view, 42> operation_names{
       "none",
       "get_device",
       "stream_create",
@@ -131,22 +130,40 @@ struct MoveProbe final {
       "launch_linear_rejection_sampling",
       "validate_linear_verify_rng",
       "launch_seeded_linear_verify_rng",
-      "launch_stateful_linear_verify_rng"};
+      "launch_stateful_linear_verify_rng",
+      "validate_dspark_proposal",
+      "launch_dspark_proposal",
+      "validate_gdn_replayssm_commit",
+      "launch_gdn_replayssm_commit",
+      "graph_create",
+      "graph_add_child",
+      "graph_clone",
+      "graph_get_nodes",
+      "graph_node_type",
+      "graph_memcpy_params",
+      "graph_memcpy_params_set",
+      "host_allocate",
+      "host_free",
+      "validate_dspark_cycle",
+      "launch_dspark_cycle_compact_result",
+      "graph_add_memset",
+      "graph_capture_begin",
+      "graph_capture_end",
+      "validate_dspark_target_verify",
+      "launch_dspark_target_verify"};
 
   for (uint32_t index = 0; index < code_names.size(); ++index) {
-    CHECK(native_runtime_code_name(
-              static_cast<NativeRuntimeCode>(index)) == code_names[index]);
+    CHECK(native_runtime_code_name(static_cast<NativeRuntimeCode>(index)) ==
+          code_names[index]);
   }
   for (uint32_t index = 0; index < operation_names.size(); ++index) {
-    CHECK(native_runtime_operation_name(
-              static_cast<NativeRuntimeOperation>(index)) ==
-          operation_names[index]);
+    CHECK(native_runtime_operation_name(static_cast<NativeRuntimeOperation>(
+              index)) == operation_names[index]);
   }
   CHECK(native_runtime_code_name(static_cast<NativeRuntimeCode>(99)) ==
         "invalid_runtime_code");
-  CHECK(native_runtime_operation_name(
-            static_cast<NativeRuntimeOperation>(99)) ==
-        "invalid_runtime_operation");
+  CHECK(native_runtime_operation_name(static_cast<NativeRuntimeOperation>(
+            99)) == "invalid_runtime_operation");
   return true;
 }
 
@@ -158,18 +175,19 @@ static_assert(std::is_nothrow_move_constructible_v<GraphMemoryArena>);
 static_assert(std::is_nothrow_move_constructible_v<GraphMemorySlice>);
 static_assert(std::is_nothrow_move_constructible_v<GraphArenaLease>);
 static_assert(std::is_nothrow_move_constructible_v<CudaGraphExecutable>);
+static_assert(std::is_nothrow_move_constructible_v<CudaCapturedGraph>);
 static_assert(!std::is_copy_constructible_v<CudaStream>);
 static_assert(!std::is_copy_constructible_v<GraphMemoryArena>);
 static_assert(!std::is_copy_constructible_v<CudaGraphExecutable>);
+static_assert(!std::is_copy_constructible_v<CudaCapturedGraph>);
 static_assert(std::is_copy_constructible_v<CudaExecutionContext>);
 static_assert(std::is_copy_constructible_v<GraphMemorySlice>);
 static_assert(std::is_copy_constructible_v<GraphArenaLease>);
 
-}  // namespace
+} // namespace
 
 int main() {
-  if (!ResultOwnsExactlyOneAlternative() ||
-      !RuntimeIdentifiersAreStable()) {
+  if (!ResultOwnsExactlyOneAlternative() || !RuntimeIdentifiersAreStable()) {
     return 1;
   }
   std::printf("[  PASSED  ] 2 tests\n");

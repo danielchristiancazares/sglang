@@ -329,20 +329,11 @@ from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import PortArgs, ServerArgs, compute_world_size
 from sglang.srt.session.session_controller import SessionController
 from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
+from sglang.srt.speculative.dflash_utils import validate_dflash_request
 from sglang.srt.speculative.eagle_utils import (
     get_draft_recurrent_hidden_state_spec_from_config,
 )
 
-if sys.platform == "win32":
-
-    def _windows_dflash_unsupported(*args, **kwargs):
-        raise RuntimeError(
-            "DFlash speculative decoding is not supported by the Windows backend"
-        )
-
-    validate_dflash_request = _windows_dflash_unsupported
-else:
-    from sglang.srt.speculative.dflash_utils import validate_dflash_request
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.speculative.uno_validation import validate_uno_request
 from sglang.srt.state_capturer.indexer_topk import destroy_global_indexer_capturer
@@ -395,6 +386,14 @@ else:
 
 
 logger = logging.getLogger(__name__)
+
+
+if sys.platform == "win32":
+
+    def _windows_dflash_unsupported(*args, **kwargs):
+        raise RuntimeError(
+            "DFlash speculative decoding is not supported by the Windows backend"
+        )
 
 
 def _torch_compile_startup_mode(server_args) -> str:
@@ -2935,7 +2934,10 @@ class Scheduler(
             return
 
         if self.spec_algorithm.is_dflash_family():
-            error_msg = validate_dflash_request(req, self.enable_overlap)
+            if sys.platform == "win32" and self.spec_algorithm.is_dflash():
+                error_msg = _windows_dflash_unsupported(req, self.enable_overlap)
+            else:
+                error_msg = validate_dflash_request(req, self.enable_overlap)
             if error_msg is not None:
                 req.set_finish_with_abort(error_msg)
                 self.init_req_max_new_tokens(req)

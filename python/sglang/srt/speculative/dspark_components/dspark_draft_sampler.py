@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Same free-memory floor init_cuda_graphs requires before draft capture.
 _CAPTURE_HEADROOM_GB = 1.0
+_TRUNCATED_SAMPLING_WIDTH = 32
 
 
 def _base_logits_dtype(model) -> torch.dtype:
@@ -79,6 +80,11 @@ class DsparkDraftSampler:
         self.greedy_mask = None
         self.exp_noise = None
         self.corrected_out = None
+        self.truncated_sampling = bool(
+            folded_sampling and envs.SGLANG_DSPARK_TRUNCATED_DRAFT_SAMPLING.get()
+        )
+        self.top_ks = None
+        self.top_ps = None
         if folded_sampling:
             vocab = int(model.lm_head.org_vocab_size)
             self.temperatures = torch.ones(
@@ -93,6 +99,13 @@ class DsparkDraftSampler:
                 dtype=_base_logits_dtype(model),
                 device=device,
             )
+            if self.truncated_sampling:
+                self.top_ks = torch.ones(
+                    (max_bs,), dtype=torch.int32, device=device
+                )
+                self.top_ps = torch.ones(
+                    (max_bs,), dtype=torch.float32, device=device
+                )
 
     def stage_sampling_params(self, *, bs: int, sampling_info) -> None:
         """Host-side refresh of the static sampling params; must run before
@@ -102,6 +115,9 @@ class DsparkDraftSampler:
         if sampling_info is None:
             self.temperatures[:bs].fill_(1.0)
             self.greedy_mask[:bs].fill_(True)
+            if self.truncated_sampling:
+                self.top_ks[:bs].fill_(1)
+                self.top_ps[:bs].fill_(1.0)
             return
         torch.clamp(
             sampling_info.temperatures.view(-1)[:bs].to(torch.float32),
@@ -109,6 +125,20 @@ class DsparkDraftSampler:
             out=self.temperatures[:bs],
         )
         self.greedy_mask[:bs].copy_((sampling_info.top_ks <= 1).view(-1)[:bs])
+        if self.truncated_sampling:
+            self.top_ks[:bs].copy_(sampling_info.top_ks.view(-1)[:bs])
+            self.top_ps[:bs].copy_(sampling_info.top_ps.view(-1)[:bs])
+
+    def truncated_sampling_supported(self, sampling_info) -> bool:
+        if not self.truncated_sampling:
+            return False
+        if sampling_info is None or sampling_info.is_all_greedy:
+            return True
+        return (
+            sampling_info.need_top_k_sampling
+            and 0 < int(sampling_info.max_top_k) <= _TRUNCATED_SAMPLING_WIDTH
+            and not sampling_info.need_min_p_sampling
+        )
 
     def __call__(self, hidden_states, input_ids):
         bs = hidden_states.shape[0] // self.query_token_num
@@ -146,6 +176,27 @@ class DsparkDraftSampler:
                     # In-graph philox noise: each replay advances the generator
                     # and redraws.
                     noise = self.exp_noise[:bs].exponential_()
+                    if self.truncated_sampling:
+                        from sglang.kernels.ops.sampling.sparse_top_p_renorm import (
+                            sorted_top_k_top_p_sample,
+                        )
+
+                        width = min(_TRUNCATED_SAMPLING_WIDTH, step_logits.shape[-1])
+                        topk_logits, topk_indices = torch.topk(
+                            step_logits, k=width, dim=-1
+                        )
+                        sampled, _, _ = sorted_top_k_top_p_sample(
+                            topk_logits,
+                            topk_indices,
+                            self.temperatures[:bs],
+                            self.top_ks[:bs],
+                            self.top_ps[:bs],
+                            noise,
+                            self.greedy_mask[:bs],
+                        )
+                        return self._tp_sync.sync(
+                            SpecTpSyncSite.DSPARK_GRAPH_SAMPLE, sampled
+                        )
                     return self._tp_sync.sync(
                         SpecTpSyncSite.DSPARK_GRAPH_SAMPLE,
                         SampleStepTokens.execute(

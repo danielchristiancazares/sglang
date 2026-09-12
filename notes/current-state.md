@@ -1,13 +1,120 @@
 # Current state
 
-**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-08-31
-19:31 PDT.
+**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-08
+NVIDIA setup and benchmark handoff.
 
-**Live runtime at reconciliation:** the four-slot production server used for
-the semantic backport gate is fully stopped. Port 30000 is free, compiler and
-CUDA workers are absent, and the RTX 5090 has returned to ordinary desktop
-residency at 835 MiB used / 31,353 MiB free. Every verified launch descendant
-was reaped; the unrelated repository `git fsmonitor--daemon` remains intact.
+**Live runtime at reconciliation:** no SGLang server is running and port 30000
+is free. The three task-owned benchmark server trees were stopped leaf-first;
+all verified PIDs and CUDA compiler workers are absent. At 19:26:11 PDT the
+RTX 5090 reported **1,404 MiB used / 30,784 MiB free**, 3% utilization,
+31 C, and 58.69 W on driver `616.56`. Unrelated desktop and CPU-work processes
+were preserved. This supersedes the September 1 live-server snapshot, not its
+qualified production selection. Recheck ownership before every GPU action.
+
+## NVIDIA stock checkpoint option
+
+The immutable `nvidia/Qwen3.8-27B-NVFP4` revision
+`fed99d815f4e8c7c616dd3dd6780076e26d5fb61` is installed at
+`C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-NVIDIA`. All upstream sizes and LFS
+hashes pass. It works with the existing dependencies and launcher:
+
+```powershell
+.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 `
+  -ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-NVIDIA `
+  -SpeculativeNumSteps 0
+```
+
+This is an explicit **target-only, real-200K** option, not a new production
+default. Five warmed uncached ordinary-sampling `6213+512` requests average
+**64.064 generation tok/s**, **9469.619 prompt tok/s**, **0.656153 s TTFT**,
+and **8.633376 s E2E**. An identically configured original RadixArk control
+averages **63.996 generation tok/s**: no material speed difference. Exact
+`199000+16` passes at **2720.158 prompt tok/s**, **73.157527 s TTFT**, and
+**73.500594 s E2E**, with 2,660 MiB free after cache flush. Reasoning,
+arithmetic, parsed tool use and continuation, non-thinking output, and the
+language-only surface pass.
+
+The mixed NVFP4/FP8 stock weights occupy **21.922 GB**, versus **18.766 GB**
+for the selected attention-NVFP4 derivative. NVIDIA DSpark serving, published
+accuracy suites, and independent-restart/OpenCode2/Codex promotion gates are
+not qualified. A preliminary full-200K production control ran at 95.899 tok/s
+under substantially higher desktop residency; it is preserved as contended
+evidence, not used to replace the historical production record. Full paired
+samples and provenance are in
+[`../benchmark/windows/nvidia_qwen38_20260908.json`](../benchmark/windows/nvidia_qwen38_20260908.json)
+and [`../BENCHMARK.md`](../BENCHMARK.md). No launcher or dependency changed.
+
+## Qualified native-Windows DSpark-v2 production winner
+
+The literal argument-free command
+`.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1` now selects the
+attention-selective RadixArk target checkpoint, the immutable trained
+`Qwen3.8-27B-DSpark-v2` draft, online-FP8 draft weights, gamma seven/eight-token
+linear verification, Triton draft attention, FP8 target/draft KV, five FP32
+Mamba cache slots, one admitted request, 4,096-token prefill chunks, exact
+200,000 context and target/draft pools, and the existing hybrid-Marlin target
+path. Qwen3 reasoning, Qwen3-Coder tools, and the language-only surface remain
+enabled.
+
+`SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT` is the final qualifying mechanism. A
+static width-eight verify already reserves all eight physical draft-cache
+slots, so the target CUDA-graph tail now projects and writes K/V for all eight
+target-hidden rows. Accepted rows are immediately addressable; rejected rows
+remain unreachable through the shorter committed sequence length and are
+overwritten on slot reuse. Eager fallback still owns the commit whenever the
+target verify does not replay its graph. The launcher enables this only for
+DSpark, restores the caller's prior environment in `finally`, and exposes
+`-EnableDSparkStaticGraphKvCommit:$false` as the matched control.
+
+The paired trace reduced the target-to-draft gap from 1.672 to about 1.10 ms.
+It moved the projection/cache-write device work into the target graph rather
+than deleting it; full cycle wall fell from 18.248 to 17.98 ms. A reduced 32K
+sampled window averaged **151.694 tok/s**. The first exact-200K window measured
+**`[157.176,173.614,135.338,152.884,160.793]`**, mean **155.961 tok/s**. The
+independent argument-free production restart measured
+**`[151.139,165.951,151.000,191.357,153.054]`**, mean **162.500 tok/s**; every
+individual default-process sample reached at least 150 tok/s. Each score used
+the Python authority client, uncached exact `6213+512`, one 16-token warmup,
+temperature 1.0, top-p 0.95, top-k 20, and presence penalty 1.5, with exact
+counts, length finish, and preserved ordinary reasoning/content.
+
+The argument-free server repeated exact `199000+16` at 3,118.215 prompt tok/s,
+63.818572 seconds TTFT, and 64.236571 seconds E2E. It coherently derived `703`,
+emitted exactly one parsed `multiply({"a":37,"b":19})` call, carried that
+call through a tool-result continuation without a second call, and returned
+thinking-disabled exact `READY` with zero reasoning. `/model_info` reports
+image/audio false. Standalone OpenCode2 passed its auxiliary-plus-main
+multi-chunk boundary. Codex CLI 0.152.0 twice completed the real Responses Code
+Mode round trip; the retained clean run executed exactly one command, consumed
+its complete nonempty output accurately, returned exact `CODEX TOOL READY`,
+and preserved Tombstead byte-for-byte.
+
+## Qualified local Codex audit prompt
+
+`C:\Users\Daniel\.codex\qwen38.config.toml` selects the Qwen-specific
+`C:\Users\Daniel\.codex\qwen38.md` while retaining
+`model_reasoning_effort = "xhigh"`. The selected instruction SHA-256 is
+`20B9DE8E98BA5D0B0106B5EAC4CC43131C3805F7D154574836563235C91810D8`.
+Its audit path requires every changed file to be triaged, bounds individual
+evidence results and live hypotheses, runs one early non-writing check, follows
+only concrete leads, names coverage gaps, and stops when the live hypotheses
+are proved or closed. Data ownership and destructive/process safety remain
+unchanged.
+
+On the exact literal Tombstead prompt `Look through this game for bugs.`, the
+complete pre-budget xhigh baseline took **472.504487 seconds**, 38 commands,
+2,672,390 cumulative input tokens, and 43,104 output tokens. Two independent
+cache-flushed samples with the selected prompt took **232.5230228** and
+**260.7988227 seconds**, mean **246.66092275 seconds**: a repeatable
+**47.7971%** start-to-finish reduction. They used 26 and 14 commands, covered
+all 11 changed files, passed `npm run check`, reached the same independently
+supported no-current-bug verdict, disclosed generated-regression/browser/
+balance gaps, preserved the exact Tombstead diff and untracked hashes, and did
+not repeat the baseline's incorrect seven-survivor safe-integer claim. The
+26-command first sample shows the budget is guidance rather than a hard tool
+gate; do not tighten it merely for latency while this quality result holds.
+Exact commands, usage, answer audits, and hashes are in the 08:37-08:51
+experiment-log entries.
 
 ## Selected semantic upstream backports
 
@@ -24,21 +131,12 @@ environment value has priority. Pool accounting and request-pool leak checks
 remain active on the idle path. Focused host coverage passes **8 tests and 2
 subtests**, including the local hybrid-SSM/Mamba branch.
 
-One default production relaunch captured target verify, draft decode, and
-draft extend graphs, preserved sampled reasoning, exact arithmetic, one parsed
-tool call, and standalone OpenCode2, then passed exact `199000+16` at
-**3190.815 prompt tok/s**, **121.616 generation tok/s**, **62.366506 s TTFT**,
-and **62.489846 s E2E**. Fifteen-second idle scheduler CPU stayed flat from an
-empty cache through 199K retained tokens, consistent with the gated deep tree
-walk. Full source, command, process, and cleanup evidence is in the latest
-experiment-log entry.
-
-**Qualified production source line:** commit
-`03ba3d2e27` (`perf: promote native Windows decode path`). The default
-launcher now selects the attention-selective checkpoint, chunk 7680, native
-draft-k1 proposal construction, and Cutlass-prefill/Marlin-decode gate/up
-weights. It passed exact capacity, graph, reasoning, tools, language-only,
-OpenCode2, and post-flush headroom gates.
+The semantic backports remain present in the qualified DSpark-v2 source line.
+The earlier `03ba3d2e27` NEXTN/chunk-7680 launch is retained as a historical
+control rather than the current production selection. Full commands, resolved
+arguments, individual samples, process ancestry, behavior/client results, and
+the one explicitly retained stochastic Codex narration retry are in the latest
+experiment-log entries.
 
 ## Native backend roadmap handoff
 
@@ -148,6 +246,31 @@ mandatory before any adapter is promoted. Four ignored root object files
 created before this task at 16:10-16:14 remain Daniel's and untouched; every
 artifact created for this milestone was removed with its isolated build
 directories.
+
+The later native continuation now covers the production batch-one, gamma-seven,
+vocabulary-248,320 DSpark proposal; BF16/FP16 corrected logits and FP32 log
+normalizers; trained rank-256 Markov sampling with explicit Philox reservation;
+corrected-logit rejection; AOT ReplaySSM fold plus convolution rollback/scatter;
+and an eight-stage native cycle controller with one 24-byte D2H result. Real
+graph factories exist for proposal, verify RNG, rejection, ReplaySSM, and
+compact publication. Target verify, draft extend, and KV write remain typed
+placeholders, not model implementations.
+
+A controlled fixture against the immutable trained DSpark-v2 checkpoint now
+matches the Python and Triton oracle exactly for all seven dependent sampled
+tokens and the final Philox counter. Across all `7 * 248320` BF16 corrected
+logits, the scalar native rank reduction differs from PyTorch's GEMM reduction
+by at most `0.0625`; the maximum log-normalizer difference is
+`0.00276756287`. Full isolated CTest remains 16/16, and both the direct trained
+fixture plus all seven ordinary native Compute Sanitizer targets report zero
+errors. Exact artifacts, hashes, commands, and the numerical rationale are in
+the 2026-09-01 05:48 PDT experiment-log entry. This establishes controlled
+trained proposal parity only; it is not full-model or serving parity.
+
+The next native ownership boundary is the real target/draft graph seam: replace
+the target-verify, draft-extend, and KV-write placeholders with model-owned AOT
+graphs and prove their state/KV semantics in the unified controller. Scheduler,
+request/pool, model-descriptor, and serving work remains explicitly later.
 
 ## Native benchmark client handoff
 
@@ -342,10 +465,12 @@ port 30000 is currently free and the GPU is at ordinary display residency.
 
 | Gate | Result |
 |---|---|
-| Real sampled, exact `6213/512` | **122.712 tok/s** ten-run mean; **122.371** median; **137.074** peak |
-| Safe fixed work, exact `6213/512`, accepted length 3 | **171.263 tok/s** five-run mean; all runs retained the established digest |
-| Native acceptance | Five-probe mean **2.318174** emitted/accepted tokens per verification |
-| Near-limit capacity, exact `199000+16` | **2608.263 prompt tok/s**, **102.358 generation tok/s**, `199016` total |
+| Current argument-free sampled, exact `6213/512` | **162.500 tok/s** five-run mean; every individual sample >=150 |
+| Independent explicit-switch sampled, exact `6213/512` | **155.961 tok/s** five-run mean |
+| Current native acceptance | **2.737968** accepted length, **0.249045** rate, 326/1309 correct/proposed, 187 verifies |
+| Current exact capacity, `199000+16` | **3118.215 prompt tok/s**, **63.818572 s TTFT**, **64.236571 s E2E**, `199016` total |
+| Historical NEXTN sampled, exact `6213/512` | **122.712 tok/s** ten-run mean; **122.371** median; **137.074** peak |
+| Historical NEXTN fixed work, accepted length 3 | **171.263 tok/s** five-run mean; all runs retained the established digest |
 | Primary exact `199000+16` record | **3078.058 prompt / 114.617 generation tok/s**, TTFT **64.651152 s**, E2E **64.782022 s** |
 | No-override default relaunch | **3052.437 prompt / 114.053 generation tok/s**, TTFT **65.193816 s**, E2E **65.325334 s** |
 | Selected-cache exact prompt window | **3047.309 tok/s** five-run mean; every request exact `199016` |
@@ -354,12 +479,12 @@ port 30000 is currently free and the GPU is at ordinary display residency.
 | Current eager-fusion long support | **3001.344 prompt / 115.225 generation tok/s** over three exact `199000+512` requests; established digest restored |
 | Behavior | Coherent preserved thinking; correct `703`; exactly one `multiply({"a":37,"b":19})` tool call |
 | Surface | Image and audio understanding reported false |
-| Final production relaunch | Promoted defaults; exact `199016`, all three graphs, arithmetic/tools/OpenCode2, and **4,338 MiB** post-flush free |
+| Final production relaunch | Argument-free DSpark-v2; exact `199016`, intended target/draft graphs, arithmetic/tool continuation, OpenCode2, Codex, and image/audio false |
 
-The real promotion used seed `783025237` to make matched investigations easier,
-while ordinary production semantics retain stochastic rejection sampling. The
-single multi-step aligned-q graph recovered the fixed-work collapse caused by
-Python execution between draft depths and became the measured winner.
+The earlier NEXTN promotion used seed `783025237` to make matched investigations
+easier. It remains a historical control. The selected DSpark-v2 lane uses
+ordinary stochastic rejection sampling and the trained Markov proposal; its
+argument-free qualifying restart used launcher seed `929684324`.
 
 ## Active tree correctness hold
 
@@ -384,9 +509,9 @@ and virtual-id reuse. The combined accepted-path, composite-graph, and GDN CUDA
 suite passes eight tests plus two subtests.
 
 Every earlier tree throughput result remains mechanism-only. The qualified
-linear **122.712 tok/s** result is the production comparison authority until a
-corrected full-model non-front path comparison and all ordinary promotion gates
-pass.
+linear DSpark-v2 **162.500 tok/s** default result is the production comparison
+authority until a corrected full-model non-front path comparison and all
+ordinary promotion gates pass.
 
 A fresh production-linear comparison from correctness commit `3f276e8acda4`
 retained all tree/device-cycle controls off. Its first five-run window averaged
@@ -546,19 +671,21 @@ PERF-061 closes stock target-FP4 tactic and PDL changes. Global PDL-off
 regressed. Bit-exact qkvz/down tactic changes projected 0.361 ms synthetically
 but moved real long generation only **123.831 -> 123.972 tok/s**, inside noise.
 
-PERF-062 promotes the native-Windows gate/up hybrid. A coalesced native
+PERF-062 historically promoted the native-Windows gate/up hybrid. A coalesced native
 Cutlass-to-Marlin relayout matches the canonical repacker bit-for-bit and
 reuses one 85 MiB scratch buffer across 64 target gate/up projections. The
 accepted exact request reached **3078.058 prompt / 114.617 generation tok/s**,
 **64.651152 s TTFT**, and **64.782022 s E2E**, beating all four prior record
 metrics. A no-override launcher restart independently beat the old record at
 **3052.437/114.053**, preserved exact `199016`, and passed every behavior and
-client gate. The user accepted this profile as the launcher default; the
-3100/120 milestone remains a future target rather than a promotion blocker.
+client gate. That NEXTN profile remains a qualified control; the later
+DSpark-v2 promotion at the top of this document supersedes it as the launcher
+default.
 
-The selected default remains `AttnNVFP4`, chunk 7680, M3, and the bit-exact
-Windows Gemma residual-norm direct-output path. Large ordinary EXTEND
-autotuning is now enabled by the launcher. The earlier independent retune
+The selected target remains `AttnNVFP4` with the bit-exact Windows Gemma
+residual-norm direct-output path, while production speculation is now DSpark-v2
+with chunk 4096 and five Mamba slots. The NEXTN M3/chunk-7680 configuration is
+retained as a control. The earlier independent retune
 produced exact prompt samples
 `3051.345, 3048.538, 3048.086, 3042.488, 3044.105`, mean **3046.912**.
 
@@ -592,13 +719,15 @@ sending a request unless prompt calibration equals the requested count exactly.
 
 Base RadixArk at chunk 4096 remains the historical production control at
 **2608.263 prompt / 102.358 generation tok/s** on the same exact workload.
-The earlier 122.712 tok/s `6213/512` and 200-TPS geometry objectives remain
-historical diagnostic context, not the current launcher defaults.
+The earlier 122.712 tok/s `6213/512` NEXTN result and 200-TPS geometry objective
+remain historical diagnostic context, not the current launcher defaults.
 
-Asynchronous CUDA-event timing collected 1,471 transition records over two
-independent real-sampling windows. The best repeatable graph-tail opportunity
-was target-to-draft-extend at conservative p10 **0.658355 ms**, below the
-required 0.75 ms. Graph-tail composition is closed.
+The older NEXTN trace collected 1,471 transition records and closed its best
+repeatable graph-tail opportunity at conservative p10 **0.658355 ms**. DSpark-v2
+later exposed a different roughly 1.67 ms target-to-draft boundary. Static
+all-row K/V commit safely moved its projection/cache writes into the target
+graph, reduced that gap to about 1.10 ms, and is now selected. Further graph-tail
+work is closed absent a newly measured production gap.
 
 The M3 target trace contains 61 exact graph-2 replays at **15.322 ms mean** and
 **14.661 ms median**. Full target-start-to-target-start cycles averaged
@@ -938,8 +1067,8 @@ Every promoted candidate retains all of these:
 - exactly one parsed `multiply({"a":37,"b":19})` call with
   `finish_reason=tool_calls`;
 - image and audio understanding disabled;
-- an unsimulated launcher-default relaunch with target verify, draft decode,
-  and draft extend graphs captured;
+- an unsimulated launcher-default relaunch with every intended target-verify
+  and draft-proposal/decode graph captured for the selected topology;
 - standalone OpenCode2 integration using a fixed provider/workload shape;
 - protected CUDA compatibility headers outside the edit boundary.
 

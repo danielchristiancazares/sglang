@@ -4,28 +4,29 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-08-31 19:31 PDT.
+**Reconciled through:** 2026-09-08 NVIDIA setup and benchmark handoff.
 
 ## Selected production choices
 
 | Decision | Selected choice | Durable evidence |
 |---|---|---|
 | Checkpoint | Attention-selective RadixArk Qwen3.8-27B NVFP4 | Launcher-default exact-200K record; preserved coherent reasoning, tools, OpenCode2, and 4,338 MiB post-flush free |
-| Capacity | Real 200K target and draft pools | Exact `199016` passed repeatedly; 232K reached 98 MiB free before cache flush and was rejected for operating margin |
-| Primary performance scoreboard | Exact `199000+16` near-limit request | Accepted record is **3078.058 prompt / 114.617 generation tok/s**, **64.651152 s TTFT**, and **64.782022 s E2E**; exact `199016` remains required |
-| Next performance milestone | **3100 prompt / 120 generation tok/s**, TTFT **<=64.20 s**, E2E **<=64.35 s** | The two time limits are derived from the throughput thresholds on exact `199000+16`; all four must pass in one eligible request |
+| Serving architecture | Trained DSpark-v2, online-FP8 draft, gamma seven/eight-token linear verification, one request | Two clean exact-200K sampled windows average **155.961** and **162.500 tok/s**; the latter is an argument-free restart and every individual sample reaches at least 150 |
+| Capacity | Real 200K target and draft pools | Argument-free DSpark-v2 repeated exact `199016` at **3118.215 prompt tok/s**, **63.818572 s TTFT**, and **64.236571 s E2E**; 232K remains rejected at 98 MiB margin |
+| Primary performance scoreboard | Uncached exact `6213+512` ordinary sampling: temperature 1.0, top-p 0.95, top-k 20, presence penalty 1.5 | Python authority windows **155.961** and **162.500 tok/s** independently clear the requested 150; exact counts, length finish, reasoning/content, process brackets, and client implementation are recorded |
+| Next performance milestone | None active; reopen native-Windows throughput only by explicit request or a newly measured gap | The requested 150 tok/s objective is qualified on the literal launcher default, including capacity, behavior, OpenCode2, and Codex gates |
 | Model surface | Language-only with Qwen3 reasoning and Qwen3 Coder tools | Preserves required behavior and VRAM; image/audio remain disabled |
 | FlashInfer | Clean native-Windows port of 0.6.17 | Passed JIT/kernel tests, fixed long-prefill correctness, and satisfies the SGLang version contract |
-| Prefill | FlashInfer, launcher-default chunk size 7680 | Qualified on the attention-selective checkpoint; base RadixArk/chunk 4096 remains an explicit control |
-| Default long-context profile | `AttnNVFP4`, chunk size 7680 | Exact `199000+16` reached **3078.058/114.617**; an independent no-override launch reached **3052.437/114.053** |
-| Target verify/decode | TRT-LLM MHA/XQA | Qualified real throughput and exact 200K capacity; compact unread mask removes redundant generic work |
-| Draft decode | TRT-LLM MHA/XQA | Controlled gain over Triton draft decode; semantics and long ladder passed |
-| Draft extend | Captured `DRAFT_EXTEND_V2` graph | Removed an eager dispatch wall and contributed to the later two-step winner |
+| Prefill | FlashInfer, launcher-default chunk size 4096 | Exact 200K DSpark-v2 capacity and both sampled windows pass; chunk 7680 remains the historical NEXTN/selective-checkpoint control |
+| Default long-context profile | `AttnNVFP4` target + DSpark-v2 online-FP8 draft + five FP32 Mamba slots | Literal argument-free launch captures the intended graphs, keeps exact 200K pools, clears 150 tok/s, and survives the real multi-chunk clients |
+| Target verify/decode | TRT-LLM MHA/XQA with static target-graph draft-KV commit | All eight reserved verify rows are projected/written in graph; rejected rows stay unreachable, eager fallback remains, exact-capacity/behavior/acceptance parity passes |
+| Draft decode | Triton inside the folded DSpark draft graph | Current trained-draft route is faster end to end with the graph-side commit despite the earlier NEXTN/XQA selection |
+| Draft proposal | One captured DSpark proposal/sampling graph | Greedy and sampled proposal construction remain folded; the one-step DSpark topology has no separate production draft-extend phase |
 | Linear attention | Triton GDN with ReplaySSM | Correct Qwen recurrent-state handling in the selected linear speculative topology |
 | Draft KV | FP8 E4M3 | Reduced memory and improved the selected topology while preserving behavior |
-| Speculation geometry | 2 steps, 3 draft tokens, EAGLE top-k 1 | Qualified **122.712 tok/s** real mean and **171.263 tok/s** fixed mean |
-| Proposal alignment | Draft top-k one with native CUDA direct one-hot q | Exact q remains rejection-correct; removes softmax/dense renormalization/categorical proposal work and is enabled by the Windows launcher |
-| Chain metadata | Native C++/CUDA fixed-chain path with distinct per-cycle outputs | 4.227x isolated metadata speedup while preserving asynchronous output lifetimes |
+| Speculation geometry | DSpark block size 7, eight target verification rows, one proposal step | Qualified ordinary sampled means **155.961/162.500 tok/s** with healthy native acceptance on two independent full-pool launches |
+| Proposal distribution | Immutable trained rank-256 DSpark-v2 Markov head with ordinary rejection sampling | Controlled trained fixture parity, coherent serving behavior, native acceptance counters, and two real sampled windows pass; truncated/sparse variants remain default-off |
+| Chain metadata | Native C++/CUDA fixed-chain path retained for NEXTN/control experiments | The selected DSpark path preserves its own graph-safe outputs and asynchronous lifetimes; do not reintroduce reusable per-cycle output aliasing |
 | Sampling | FlashInfer | Native CUDA renormalization controls the speculative target path; fallback sampling remains available |
 | Native elementwise/norm | C++/CUDA SiLU, RMSNorm, Gemma RMSNorm, fused Gemma residual-add norm, direct Gemma residual output, and qualified sigmoid-multiply dispatch | Both Gemma paths are bit-exact; the fused residual-add norm improved adjacent exact long generation from 115.194 to 116.583 tok/s |
 | Eager MLP activation quantization | Exact native SwiGLU-to-NVFP4 producer outside `torch.compile`; preserve the former compiled M3 path | All-finite-BF16, production-shape, graph, and tuple-consumer gates pass. Exact prompt improved **0.914%** versus PERF-028 with both deterministic digests restored |
@@ -33,10 +34,11 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Gate/up decode | In-place Cutlass-prefill/Marlin-decode layout for all 64 target gate/up projections | Canonical repack parity and round-trip tests pass; exact record beats all prior metrics while reusing one 85 MiB scratch buffer |
 | Selective tactic cache | Keep the independently selected 20,928-byte cache | SHA-256 `8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`; fresh selection regressed long generation and requires requalification |
 | Workspace | 128 MiB | Wins decode and long prefill; 64 MiB fails required graph allocation |
-| Compile mode | `default`, with established partial fallbacks | Five-run fixed-work win over other compile/fallback arrangements |
+| Compile mode | Disabled for the selected DSpark-v2 launcher | Current DSpark target/draft CUDA graphs capture directly and the independently restarted default clears all throughput and behavior gates |
 | Scheduling | Receive interval 4; stream interval 4; incremental output | Measured fixed-work wins while retaining client streaming behavior |
-| Codex client lane | Launcher override `-MaxMambaCacheSize 5`; one request; close failed Qwen sessions before server restart | A real 10.5K-token Codex prompt exhausted the four-slot pool while caching its unfinished 7,680-token chunk. Five slots passed the same multi-chunk boundary, retained-cache pressure, exact 200K capacity, post-capacity Codex, semantics, and OpenCode2; four slots remain the benchmarked production default |
-| Codex Code Mode ABI | Adapt Responses `custom` tools through a synthetic one-string Qwen function and restore custom call/output wire items at the API boundary | Codex 0.151.0 rejected JSON-shaped `exec` calls as incompatible. The adapter passes 68 focused tests; a real 12.4K-token Tombstead turn executed one read-only command, consumed its output, returned exact `CODEX TOOL READY`, and preserved ordinary function calls |
+| Codex client lane | Five FP32 Mamba slots are now the one-request launcher default; close failed Qwen sessions before restart | Four slots failed the unfinished multi-chunk donation boundary. Five passed exact 200K, OpenCode2, and repeated 9.7K-cached-token Codex Responses turns without weakening either token pool |
+| Codex Code Mode ABI | Preserve the synthetic one-string Qwen adapter and custom call/output restoration | Codex 0.152.0 twice executed exactly one read-only command with complete output and exact `CODEX TOOL READY`; the retained retry accurately recognized the nonempty status, preserved Tombstead, and left no process |
+| Local Codex audit instructions | Select bounded-evidence `C:\Users\Daniel\.codex\qwen38.md` only for the `qwen38` profile; retain `xhigh` reasoning and the full data-safety contract | Exact Tombstead audit baseline **472.504487 s**; independent selected-prompt samples **232.5230228/260.7988227 s**, mean **246.66092275 s** (**47.7971%** lower), with all changed files triaged, green static gate, independently supported verdict, explicit gaps, and byte-identical user work |
 | Selected upstream hardening backports | Pin compressed-tensors 0.18.0; strip credentials from executable PR checkouts; reject NUL grammars; bound stop inputs; resolve Qwen tool properties across schema combinators | Explicitly authorized exception for the reviewed Python correctness changes. Consolidated host coverage passes 199 tests/28 subtests; live malformed requests fail closed, `oneOf` arguments retain integer/boolean types, ordinary multiply and multi-chunk Codex Code Mode remain qualified |
 | Process-tree teardown | Wait up to 60 seconds for ordinary kill/reap; use explicit fire-and-forget only for the runtime/GC route; reap tokenizer descendants before tokenizer exit | Semantic adaptation of upstream `78d36f5f62`; focused race, ordering, and caller-policy coverage passes, and a production launch released every verified server PID, listener, and CUDA resource cleanly |
 | Idle tree-cache diagnostics | Default the deep tree walk off in production and on in CI through `SGLANG_ENABLE_TREE_CACHE_SANITY_CHECK`; preserve explicit override priority | Semantic adaptation of upstream `6afb5e1771`; ordinary idle pool/request checks remain active, SWA and Mamba opt-in coverage passes, and idle scheduler CPU stayed flat through a retained 199K cache |
@@ -47,10 +49,28 @@ remain in [`experiment-log.md`](experiment-log.md).
 | Tree/SWOR implementation | Retained as opt-in, production-ineligible infrastructure | A non-front unified-pool KV/compaction defect exists outside the measured static-pool route; current-config full cross-cycle parity is still required, and raw-composite SWOR RNG is invalid |
 | Device-resident linear cycle | Retained opt-in; rejected for throughput | Exact-q dense-race and explicit-seed categorical forms reached 122.576 and 120.075 tok/s versus 124.775 matched control; ordinary scheduling remains selected |
 | Geometry funding gate | Complete lattice; conservative lower >=215 TPS; strictly above measured frontier | Family rejection uses an impossible target-aware upper <=200 TPS; selected-tree gaps fail closed |
-| Graph-tail work | Closed at the 0.75 ms admission gate | Two independent windows produced 1,471 CUDA-event records; best repeatable recoverable p10 was 0.658355 ms |
+| Graph-tail work | Static target-graph DSpark K/V commit selected; remaining tail work closed absent a new measured gap | Target-to-draft gap fell **1.672 -> ~1.10 ms**, full cycle **18.248 -> 17.98 ms**, exact acceptance parity held, and production windows cleared 150 |
 | Target attribution | Exact per-shape M/N/K plus overlap-aware exposure | M3 primary GEMMs occupy 12.360 ms on the terminal stream; aggregate residency alone overcounts alternate-stream overlap |
 | Selective target NVFP4 | Launcher-default production checkpoint | User accepted the all-four-metric record; default relaunch and behavior/client gates passed |
 | MiaAI-Lab vLLM recipe | Matched `199000+16` reproduction remains an information gate | Same checkpoint/GPU uses MTP-3, TurboQuant 4-bit KV, and patched full-graph K+1 verify; published ~160 TPS lacks raw workload evidence |
+
+## NVIDIA stock checkpoint alternative
+
+The September 8 NVIDIA checkpoint is retained as an immutable, explicitly
+selected **target-only 200K** option:
+`-ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-NVIDIA -SpeculativeNumSteps 0`.
+Its five-run sampled mean is **64.064 tok/s**, versus **63.996 tok/s** for
+the original stock RadixArk checkpoint with identical serving flags; the
+0.11% difference does not establish a performance win. Exact `199000+16`,
+ordinary reasoning/arithmetic, parsed tools and continuation, non-thinking
+output, and language-only reporting pass.
+
+Do not replace the attention-selective DSpark production default on this
+evidence. NVIDIA speculative serving, independent-restart/client promotion,
+and the published accuracy scores were not qualified. This preserves an
+additional usable checkpoint without weakening the production capacity or
+promotion contract. See `benchmark/windows/nvidia_qwen38_20260908.json`
+and the September 8 experiment-log entries for the paired samples and hashes.
 
 ## Native backend foundation
 
@@ -75,24 +95,28 @@ remain in [`experiment-log.md`](experiment-log.md).
 ## Primary performance record
 
 The root [`../BENCHMARK.md`](../BENCHMARK.md) scoreboard governs optimization
-ranking. The selective target-NVFP4 checkpoint completed exact `199000+16` at
-**3078.058 prompt tok/s**, **114.617 generation tok/s**, **64.651152 s TTFT**,
-and **64.782022 s** end to end. An independent launcher-default relaunch
-reached **3052.437/114.053**, **65.193816 s TTFT**, and **65.325334 s E2E**.
-Both exact requests beat every prior record metric. This is the record to beat.
+ranking. The selected DSpark-v2 production scoreboard is uncached ordinary
+sampling at exact `6213+512`. The explicit-switch full-pool window averaged
+**155.961 tok/s**; an independent literal argument-free restart averaged
+**162.500 tok/s**, and all five of its individual samples reached at least 150.
 
-The next milestone is **3100 prompt / 120 generation tok/s**, with TTFT
-**<=64.20 s** and end-to-end time **<=64.35 s** in the same eligible request.
+The argument-free server also repeated exact `199000+16` at **3118.215 prompt
+tok/s**, **63.818572 s TTFT**, and **64.236571 s E2E**. The prior NEXTN
+selective-target exact-16 record remains a separate historical long-context
+control; its short-completion generation rate is not substituted for the
+512-token ordinary-sampling objective. There is no active next Windows
+milestone after closing the requested 150 tok/s gate.
 
 ## Qualified reference results
 
 | Result | Accepted value |
 |---|---|
-| Real sampled `6213/512` | **122.712 tok/s** ten-run mean, **122.371** median, **137.074** peak |
-| Fixed accepted-length-3 `6213/512` | **171.263 tok/s** five-run mean |
-| Native two-step acceptance | **2.318174** mean emitted/accepted tokens per verification over five probes |
-| Near-limit `199000/16` | **2608.263 prompt tok/s**, **102.358 generation tok/s**, exact `199016` total |
-| Final production graph headroom | **1.84 GiB** reported after restored 200K capture |
+| Argument-free real sampled `6213/512` | **162.500 tok/s** five-run mean; samples `151.139/165.951/151.000/191.357/153.054` |
+| Independent explicit-switch sampled `6213/512` | **155.961 tok/s** five-run mean |
+| Current native DSpark acceptance | **2.737968** accepted length, **0.249045** rate, 326/1309 correct/proposed over 187 verifies |
+| Current exact `199000/16` capacity | **3118.215 prompt tok/s**, **63.818572 s TTFT**, **64.236571 s E2E**, exact `199016` total |
+| Current graph/headroom envelope | **1.71 GiB** at graph end; **253-255 MiB** with retained benchmark prefixes; **1,361 MiB** after final cache flush |
+| Historical NEXTN fixed accepted-length-3 `6213/512` | **171.263 tok/s** five-run mean |
 
 ## Closed or rejected candidates
 

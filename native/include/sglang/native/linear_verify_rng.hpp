@@ -95,8 +95,26 @@ validate_linear_verify_rng_shape(LinearVerifyRngShape shape) noexcept;
 [[nodiscard]] NativeRuntimeError launch_seeded_linear_verify_rng(
     const CudaExecutionContext &context,
     const SeededLinearVerifyRngBuffers &buffers) noexcept;
+[[nodiscard]] NativeRuntimeError launch_seeded_linear_verify_rng_if_ready(
+    const CudaExecutionContext &context,
+    const SeededLinearVerifyRngBuffers &buffers) noexcept;
 [[nodiscard]] NativeRuntimeError launch_stateful_linear_verify_rng(
     const CudaExecutionContext &context,
+    const StatefulLinearVerifyRngBuffers &buffers) noexcept;
+[[nodiscard]] NativeRuntimeError launch_stateful_linear_verify_rng_if_ready(
+    const CudaExecutionContext &context,
+    const StatefulLinearVerifyRngBuffers &buffers) noexcept;
+
+// Captures the guarded producer form used by the speculative-cycle controller.
+// Every view must belong to arena so the returned source graph can retain the
+// exact storage whose addresses are recorded by its kernel node.
+[[nodiscard]] NativeRuntimeResult<CudaCapturedGraph>
+capture_seeded_linear_verify_rng_graph(
+    const CudaExecutionContext &context, const GraphArenaLease &arena,
+    const SeededLinearVerifyRngBuffers &buffers) noexcept;
+[[nodiscard]] NativeRuntimeResult<CudaCapturedGraph>
+capture_stateful_linear_verify_rng_graph(
+    const CudaExecutionContext &context, const GraphArenaLease &arena,
     const StatefulLinearVerifyRngBuffers &buffers) noexcept;
 
 static_assert(sizeof(LinearVerifyRngShape) == 8);
