@@ -1,6 +1,7 @@
 #include <torch/extension.h>
 
 #include <ATen/mps/MPSStream.h>
+#include <ATen/ops/_to_copy_native.h>
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -584,6 +585,102 @@ INSTANTIATE_QUANT_BATCH("q6_K_batch_8", block_q6_K, 256, 8)
 INSTANTIATE_QUANT_BATCH("iq2_xxs_batch_4", block_iq2_xxs, 256, 4)
 INSTANTIATE_QUANT_BATCH("iq2_xxs_batch_8", block_iq2_xxs, 256, 8)
 #undef INSTANTIATE_QUANT_BATCH
+
+// Reuse each activation fragment across two Q6_K output rows. This mapping
+// adapts kernel_mul_mv_q6_K_f32_impl from ggml-org/llama.cpp's
+// ggml/src/ggml-metal/ggml-metal.metal at
+// 749f688fcaa4c472ec034b08cb8a907c45cfaa02; see THIRDPARTYNOTICES.txt.
+kernel void q6_K_batch_1_rows2(
+        device const block_q6_K * weights,
+        device const float * input,
+        device float * output,
+        constant Q4Args & args,
+        uint group [[threadgroup_position_in_grid]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr ushort rows_per_simdgroup = 2;
+    constexpr ushort simdgroups = 2;
+    constexpr uchar mask0 = 0x03;
+    constexpr uchar mask1 = 0x0c;
+    constexpr uchar mask2 = 0x30;
+    constexpr uchar mask3 = 0xc0;
+
+    const uint first_row =
+        (group * simdgroups + simd_id) * rows_per_simdgroup;
+    const ushort tid = lane / 2;
+    const ushort block_cohort = lane & 1;
+    const ushort input_half = tid / 8;
+    const ushort input_lane = tid & 7;
+    const ushort local = 4 * input_lane;
+    const ushort scale_index = 8 * input_half + local / 16;
+    const ushort input_offset = 128 * input_half + local;
+    const ushort low_offset = 64 * input_half + local;
+    const ushort high_offset = 32 * input_half + local;
+
+    float sums[rows_per_simdgroup] = {0.0f};
+    float input_values[16];
+
+    for (uint block_index = block_cohort;
+         block_index < args.blocks_per_row;
+         block_index += 2) {
+        device const float * input_block =
+            input + block_index * 256 + input_offset;
+#pragma unroll
+        for (ushort i = 0; i < 4; ++i) {
+            input_values[4 * i] = input_block[i];
+            input_values[4 * i + 1] = input_block[i + 32];
+            input_values[4 * i + 2] = input_block[i + 64];
+            input_values[4 * i + 3] = input_block[i + 96];
+        }
+
+#pragma unroll
+        for (ushort row_offset = 0;
+             row_offset < rows_per_simdgroup;
+             ++row_offset) {
+            device const block_q6_K * block =
+                weights +
+                (first_row + row_offset) * args.blocks_per_row +
+                block_index;
+            device const uchar * low0 = block->ql + low_offset;
+            device const uchar * low1 = low0 + 32;
+            device const uchar * high = block->qh + high_offset;
+            device const char * scales = block->scales + scale_index;
+            float4 accumulators = float4(0.0f);
+
+#pragma unroll
+            for (ushort i = 0; i < 4; ++i) {
+                accumulators[0] += input_values[4 * i] *
+                    float(int((low0[i] & 0x0f) |
+                        ((high[i] & mask0) << 4)) - 32);
+                accumulators[1] += input_values[4 * i + 1] *
+                    float(int((low1[i] & 0x0f) |
+                        ((high[i] & mask1) << 2)) - 32);
+                accumulators[2] += input_values[4 * i + 2] *
+                    float(int((low0[i] >> 4) |
+                        (high[i] & mask2)) - 32);
+                accumulators[3] += input_values[4 * i + 3] *
+                    float(int((low1[i] >> 4) |
+                        ((high[i] & mask3) >> 2)) - 32);
+            }
+
+            sums[row_offset] += float(block->d) * (
+                accumulators[0] * float(scales[0]) +
+                accumulators[1] * float(scales[2]) +
+                accumulators[2] * float(scales[4]) +
+                accumulators[3] * float(scales[6]));
+        }
+    }
+
+#pragma unroll
+    for (ushort row_offset = 0;
+         row_offset < rows_per_simdgroup;
+         ++row_offset) {
+        const float sum = simd_sum(sums[row_offset]);
+        if (lane == 0) {
+            output[first_row + row_offset] = sum;
+        }
+    }
+}
 
 // Reuse each activation fragment across four Q2_K output rows. This mapping
 // adapts kernel_mul_mv_q2_K_f32_impl from ggml-org/llama.cpp's
@@ -1717,6 +1814,90 @@ kernel void q6_K_batch_8_vec4(
     }
 }
 
+// At batch four, assign each eight-lane cohort a separate output row. Every
+// cohort dequantizes one row once and reuses it across all four activations,
+// allowing a 128-thread group to produce sixteen rows.
+kernel void q6_K_batch_4_vec4_rows16(
+        device const block_q6_K * weights,
+        device const float * input,
+        device float * output,
+        constant Q4Args & args,
+        uint group [[threadgroup_position_in_grid]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr ushort lanes_per_row = 8;
+    constexpr ushort batch_size = 4;
+    constexpr ushort rows_per_simdgroup = 4;
+    constexpr ushort rows_per_threadgroup = 16;
+    const ushort row_in_simdgroup = lane / lanes_per_row;
+    const ushort thread_x = lane & (lanes_per_row - 1);
+    const uint row = group * rows_per_threadgroup
+        + simd_id * rows_per_simdgroup + row_in_simdgroup;
+    const bool valid_row = row < args.output_size;
+    device const block_q6_K * row_weights = valid_row
+        ? weights + row * args.blocks_per_row : weights;
+    float sums[batch_size] = {0.0f};
+    device const float * input_rows[batch_size] = {
+        input,
+        input + args.input_size,
+        input + 2 * args.input_size,
+        input + 3 * args.input_size,
+    };
+    if (valid_row) {
+        const uint lane_base = thread_x * 4;
+        for (uint block_index = 0;
+             block_index < args.blocks_per_row;
+             ++block_index) {
+            device const block_q6_K * block = row_weights + block_index;
+            const float block_scale = float(block->d);
+#pragma unroll(2)
+            for (ushort half_block = 0; half_block < 2; ++half_block) {
+#pragma unroll(4)
+                for (ushort quadrant = 0; quadrant < 4; ++quadrant) {
+                    const uint ql_offset = half_block * 64 + lane_base
+                        + ((quadrant & 1) ? 32 : 0);
+                    const uchar4 packed_low =
+                        *reinterpret_cast<device const uchar4 *>(
+                            block->ql + ql_offset);
+                    const uchar4 low = quadrant < 2
+                        ? packed_low & uchar4(0x0f) : packed_low >> 4;
+                    const uchar4 packed_high =
+                        *reinterpret_cast<device const uchar4 *>(
+                            block->qh + half_block * 32 + lane_base);
+                    const uchar4 high =
+                        (packed_high >> (quadrant * 2)) & uchar4(3);
+                    const int4 quant = int4(low | (high << 4)) - 32;
+                    const uint scale_index = half_block * 8
+                        + (lane_base / 16) + quadrant * 2;
+                    const float4 weight = block_scale
+                        * float(block->scales[scale_index]) * float4(quant);
+                    const uint column = block_index * 256
+                        + half_block * 128 + quadrant * 32 + lane_base;
+#pragma unroll(batch_size)
+                    for (ushort batch = 0; batch < batch_size; ++batch) {
+                        sums[batch] += dot(
+                            weight,
+                            *reinterpret_cast<device const float4 *>(
+                                input_rows[batch] + column));
+                    }
+                }
+            }
+        }
+    }
+#pragma unroll(batch_size)
+    for (ushort batch = 0; batch < batch_size; ++batch) {
+        sums[batch] += simd_shuffle_down(sums[batch], 4);
+        sums[batch] += simd_shuffle_down(sums[batch], 2);
+        sums[batch] += simd_shuffle_down(sums[batch], 1);
+    }
+    if (thread_x == 0 && valid_row) {
+#pragma unroll(batch_size)
+        for (ushort batch = 0; batch < batch_size; ++batch) {
+            output[batch * args.output_size + row] = sums[batch];
+        }
+    }
+}
+
 // Give each eight-lane cohort a separate output row at batch one. Each lane
 // decodes four adjacent weights at a time, and all four cohorts reuse the same
 // input vector while producing sixteen rows per threadgroup.
@@ -1782,6 +1963,95 @@ kernel void q5_K_batch_1_vec4(
         }
     }
     sum += simd_shuffle_down(sum, 4);
+    sum += simd_shuffle_down(sum, 2);
+    sum += simd_shuffle_down(sum, 1);
+    if (thread_x == 0 && valid_row) {
+        output[row] = sum;
+    }
+}
+
+// Double the batch-one Q5_K row cohort for compact target projections. Four
+// lanes decode eight adjacent weights each, allowing one threadgroup to cover
+// 32 output rows while retaining the established vector-four arithmetic.
+kernel void q5_K_batch_1_vec8_rows32(
+        device const block_q5_K * weights,
+        device const float * input,
+        device float * output,
+        constant Q4Args & args,
+        uint group [[threadgroup_position_in_grid]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr ushort lanes_per_row = 4;
+    constexpr ushort rows_per_simdgroup = 8;
+    constexpr ushort rows_per_threadgroup = 32;
+    const ushort row_in_simdgroup = lane / lanes_per_row;
+    const ushort thread_x = lane & (lanes_per_row - 1);
+    const uint row = group * rows_per_threadgroup
+        + simd_id * rows_per_simdgroup + row_in_simdgroup;
+    const bool valid_row = row < args.output_size;
+    device const block_q5_K * row_weights = valid_row
+        ? weights + row * args.blocks_per_row : weights;
+    float sum = 0.0f;
+    if (valid_row) {
+        const uint lane_base = thread_x * 8;
+        for (uint block_index = 0;
+             block_index < args.blocks_per_row;
+             ++block_index) {
+            device const block_q5_K * block = row_weights + block_index;
+            const float block_scale = float(block->d);
+            const float block_min = float(block->dmin);
+            const uchar4 packed_high0 =
+                *reinterpret_cast<device const uchar4 *>(
+                    block->qh + lane_base);
+            const uchar4 packed_high1 =
+                *reinterpret_cast<device const uchar4 *>(
+                    block->qh + lane_base + 4);
+#pragma unroll(4)
+            for (ushort group_index = 0; group_index < 4; ++group_index) {
+                const uchar4 packed_low0 =
+                    *reinterpret_cast<device const uchar4 *>(
+                        block->qs + group_index * 32 + lane_base);
+                const uchar4 packed_low1 =
+                    *reinterpret_cast<device const uchar4 *>(
+                        block->qs + group_index * 32 + lane_base + 4);
+#pragma unroll(2)
+                for (ushort nibble_half = 0;
+                     nibble_half < 2;
+                     ++nibble_half) {
+                    const ushort scale_index =
+                        group_index * 2 + nibble_half;
+                    const uchar2 scale_min =
+                        q5_k_scale_min(block->scales, scale_index);
+                    const uchar4 low0 = nibble_half == 0
+                        ? packed_low0 & uchar4(0x0f) : packed_low0 >> 4;
+                    const uchar4 low1 = nibble_half == 0
+                        ? packed_low1 & uchar4(0x0f) : packed_low1 >> 4;
+                    const uchar4 high0 =
+                        (packed_high0 >> scale_index) & uchar4(1);
+                    const uchar4 high1 =
+                        (packed_high1 >> scale_index) & uchar4(1);
+                    const float4 weight0 =
+                        block_scale * float(scale_min[0])
+                            * float4(uint4(low0) + uint4(high0) * 16)
+                        - block_min * float(scale_min[1]);
+                    const float4 weight1 =
+                        block_scale * float(scale_min[0])
+                            * float4(uint4(low1) + uint4(high1) * 16)
+                        - block_min * float(scale_min[1]);
+                    const uint column = block_index * 256
+                        + group_index * 64 + nibble_half * 32 + lane_base;
+                    sum += dot(
+                        weight0,
+                        *reinterpret_cast<device const float4 *>(
+                            input + column));
+                    sum += dot(
+                        weight1,
+                        *reinterpret_cast<device const float4 *>(
+                            input + column + 4));
+                }
+            }
+        }
+    }
     sum += simd_shuffle_down(sum, 2);
     sum += simd_shuffle_down(sum, 1);
     if (thread_x == 0 && valid_row) {
@@ -2362,6 +2632,7 @@ struct ExtendAttentionArgs {
     uint cache_slots;
     uint req_rows;
     uint req_stride;
+    uint key_splits;
     float scale;
 };
 
@@ -2910,6 +3181,93 @@ inline ushort f32_to_bf16_rne(float value) {
     return ushort(bits >> 16);
 }
 
+inline uchar f32_to_fp8_e4m3fn(float value) {
+    constexpr uint fp8_max = 0x43f00000u;
+    constexpr uint denorm_mask = 0x46800000u;
+    uint bits = as_type<uint>(value);
+    const uint sign = bits & 0x80000000u;
+    bits ^= sign;
+
+    uchar result;
+    if (bits >= fp8_max) {
+        result = 0x7f;
+    } else if (bits < 0x3c800000u) {
+        bits = as_type<uint>(
+            as_type<float>(bits) + as_type<float>(denorm_mask));
+        result = uchar(bits - denorm_mask);
+    } else {
+        const uint mantissa_odd = (bits >> 20) & 1u;
+        bits += 0xc407ffffu + mantissa_odd;
+        result = uchar(bits >> 20);
+    }
+    return result | uchar(sign >> 24);
+}
+
+inline float fp8_e4m3fn_to_f32(uchar input) {
+    const uint word = uint(input) << 24;
+    const uint sign = word & 0x80000000u;
+    const uint nonsign = word & 0x7fffffffu;
+    uint renorm_shift = nonsign != 0 ? clz(nonsign) : 32;
+    renorm_shift = renorm_shift > 4 ? renorm_shift - 4 : 0;
+    const int inf_nan_mask =
+        (int(nonsign + 0x01000000u) >> 8) & int(0x7f800000u);
+    const int zero_mask = int(nonsign - 1u) >> 31;
+    const uint result = sign |
+        ((((nonsign << renorm_shift >> 4) +
+           ((0x78u - renorm_shift) << 23)) |
+          uint(inf_nan_mask)) &
+         ~uint(zero_mask));
+    return as_type<float>(result);
+}
+
+struct Float8ConversionArgs {
+    uint count;
+    uint dimensions;
+    ulong sizes[8];
+    ulong strides[8];
+};
+
+inline ulong float8_conversion_input_index(
+        uint linear_index,
+        constant Float8ConversionArgs & args) {
+    if (args.dimensions == 0) {
+        return linear_index;
+    }
+    ulong remaining = linear_index;
+    ulong input_index = 0;
+    for (int dimension = int(args.dimensions) - 1;
+         dimension >= 0;
+         --dimension) {
+        const ulong size = args.sizes[dimension];
+        const ulong coordinate = remaining % size;
+        remaining /= size;
+        input_index += coordinate * args.strides[dimension];
+    }
+    return input_index;
+}
+
+kernel void convert_f32_to_fp8_e4m3fn(
+        device const float * input,
+        device uchar * output,
+        constant Float8ConversionArgs & args,
+        uint index [[thread_position_in_grid]]) {
+    if (index < args.count) {
+        output[index] = f32_to_fp8_e4m3fn(
+            input[float8_conversion_input_index(index, args)]);
+    }
+}
+
+kernel void convert_fp8_e4m3fn_to_f32(
+        device const uchar * input,
+        device float * output,
+        constant Float8ConversionArgs & args,
+        uint index [[thread_position_in_grid]]) {
+    if (index < args.count) {
+        output[index] = fp8_e4m3fn_to_f32(
+            input[float8_conversion_input_index(index, args)]);
+    }
+}
+
 #if defined(SGLANG_EXTEND_GQA) && SGLANG_SIMDGROUP_MATRIX && SGLANG_EXTEND_GQA
 inline float simd_max_16(float value) {
     value = max(value, simd_shuffle_xor(value, 8));
@@ -2963,8 +3321,9 @@ kernel void extend_gqa_bf16_tiled_256(
     threadgroup float * shared_stats =
         reinterpret_cast<threadgroup float *>(shared_runs + key_tile / 8);
 
+    const bool split_decode = args.query_tokens == 1 && args.key_splits > 1;
     const uint kv_head = group.y;
-    const uint attention_row_start = group.x * query_tile;
+    const uint attention_row_start = split_decode ? 0 : group.x * query_tile;
     const uint attention_rows = args.query_tokens * heads_per_kv;
     const long raw_seq_len = seq_lens[0];
     const bool metadata_valid = raw_seq_len >= long(args.query_tokens) &&
@@ -2987,6 +3346,23 @@ kernel void extend_gqa_bf16_tiled_256(
     const uint group_kv_len = req_valid
         ? min(seq_len, prefix_len + last_attention_row / heads_per_kv + 1)
         : 0;
+    const uint active_key_splits = split_decode
+        ? min(args.key_splits, max(1u, (group_kv_len + 1023) / 1024))
+        : 1;
+    if (split_decode && group.x >= active_key_splits) {
+        return;
+    }
+    const uint key_tiles = (group_kv_len + key_tile - 1) / key_tile;
+    const uint tiles_per_split =
+        (key_tiles + active_key_splits - 1) / active_key_splits;
+    const uint first_key_tile = split_decode
+        ? group.x * tiles_per_split
+        : 0;
+    const uint last_key_tile = split_decode
+        ? min(key_tiles, first_key_tile + tiles_per_split)
+        : key_tiles;
+    const uint first_key = first_key_tile * key_tile;
+    const uint last_key = min(group_kv_len, last_key_tile * key_tile);
 
     for (uint index = tid; index < query_tile * head_dim; index += 128) {
         const uint row = index / head_dim;
@@ -3009,7 +3385,7 @@ kernel void extend_gqa_bf16_tiled_256(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    for (uint key_start = 0; key_start < group_kv_len; key_start += key_tile) {
+    for (uint key_start = first_key; key_start < last_key; key_start += key_tile) {
         int mapped_slot = -1;
         if (tid < key_tile) {
             const uint logical_token = key_start + tid;
@@ -3256,6 +3632,31 @@ kernel void extend_gqa_bf16_tiled_256(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
+    if (split_decode) {
+        for (uint index = tid; index < query_tile * head_dim; index += 128) {
+            const uint row = index / head_dim;
+            const uint dim = index - row * head_dim;
+            const uint attention_row = attention_row_start + row;
+            if (attention_row < attention_rows) {
+                const uint query_head =
+                    kv_head * heads_per_kv + attention_row % heads_per_kv;
+                const ulong partial_base =
+                    (ulong(group.x) * args.num_q_heads + query_head) *
+                    (head_dim + 2);
+                output[partial_base + dim] = shared_output[index];
+            }
+        }
+        if (tid < heads_per_kv) {
+            const uint query_head = kv_head * heads_per_kv + tid;
+            const ulong partial_base =
+                (ulong(group.x) * args.num_q_heads + query_head) *
+                (head_dim + 2);
+            output[partial_base + head_dim] = shared_stats[2 * tid];
+            output[partial_base + head_dim + 1] = shared_stats[2 * tid + 1];
+        }
+        return;
+    }
+
     for (uint index = tid; index < query_tile * head_dim; index += 128) {
         const uint row = index / head_dim;
         const uint dim = index - row * head_dim;
@@ -3268,6 +3669,62 @@ kernel void extend_gqa_bf16_tiled_256(
             output[(query_token * args.num_q_heads + query_head) * head_dim + dim] =
                 sum == 0.0f ? 0.0f : shared_output[index] / sum;
         }
+    }
+}
+
+kernel void reduce_decode_gqa_bf16_split_256(
+        device const float * partials,
+        device float * output,
+        device const long * seq_lens,
+        constant ExtendAttentionArgs & args,
+        uint query_head [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort simd_id [[simdgroup_index_in_threadgroup]]) {
+    constexpr uint head_dim = 256;
+    constexpr uint partial_stride = head_dim + 2;
+
+    const uint seq_limit = min(args.cache_slots, args.req_stride);
+    const uint seq_len = uint(min(
+        ulong(max(seq_lens[0], long(0))), ulong(seq_limit)));
+    const uint active_key_splits =
+        min(args.key_splits, max(1u, (seq_len + 1023) / 1024));
+    threadgroup float split_scales[32];
+    threadgroup float denominator;
+
+    if (simd_id == 0) {
+        const ulong partial_base =
+            (ulong(lane) * args.num_q_heads + query_head) * partial_stride;
+        const float partial_sum = lane < active_key_splits
+            ? partials[partial_base + head_dim + 1]
+            : 0.0f;
+        const float partial_max = partial_sum == 0.0f
+            ? -INFINITY
+            : partials[partial_base + head_dim];
+        const float merged_max = simd_max(partial_max);
+        const float partial_scale = partial_sum == 0.0f
+            ? 0.0f
+            : exp(partial_max - merged_max);
+        if (lane < active_key_splits) {
+            split_scales[lane] = partial_scale;
+        }
+        const float merged_sum = simd_sum(partial_sum * partial_scale);
+        if (lane == 0) {
+            denominator = merged_sum;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid < head_dim && query_head < args.num_q_heads) {
+        float value = 0.0f;
+        for (uint split = 0; split < active_key_splits; ++split) {
+            const ulong partial_base =
+                (ulong(split) * args.num_q_heads + query_head) * partial_stride;
+            value += partials[partial_base + tid] * split_scales[split];
+        }
+        output[query_head * head_dim + tid] = denominator == 0.0f
+            ? 0.0f
+            : value / denominator;
     }
 }
 #endif
@@ -3660,6 +4117,13 @@ struct AttentionArgs {
     float scale;
 };
 
+struct Float8ConversionArgs {
+    uint32_t count;
+    uint32_t dimensions;
+    uint64_t sizes[8];
+    uint64_t strides[8];
+};
+
 struct ExtendAttentionArgs {
     uint32_t query_tokens;
     uint32_t num_q_heads;
@@ -3668,6 +4132,7 @@ struct ExtendAttentionArgs {
     uint32_t cache_slots;
     uint32_t req_rows;
     uint32_t req_stride;
+    uint32_t key_splits;
     float scale;
 };
 
@@ -3726,12 +4191,15 @@ struct Pipelines {
     id<MTLComputePipelineState> q4_K_batch8 = nil;
     id<MTLComputePipelineState> q5_K_batch1 = nil;
     id<MTLComputePipelineState> q5_K_batch1_vec4 = nil;
+    id<MTLComputePipelineState> q5_K_batch1_vec8_rows32 = nil;
     id<MTLComputePipelineState> q5_K_batch4 = nil;
     id<MTLComputePipelineState> q5_K_batch8 = nil;
     id<MTLComputePipelineState> q5_K_batch8_vec4 = nil;
     id<MTLComputePipelineState> q5_K_batch24_vec4 = nil;
     id<MTLComputePipelineState> q6_K_batch1 = nil;
+    id<MTLComputePipelineState> q6_K_batch1_rows2 = nil;
     id<MTLComputePipelineState> q6_K_batch4 = nil;
+    id<MTLComputePipelineState> q6_K_batch4_vec4_rows16 = nil;
     id<MTLComputePipelineState> q6_K_batch8 = nil;
     id<MTLComputePipelineState> q6_K_batch8_vec4 = nil;
     id<MTLComputePipelineState> q6_K_batch24_split = nil;
@@ -3768,6 +4236,8 @@ struct Pipelines {
     id<MTLComputePipelineState> dense_f32_batch8 = nil;
     id<MTLComputePipelineState> prepare_full_attention = nil;
     id<MTLComputePipelineState> sigmoid_mul_inplace = nil;
+    id<MTLComputePipelineState> f32_to_fp8_e4m3fn = nil;
+    id<MTLComputePipelineState> fp8_e4m3fn_to_f32 = nil;
 };
 
 Pipelines & pipelines() {
@@ -3831,12 +4301,17 @@ Pipelines & pipelines() {
         value.q4_K_batch8 = compile(@"q4_K_batch_8");
         value.q5_K_batch1 = compile(@"q5_K_batch_1");
         value.q5_K_batch1_vec4 = compile(@"q5_K_batch_1_vec4");
+        value.q5_K_batch1_vec8_rows32 =
+            compile(@"q5_K_batch_1_vec8_rows32");
         value.q5_K_batch4 = compile(@"q5_K_batch_4");
         value.q5_K_batch8 = compile(@"q5_K_batch_8");
         value.q5_K_batch8_vec4 = compile(@"q5_K_batch_8_vec4");
         value.q5_K_batch24_vec4 = compile(@"q5_K_batch_24_vec4");
         value.q6_K_batch1 = compile(@"q6_K_batch_1");
+        value.q6_K_batch1_rows2 = compile(@"q6_K_batch_1_rows2");
         value.q6_K_batch4 = compile(@"q6_K_batch_4");
+        value.q6_K_batch4_vec4_rows16 =
+            compile(@"q6_K_batch_4_vec4_rows16");
         value.q6_K_batch8 = compile(@"q6_K_batch_8");
         value.q6_K_batch8_vec4 = compile(@"q6_K_batch_8_vec4");
         value.q6_K_batch24_split = compile(@"q6_K_batch_24_split");
@@ -3876,12 +4351,17 @@ Pipelines & pipelines() {
         value.dense_f32_batch8 = compile(@"dense_f32_batch_8");
         value.prepare_full_attention = compile(@"prepare_full_attention_f32");
         value.sigmoid_mul_inplace = compile(@"sigmoid_mul_inplace_f32");
+        value.f32_to_fp8_e4m3fn =
+            compile(@"convert_f32_to_fp8_e4m3fn");
+        value.fp8_e4m3fn_to_f32 =
+            compile(@"convert_fp8_e4m3fn_to_f32");
     });
     return value;
 }
 
 struct ExtendPipeline {
     id<MTLComputePipelineState> state = nil;
+    id<MTLComputePipelineState> reduction = nil;
     std::string error = "native Metal BF16 extend pipeline is unavailable";
 };
 
@@ -3935,6 +4415,18 @@ ExtendPipeline & extend_pipeline() {
             value.error =
                 "native Metal BF16 extend pipeline does not satisfy the SIMD or threadgroup-memory contract";
             return;
+        }
+        id<MTLFunction> reduction_function =
+            [library newFunctionWithName:@"reduce_decode_gqa_bf16_split_256"];
+        if (reduction_function != nil) {
+            value.reduction = [device
+                newComputePipelineStateWithFunction:reduction_function
+                                              error:&error];
+            if (value.reduction != nil &&
+                (value.reduction.threadExecutionWidth != 32 ||
+                 value.reduction.maxTotalThreadsPerThreadgroup < 256)) {
+                value.reduction = nil;
+            }
         }
         value.error.clear();
     });
@@ -4155,6 +4647,18 @@ torch::Tensor quant_matmul(
         const char * value = std::getenv("SGLANG_MPS_Q2_K_BATCH1_ROWS4");
         return value == nullptr || std::string(value) != "0";
     }();
+    static const bool q6_k_batch1_rows2_enabled = [] {
+        const char * value = std::getenv("SGLANG_MPS_Q6_K_BATCH1_ROWS2");
+        return value == nullptr || std::string(value) != "0";
+    }();
+    static const bool q5_k_batch1_rows32_enabled = [] {
+        const char * value = std::getenv("SGLANG_MPS_Q5_K_BATCH1_ROWS32");
+        return value == nullptr || std::string(value) != "0";
+    }();
+    static const bool q6_k_batch4_rows16_enabled = [] {
+        const char * value = std::getenv("SGLANG_MPS_Q6_K_BATCH4_ROWS16");
+        return value == nullptr || std::string(value) != "0";
+    }();
     static const bool iq2_large_batch_enabled = [] {
         const char * value = std::getenv("SGLANG_MPS_IQ2_LARGE_BATCH");
         return value == nullptr || std::string(value) != "0";
@@ -4167,6 +4671,25 @@ torch::Tensor quant_matmul(
         p.q2_K_batch1_rows4 != nil &&
         p.q2_K_batch1_rows4.threadExecutionWidth == 32 &&
         p.q2_K_batch1_rows4.maxTotalThreadsPerThreadgroup >= 64;
+    const bool use_q6_k_batch1_rows2 = q6_k_batch1_rows2_enabled &&
+        weight_type == 14 && batch_size == 1 && output_size % 4 == 0 &&
+        weight_offset % 2 == 0 && input_offset % 4 == 0 &&
+        p.q6_K_batch1_rows2 != nil &&
+        p.q6_K_batch1_rows2.threadExecutionWidth == 32 &&
+        p.q6_K_batch1_rows2.maxTotalThreadsPerThreadgroup >= 64;
+    // The 1,024-row attention K/V projections favor the established
+    // eight-lane mapping; wider target projections amortize four-lane rows.
+    const bool use_q5_k_batch1_rows32 = q5_k_batch1_rows32_enabled &&
+        use_q5_vec4_batch1 && output_size >= 5120 &&
+        p.q5_K_batch1_vec8_rows32 != nil &&
+        p.q5_K_batch1_vec8_rows32.threadExecutionWidth == 32 &&
+        p.q5_K_batch1_vec8_rows32.maxTotalThreadsPerThreadgroup >= 128;
+    const bool use_q6_k_batch4_rows16 = q6_k_batch4_rows16_enabled &&
+        weight_type == 14 && batch_size == 4 &&
+        weight_offset % 4 == 0 && input_offset % 16 == 0 &&
+        p.q6_K_batch4_vec4_rows16 != nil &&
+        p.q6_K_batch4_vec4_rows16.threadExecutionWidth == 32 &&
+        p.q6_K_batch4_vec4_rows16.maxTotalThreadsPerThreadgroup >= 128;
     const bool use_iq2_large_batch = iq2_large_batch_enabled &&
         weight_type == 16 && batch_size > 8 &&
         p.iq2_xxs_large_batch != nil &&
@@ -4202,16 +4725,22 @@ torch::Tensor quant_matmul(
     } else if (weight_type == 13) {
         pipeline = use_q5_vec24 ? p.q5_K_batch24_vec4
             : (batch_tile == 1
-                ? (use_q5_vec4_batch1
-                    ? p.q5_K_batch1_vec4 : p.q5_K_batch1)
+                ? (use_q5_k_batch1_rows32
+                    ? p.q5_K_batch1_vec8_rows32
+                    : (use_q5_vec4_batch1
+                        ? p.q5_K_batch1_vec4 : p.q5_K_batch1))
                 : (batch_tile == 4 ? p.q5_K_batch4
                     : (batch_size == 8 ? p.q5_K_batch8_vec4
                                        : p.q5_K_batch8)));
     } else if (weight_type == 14) {
         pipeline = use_q6_vec24 ? p.q6_K_batch24_vec4
             : (use_q6_batch24 ? p.q6_K_batch24_split16
-            : (batch_tile == 1 ? p.q6_K_batch1
-                : (batch_tile == 4 ? p.q6_K_batch4
+            : (batch_tile == 1
+                ? (use_q6_k_batch1_rows2
+                    ? p.q6_K_batch1_rows2 : p.q6_K_batch1)
+                : (batch_tile == 4
+                    ? (use_q6_k_batch4_rows16
+                        ? p.q6_K_batch4_vec4_rows16 : p.q6_K_batch4)
                     : (batch_size == 8 ? p.q6_K_batch8_vec4
                                        : p.q6_K_batch8))));
     } else if (weight_type == 16) {
@@ -4244,16 +4773,21 @@ torch::Tensor quant_matmul(
             ((weight_type == 16 || weight_type == 29) && batch_size == 1);
         const NSUInteger output_groups = use_iq2_large_batch
             ? (output_size + 63) / 64
-            : (use_q5_vec4_batch1
+            : (use_q6_k_batch4_rows16
                 ? (output_size + 15) / 16
-                : (use_four_row_batch1
-                    ? (output_size + 7) / 8 : (output_size + 3) / 4));
+                : (use_q5_k_batch1_rows32
+                ? (output_size + 31) / 32
+                : (use_q5_vec4_batch1
+                    ? (output_size + 15) / 16
+                    : (use_four_row_batch1
+                        ? (output_size + 7) / 8 : (output_size + 3) / 4))));
         const NSUInteger batch_groups = use_iq2_large_batch
             ? (batch_size + 31) / 32
             : ((use_q5_vec4_batch1 || use_four_row_batch1)
                 ? 1 : (batch_size + batch_tile - 1) / batch_tile);
         const NSUInteger threads =
-            (use_four_row_batch1 || use_q4_k_batch1_rows2) ? 64 : 128;
+            (use_four_row_batch1 || use_q4_k_batch1_rows2 ||
+             use_q6_k_batch1_rows2) ? 64 : 128;
         [encoder dispatchThreadgroups:MTLSizeMake(output_groups, batch_groups, 1)
                     threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
     });
@@ -5245,7 +5779,6 @@ torch::Tensor decode_gqa(
                     seq_lens.numel() >= batch_size,
                 "decode attention metadata must cover every batch row");
 
-    auto output = torch::empty_like(query);
     auto buffer_of = [](const torch::Tensor & tensor) {
         return (__bridge id<MTLBuffer>)tensor.storage().data_ptr().get();
     };
@@ -5263,6 +5796,50 @@ torch::Tensor decode_gqa(
         static_cast<uint32_t>(req_to_token.size(1)),
         static_cast<float>(scale),
     };
+
+    // Batch-one BF16 decode is the one-query-row case of the retained tiled
+    // extend kernel. Six query heads share each KV tile, and long histories
+    // are divided across bounded partials before one numerically stable merge.
+    // The returned view owns the partial storage until queued GPU work no
+    // longer needs it.
+    static const bool tiled_decode_enabled = [] {
+        const char * value = std::getenv("SGLANG_MPS_TILED_DECODE");
+        return value == nullptr || std::string(value) != "0";
+    }();
+    static const bool split_decode_enabled = [] {
+        const char * value = std::getenv("SGLANG_MPS_SPLIT_DECODE");
+        return value == nullptr || std::string(value) != "0";
+    }();
+    ExtendPipeline & tiled_pipeline = extend_pipeline();
+    const bool use_tiled_bf16 = tiled_decode_enabled && cache_is_bf16 &&
+        tiled_pipeline.state != nil;
+    const uint32_t requested_key_splits =
+        static_cast<uint32_t>((cache_slots + 4095) / 4096);
+    const uint32_t max_key_splits = requested_key_splits > 32
+        ? 32
+        : requested_key_splits;
+    const bool use_split_bf16 = use_tiled_bf16 && split_decode_enabled &&
+        tiled_pipeline.reduction != nil && max_key_splits > 1;
+    ExtendAttentionArgs tiled_args = {
+        1,
+        static_cast<uint32_t>(num_q_heads),
+        static_cast<uint32_t>(num_kv_heads),
+        static_cast<uint32_t>(head_dim),
+        static_cast<uint32_t>(cache_slots),
+        static_cast<uint32_t>(req_to_token.size(0)),
+        static_cast<uint32_t>(req_to_token.size(1)),
+        use_split_bf16 ? max_key_splits : 1,
+        static_cast<float>(scale),
+    };
+    const int64_t output_values = query.numel();
+    const int64_t partial_values = use_split_bf16
+        ? static_cast<int64_t>(max_key_splits) * num_q_heads * (head_dim + 2)
+        : 0;
+    auto output_storage = torch::empty(
+        {output_values + partial_values}, query.options());
+    auto output = output_storage.narrow(0, 0, output_values).view(query.sizes());
+    const NSUInteger partial_offset = offset_of(output_storage) +
+        output_values * output_storage.element_size();
 
     at::mps::MPSStream * stream = at::mps::getCurrentMPSStream();
     Pipelines & p = pipelines();
@@ -5283,10 +5860,11 @@ torch::Tensor decode_gqa(
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 
-        [encoder setComputePipelineState:
-            cache_is_bf16
+        [encoder setComputePipelineState:use_tiled_bf16
+            ? tiled_pipeline.state
+            : (cache_is_bf16
                 ? p.decode_gqa_bf16
-                : (use_online_attention ? p.decode_gqa_online : p.decode_gqa)];
+                : (use_online_attention ? p.decode_gqa_online : p.decode_gqa))];
         [encoder setBuffer:buffer_of(query) offset:offset_of(query) atIndex:0];
         [encoder setBuffer:buffer_of(key_cache) offset:offset_of(key_cache) atIndex:1];
         [encoder setBuffer:buffer_of(value_cache) offset:offset_of(value_cache) atIndex:2];
@@ -5294,7 +5872,30 @@ torch::Tensor decode_gqa(
         [encoder setBuffer:buffer_of(req_pool_indices)
                  offset:offset_of(req_pool_indices) atIndex:4];
         [encoder setBuffer:buffer_of(seq_lens) offset:offset_of(seq_lens) atIndex:5];
-        [encoder setBuffer:buffer_of(output) offset:offset_of(output) atIndex:6];
+        [encoder setBuffer:buffer_of(output_storage)
+                 offset:use_split_bf16 ? partial_offset : offset_of(output)
+                atIndex:6];
+        if (use_tiled_bf16) {
+            [encoder setBytes:&tiled_args length:sizeof(tiled_args) atIndex:7];
+            [encoder setThreadgroupMemoryLength:20832 atIndex:0];
+            [encoder dispatchThreadgroups:MTLSizeMake(
+                        use_split_bf16 ? max_key_splits : 1, 4, 1)
+                        threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+            if (use_split_bf16) {
+                [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                [encoder setComputePipelineState:tiled_pipeline.reduction];
+                [encoder setBuffer:buffer_of(output_storage)
+                         offset:partial_offset atIndex:0];
+                [encoder setBuffer:buffer_of(output)
+                         offset:offset_of(output) atIndex:1];
+                [encoder setBuffer:buffer_of(seq_lens)
+                         offset:offset_of(seq_lens) atIndex:2];
+                [encoder setBytes:&tiled_args length:sizeof(tiled_args) atIndex:3];
+                [encoder dispatchThreadgroups:MTLSizeMake(num_q_heads, 1, 1)
+                            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+            }
+            return;
+        }
         [encoder setBytes:&args length:sizeof(args) atIndex:7];
         const NSUInteger scratch_floats =
             cache_is_bf16
@@ -5397,6 +5998,7 @@ torch::Tensor extend_gqa_bf16(
         static_cast<uint32_t>(cache_slots),
         static_cast<uint32_t>(req_to_token.size(0)),
         static_cast<uint32_t>(req_to_token.size(1)),
+        1,
         scale_f32,
     };
 
@@ -5429,7 +6031,101 @@ torch::Tensor extend_gqa_bf16(
     return output;
 }
 
+torch::Tensor mps_float8_to_copy(
+    const torch::Tensor & self,
+    std::optional<at::ScalarType> dtype,
+    std::optional<at::Layout> layout,
+    std::optional<at::Device> device,
+    std::optional<bool> pin_memory,
+    bool non_blocking,
+    std::optional<at::MemoryFormat> memory_format) {
+    const at::ScalarType target_dtype = dtype.value_or(self.scalar_type());
+    const at::Layout target_layout = layout.value_or(self.layout());
+    const at::Device target_device = device.value_or(self.device());
+    const bool supported_memory_format =
+        !memory_format.has_value() ||
+        *memory_format == at::MemoryFormat::Preserve ||
+        *memory_format == at::MemoryFormat::Contiguous;
+    const bool encode =
+        self.scalar_type() == at::ScalarType::Float &&
+        target_dtype == at::ScalarType::Float8_e4m3fn;
+    const bool decode =
+        self.scalar_type() == at::ScalarType::Float8_e4m3fn &&
+        target_dtype == at::ScalarType::Float;
+
+    if (!(self.device().is_mps() && target_device == self.device() &&
+          target_layout == at::Layout::Strided &&
+          !pin_memory.value_or(false) && supported_memory_format &&
+          self.dim() <= 8 && (encode || decode))) {
+        return at::native::_to_copy(
+            self,
+            dtype,
+            layout,
+            device,
+            pin_memory,
+            non_blocking,
+            memory_format);
+    }
+
+    TORCH_CHECK(
+        self.numel() <= std::numeric_limits<uint32_t>::max(),
+        "native Metal FP8 conversion supports at most uint32 elements");
+    Float8ConversionArgs args = {};
+    args.count = static_cast<uint32_t>(self.numel());
+    if (args.count != 0 && !self.is_contiguous()) {
+        args.dimensions = static_cast<uint32_t>(self.dim());
+        for (int64_t dimension = 0; dimension < self.dim(); ++dimension) {
+            TORCH_CHECK(
+                self.size(dimension) > 0 && self.stride(dimension) >= 0,
+                "native Metal FP8 conversion requires positive sizes and nonnegative strides");
+            args.sizes[dimension] =
+                static_cast<uint64_t>(self.size(dimension));
+            args.strides[dimension] =
+                static_cast<uint64_t>(self.stride(dimension));
+        }
+    }
+    torch::Tensor output;
+    if (encode) {
+        output = torch::empty(
+                     self.sizes(),
+                     self.options().dtype(at::ScalarType::Byte))
+                     .view(at::ScalarType::Float8_e4m3fn);
+    } else {
+        output = torch::empty(
+            self.sizes(), self.options().dtype(at::ScalarType::Float));
+    }
+    if (args.count == 0) {
+        return output;
+    }
+
+    auto buffer_of = [](const torch::Tensor & tensor) {
+        return (__bridge id<MTLBuffer>)tensor.storage().data_ptr().get();
+    };
+    auto offset_of = [](const torch::Tensor & tensor) -> NSUInteger {
+        return tensor.storage_offset() * tensor.element_size();
+    };
+    Pipelines & p = pipelines();
+    id<MTLComputePipelineState> pipeline =
+        encode ? p.f32_to_fp8_e4m3fn : p.fp8_e4m3fn_to_f32;
+    TORCH_CHECK(pipeline != nil, "native Metal FP8 conversion is unavailable");
+    at::mps::MPSStream * stream = at::mps::getCurrentMPSStream();
+    dispatch_sync(stream->queue(), ^{
+        id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:buffer_of(self) offset:offset_of(self) atIndex:0];
+        [encoder setBuffer:buffer_of(output) offset:offset_of(output) atIndex:1];
+        [encoder setBytes:&args length:sizeof(args) atIndex:2];
+        [encoder dispatchThreads:MTLSizeMake(args.count, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    });
+    return output;
+}
+
 }  // namespace
+
+TORCH_LIBRARY_IMPL(aten, MPS, module) {
+    module.impl("_to_copy", TORCH_FN(mps_float8_to_copy));
+}
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
     module.def("supports_bf16_decode_gqa", &supports_bf16_decode_gqa,

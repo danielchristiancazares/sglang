@@ -702,20 +702,21 @@ code changes, or process state matter.
 
 - The machine-local `$CODEX_HOME/qwen38-local.config.toml` profile selects the
   local Q2 model, SGLang's Responses endpoint, 32,768 context, medium reasoning,
-  a 900-second stream-idle bound, read-only sandboxing, and sequential tools.
-  Its static catalog identifies a text-only `shell_command` surface. Codex CLI
-  is 0.149.0; profile/catalog SHA-256 values begin `9706003a` and `a67c491a`.
+  a 900-second stream-idle bound, and read-only sandboxing. Its static catalog
+  identifies a text-only `shell_command` surface and declares sequential tools;
+  concurrency remained unqualified. Codex CLI is 0.149.0; profile/catalog
+  SHA-256 values begin `9706003a` and `a67c491a`.
 - A fixed no-tool run first admitted 8,839 input tokens, preserved 38 reasoning-
   output tokens, returned exact visible `CODEX READY`, and exited zero. The
   final read-only tool gate then issued `/bin/zsh -lc pwd` exactly once,
   consumed `/Users/dcazares/sglang`, returned exact visible
   `CODEX TOOL READY`, and exited zero with 17,871 input, 96 output, and 62
-  reasoning-output tokens across two Responses turns.
+  reasoning-output tokens across the initial and follow-up Responses requests.
 - The worktree remained unchanged across the Codex tool run, the server stayed
   healthy, cache flush succeeded, and verified leaf-first cleanup returned
   port 30000, 94% free memory, and normal thermal status. The earlier
   process-scoped OpenCode requests remain chronological admission evidence;
-  the named Codex profile owns the current Apple real-client decision.
+  the named Codex profile owned the Apple real-client decision at PERF-A016.
 
 ### Fixed-memory Metal EXTEND reaches the 131K isolated rung
 
@@ -835,10 +836,248 @@ code changes, or process state matter.
 - Current-source exact `32761+1` passes in the 32,768-token BF16 pool at
   **18.942 prompt tok/s**, **1729.565719 s TTFT**, and **1729.565822 s E2E**.
   Sampled reasoning, arithmetic, thinking-disabled, parsed tool call,
-  continuation, and language-only gates pass. The named Codex profile last
-  ran on PERF-A016 and remains PERF-A021's final promotion gate.
+  continuation, and language-only gates pass.
+- Codex CLI 0.151.0 then exercised the repaired, hash-pinned machine-local
+  profile/catalog pair in one PERF-A021 shell-tool gate. One `pwd` shell call
+  returned the workspace, the follow-up Responses request consumed it, and
+  final visible output was exact
+  `CODEX TOOL READY`; usage was 21,537 input, 413 output, and 379
+  reasoning-output tokens. Health, cache flush, foreground shutdown,
+  free-listener, memory, and thermal gates pass. The configured 30,000-token
+  compaction limit resolves to 29,491. At that point, near-limit transport/
+  compaction, concurrent tools, and a reversible workspace edit remained
+  client-hardening work.
+
+### Strict Codex scratch editing qualifies; compaction recovery remains historical
+
+- A separate `qwen38-local-hardened` overlay passes real 0.151.0 strict config
+  loading, removes model-visible plugin/agent/MCP surfaces, disables unbounded
+  retries, bounds tool output, expands the idle timeout to 40 minutes, and
+  confines workspace writes. Repository `AGENTS.md` and environment context
+  remain visible in one
+  observed 32,965-to-21,457-byte prompt render whose exact command was not
+  retained.
+- A forced 1,000-token compaction run on the immediate medium-reasoning
+  predecessor hashes recovers from one malformed patch across two observed
+  compaction boundaries, successfully writes a nonce-bearing file, preserves
+  that nonce into final output, and exits zero. Its raw JSONL and exact warning
+  text were not retained, so this is historical continuation evidence.
+- An unmatched low-reasoning clean-edit trial completes one first-attempt patch
+  at 4,136/141/70 tokens. Promoting it into the overlay is independently
+  confirmed with no reasoning or capacity override at **4,111 input / 118
+  output / 47 reasoning-output tokens**, exact `QWEN38 DEFAULT WRITE READY`,
+  and the expected file hash; same-value sandbox/approval pins remained. The
+  mutable lower user config and rules were not pinned at process start.
+  All scratch paths were removed, and verified foreground shutdown returned the
+  listener, processes, memory, and thermal state to the recorded idle snapshot.
+
+### Isolated Codex home narrows the mutable-config boundary
+
+- Exact-tag review found that `-p` composes a profile above the ordinary user
+  config and loads exec-policy rules. It also found default-on login-shell,
+  hooks, image generation, optional tools, and broad shell-environment
+  inheritance that the profile hashes did not identify.
+- At that stage, the dedicated `qwen38-local-hardened-home` held sibling-relative,
+  hash-pinned config/catalog/instructions. It explicitly pinned the shell-only
+  surface, low reasoning, 32K/30K Total capacity, core-only filtered shell
+  inheritance, no login startup, untrusted exact paths, workspace confinement,
+  disabled optional tool/model-visible features, zero retries, and a 40-minute
+  idle timeout.
+- The exact default-config gate used no profile, `-c`, `--sandbox`, reasoning,
+  or capacity override. It emitted one first-attempt `file_change`, returned
+  exact `QWEN38 ISOLATED WRITE READY`, and exited zero at **2,843 input / 260
+  output / 184 reasoning-output tokens**. Bundle and ordinary-global hashes
+  were stable pre/post. Cleanup returned port, processes, scratch, memory, and
+  thermal state to idle.
+
+### Trusted-repository unified exec became the Apple Codex handoff at 20:29
+
+- The 20:29 repository trust decision admitted root `AGENTS.md`; an exact
+  post-change prompt-input diagnostic contained its heading and C++/CUDA-only
+  rule. The qualified tree had no project `.codex`, hook, or rule surface, and
+  the dedicated home had no `rules/` directory. Those mutable inputs received
+  a fresh absence/hash preflight before interactive work.
+- The 20:29 catalog declared `shell_type=unified_exec`, and the instructions
+  named `exec_command` plus its `cmd` argument. The 20:29 config/catalog/
+  instruction hashes began `a1ce8b8e`, `862339c1`, and `5d59350d`.
+- The 20:29 strict scratch gate emitted one first-attempt `file_change`,
+  returned exact `QWEN38 ISOLATED WRITE READY`, and exited zero at **2,662
+  input / 113 output / 37 reasoning-output tokens**. Stable hashes, health,
+  cache flush, artifact cleanup, verified foreground shutdown, free memory,
+  and thermal state completed the gate.
+
+### Spawned zsh startup is isolated in the current Apple Codex handoff
+
+- Exact-tag review found that non-login `zsh -c` still resolves a per-user
+  `.zshenv` after core environment filtering. The selected config now sets
+  `ZDOTDIR=/var/empty` before unified-exec child creation. The target is
+  root-owned 0755 and empty, and both system zshenv paths are absent.
+- Current config/catalog/instruction hashes begin `9d7842bb`, `862339c1`, and
+  `5d59350d`. The final strict task uses explicit stdin EOF, emits one first-
+  attempt `file_change`, returns exact `QWEN38 ISOLATED WRITE READY`, and exits
+  zero at **2,670 input / 115 output / 39 reasoning-output tokens**. The exact
+  34-byte artifact and stable pre/post identities pass.
+- A separate repository-CWD prompt diagnostic confirms the trusted root
+  `AGENTS.md` and C++/CUDA-only rule. Ignore-independent scans find no auxiliary
+  project/home config, hook, rule, override-instruction, or skill surfaces.
+  Cleanup returns the listener, process sets, scratch path, memory, and thermal
+  state to the recorded idle snapshot.
+
+### Actual-work Codex testing adds a two-minute process-tree watchdog
+
+- A repository multi-file C++ control exposed full Responses-prefix replay
+  under `ChunkCache`: 6,697-7,599 prompt tokens were recomputed at roughly
+  24-25 tok/s on successive tool turns, taking about 4.7-5.2 minutes each.
+- The matched four-slot hybrid `UnifiedRadixCache` candidate reused 6,785,
+  7,140, 7,414, and 7,680 prefix tokens while admitting only 295, 219, 210,
+  and 200 new tokens. Follow-up prefill fell to roughly 9-20 seconds. A later
+  response decoded for more than four minutes before its next tool call, and
+  the requested repository repair remained untouched.
+- The usability contract now wraps every future non-interactive Qwen/Codex
+  attempt with GNU `timeout --signal=INT --kill-after=10s 120s`. Both a cold
+  repository-root minimal tool gate and a compact fully specified scratch C++
+  repair reached exit `124`. The corrected process-group cutoff left the
+  frozen scratch hashes exact, produced no binary, and left no client/compiler
+  descendant. Wider actual-work qualification remains open.
+
+### Parser-free structured output completes the supervised two-minute repair gate
+
+- One-off prompt-elision diagnostics reduced Codex 0.151.0 ingress to 100
+  tokens, and a compact scratch thread issued a real command and exited zero in
+  about 52 seconds. The normal trusted-repository prompt and existing
+  interactive configuration remain authoritative; elision flags are confined
+  to disposable diagnostics.
+- Default xgrammar mask application failed on MPS, and parser-wrapped Outlines
+  exposed structural-tag/backend-mask incompatibilities. A controlled restart
+  omitted both parsers and successfully served Outlines JSON-schema Responses
+  with reasoning effort `none`.
+- Four individually process-bounded structured requests generated the header,
+  normalization algorithm, and authored-test intent. Host review corrected
+  repository wrapper/API drift. Independent review then expanded the authored
+  suite to the four required categories. The strict warning-as-error build and
+  immutable verifier emitted exact `QWEN38_CPP_MULTI_FILE_GATE=passed`.
+- This retains an opt-in supervised subworker for bounded actual work.
+  Autonomous multi-file tool ownership and parser-enabled required tools remain
+  open qualification targets.
 
 ## 2026-09-01
+
+### Native affine-Q5 becomes the active Apple target
+
+- Pinned and downloaded the 18.51 GB text-only affine-Q5/G64 checkpoint at
+  revision `2568951b893b6427d0a8eb91cc7f4307154c2f05`; all four model shards
+  verify by SHA-256 and the tensor inventory contains no vision tower.
+- The existing compiled Qwen3.8 engine accepts five-bit affine tensors and
+  reaches **16.322505765 tok/s** on the first complete sampled direct control,
+  more than twice the selected GGUF-Q5 small-pool rate.
+- The selected Q4 DFlash policy regresses on this target because five-bit M=8
+  verification reaches generic MLX QMM. The retained affine-Q5 K-split kernel
+  then cuts M=8 to about 228--229 ms and raises direct DFlash throughput
+  **19.246%** to **13.721235888 tok/s** with representative parity and the
+  full-Q4 regression gate intact. Target-only remains the active route before
+  exact-131K serving and Codex qualification.
+
+### Matched five-bit MTP exposes a 31.4 tok/s ceiling and a sampled-overlap gap
+
+- Pinned the 292,018,299-byte five-bit MTP sidecar at revision
+  `1faa5a803c972c57cfc1beed606184e726ad3d85` and verified its SHA-256.
+- An opt-in eight-token block aligns verification with the native Q5 M=8
+  kernel, reaches **31.380317186 tok/s**, mean width **8**, and preserves the
+  deterministic target digest. This establishes sufficient execution
+  capacity for the requested floor.
+- Exact dense-q sampling and residual rejection complete, while the best
+  calibrated arm reaches **6.380162135 tok/s** at width **2.285714286**.
+  The matched head therefore remains a deterministic execution-cost probe;
+  target-only Q5 and its batch-one weight traversal own production work.
+
+### Direct affine-Q5 QMV moves target-only decode to 17.8 tok/s
+
+- A guarded native Metal kernel decodes MLX affine-five-bit packs directly,
+  reuses each 16-value activation fragment across four output rows per SIMD
+  group, and performs FP32 accumulation. Three representative shapes pass
+  parity at maximum absolute error at most **0.03125**; an unsupported K=256
+  shape fails closed.
+- The selected four-SIMD/four-row/two-pack geometry, fixed scalar FMAs,
+  packed four-byte loads, and compile-time K reach **17.823163930 tok/s** in a
+  complete sampled `128 / 32 warm / 128 timed` screen. This is **+9.194%**
+  over the original **16.322505765 tok/s** affine-Q5 target result and leaves
+  **2.176836070 tok/s** to the requested floor.
+- Wider per-thread packing, additional result rows, a 16-lane cohort, and
+  FP16 local accumulation all regress. A first gate/up multi-stream probe
+  stalls on an unsignaled custom-Metal event and is removed. The QMV remains
+  opt-in while repeated matched, exact-131K serving, and Codex gates stay
+  active.
+
+### An aggregate-4.951-bpw mixed checkpoint opens a smaller Q5-class lane
+
+- Pinned `maglun/Qwen3.8-27B-MLX-Mixed-4.95bpw` at revision
+  `596b8067f7cf429007bb668874ffee7e917c8340` and downloaded its four language
+  shards while leaving the independently stored vision shard out of the
+  language-only runtime snapshot. Every language-shard SHA-256 matches the
+  published release manifest.
+- The language payload is **16,645,209,088 tensor bytes**, **9.999%** below
+  the uniform-five-bit checkpoint. It assigns Q4/G64 to embeddings, LM head,
+  MLP gate/up, and attention Q/K, and Q5/G64 to MLP down, mixer projections,
+  and attention V/O, for **4.9510 aggregate BPW**.
+- The native engine's complete required-key and packed-shape audit passes:
+  1,655 language tensors, 162 Q4 plus 240 Q5 affine matrices, zero missing or
+  extra language tensors, and zero bit-width inference errors. A fresh Metal
+  session is the remaining boundary before direct throughput measurement.
+
+### Shader attribution selects a stock-exact Q4 cohort and reaches 19.24 tok/s
+
+- A selected-A100 Metal System Trace maps 48,156 target-process GPU PCs.
+  Stock affine-Q4 QMV owns **43.546%**, custom affine-Q5 QMV owns
+  **48.613%**, and all QMV owns **92.159%** of mapped execution.
+- A new Q4/G64 batch-one kernel preserves official MLX v0.32.2's helper and
+  FP32 expression structure while doubling the output cohort from eight to
+  sixteen rows. K/N `512/64`, `5120/128`, and `5120/17408` are bit-exact
+  against stock MLX. A faster hand-inlined form is rejected because small
+  BF16 differences change the seeded target trajectory.
+- Two independent balanced five-versus-five windows improve paired A100-only
+  **19.113936088 -> 19.241981332 tok/s**, **+0.669905%**, with the canonical
+  digest and last token in all 20 qualified runs. The direct gap is now
+  **0.758018668 tok/s / 3.939400%**; exact 131K serving and Codex `xhigh`
+  remain gated on clearing 20 with margin.
+
+### Fixed-memory native attention converts the mixed-Q5 exact 32K crash into a pass
+
+- On-demand token-embedding dequantization first removes **1.702 GiB** of eager
+  BF16 duplication. A follow-up contract repair admits the native sampler's
+  valid MLX `uint32` feedback alongside prompt `int32`, with both forms
+  bit-exact against gather from the complete dequantized table.
+- A native Q8/C64 online-softmax Metal kernel consumes the existing contiguous
+  BF16 GQA cache with fixed threadgroup storage. Five focused shapes, including
+  prefix 8,191 and a 1,024-token query chunk, stay within maximum absolute
+  error `0.000244141` and contain no non-finite values.
+- Always-on dispatch changes the seeded short-prompt trajectory, so the
+  selected policy keeps stock MLX SDPA through 8,192 active tokens. It restores
+  the canonical digest at **19.744722973 tok/s** and uses fixed-memory
+  attention only in the unsafe long-history region.
+- Independent clean exact requests complete at **107.023 prompt tok/s** for
+  `8192+16` and **87.807667 prompt tok/s** for `32768+16`. The latter takes
+  **373.179259 s** and remains healthy where A131 plus stock SDPA fails near
+  180 seconds. Exact 131K now moves to persistent BF16 KV and prompt-snapshot
+  residency; the decode floor and Codex `xhigh` remain open.
+
+### Spotlight isolation closes the full-reserve BF16 cache and selects affine Q8
+
+- Spotlight indexing is disabled on `/`, `/System/Volumes/Data`, and
+  `/System/Volumes/Preboot`; active shared metadata workers drained before the
+  capacity launch, removing the earlier host-contention confounder.
+- A metadata-only append-only snapshot retains only logical offset/length while
+  the current cache owns prompt storage. Focused growth, rollback, overwrite,
+  and five fixed-attention parity cases pass. A same-dylib switch pair is
+  neutral at **19.685169420 -> 19.672600916 tok/s**, canonical in both arms.
+- Reserving all 131,072 BF16 cache slots on the first long chunk fails exact
+  `32768+16` after about 16 seconds with Metal insufficient memory. Scheduler
+  RSS is **18,225,056 KiB** before the request, final BF16 K/V is 8 GiB, and
+  MLX reports an approximately 25 GiB recommended working set; the final
+  representation does not fit safely even after snapshot ownership is removed.
+- PERF-A134 therefore owns exact 131K with affine-Q8/G64 K/V (approximately
+  4.25 GiB including metadata), the retained append-only snapshot invariant,
+  A130's fixed-memory prefill, and split-history long decode. The >=20 tok/s,
+  sampled behavior, and Responses/Codex `xhigh` gates remain open.
 
 ### 03:07–06:18 — DSpark-v2 crosses 150 tok/s and becomes the Windows default
 
@@ -867,6 +1106,64 @@ code changes, or process state matter.
 - `SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT` is now a reversible DSpark-only
   launcher default. NEXTN, sparse/truncated DSpark experiments, tree/SWOR, and
   the independent native-controller lane remain preserved but unselected.
+
+## 2026-09-02
+
+### Official coding settings align the Apple qualification contract
+
+- The pinned upstream Qwen3.8 sources select thinking and preserved thinking,
+  `reasoning_effort=xhigh`, temperature **1.0**, top-p **0.95**, top-k
+  **20**, min-p **0.0**, presence **0.0**, and repetition **1.0**. Native
+  context is 262,144, so the 131,072-token lane uses no YaRN.
+- The direct native sampler already implements that target distribution.
+  Presence **1.5** is retained only for Qwen's separate non-thinking profile.
+  Qwen publishes no recommended internal MTP proposal temperature.
+
+### Exact shared Q4 head loads clear 20 tok/s directly
+
+- A149/A150 first reduce standard-MTP M=2 verification from generic
+  **15.204721403** to **19.795886878 tok/s** by sharing Q5 and fused-Q4 MLP
+  loads across both verifier rows.
+- A163 adds the remaining ordinary Q4 vocabulary head while preserving each
+  row's scalar arithmetic order. The exact production micro improves
+  **4.195437500 -> 3.440243000 ms**; the faster A162 vector form is rejected
+  for 10,703 mismatches and changed acceptance.
+- Two independent five-sample A163 windows average **20.109963672** and
+  **20.107849480 tok/s**. Every sample clears 20 and preserves digest
+  `6bd687fb75c4f5a9`, last token 1467, 75 refills, and width
+  **1.706666667**. Signed `94ca4ff7fa` retains the opt-in win.
+- The short direct floor is cleared. The 6,237-token actual-work window, exact
+  served 131K composition, and a real Responses/Codex `xhigh` coding turn
+  remain the active qualification sequence.
+
+### Actual-work MTP collapse localizes to missing committed history
+
+- A163 target-only reproduces **19.057906040 tok/s** after 6,237 prompt
+  tokens. The official five-bit MTP reaches only **7.839819833 tok/s** and
+  width **1.032258065**; the optimized Q4 MTP falls from
+  **26.491661416 tok/s** short to **7.516953814 tok/s** and width
+  **1.003921569** long.
+- Native standard MTP clears its attention cache before every proposal and
+  never constructs shifted prompt history. Official MTPLX keeps prompt hidden
+  rows paired with following tokens and restores then appends only committed
+  decode prefixes. PERF-A164 moves this invariant into the native MTP state
+  owner before another checkpoint or kernel is ranked.
+
+### Committed MTP history clears the actual-work decode floor
+
+- Signed A164 commit `b92c21d69d` adds opt-in prompt-shifted and
+  accepted-prefix history at the standard-MTP state owner. It streams prompt
+  alignment in bounded chunks, restores speculative KV before commit, and
+  keeps MTP cache length exactly one token behind the target.
+- The optimized Q4 MTP improves from **7.516953814** empty-cache tok/s to a
+  clean five-sample mean **23.821754359 tok/s** after 6,237 prompt tokens.
+  All runs retain 131 refills, width **1.961832061**, digest
+  `d468c7e1b0d274b3`, and last token 20.
+- A post-commit rebuild reproduces **23.819226864 / 23.811460300 tok/s**.
+  One FileProvider/indexing-contended sample is retained at
+  **19.724760551 tok/s** with identical acceptance/output; the user accepted
+  it as labeled host noise. Work now moves to exact served 131K and a real
+  Responses/Codex `xhigh` coding turn.
 
 ## 2026-09-08
 

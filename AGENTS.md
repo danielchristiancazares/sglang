@@ -11,7 +11,7 @@ under `docs/`.
 
 Last reconciled with
 [`notes/experiment-log.md`](notes/experiment-log.md) through
-**2026-08-30 18:04 PDT**. A later experiment-log entry or fresh runtime
+**2026-08-30 20:46 PDT**. A later experiment-log entry or fresh runtime
 evidence supersedes every snapshot in this file.
 
 ## Recover context before acting
@@ -268,8 +268,8 @@ Every promoted candidate preserves all of these:
 
 - exact 200,000 context and token-pool capacity, including a successful
   `199000+16` request when memory layout or residency changes;
-- sampled reasoning at temperature `1.0`, top-p `0.95`, top-k `20`, and
-  presence penalty `1.5`;
+- sampled reasoning at temperature `1.0`, top-p `0.95`, top-k `20`, min-p
+  `0.0`, presence penalty `0.0`, and repetition penalty `1.0`;
 - coherent preserved `reasoning_content`, ordinary completion behavior, and
   the established arithmetic answer `703` for `37 * 19`;
 - exactly one parsed `multiply({"a":37,"b":19})` call with
@@ -291,7 +291,7 @@ contract. The standard controls are:
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512
-.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5
+.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 6213 --output-tokens 512 --temperature 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 0.0 --repetition-penalty 1.0
 .\.venv\Scripts\python.exe .\scripts\windows\bench_spec_acceptance.py
 .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --input-tokens 199000 --output-tokens 16 --timeout 600
 ```

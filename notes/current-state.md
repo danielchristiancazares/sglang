@@ -1,10 +1,11 @@
 # Current state
 
-**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-12
-DeepSeek V4.1 admission and pinned TurboQuant35 layouts.
+**Reconciled through:** [`experiment-log.md`](experiment-log.md), Windows
+2026-09-12 DeepSeek V4.1 admission and pinned TurboQuant35 layouts; Apple
+2026-09-02 03:35 PDT. The September 12 Git integration preserves both records.
 
-**Live runtime at reconciliation:** no SGLang server is running and port 30000
-is free. All verified SGLang, benchmark, and CUDA compiler processes are
+**Windows runtime at its recorded reconciliation:** no SGLang server is running
+and port 30000 is free. All verified SGLang, benchmark, and CUDA compiler processes are
 absent. After the pinned TurboQuant35 replay, the RTX 5090 reported **1,329
 MiB used / 30,859 MiB free**, 18% sampled display utilization, 32 C, and 78.90
 W on driver `616.92`; 51,294 MiB of host RAM was available and disk traffic
@@ -166,6 +167,832 @@ control rather than the current production selection. Full commands, resolved
 arguments, individual samples, process ancestry, behavior/client results, and
 the one explicitly retained stochastic Codex narration retry are in the latest
 experiment-log entries.
+
+## Active Apple handoff
+
+The current speed target is the immutable 4.951-bpw mixed-Q5 checkpoint at
+revision `596b8067f7cf429007bb668874ffee7e917c8340`. The selected direct path
+uses A100 aligned-word affine-Q5, stock-exact A111 affine-Q4, A114/A117 fused
+Q4 gate/up/SwiGLU with lane-parallel epilogues, A113's redundant token-
+evaluation removal, A128's aligned raw parameter bundles, A137's exact fast
+sigmoid, and A149/A150/A163's shared two-row standard-MTP verifier kernels.
+A163 is the first direct standard-MTP composition to clear the required floor
+in repeated evidence: independent five-sample means are **20.109963672** and
+**20.107849480 tok/s**, combined **20.108906576**, and all ten samples range
+from **20.075602549 to 20.132668649 tok/s**. Every process preserves 75
+refills, width **1.706666667**, digest `6bd687fb75c4f5a9`, last token 1467,
+and exact requested length. Signed `94ca4ff7fa` retains the opt-in kernel.
+This clears the short direct execution gate. Signed A164 commit `b92c21d69d`
+also clears the 6,237-token actual-work gate by retaining prompt-shifted and
+accepted-prefix MTP history. Exact served 131K and a real Responses/Codex
+`xhigh` coding turn remain open.
+
+The A163 actual-work rerun isolated a state defect rather than a verifier
+kernel gap. A164 repairs it at the native standard-MTP state owner: prompt
+hidden rows pair with the following prompt tokens in bounded chunks, decode
+restores speculative KV and appends only target-committed prefixes, and the
+MTP cache remains exactly one token behind target history. With the optimized
+Q4 MTPLX checkpoint, five consecutive `6237 / 32 warm / 256 timed` samples
+reach **23.816926450 / 23.795889548 / 23.800057113 / 23.825786407 /
+23.870112277 tok/s**, mean **23.821754359**. Every run has 131 refills, width
+**1.961832061**, digest `d468c7e1b0d274b3`, and last token 20. Independent
+rebuilt-artifact checks reach **23.819226864 / 23.811460300 tok/s**; one
+intervening FileProvider/indexing-contended observation reaches
+**19.724760551** with identical acceptance/output and remains explicitly
+recorded. The user accepted that labeled host-noise sample. A164 is selected;
+the current blocker is capacity/serving integration, not long-history decode.
+
+PERF-A139/A140 close lossless preassembled Q5 windows. A139's four-row form
+regresses the dominant `K=17408, N=5120` micro
+**0.435539514 -> 0.441254344 ms** (**1.312127%**) across six samples per arm.
+A140 reduces live weight state to one row and regresses its adjacent exact
+pair **0.418530771 -> 0.453039271 ms** (**8.245152%**). Both preserve digest
+`d05378cc8066dc41`; neither reached the full-model gate. The next exact Q5
+candidate must change extraction cost, not only rearrange the same continuous
+bit windows.
+
+PERF-A141--A144 then close the remaining byte-neutral representation family
+on the same dominant shape. Low-nibble/high-plane extraction regresses
+**5.800641%**; sixteen-row and four-row unchanged-block interleaves regress
+**1.508948% / 0.515803%**; a combined weight plus raw-parameter stream
+regresses **3.662772%**. Every arm is bit-exact. A143's first 2.28% apparent
+win reverses across six samples per arm, so it receives no promotion credit.
+Further Q5 work must reduce actual bytes or remove arithmetic rather than
+repack the same stream.
+
+PERF-A145 bounds that byte-reduction route with the real checkpoint. Across
+all 240 Q5 tensors and **62,914,560** sampled codes, aggregate entropy is
+**4.722514 Shannon / 4.748775 ideal-Huffman bits/code**; practical local
+range, palette, and sparse-high-plane forms expose effectively no reduction.
+Even a fictional zero-cost ideal decoder projects to only about **2.5%** end
+to end at Q5's measured **49.061847%** owner, below the **5.047909%** gap.
+Exact-kernel Q4 is **7.648307%** faster only for the down-projection shape;
+the other Q5 families are nearly flat or slower, so down-only substitution
+projects to about **1.6658%** and changes precision. Lossless compression and
+selective Q4 are closed as standalone solutions. The active candidate is now
+algorithmic: remove full-vocabulary dense proposal construction and retention
+from the sampled standard-MTP path while preserving exact p/q verification.
+
+PERF-A146/A147 close that proposal-only route. On the selected mixed target
+with the official five-bit MTP head and block two, dense q reaches
+**15.230953312 tok/s** at width **1.802816901**. Sampling probability-sorted
+sparse support changes MLX's seeded inverse-CDF order, collapses width to
+**1.196261682**, and reaches only **6.983233096 tok/s**. Reordering the
+support by vocabulary ID restores the exact digest, last token, width, refill
+count, target probabilities, and acceptance path, but measures
+**15.222551699 tok/s**, a **0.055161%** regression. A traced steady cycle
+spends approximately **103 ms** in two-token target verification; dense q
+construction/retention is not the owner.
+
+PERF-A149/A150 specialize the Q5 and fused-MLP portions of that M=2 owner
+behind opt-in switches in signed `6b6d0d15ea`. PERF-A163 completes the
+ordinary Q4 vocabulary head: it loads each packed word once but preserves
+independent scalar arithmetic order for both rows. The exact production head
+micro improves **4.195437500 -> 3.440243000 ms** in the final rebuild. Its
+two independent full-model windows supersede A150's **19.795886878 tok/s**
+best with a combined **20.108906576 tok/s** mean, and every sample clears 20.
+The rejected A162 `float2` form was faster in isolation but produced 10,703
+mismatches, changed acceptance, and regressed the model to **19.561130627
+tok/s**. Focused two-row, dispatch, invalid-shape, batch-one, fused-Q4, and
+exhaustive-domain tests pass. Exact served 131K and the real Responses/Codex
+`xhigh` gate remain unresolved; direct actual-work decode now has
+approximately 19.1% mean margin over the 20 tok/s floor.
+
+A128's 680 MiB duplicate parameter stream remains opt-in. A130 plus A131
+completes an independent exact `32768+16` server request at
+**87.807667 prompt tok/s / 373.179259 s**, but final BF16 K/V cannot fit at
+131K. A134 proves that a final approximately 4.25 GiB affine-Q8/G64 K/V
+allocation fits; its current long-history composition reaches only
+**3.515167775 tok/s** and is rejected for promotion. Exact served 131K,
+steady sampled serving, and Responses/Codex `xhigh` qualification remain
+pending behind a faster compressed-cache design and a new long-history/
+real-client window using the direct threshold winner.
+
+The fresh-session candidate matrix is resolved through A111. A100 is promoted:
+five aligned 16-bit loads reconstruct the same three bit windows and retain the
+original sixteen sequential FP32 FMAs. A111 follows official MLX v0.32.2's
+Q4 load/dot helper structure exactly while doubling the output cohort from two
+to four SIMD groups. Representative parity is bit-exact, and two independent
+full-model windows qualify the 0.670% increment. A095 packed-byte loads are
+correct and neutral. A103 aligned overlapping loads, A104 vector
+dots, A106 vector input reads, A108 parameter broadcast, alternate threadgroup
+geometry, the older two-SIMD/two-result mixed-target Q4 custom execution, and
+the published Q4 MTP head are closed by current measurements. The faster
+hand-inlined Q4 precursor is also closed because its small BF16 differences
+changed the seeded target trajectory. Dense BF16 recurrent b/a row fusion is
+exact and aggregate-flat at **18.993221731 vs 18.993383731 tok/s** across ten
+samples per arm, so its source remains outside `main`. A101 paired-lane word
+sharing and A107 128-bit activation reads are exact and slower across the production-
+shape matrix; both are closed. Exact 131K serving, sampled behavior, and Codex
+`xhigh` qualification follow only after a direct candidate clears 20 with
+margin.
+
+A114 is qualified and retained. It fuses each batch-one affine-Q4 gate/up
+pair and the SwiGLU chain into one 8-SIMD/four-paired-row Metal dispatch. A
+temporary real-weight/real-hidden trace localized the original trajectory
+failure to layer 62, element 36: gate and up were exact, but `metal::exp`
+rounded sigmoid to BF16 `0x3a8c` rather than MLX's safe-math `0x3a8b`.
+Volatile locals and explicit BF16 bit round trips did not change it. Replacing
+only that operation with `metal::precise::exp` makes gate, up, sigmoid, SiLU,
+and final output exact across all 64 traced layers and restores the canonical
+full-model digest/last token. The corrected production-shape microbenchmark
+moves **0.604255438 -> 0.564201438 ms** (**-6.628659%**). Forward and reversed
+five-pair windows improve **19.236012324 -> 19.264036375** and
+**19.221428286 -> 19.272779458 tok/s**; all 20 outputs are canonical. A new
+Q4 fixture constructs the failing gate value `-6.84375`: the precise kernel
+matches MLX in all 32 rows while the preserved fast-exp artifact fails all 32.
+The selected result and direct gap are now **19.268407916 tok/s** and
+**0.731592084 tok/s / 3.796848%**. Exact 131K serving and Codex `xhigh` stay
+deferred until the direct lane clears 20 with margin.
+
+A113 is also qualified and retained. `Engine::emit_scheduled()` previously
+evaluated `pending_tok_` and immediately called `array::item<int32_t>()`, which
+performs the same evaluation internally. Removing the explicit call preserves
+the two-token pipeline and every fixed-work output. Forward and reversed
+five-pair windows improve **19.270942164 -> 19.277656005** and
+**19.285820872 -> 19.301343552 tok/s**. Aggregate matched control/candidate is
+**19.278381518 / 19.289499778**, a **+0.057672%** win. Signed
+`ad11696f2e` contains the one-line deletion. The selected gap is now
+superseded by A117 below.
+
+A117 is qualified and retained in signed `00d09138ce`. A selected-path Metal
+trace attributes **42.141%** of sampled target shader PCs to the fused Q4
+gate/up/SwiGLU kernel, making it the largest single shader. A117 keeps A114's
+eight-SIMD geometry and exact BF16 boundaries, reduces all four rows as before,
+then lets lanes 0--3 execute the four `metal::precise::exp`/SiLU/product chains
+concurrently. Compile-time-named ternaries select each lane's already-reduced
+register values; the dynamically indexed precursor is slower and closed by
+PERF-FA134. General-shape and `-6.84375` boundary parity remain bit-exact.
+Forward and reversed five-pair windows improve
+**19.268343602 -> 19.450918961** and
+**19.268607678 -> 19.455265774 tok/s**. Aggregate matched
+control/candidate is **19.268475640 / 19.453092367**, a
+**+0.184616727 / +0.958128%** win. The selected direct gap is now
+**0.546907633 tok/s / 2.811417%**. One separate process-reload window at
+11--14 tok/s is explicitly excluded after extreme page-in/swap churn; a
+60-second idle interval restored the selected control to **19.203472228**
+before the replacement reverse window.
+
+A128 is qualified and retained as an opt-in in signed `f2fcce0c73`. The fused
+Q4 kernel previously read gate scale, gate bias, up scale, and up bias as four
+independent BF16 planes. A128 preserves the raw BF16 bits but interleaves four
+gate row pairs followed by four up row pairs in one group-local stream. Each
+iteration therefore issues two aligned `uint4` loads while keeping quantized
+weights, FP32 dot order, reductions, the precise sigmoid, and every BF16
+boundary unchanged. Ten order/reverse production-shape micro pairs improve
+**0.5601321469 -> 0.5542401462 ms** (**1.051895%**) with every pair faster and
+digest `8a9031349585365a`. Forward and cooled reversed complete-model windows
+improve **19.439523730 -> 19.639348219** and
+**19.454291289 -> 19.611393731 tok/s**. Aggregate matched throughput is
+**19.446907510 -> 19.625370975**, a **+0.917696%** win; all 20 clean outputs
+are canonical. Three second-position controls at **15.202523971**,
+**17.620645469**, and **14.934890513 tok/s** coincided with a Spotlight worker
+wave and repeated 18.5 GB reloads, are excluded, and were replaced after
+enforced idle intervals. The final hardened source smoke reaches
+**19.662460455 tok/s**. The extra decode stream duplicates
+**713,031,680 bytes / 680 MiB**. PERF-A129's one-GiB MLX cache cap plus
+1,024-token internal prefill converts the repeatable 8K Metal OOM into a
+complete sampled request, but an exact-ID `32768+16` request still fails with
+Metal insufficient memory after about 66 seconds. Startup advertises the real
+131,072-token context/admission surface and language-only metadata; the stock
+shape-growing BF16 KV plus dense-SDPA prefill path is not a capacity solution.
+
+A137 is qualified and retained in signed `24d745ff38`. The shared fused-Q4
+sigmoid helper now uses fast Metal exp and directly supplies precise BF16
+sigmoid bits `0x3a8b` for input `0xc0db` (`-6.84375`), the sole mismatch found
+by an exhaustive 65,536-pattern comparison. Corrected sigmoid and SiLU digests
+match precise evaluation over the complete BF16 domain. The production fused
+kernel also matches the separate QMV plus MLX SiLU path for all 65,280 finite
+input patterns. Two independent direct windows improve
+**19.640965505 -> 19.667930618 tok/s** (**+0.137290%**) with every output
+canonical. Keeping precise exp as a conditional fallback regresses the fused
+micro by **0.200153%** and is closed by PERF-FA149.
+
+PERF-A130 is now the selected long-prefill mechanism behind
+`SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION=1`. Its Q8/C64 native Metal
+online-softmax path starts only above 8,192 active tokens, retaining canonical
+stock SDPA for ordinary prompts. The thresholded direct smoke reaches
+**19.744722973 tok/s**, digest `d0193f6d413b68c1`, and last token 11406. An
+independent clean exact-ID `32768+16` server request completes at
+**87.807667 prompt tok/s / 373.179259 s** where A131 plus stock SDPA fails
+around 180 seconds. Signed `ee0bf40711` owns this win. Exact 131K still needs
+persistent KV/snapshot residency reduction; steady sampled serving and Codex
+`xhigh` also remain gates before default selection.
+
+PERF-A131 retains on-demand quantized embedding behind
+`SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING=1`. It replaces the eager
+**2,542,796,800-byte** BF16 vocabulary table with **715,161,600 bytes** of
+checkpoint-resident affine weight/scale/bias tensors and dequantizes only
+selected rows, removing **1,827,635,200 bytes / 1.702 GiB**. Focused output is
+bit-exact, matched sampled decode is **19.713595204 -> 19.690129490 tok/s**
+(**-0.119033%**), and canonical full-model output is unchanged. The exact 32K
+request now runs about 180 rather than 66 seconds before the same stock-path
+Metal OOM; this is a qualified residency win, not a capacity pass. Signed
+`e7643c904d` additionally admits the native sampler's valid MLX `uint32`
+indices alongside prompt `int32` indices; both gathered forms are bit-exact
+and floating indices remain rejected.
+
+PERF-A133 proves that snapshot ownership is not the remaining capacity owner
+by itself. Its metadata-only append-only snapshot passes exact logical
+rollback, suffix overwrite, growth-boundary, and fixed-attention parity tests;
+changing only that switch is neutral in one short direct pair at
+**19.685169420 -> 19.672600916 tok/s**, with canonical output in both arms.
+However, eagerly reserving all 131,072 BF16 slots makes the exact `32768+16`
+server probe fail after about 16 seconds. Scheduler RSS is 18,225,056 KiB
+(approximately 17.38 GiB) before the request; adding the final 8 GiB BF16 K/V
+cache exceeds MLX's approximately 25 GiB recommended Metal working set before
+safe OS/display headroom. That unchanged representation is closed by
+PERF-FA145. A134's affine-Q8/G64 representation reduces final storage to
+approximately 4.25 GiB and its complete 131,072-slot direct allocation fits,
+but `8193 / 1 warm / 8 timed` reaches only **3.515167775 tok/s**. Fixed split
+counts from one through 32 do not repair it. Preserve the capacity
+infrastructure, but do not promote the current Q8 composition; exact 131K,
+steady sampled serving, Responses/Codex `xhigh`, and decode above 20 tok/s
+with margin remain open gates.
+
+A118 and A119 are closed in their measured forms. Replacing A117's fused-Q4
+packed-word reads with one explicit `packed_ushort4` transaction is exact but
+regresses **0.557832737 -> 0.560992548 ms**. Row-concatenating each affine-Q5
+linear-attention `qkv`/`z` pair reduces the isolated two-launch aggregate
+**0.426645998 -> 0.420592346 ms**, but the copied-weight plus runtime-split
+implementation reaches only **19.441971742 / 19.406059113 tok/s** around an
+adjacent disabled control at **19.469521945**. Exact A117 is restored. The
+split-free A120 and A121 follow-ups are also exact and slower. A120's direct
+four-SIMD/two-output aggregate regresses **0.421745535 -> 0.427401865 ms**;
+A121's exact-ratio five-plus-three/eight-SIMD topology regresses
+**0.423397846 -> 0.426008156 ms**. The launch-sharing family is closed under
+copied/split, direct four-SIMD, and 5:3 eight-SIMD representations. Exact A117
+is restored. Further Q5 work must reduce weight-side bytes, instructions, or
+dependency cost rather than submission count alone.
+
+A122 also closes source-order alternation inside the selected fused-Q4 body.
+Issuing each gate row immediately before its matching up row preserves every
+arithmetic and BF16 boundary but regresses production-shape aggregate latency
+**0.558719448 -> 0.569066813 ms** (**1.851979%**) and loses all ten
+order/reverse pairs. Exact A117 is restored. Further fused-Q4 work must remove
+instructions or bytes, not merely reorder the same eight row dots.
+
+A123/A124 close Q5 result-row read-ahead. Prefetching all four rows regresses
+the two largest K families by **0.431270% / 0.727663%**; prefetching only two
+rows still regresses the decisive K=17,408 aggregate
+**0.428486222 -> 0.429494958 ms** and wins only four of ten long pairs. Every
+shape is exact and A100/A117 is restored. Further Q5 kernel work must remove
+streamed bytes or unpack/arithmetic instructions rather than merely extend
+the number of live row loads.
+
+A139/A140 also close preassembled continuous-Q5 window layouts in four-row and
+row-local forms. The balanced A139 production mean regresses
+**0.435539514 -> 0.441254344 ms**; A140's first matched exact pair regresses
+**0.418530771 -> 0.453039271 ms**. Preserve A100's selected aligned-word
+stream. A low-nibble/high-bit-plane representation remains distinct because
+it changes extraction instructions rather than only address layout.
+
+The requested Q5 lane now serves through a provenance-pinned derived artifact.
+Bartowski's immutable `Qwen3.8-27B-Q5_K_S.gguf` source is pinned at revision
+`f0eec4a4bb4975114a030d048952d83c0a53c034`, occupies exactly
+19,680,945,760 bytes, and verifies as SHA-256
+`b52fbc242bde75a8e8f1dd2ec9ef9da4a1ce074d2513d3087a4f15003c11e569`.
+Pinned llama.cpp build 10547 copied all source tensors and converted only the
+833.59 MiB Q5_K `token_embd.weight` to F16. The distinct
+`Qwen3.8-27B-Q5_K_S-TokenF16.gguf` artifact is exactly 21,349,656,160 bytes
+with SHA-256
+`c05a777870159b0779a441e2f58b543a0660af466d833d5b550a8aab9c17fcfb`.
+
+A second provenance-preserving derivative changes only that same token
+embedding to Q4_K. `Qwen3.8-27B-Q5_K_S-TokenQ4_K.gguf` is exactly
+19,522,020,960 bytes with SHA-256
+`8ed3117aff80d105a302da708221364579d483964c4c07d56eb6091a774b06ae`.
+All other 865 tensors retain COPY from the immutable Q5_K_S source. Direct
+Q4_0/Q4_K/Q5_K/Q6_K arithmetic and token-id embedding parity pass.
+
+Actual-file native-MPS parity passes for Q4_0, Q5_K, and Q6_K. The derived
+checkpoint loads as `Qwen3_5ForCausalLM`, occupies 21.37 GB at runtime, warms
+the native Metal path, and exposes the language-only `qwen3.8-27b-q5` serving
+surface. The first retained Q5 optimization adapts pinned llama.cpp's Q6_K
+batch-one matrix-vector mapping so each SIMD group reuses its activation
+fragment across two output rows. Matched QKV and vocabulary-head medians fall
+**0.748917 -> 0.448125 ms** and **12.009166 -> 3.324625 ms**. Optimized,
+odd-row fallback, and batch-eight actual-file parity all pass.
+
+The second retained Q5 optimization doubles the Q5_K batch-one cohort to 32
+rows for aligned projections with at least 5,120 outputs, the smallest measured
+winning shape. Four lanes cooperate
+on each row and each lane consumes two adjacent `float4` fragments. The
+1,024-row attention K/V shapes retain the prior mapping. Reversed-order matched
+serving moves the `128+32` five-run mean **7.1342 -> 7.1646 tok/s**
+(**+0.426%**) and the higher-resolution `128+128` median
+**7.456 -> 7.500 tok/s** (**+0.590%**). Direct candidate, tail, alignment,
+fallback, and complete served-behavior gates pass;
+`SGLANG_MPS_Q5_K_BATCH1_ROWS32=0` selects the matched control.
+
+The first retained NEXTN prerequisite specializes exact-batch-four Q6_K. Each
+eight-lane cohort dequantizes one row once, reuses it across all four verifier
+activations, and four SIMD groups produce sixteen output rows. Matched final-
+source medians move `output.weight` **29.166000 -> 6.121375 ms** and the
+representative QKV projection **1.442333 -> 0.588500 ms**. In the real
+synchronous NEXTN path, five sampled `128+128` requests improve from the
+environment-disabled mean **3.3384** to **3.7028 tok/s** (**+10.915%**) even
+though control mean accepted length is slightly higher (**3.024 vs 2.960**).
+Direct batch-four, 17-row tail, batch-three fallback, and batch-eight
+preservation checks pass; `SGLANG_MPS_Q6_K_BATCH4_ROWS16=0` selects the
+matched generic route.
+
+The complete same-GGUF three-step NEXTN configuration remains below the Q5
+target-only lane. Explicit `--speculative-draft-model-quantization gguf` is
+required because draft propagation precedes target GGUF inference; with it,
+the trained draft occupies **1.00 GB** and leaves **8.50 GB** after the 1K
+state/cache allocation. Its **3.7028 tok/s** mean trails the selected
+target-only `128+128` median **7.500 tok/s** by **50.629%**, leaving
+**16.2972 tok/s / 5.4013x** to the floor. PERF-FA115 closes this unchanged
+full configuration while retaining the independent verifier-kernel gain.
+
+Five ordinary sampled exact `128+32` requests reach
+**6.993 / 7.214 / 7.206 / 7.218 / 7.192 generation tok/s**, mean **7.1646**
+and warmed-four mean **7.2075**, versus the original generic-kernel baseline
+of **5.746 tok/s**. Every request preserves 32 reasoning tokens and exact
+length. The five-run prompt/TTFT/E2E means are **5.809 tok/s**,
+**22.035143 s**, and **26.362669 s**. This leaves a
+**12.8354 tok/s / 2.7915x** decode gap.
+
+Both derivatives pass server startup, warmup, health, language-only metadata,
+and an exact request with real `context_length=max_total_tokens=131072`. The
+F16-embedding artifact occupies **21.37 GB** at runtime; its **8.00 GB** BF16
+attention cache leaves no reported headroom, and one sampled `128+32`
+diagnostic reaches only **0.102 generation tok/s / 329.689187 s E2E** under
+heavy paging. The Q4_K-embedding artifact occupies **20.00 GB**, leaves
+**0.99 GB** after the same cache, and improves the matched exact-capacity
+result to **0.315 tok/s / 121.240667 s E2E**, a **3.088235x** residency win.
+Its 1K-pool smoke reaches **7.086 tok/s**, returns arithmetic answer **703**,
+and emits exactly one parsed `multiply({"a":37,"b":19})` call.
+
+PERF-A089 supplies PyTorch 2.11.0's missing MPS E4M3FN value conversion in
+the existing C++/Metal extension. SGLang's generic pool already stores float8
+pages in `uint8`; the native path encodes FP32 cache writes and decodes both
+contiguous and moved-dimension gathers while every other `_to_copy` case uses
+PyTorch's original composite implementation. **400,006** reference encodes,
+all **256** raw decodes, offsets, strides, empty tensors, and BF16 fallback
+pass. A 1K FP8 server completes warmup and five sampled `128+32` requests at
+**7.248 / 7.277 / 7.268 / 7.251 / 7.263 tok/s**, mean **7.2614**, with
+arithmetic and parsed tools preserved.
+
+The exact 131K FP8 pool now passes. It occupies **2.00 GB K + 2.00 GB V** and
+leaves **6.99 GB** by server accounting, versus 8.00 GB and 0.99 GB for the
+same artifact's BF16 pool. Five cache-flushed sampled requests average
+**3.237 tok/s**, **10.276x** the BF16 result, with exact reasoning,
+arithmetic, and tools. The fully allocated pool still trails the 1K FP8 mean
+by **55.419%**. Another resident-byte reduction owns short-context recovery;
+a fused native FP8 attention owner owns long-history decode without FP32 K/V
+materialization. The sustained 20 tok/s admission window and Codex `xhigh`
+work gate remain due.
+
+A native affine-Q5 route now supersedes the GGUF lane as the throughput
+candidate. The immutable text-only group-64 five-bit checkpoint at revision
+`2568951b893b6427d0a8eb91cc7f4307154c2f05` contains 498 U32 packed and
+1,349 BF16 tensors with no vision tensors. Its four model shards verify against
+their SHA-256-addressed Hub blobs. The existing compiled engine loads it
+directly and reaches **16.322505765 tok/s** on sampled direct
+`128 / 32 warm / 128 timed`, **2.248x** the GGUF Q5 1K-FP8 mean. Exact served
+131K, reasoning/tools, and Codex gates remain pending. The unchanged selected
+DFlash controls regress to **11.506669050 tok/s** because five-bit M=8 target
+verification falls through to generic MLX QMM. PERF-A092 adds exact
+five-byte/eight-value affine-Q5 unpacking to the selected SG16/B32 K-split
+kernel. Representative parity passes, M=8 verification falls to about
+**228--229 ms**, and the same direct composition rises to
+**13.721235888 tok/s** (**+19.246%**). Target-only remains faster at
+**16.322505765 tok/s**; proposal quality and target-cycle bytes own the next
+gap.
+
+The pinned matching five-bit MTP head at revision
+`1faa5a803c972c57cfc1beed606184e726ad3d85` establishes a high execution-cost
+ceiling. Its default three-token deterministic path reaches
+**17.919995235 tok/s**;
+an opt-in eight-token block aligns with the Q5 M=8 kernel and reaches
+**31.380317186 tok/s**, mean width **8**, with the target digest preserved.
+Native sampling now uses the head's dense proposal probabilities through exact
+p/q rejection. The best calibration screen reaches only **6.380162135 tok/s**
+at mean width **2.285714286**, so this MTP head remains an experimental probe.
+Target-only affine Q5 stays selected and batch-one target weight traversal owns
+the active speed gap.
+
+PERF-A094 now supplies an opt-in batch-one affine-Q5/G64 Metal QMV that decodes
+each five-byte pack directly, reuses a 16-value BF16 activation fragment across
+four output rows per SIMD group, and accumulates in FP32. Representative K/N
+parity against MLX `quantized_matmul` passes at maximum absolute error
+**0.03125 / 0.03125 / 0.0234375**. With the selected command-buffer controls,
+one complete sampled `128 / 32 warm / 128 timed` screen reaches
+**17.823163930 tok/s**, **+1.500658165 / +9.194%** over the original affine-Q5
+target baseline and **2.176836070 tok/s** below the floor. The target trajectory
+is preserved against the adjacent native-kernel screens. This remains an
+opt-in candidate pending a repeated matched window, exact 131K serving, and
+Codex qualification. A concurrent gate/up stream experiment caused a bounded
+custom-Metal event stall and is closed; use one sequential MLX stream.
+
+PERF-A095 replaces the selected kernel's two packed-four-byte plus two scalar
+weight reads with three packed reads over the same ten bytes. Fresh-session
+parity passes at maximum errors **0.03125 / 0.03125 / 0.0234375**. The A094
+and A095 production-shape microbenchmarks converge, and mixed full-model
+screens reach **19.010697650 / 19.032187257 tok/s** with the same digest.
+This **0.113%** movement is neutral and A094 remains selected.
+
+PERF-A096 adds a smaller aggregate-Q5 checkpoint candidate. The immutable
+`maglun/Qwen3.8-27B-MLX-Mixed-4.95bpw` revision
+`596b8067f7cf429007bb668874ffee7e917c8340` is now cached without its separate
+vision shard. Its four language shards contain exactly **16,645,209,088 tensor
+bytes**, **9.999%** fewer than the uniform-Q5 checkpoint, and all four match
+the release SHA-256 manifest. The inventory is exactly the native engine's
+1,655 required language tensors: 1,253 BF16 and 402 U32 tensors, with 162
+affine-Q4 and 240 affine-Q5 matrices, every one group 64, zero missing or
+extra language keys, and zero packed-shape/bit-width errors. The text aggregate
+is **4.9510 bits per weight**. The committed dense-BF16 loader branch admits
+all 96 recurrent b/a tensors. Selected A094 Q5 QMV reaches
+**18.993383731 tok/s** across ten sampled direct controls; exact 131K capacity,
+behavior, and Codex qualification remain open.
+
+The reachable quantized-linear stream refines the aggregate artifact estimate.
+Excluding the embedding table, uniform Q5 traverses **17,615,093,760 bytes**
+per target token and the mixed checkpoint traverses **15,877,570,560 bytes**,
+a **1,737,523,200-byte / 9.863831687%** reduction. Pure byte scaling of the
+PERF-A094 result projects **19.773598394 tok/s**, only **0.226401606 tok/s**
+below the floor; measured full-Q4/Q5 interpolation is more conservative, so
+the fresh-session result remains the admission evidence.
+
+PERF-A097 identifies a likely correctness defect in the native matched-MTP
+seed. `Engine::select_token` retains the target's raw pre-final-norm residual,
+while the target logits apply `final_norm_` separately; both native sampled
+and greedy MTP drafting feed that raw value into `mtp_forward`. Upstream
+Qwen3.5 returns the final-normalized target hidden state to the standard MTP
+worker. The pinned MTPLX 2.9.0 Qwen3.8 contract independently selects
+`base_hidden_variant=post_norm`, embedding-before-hidden concatenation,
+post-norm recurrent hidden, and local/cache positions. Native concatenation
+and recurrent normalization already match; the initial target seed does not.
+
+The corresponding published INT4/G64 head is cached independently at exact
+revision `123db8bcc7101455b00d9aad36c0e760c6e7de02`. Its
+**238,934,249-byte** `mtp.safetensors` has SHA-256
+`c58feddc584f37971c72af1f0da95e0099478487009936b3c26ddd88844fab10`,
+contains the exact 31-tensor one-layer Qwen3.8 MTP shape, and preserves all
+seven BF16 norm tensors bit-for-bit against the existing five-bit sidecar.
+Its eight affine matrices are Q4/G64 and carry an `mtp.` namespace. Signed
+commit `0da5c5a135` teaches the shared native MTP loader to accept that namespace
+while preserving unprefixed sidecars. Signed commit `1b328149c7` adds the
+opt-in `SGLANG_MLX_NATIVE_MTP_POST_NORM_SEED=1` correction at the common
+sampled/greedy seed owner. Both compile under strict warnings. Published
+depth-three exact-sampling acceptance is
+**0.958762887 / 0.872852234 / 0.759450172**. Fresh-session mixed-target
+block-three screens reach **9.122242179 tok/s**, post-norm seed
+**9.507655940**, and Q4 QMV **11.341033334**. The unchanged composition is
+closed for throughput. Committed MTP history and position origin remain
+isolated research variables; the native engine currently clears the MTP
+attention cache at each refill, while the published server path uses committed
+history.
+
+Offline Metal AIR inspection also queues PERF-A098 after PERF-A095. Apple
+Metal 32023.883 scalarizes PERF-A095's packed byte vectors to ten aligned-one
+byte loads. An alignment-safe `packed_ushort4` plus scalar `ushort` mapping
+generates five aligned-two 16-bit loads. Every admitted Q5 row and lane begins
+at an even address because K is a multiple of 512 and each lane advances ten
+bytes. This remains source-only evidence until PERF-A095 has a fresh-session
+runtime result.
+
+PERF-A100 refines that queued 16-bit form into a continuous Q5 bitstream. A
+standalone Metal 3.2 control reproduces PERF-A095's ten aligned-one `i8` loads
+and ten byte extensions. The candidate emits five aligned-two `i16` loads and
+five word extensions, forms two 32-bit windows plus a 16-bit tail, and needs
+cross-window reconstruction only for fields 6 and 12. The alignment proof is
+unchanged. Fresh-session parity and all production-shape digests match A094.
+Two balanced full-model windows improve **19.004038228 -> 19.122257628** and
+**19.021221323 -> 19.147557640 tok/s**. The aggregate
+**+0.122277858 tok/s / +0.643140%** gain qualifies A100 as the selected Q5
+kernel source.
+
+PERF-A101 adds a paired-lane mapping above that continuous-bitstream form.
+Each even SIMD lane reads both adjacent ten-byte packs through five aligned
+32-bit loads; three native SIMD shuffles deliver the words needed by its odd
+neighbor. AIR preserves that masked mapping. Dynamic weight-load operations
+fall from 160 to 80 per SIMD group and output row while bytes remain 320. A
+standalone C++ pack/unpack check passes **1,001,026** deterministic cases.
+Fresh-session parity and complete digests pass, while gate/up, down, and
+attention-output regress roughly **5--9%** in the matched matrix. A101 is
+closed under the current compiler/GPU topology.
+
+PERF-A103 supplies a branchless middle point. Each lane rounds its ten-byte
+segment back to the pair's aligned 20-byte base and reads three aligned 32-bit
+words. The two lanes overlap one word, so the SIMD group issues **96** dynamic
+loads while the union of addresses remains the exact 320-byte Q5 block. Metal
+AIR lowers reconstruction to two funnel shifts and selects, with no SIMD
+shuffles. A standalone C++ pack/unpack check passes **1,016,386** cases; its
+strict full dylib and standalone Metal parity executable are prebuilt from
+signed `92a979bce7`. Runtime ranking belongs beside PERF-A100/A101 after the
+fresh-session parity gate.
+
+PERF-A104 layers a four-way FP32 dot formulation over PERF-A103. In an
+explicit isolated control, Metal AIR retains sixteen scalar `air.fma.f32`
+calls; the candidate emits four `air.dot.v4f32` calls and three FP32 adds.
+This changes the within-lane reduction order, so compiler lowering alone
+carries no correctness or speed standing. A strict full dylib and standalone
+parity executable are ready from signed `6e181e68d2`; fresh-session numeric
+parity, deterministic digest, sampled semantics, and matched timing determine
+whether the vector intrinsic is useful.
+
+PERF-A105 adds a single C++20 direct-QMV benchmark for all nine prebuilt Q5
+arms. It constructs deterministic Q5/G64 weights and BF16 inputs, synchronizes
+each launch, and reports latency, effective streamed bandwidth, and a complete
+BF16 output digest. Strict final executables for
+A094/A095/A100/A101/A103/A104/A106/A107/A108 are ready in `/private/tmp`; the
+harness source hash is `6f7e336e...d6da3`.
+After restart, parity precedes randomized and reversed gate/up, down,
+attention-output, and value-projection matrices. Equal digests are required
+through A103; A104 receives separate numeric and behavior gates because its
+FP32 reduction grouping changes.
+
+PERF-A106 isolates the activation-load side on the A094 weight path. Four
+aligned 64-bit reads replace sixteen scalar BF16 reads per lane and K block;
+AIR keeps four vector BF16-to-FP32 conversions while the sequential input sum
+and every FP32 FMA retain their order. The candidate engine, strict full
+dylib, parity executable, and PERF-A105 binary are prebuilt from signed
+`83c2731a3d`. Fresh-session parity, exact control digest equality, and matched
+matrix timing determine whether it combines with the selected weight-load arm.
+
+PERF-A107 tests the wider aligned form independently. AIR replaces A106's four
+64-bit reads with two aligned 128-bit `<2 x i64>` reads while retaining its
+four vector conversions and the original arithmetic order. The candidate is
+prebuilt from signed `414198a15c`; a sixteen-byte-aligned base is required and
+the 32-byte lane/1,024-byte block offsets preserve it. Live parity gates that
+alignment premise before exact digest and A094/A106/A107 matrix timing.
+
+PERF-A108 isolates quantization-parameter sharing. Four adjacent lanes address
+the same group-64 scale/bias pair; AIR keeps a leader-only load branch and one
+vector SIMD shuffle, reducing dynamic BF16 parameter loads/conversions
+fourfold from 32+32 to 8+8 per SIMD/output row. Arithmetic order after the
+broadcast is unchanged. The strict candidate matrix is prebuilt from signed
+`b1eeaf9f11`; parity and matched A094/A108 timing determine whether explicit
+broadcast improves on the hardware's duplicate-address handling.
+
+The fresh-boot comparison is prebuilt from source-identical signed revisions
+in four detached clean worktrees. PERF-A094 control and PERF-A095/A100/A101
+each have a strict full native dylib plus standalone Metal parity executable
+in `/private/tmp`. Their dylib SHA-256 values are respectively
+`b01d2712...fb242`, `3638e361...dd27`, `88c28fc0...ae85f`, and
+`7ff5004e...a347`. Run all parity executables before the randomized matched
+timing matrix; the current session has executed none of them.
+
+PERF-A099 pins the remaining committed-history alignment before any source
+implementation. Published MTPLX prefill pairs post-norm target hidden row
+`H[i]` with token `T[i+1]`. Each decode cycle retains the provisional MTP
+cache entry for the current pending token, rolls the later speculative entries
+back to `cycle_base + 1`, then appends only accepted target tokens paired with
+the committed target-hidden prefix. The sampled correction or full-acceptance
+bonus stays pending and enters history in the following cycle. Decode-only
+history and prompt history are therefore separable experiments. A full
+131,072-token prompt history adds one 4-KV-head, 256-head-dimension BF16 MTP
+cache, exactly **512 MiB** at capacity, plus a one-layer causal history pass.
+Run the already-committed post-norm seed arm first; add decode-only history
+only if acceptance remains insufficient, then qualify prompt history as a
+separate TTFT/capacity candidate.
+
+PERF-A102 prebuilds that decode-only history arm in a detached clean worktree
+at signed `711214b27c`. The opt-in
+`SGLANG_MLX_NATIVE_MTP_DECODE_HISTORY=1` path begins each sampled MTP cycle at
+the target's absolute sequence offset, retains the cache entry produced for
+the current pending token, rolls the provisional tail back to that boundary,
+and appends accepted draft tokens with the verifier's corresponding post-norm
+target-hidden prefix. An offset mismatch clears the decode-only history and
+resynchronizes it, covering target-only reasoning-cap fallbacks. Prompt MTP
+history, position-origin experiments, greedy MTP, DFlash, and DSpark remain
+unchanged. Strict C++20/O3 compilation and `git diff --check` pass; the dylib
+SHA-256 is `b4f3b222...a5d`. Fresh-session acceptance and throughput remain
+the admission evidence.
+
+A current Hugging Face inventory found no smaller distinct uniform-five-bit
+MLX language layout to download. The additional published uniform candidates
+use the same affine five-bit/group-64 text quantization and either carry the
+BF16 vision tower or duplicate the existing text layout. The published OptiQ
+candidate averages 5.50 BPW and is larger. Keep the already-pinned 18.51 GB
+uniform text-only target for the literal Q5 control and the already-pinned
+4.951-bpw mixed target for the bandwidth arm.
+
+Two bounded fallbacks confirm that the current-session fault reaches the full
+model path. The committed pre-PERF-A094 native library with every Q5 custom
+dispatch disabled produced no output before a **120-second** cutoff. A pure
+stock-MLX `mlx_lm.generate_step` load of PERF-A096 produced no output before a
+**180-second** cutoff. Both complete process trees exited with status 124;
+port 30000 and Qwen, benchmark, MLX, and compiler process searches are clear.
+The system still reports **1,207,315 wired pages** and memory pressure remains
+at **39% free capacity** after 30 seconds. End GPU submissions for this
+session. Resume after a full machine restart, then verify ordinary MLX
+arithmetic, PERF-A095
+parity, the PERF-A094 matched control, and PERF-A096 in that order.
+
+The unchanged Q5_K_M artifact is closed on this loader because mixed merged
+weights contain Q8_0 shards unsupported by the native Metal merge path. The
+unchanged Q5_K_S artifact loads its 20.00 GB weights and then reaches the
+unsupported Q5_K embedding boundary. The derived artifact owns the active Q5
+route. The affine-Q4 lane below remains optimization substrate and comparison
+evidence.
+
+The native M1 Max Qwen3.8 lane now clears the requested 20 tok/s served floor
+in two independent real-131K five-sample windows when recurrent QKV
+projections are restored from the immutable Q4 checkpoint. The windows average
+**20.0222** and **20.0292 tok/s**, and every individual sample exceeds 20.
+One pinned Codex 0.151.0 `xhigh` turn completed the requested shell tool
+cleanly. A second completed the work after sampling a malformed extra
+`write_stdin` call, so strict structured-output reliability remains active.
+
+DFlash2 now runs end to end through the native C++ MLX engine in signed commit
+`d57a6ac11c` (`feat(mps): add native DFlash2 runtime`). The exact
+`incoai/Qwen3.8-27B-DFlash2` BF16 source remains immutable, and the distinct
+175-tensor affine-W4/G64 draft artifact remains at
+`/Users/dcazares/.cache/sglang/checkpoints/Qwen3.8-27B-DFlash2-MLX-AffineQ4`
+with model SHA-256
+`33bf2ddd0d46c27d6f383b6822ab897eb87261d34ca9c6eeb6a0f232026f723c`.
+The existing `Engine::load_mtp` entry autodetects its tensor contract. Native
+target-layer capture, five-layer block drafting, selector sampling, exact p/q
+rejection, and accepted-prefix recurrent-state replay are implemented behind
+the existing opt-in draft path.
+
+Signed commit `6cf95442cc` also loads the official 81-tensor BF16 checkpoint
+directly through the shared native linear owner. It passes dense bit parity
+and complete direct decoding. BF16 is a compatibility lane: its matched
+sample reaches **9.044043 tok/s**, 61 refills, and mean width **2.114754**,
+versus adjacent affine-W4 **30.992508 tok/s**, 19 refills, and width
+**6.684211**. The derived affine artifact remains the performance selection.
+
+The native prefill owner divides DFlash target/capture work into internal
+2,048-token units while preserving one external SGLang prefill call. This
+completed 4,096- and 6,237-token direct prompts and the real 6.2K-token Codex
+shape that previously exhausted Metal residency. Two real 131K-configured
+Codex 0.151.0 `xhigh` turns have each issued exactly one requested shell tool
+and returned the exact final marker.
+
+Generation remains the active gap. Signed commit `3bae8a5e67`
+(`perf(mps): widen DFlash verifier output tiles`) expands the opt-in M=8
+affine-W4 kernel to 32 output columns while retaining sixteen independent K
+partitions. The dequantized-weight staging and FP32-partial phases have
+disjoint lifetimes and share one 32 KiB threadgroup allocation. Five
+process-isolated no-trace `128 / 32 warm / 128 timed` samples measure
+**31.347246 / 31.354397 / 31.268351 / 31.330814 / 31.335863 tok/s**, mean
+**31.327334**, versus the preceding SG16/B16 mean **17.651701 tok/s**. Every
+sample reproduces mean emitted width **6.684211**, digest
+`46bd4bb035b72c2b`, and last token 20. Steady short-harness cycles now spend
+about **26.0--26.4 ms** drafting and **185.4--186.7 ms** verifying. The shape
+owner requires K divisible by 512 and N divisible by 32, covering every
+reachable projection and failing closed elsewhere.
+
+SG16/B32 also passes the real server and Codex behavior gates. The exact
+sampled `6237+128` control reaches **15.328 generation tok/s**, **109.106
+prompt tok/s**, **57.164599 s TTFT**, and exact `6365` total tokens. Live
+6.2K-history verification falls from SG16/B16's roughly **236--239 ms** to
+**211--214 ms**. Codex thread `01a05c69-215f-7fb0-a7f8-1425c9b2ae5a`
+issues one exact command, observes exact stdout, returns exact
+`QWEN38_DFLASH2_READY`, and exits zero with 264 reasoning tokens. The fixed
+cycle win is production-reachable; this prompt's sampled proposal acceptance
+leaves **4.672 tok/s** to the sustained admission requirement. Proposal
+precision/selection and further verifier work are the next active branch.
+
+The learned selector now has a checked opt-in temperature at its native score
+owner. Identity remains the default and preserves the prior operation graph.
+Temperature **1.15** raises five consecutive exact real-131K-pool samples from
+the adjacent identity mean **15.4424** to **15.8866 tok/s**, a **2.876%**
+gain; mean emitted verifier width rises **3.878788 -> 4.031250**. Every sample
+completes exact 6,365 tokens with a stable coherent digest within its setting,
+and exact rescaled q continues into rejection sampling. Temperature 0.95,
+which appeared strongest on the repeated-token direct screen, reaches only
+**13.739 tok/s** on the natural request and is closed. The selected opt-in
+establishes the proposal distribution used by the selected verifier budget.
+
+The common exact verifier now also supports a checked DFlash-only current-block
+q budget. Mean selected q over proposal positions one through six has Pearson
+**0.801577** with accepted length on the natural trace, while accepted-length
+lag-one autocorrelation is only **0.324698**. With selector temperature 1.15,
+the opt-in mean-q6 threshold **0.62** chooses target M=2 below the boundary and
+M=8 otherwise. Five exact real-131K-pool `6237+128` requests reach **16.167 /
+16.181 / 16.178 / 16.179 / 16.183 tok/s**, mean **16.1776**, versus adjacent
+current-source full-M=8 **15.883 / 15.908 / 15.900 / 15.899 / 15.897**, mean
+**15.8974**. The gain is **0.2802 tok/s / 1.763%**. Each candidate request
+uses 23 M=2 cycles averaging **133.648 ms** and 19 M=8 cycles averaging
+**248.447 ms**, completes exact 6,365 tokens, and reproduces coherent SHA-256
+`bdf9428e...`. Thresholds 0.55 and 0.65 are closed at **15.191 / 16.056
+tok/s**. Full M=8 remains the default; threshold 0.62 is retained opt-in with
+**3.8224 tok/s** to the requested floor. Target-cycle arithmetic and proposal
+quality are the next active branches.
+
+Native M=8 gate/up fusion is also closed under the current kernel geometry. A
+single workgroup that computes both products and exact BF16 SwiGLU serializes
+the output grids and adds roughly **3.3 ms** to verification. A launch-only
+two-plane grid preserves both products bit-exactly and changes five-sample
+direct mean only **26.943319961 -> 26.964966176 tok/s** (**+0.08034%**), with
+two adjacent pairs flat or slower. Separate SG16/B32 products remain selected;
+a future reopening needs shared arithmetic or a fused down-projection boundary.
+
+The official worker's greedy LM-head proposal rule is closed for sampled
+production. It reached a misleading five-sample direct mean of **37.518731
+tok/s** and width **7.9375** on the repeated-token harness, then only **9.512
+tok/s** on the exact natural `6237+128` request, **37.944%** below the learned
+selector. The temporary switch was removed. Proposal-policy candidates now
+require the real 6.2K request as their admission screen.
+
+DSpark v2 also runs end to end through signed commit `21cd561dfc`. The native
+lane accepts the exact official 62-tensor BF16 checkpoint and the distinct
+136-tensor affine-W4 derivative, executes all five full-attention YaRN draft
+layers plus sequential rank-256 Markov correction, and shares the exact target
+verifier/accepted-state commit owner with DFlash2. The affine artifact reaches
+**10.050625 tok/s** in the first direct sampled screen and **11.242 tok/s** on
+the exact real-131K-pool sampled `6237+128` request. Full reasoning, exact token
+counts, health, and the language-only model surface pass.
+
+The native DSpark lane now also evaluates the checkpoint's trained confidence
+head under the existing trace flag. It combines each final draft hidden row
+with its previous-token Markov embedding and emits the exact seven FP32-sigmoid
+survival probabilities while preserving proposal width and the direct/served
+baseline digests. The natural prompt spans roughly **0.1895--0.9998** and
+confirms the signal is probabilistic. Bounded-width verifier profiling and a
+cost-based cumulative-survival budget are the active follow-up.
+
+The common exact verifier now accepts checked prefixes of one through seven
+draft tokens behind a DSpark-only opt-in width probe; DFlash and default
+DSpark remain at seven. The complete fixed-width direct sweep reaches
+**11.920231 / 8.861866 / 8.353200 / 7.544333 / 4.104266 / 4.139508 /
+10.025000 tok/s**. Target M=6/M=7 fall onto a slow generic affine-QMM tier,
+while M=8 uses the selected SG16/B32 kernel. M=2 and M=8 are the useful
+measured tiers for the next confidence scheduler; every fixed short-width
+policy is closed below the required floor.
+
+The native trained-confidence scheduler now chooses between those M=2 and M=8
+tiers from cumulative expected survival and a measured complete-cycle cost
+ratio. At the selected opt-in ratio **1.75**, five consecutive real-131K-pool
+sampled `6237+128` requests reach **13.595 / 13.609 / 13.603 / 13.607 /
+13.615 tok/s**, mean **13.6058**, versus the adjacent fixed-M=8 control at
+**11.313 tok/s**. Every sample completed exact 6,365 tokens with one shared
+reasoning/output digest. Fixed M=8 remains the DSpark default; the adaptive
+lane is **1.7222 tok/s** behind selected DFlash2 and **6.3942 tok/s** behind
+the requested floor. A bounded target-only bypass for predicted low-value
+draft cycles is the next cost candidate.
+
+An additional opt-in cooldown now skips sixteen DSpark probes after the
+confidence budget selects M=2, advancing target and draft context through
+exact target-only refills before forcing a fresh probe. The first five real
+samples reach **17.028 / 17.080 / 17.036 / 17.102 / 14.952 tok/s**, mean
+**16.6396**; the fifth is retained as transiently contended, and the recovery
+sample reaches **17.011**. Five normal samples within the six-request window
+average **17.0514 tok/s**. Every request completes exact 6,365 tokens with one
+shared reasoning/output digest. Cooldown sixteen is the strongest measured
+speculative serving lane and remains opt-in; it retains a **3.3604 tok/s** gap
+to the floor on the all-sample mean.
+
+The cheap target-state predictor branch is now closed as a scheduler. Its
+score-0.525 direct screens reached **33.222 / 32.788 tok/s**, while the exact
+natural request reached only **13.652 tok/s**. On a no-policy real trace, M=2
+and M=8 score ranges overlap and score versus accepted width has Pearson
+**0.141**. The target-state score remains available under the existing trace
+flag as diagnostic telemetry; its parser and scheduling branch were removed.
+Longer fixed cooldowns 64/128 reach only **18.402 / 19.664 tok/s** directly.
+
+DFlash2 also cannot reuse the faster mixed-precision target unchanged:
+QKV-only and complete recurrent restoration collapse direct accepted width to
+**2.653 / 1.984** and throughput to **10.130 / 7.841 tok/s**. A two-phase
+64-column M8 verifier preserves the selected digest and width yet falls to
+**8.961 tok/s**; it was removed. The full-Q4 target and SG16/B32 verifier
+remain the compatible selections. Further progress returns to shared target
+decode cost while preserving the qualified target-only lane above 20.
+
+The full-Q4 target-only lane now has a memory-safe representative prefill.
+Checked opt-in `SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE=2048`
+evaluates and releases 2,048-token target units inside the native owner. It
+completes direct 6,237-token prefill and the exact real-131K-pool served
+`6237+128` request that exhausted Metal residency on the one-shot path. The
+served sample reaches **19.300 generation tok/s**, **109.988 prompt tok/s**,
+**56.706198 s TTFT**, and **63.286374 s E2E**, with exact token count and
+coherent reasoning. Direct long-history decode reaches **19.586705 tok/s**;
+single-chunk sampled decode retains its exact digest above 20. DFlash2 and
+DSpark retain their existing capture chunks, ordinary MTP is unchanged, and
+the default target-only path remains one-shot. The target-only served gap is
+now **0.700 tok/s**.
+
+A dedicated affine-W4 batch-one Metal QMV is closed at its scalar-output
+geometry. Standalone BF16 parity passed, while the one-SIMD-per-output form
+reached **10.456143330 tok/s** and an eight-lane quant-parameter broadcast
+reached **7.773375044 tok/s**, against stock MLX **20.339874670 tok/s** on the
+same short full-Q4 target-only shape. Every experimental source and test
+change was removed. Future batch-one affine work requires matrix tiling,
+dependency-level evidence, or fusion with a downstream consumer.
+
+Metal GPU Counters now attribute the representative long-history target-only
+decode. Of 48,343 sampled shader PCs, 47,676 map to the target process:
+**88.470%** land in MLX's affine-W4 `qmv_fast`, **3.904%** in the two SDPA
+passes, **2.358%** in the recurrent state update, and **1.405%** in the fused
+full-attention q/k norm plus RoPE kernel. The trace-instrumented run reaches
+**19.144319346 tok/s** with its stable 128-token completion. Installed MLX is
+0.32.2 at official tag `1f8e74e3`; official HEAD `117188cd` contains no later
+QMV change. A stock-compatible multi-output SIMD tile or dependency-level QMV
+change owns the next measured branch.
+
+Two DSpark proposal-fidelity candidates are closed. Independently applying
+target top-k/top-p filtering to each draft row fell to **6.997461 tok/s** and
+width **1.6** direct. Retaining only Markov W2 in BF16 fell to **7.044992
+tok/s** and width **1.65** direct; its representative served request reached
+**11.294 tok/s**, a **0.462551%** different-trajectory movement, while adding
+**87.148 MiB**. Both experimental source changes were removed. The selected
+affine checkpoint, DFlash2 path, and production runtime remain intact.
 
 ## Native backend roadmap handoff
 
@@ -868,8 +1695,11 @@ current Apple benchmark baseline and preserves generic aligned, tail, and
 multi-batch fallbacks.
 Signed commit `1ec20a0e87` widens the fixed-memory BF16 Metal decode fence to
 131,073 physical rows. Isolated native admission, the 131,074-row fallback,
-and active sequence length 131,072 all pass; served context qualification
-remains the exact 32,768-token gate.
+and active sequence length 131,072 all pass. Signed commit `5f966ecb0d`
+splits long BF16 tiled decode history and stably reduces the exact 131,072-row
+attention median from **148.078959 ms** online and **65.117542 ms** unsplit to
+**4.338625 ms**. Focused parity, fragmented maps, nonzero storage offsets, and
+12 outstanding asynchronous output lifetimes pass.
 Signed commit `0d1d0ea643` owns PERF-A017's fixed-memory BF16 paged-GQA
 EXTEND mechanism and its separate lazy Metal pipeline.
 Host cleanup leaves this artifact as the only Hugging Face model cache and no
@@ -915,9 +1745,9 @@ The first native Rust `/generate` baseline remains **7.001584 tok/s** aggregate,
 official-tokenizer fixed-output boundary with exact token IDs and FNV
 `6d4d220de481f54e`.
 
-PERF-A016 remains the last named-client-qualified repository-native result on
-the tool-capable Python ingress with the same official tokenizer. Its
-final-source five-run window is
+PERF-A016 remains the historical first named-client-qualified
+repository-native result on the tool-capable Python ingress with the same
+official tokenizer. Its final-source five-run window is
 **8.586948 tok/s** aggregate, **8.591773 tok/s** best hit, and **29.812688 s**
 mean E2E. The fresh disabled-kernel control is **7.009167 tok/s**, attributing
 a **22.510241%** full-model gain; an independent candidate restart reaches
@@ -948,18 +1778,174 @@ BF16 pool at **18.942 observed prompt tok/s**, **1729.565719 s TTFT**, and
 thinking-disabled `READY`, one parsed multiply call, tool-result reasoning
 continuity, and image/audio-disabled reporting.
 
+The experimental long-context server now allocates real
+`context_length=max_total_tokens=131072` with BF16 KV and one request. Five
+no-buffer Mamba slots use 0.87 GB, the K/V pool uses 8.00 GB, packed weights use
+9.03 GB, and **10.97 GB remains** after allocation. Health and language-only
+reporting pass. The fifth slot is retained as Codex transient-state headroom;
+four- and five-slot experiments both proved that a late prompt-token change can
+miss a compressed terminal recurrent checkpoint, so slot count does not solve
+that radix-path issue.
+
+The current native-MLX early-out27 v2 decode line is signed at `4c1bc4c1e3`.
+Its reusable power-of-two full-attention K/V storage first changed exact
+6,237-history direct decode **17.923409 -> 19.151623 tok/s**. The latest retained
+kernels make each single-token recurrent causal-convolution/state transition
+one Metal launch, fuse the following BF16 SiLU into that same owner, fuse 127
+residual/RMSNorm boundaries into dual-output launches with distinct residual
+storage, combine q/k normalization with float scaling, and combine recurrent-
+output RMS normalization with the SiLU gate across all 48 recurrent layers.
+The convolution/state step improved matched serving **18.7616 -> 18.8914
+tok/s**; residual/RMS fusion improved its matched control **18.8286 -> 19.0484
+tok/s**; recurrent q/k fusion improved the next matched control **19.0900 ->
+19.1610 tok/s**; recurrent output norm/gate fusion improved its fresh matched
+control **19.1260 -> 19.1548 tok/s**; convolution/SiLU fusion improved its
+fresh matched control **19.1730 -> 19.2134 tok/s**. All served requests retained
+exact `6237+128` counts, reasoning output, stream shape, and SHA-256. The latest
+actual-work generation mean leaves a **0.7866 tok/s** gap to the required floor.
+Full-attention q/k/v affine row concatenation is closed under current MLX
+semantics: both the all-row and k/v-only forms changed the production-shape
+deterministic digest despite exact synthetic row arithmetic. PERF-FA084 retains
+their bounded screens. Recurrent beta/decay work inside the q/k normalization
+owner is also closed: the beta-only isolation was neutral, while the complete
+exact owner changed matched long-history decode **19.641655 -> 19.547612
+tok/s**. PERF-FA085 retains the five-pair evidence; selected source and digest
+are restored.
+
+The native engine's command-buffer byte default is now under qualification at
+128 MiB, with explicit `MLX_MAX_MB_PER_BUFFER` values retaining precedence.
+Five exact adjacent direct pairs improve **19.623300 -> 20.153966 tok/s**
+(**+2.704%**), and every candidate run clears 20. Its real 131K served gate is
+the remaining promotion step.
+
+The normal hash-pinned client prompt at `xhigh` renders 6,232 tokens. A midnight
+date update changed exactly one token at index 6,003. Infrastructure priming at
+aligned endpoints 2,048, 4,160, and 5,952 completed in separate bounded windows
+at **81.027809 / 85.022104 / 72.424614 seconds**; the last endpoint sits before
+the mutable date token. Actual Codex thread
+`01a056b0-54e5-7a60-921a-c7a05ef0843a` then completed in about **91.6 seconds**
+under `/opt/homebrew/bin/timeout --signal=INT --kill-after=10s 120s`. It ran
+exactly one `exec_command`, observed exact stdout
+`QWEN38_XHIGH_SPLIT_DECODE_TOOL=passed`, and returned the requested
+`QWEN38_XHIGH_SPLIT_DECODE_READY`. Usage was **12,678 input / 12,328 cached /
+188 output / 131 reasoning-output tokens**. The two server turns reused
+5,952+280 and 6,376+70 prompt tokens. The actual Responses body omitted
+`max_output_tokens`; the default instructions and repository prompt remained
+byte-identical. This qualifies parser-enabled, ordinary-prompt, uncapped-output
+tool use at `xhigh` with real 131K client/server metadata inside the two-minute
+contract. Cold 6K prefill remains the leading interactivity gap and autonomous
+multi-file ownership remains open.
+
 Historical process-scoped OpenCode 1.18.15 runs admitted 13,635 and
-13,691-token agent prompts. The governing Apple real-client gate is Codex CLI
-0.149.0 through the machine-local `qwen38-local` Responses profile. Its last
-execution remains on PERF-A016: one read-only `pwd` tool call returned the
-workspace, its result was consumed, visible final was exact
-`CODEX TOOL READY`, and the client accounted for 17,871 input, 96 output, and
-62 reasoning-output tokens before exiting zero. Profile/catalog SHA-256 values
-are `9706003ad8a43ad48e4260f282057c023214c9e66737eae3da88a49188079a1c`
-and `a67c491a1dd4d4df0f720fb966ac390bd20041d8ed29f02833dfca4424a013f0`.
-The PERF-A021 named-client rerun remains the final promotion gate. Verified
-cleanup leaves every server/client PID absent, port 30000 free, 93% memory
-free, and normal thermal/performance status.
+13,691-token agent prompts. The 18:29 Codex 0.151.0 `qwen38-local` read-only
+gate remains historical evidence with hashes `9706003a...9a1c` and
+`680e762e...e970`. The 19:46 strict profile-overlay write also remains
+historical behavioral evidence at `d347c93e...f0ba` / `eb15e828...1db1` /
+`8a2fe9b9...2279`; it used same-value sandbox/approval pins, and its mutable
+lower user config and rules were not hashed at process start.
+
+The governing Apple workspace-write client gate now uses the dedicated
+`CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home`. Final
+config/catalog/instruction SHA-256 values are
+`9d7842bb47d15c5b7a63d1507b8e035784bf1ab768de36dbb131088493620409`,
+`862339c156824879852dbdc9ebf096523d6312699fdd8723f13d81091de2ec71`,
+and `5d59350d7a1568c3c458b05513e8b58ed50d70874f27fb80a06d131e09b9d096`.
+The exact strict task used no profile layer, `-c`, `--sandbox`, reasoning, or
+capacity override. It issued one successful `file_change` on the first attempt,
+added only `gate.txt` with exact content
+`QWEN38_ISOLATED_WRITE_GATE=passed`, returned visible
+`QWEN38 ISOLATED WRITE READY`, and exited zero with **2,670 input**, **115
+output**, and **39 reasoning-output tokens**. The 34-byte file SHA-256 was
+`f7ca43b4d2b9698e2f794c8bfffefe78836423c77bde38a7405f96ab12f6729a`.
+
+After the PERF-A021 server is ready, the normal interactive entry is:
+
+```bash
+env CODEX_HOME=/Users/dcazares/.codex/qwen38-local-hardened-home \
+  SGLANG_API_KEY=local /opt/homebrew/bin/codex --strict-config \
+  -C /Users/dcazares/sglang
+```
+
+The repository is trusted so root `AGENTS.md` reaches the interactive prompt;
+the final separate prompt-input diagnostic rendered 21,741 characters and
+contained its exact C++/CUDA-only rule. Qualification scans that did not rely on
+ignore rules found no project `.codex`, hook, rule, override-instruction, or
+skill sidecar; no dedicated-home rule, skill, or override-instruction path; and
+no `$HOME/.agents/skills` or `/etc/codex/skills` directory.
+Recheck those mutable interactive inputs before launch. The fixed scratch gate
+is untrusted and supplies `--ignore-rules` explicitly.
+
+The normal trusted-repository prompt and existing interactive configuration
+remain the authoritative working lane. A one-off Codex 0.151.0 diagnostic with
+`project_doc_max_bytes=0`, `include_environment_context=false`, and reasoning
+effort `none` reduced debug prompt input to 100 tokens; those overrides are
+confined to diagnostics and disposable scratch gates. Compact scratch thread
+`01a05638-3921-7411-9564-f680af8ea1b8` issued a real `printf` tool command,
+received `QWEN38_COMPACT_TOOL=passed`, returned the requested final marker, and
+exited zero in about 52 seconds. A following automatic header-edit prompt
+returned only `ack`, so tool selection for edits remains a supervision point.
+
+Parser-free `--grammar-backend outlines` is retained as an opt-in supervised
+structured subworker on MPS, outside the normal Codex prompt. Four JSON-schema
+Responses requests completed inside their individual 120-second process
+deadlines and generated a header, validation/sort/merge implementation, and
+authored-test intent. Host review preserved repository paths and namespaces and
+corrected generated API/type drift. The strict three-file C++20 build emitted
+exact
+`QWEN38_CPP_MULTI_FILE_GATE=passed`, while the immutable verifier retained SHA-
+256 `37726f73...c9ec0`. This qualifies supervised multi-file repair within the
+two-minute request contract. Autonomous multi-file editing remains open.
+
+Every future non-interactive Qwen/Codex work attempt runs inside
+`/opt/homebrew/bin/timeout --signal=INT --kill-after=10s 120s`. Hybrid
+`UnifiedRadixCache` remains established for delta-sized continuation prefill.
+Default xgrammar vocabulary-mask application currently raises `Unsupported
+device: mps`; retaining Qwen reasoning/tool parsers with Outlines also fails at
+the structural-tag/backend-mask boundary. The selected local structured lane
+therefore omits both parsers and uses reasoning effort `none`. The ordinary
+Qwen-parser Codex lane now owns a successful auto-selected shell tool round
+trip at `xhigh`; required named-tool grammar remains a separate qualification
+target.
+
+A separate 1,000-token Total-scope gate on the immediate medium-reasoning
+predecessor hashes
+`39ad0f7c97ed30d36d41baf5d2b6ec3c127e2e44baf9aad2aa76f6bbf70c832b` /
+`8fbb54a5407b9279c1abcc61a805bb15067fe27bf4bf6e8346bd80051572dfa5` /
+`8a2fe9b979da48d5bc5a38ec22fb44f50b06de21216e3643b376ba330a4e2279`
+supplies historical compaction evidence. The task recovered from a malformed
+patch across two observed compaction boundaries, preserved its nonce, and
+exited zero with 11,093/5,120/3,943 tokens. It is unmatched to the clean low
+task, and its raw JSONL and exact warning text were not retained. Production
+remains configured at 30,000 Total-scope tokens, resolving to 29,491 under
+Codex's 90% clamp; near-limit runtime continuation at that effective threshold
+remains a separate qualification gate.
+
+The isolated lane passes strict config loading and explicitly disables hooks,
+plugins, agents, goals, memories, message-history append, analytics, feedback,
+login-shell startup, web/network tools, and other optional tool/model-visible
+surfaces. It has zero configured MCP servers, and all effective skill-root
+paths were absent; skill-instruction injection and bundled skills are disabled.
+It caps tool output at 10,000 tokens, disables unbounded/request/stream
+retries, uses a 2,400,000-ms idle bound, filters a core-only initial shell
+environment, and sets `ZDOTDIR=/var/empty` before spawned shell startup. The
+root-owned target
+was empty and system zshenv files were absent, so spawned non-login zsh tools
+do not reread `~/.zshenv`. The config trusts the repository, leaves the fixed
+scratch path untrusted, and confines workspace writes with network and implicit
+temporary roots disabled. The catalog declares `shell_type=unified_exec`; its
+exposed tools are `exec_command` and `write_stdin`. The client sends
+`parallel_tool_calls=true` while the instruction bundle requests sequential
+use. Complex multi-file editing, concurrent-tool behavior, and production-
+threshold near-limit compaction remain wider client gates.
+
+Pre/post bundle hashes and the ordinary user config/rules hashes
+`97f15d75...5ca9c` / `63d2d91f...61e5` were stable. System and managed Codex
+layers were absent. Post-tool health, language-only reporting, cache flush,
+and scratch cleanup passed. Foreground shutdown removed root/listener `36097`,
+tracker `36112`, scheduler `36113`, and detokenizer `36114`. In the 20:46
+post-shutdown snapshot, port 30000 and model/compiler/client process sets were
+empty, the fixed scratch path was absent, memory had returned to 92% free with
+zero throttled pages, and thermal/performance status was normal.
 
 A one-shot synchronized batch-one profile now supplies a candidate-selection
 diagnostic.
@@ -1016,10 +2002,9 @@ the matched disabled prompt rate. Every request completed exact `128+1` with
 parity.
 
 The current PERF-A021 baseline has cleared its semantic, sampled, independent-
-restart, and exact-capacity gates. Its **9.189086 tok/s** aggregate leaves a
-**37.324447%** gap to pinned llama.cpp. The named Codex-profile rerun is open,
-and the next measured batch-one decode hotspot remains the compact-scoreboard
-handoff.
+restart, exact-capacity, and isolated-home Codex gates. Its **9.189086 tok/s**
+aggregate leaves a **37.324447%** gap to pinned llama.cpp. The next measured
+batch-one decode hotspot remains the compact-scoreboard handoff.
 
 Long-context EXTEND now has a qualified native mechanism. PERF-A017 implements
 batch-one BF16 paged GQA at 24 query heads, four KV heads, and dimension 256
@@ -1089,7 +2074,8 @@ Every promoted candidate retains all of these:
   when memory layout, graph coverage, cache dtype, workspace, or sampling
   residency changes;
 - Qwen's selected sampled reasoning profile: temperature `1.0`, top-p `0.95`,
-  top-k `20`, and presence penalty `1.5`;
+  top-k `20`, min-p `0.0`, presence penalty `0.0`, and repetition penalty
+  `1.0`;
 - preserved `reasoning_content`, coherent thinking, and ordinary completion
   behavior;
 - arithmetic probe result `703` for `37 * 19`;

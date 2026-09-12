@@ -1716,3 +1716,3051 @@ option, or serving dispatch was added.
   workload clears 1% in two windows.
 - Related commit or revert: every shader edit was reverted; signed PERF-A020 at
   `5fe532b41c` is restored. The record-only closure commit follows this entry.
+
+## PERF-FA064 - Apple MPS extra-buffer cache under non-overlap scheduling
+
+- Hypothesis: eager `extra_buffer` would retain aligned recurrent checkpoints
+  for divergent Codex task suffixes while preserving the established Apple
+  non-overlap scheduler.
+- Scope: Qwen3.8-27B IQ2_XXS on the M1 Max, exact 131,072-token context and
+  BF16 KV pool, five FP32 Mamba slots, page size one, seed 67396869, and the
+  qualified reasoning/tool parser pair.
+- Attempted change: changed only the selected cache strategy from `no_buffer`
+  to `extra_buffer`; retained `--disable-overlap-schedule`.
+- Benchmark evidence: weight load, five-slot Mamba allocation, exact KV-pool
+  allocation, and UnifiedRadixCache startup completed. The first six-token
+  warmup prefetched successfully, then the first decode transition crashed
+  before an external request could be scored.
+- Correctness evidence: the fatal stack identifies
+  `set_mamba_track_indices_from_reqs` and the pinned-CPU-to-MPS copy, ending in
+  `at::native::mps::mps_copy_` and the AGX blit path. The scheduler exited
+  `-11`; macOS retained the exact crash report. Cleanup left the listener and
+  relevant process sets empty.
+- Failure mode: current eager extra-buffer tracking takes an unsafe MPS device
+  transfer path during decode preparation.
+- Why not to retry unchanged: the configuration cannot pass its built-in
+  startup generation gate and therefore cannot serve real client traffic.
+- Reopen only if: the track-index construction gains an MPS-safe lifetime and
+  device-transfer implementation with focused replay coverage, or a dependency
+  change demonstrably removes the same crash.
+- Related commit or revert: no source change; full evidence is in the
+  2026-08-31 01:59 experiment-log entry.
+
+## PERF-FA065 - Cap split-history Metal decode at sixteen partitions
+
+- Hypothesis: a sixteen-way cap would avoid idle split threadgroups at the
+  6.2K-token Codex history while still dividing the exact 131K history evenly.
+- Scope: native Apple7 BF16 batch-one GQA decode on the M1 Max; current
+  131,073-row physical cache, Qwen 24/4 heads, head dimension 256, and the
+  retained two-kernel stable softmax merge.
+- Attempted change: added a native `SGLANG_MPS_SPLIT_DECODE_MAX_SPLITS`
+  control and selected sixteen by default; the 32-way value reproduced the
+  committed control in separate processes.
+- Benchmark evidence: focused medians changed **0.919091 -> 0.472529 ms** at
+  sequence length 6,234 and **0.161865 -> 0.140490 ms** at length 16. Exact
+  131,072-token history remained effectively flat at **4.066904 ->
+  4.078974 ms**. A matched full-model six-Mamba-slot 131K window then measured
+  warmed exact `128+256` decode at **9.190 tok/s** for the 32-way control and
+  **9.122 tok/s** for the sixteen-way candidate. The identical output digest
+  and all count/finish gates passed. The candidate therefore failed the served
+  promotion gate despite its isolated long-history reduction.
+- Correctness evidence: BF16 reference parity passed lengths 1, 257, 1,024,
+  1,025, 6,234, and 131,072 with maximum error
+  `5.066394805908203e-07`; a fragmented map and twelve unsynchronized outputs
+  retained twelve distinct backing storages with maximum error
+  `3.725290298461914e-07`. The native extension compiled, the existing MPS
+  attention smoke passed at maximum error `5.96046e-07`, three dispatch unit
+  tests passed, and `git diff --check` passed.
+- Failure mode: the saved full-attention work is too small a fraction of the
+  full token wall, and the warmed end-to-end window moved 0.74% lower.
+- Why not to retry unchanged: the user-visible generation rate owns promotion;
+  isolated attention speed alone cannot fund an end-to-end regression.
+- Reopen only if: whole-token attribution shows a new long-history server path
+  where the same cap clears a matched served window and the 20 tok/s floor.
+- Related commit or revert: the Objective-C++ edit was fully removed before
+  the next profile; no candidate source remains.
+
+## PERF-FA066 - Full Qwen3.8-27B affine 3-bit MLX checkpoint
+
+- Hypothesis: reducing the full 27B weight stream from affine q4 to affine
+  q3 would save enough Metal memory bandwidth to clear 20 tok/s.
+- Scope: immutable revision
+  `c98bba5926f51fec1c8d8737e577221673f524d7` of
+  `lukaskremla/Qwen3.8-27B-3bit-MLX-TextOnly`, real 131,072 context/token
+  pools, q4 KV, one request, MLX 0.32.2, and the existing SGLang sampling and
+  parser surface.
+- Attempted change: launched the prequantized group-64, three-bit checkpoint
+  through the MLX runner. The config's empty quantization method required the
+  existing `--quantization mlx_q4` loader selection; model loading detected
+  the stored affine-q3 tensors and preserved them.
+- Benchmark evidence: three exact deterministic `128+256` server samples were
+  **17.972, 17.961, and 17.941 tok/s**, mean **17.958**. The selected
+  affine-q4/q4-KV endpoint averages **19.1432 tok/s** on the same dependency,
+  so the smaller checkpoint is about 6.2% slower.
+- Correctness evidence: all three requests completed 128 prompt and 256
+  completion tokens, ended with `finish_reason=length`, preserved reasoning,
+  and reproduced output SHA-256 `2f8a3468...212d`.
+- Failure mode: the three-bit affine kernel's unpack/compute efficiency costs
+  more than the reduced packed-weight traffic saves on this M1 Max/MLX build.
+- Why not to retry unchanged: the immutable checkpoint and current MLX kernel
+  miss the selected endpoint by more than 1.18 tok/s before sampling cost.
+- Reopen only if: a native three-bit batch-one matvec specialization or an MLX
+  dependency change demonstrates a direct target-loop gain over affine q4.
+- Related commit or revert: no source change; checkpoint remains an immutable
+  local cache artifact.
+
+## PERF-FA067 - Official Qwen3.8-27B MLX MXFP4 checkpoint
+
+- Hypothesis: MXFP4's group-32 block format would reduce affine metadata and
+  improve batch-one quantized matvec throughput.
+- Scope: immutable revision
+  `97ab0819817ab1c61d7d39f9169fc71999915641` of
+  `mlx-community/Qwen3.8-27B-mxfp4`, MLX 0.32.2, a 128-token input, 32 warm
+  decode tokens, 256 timed tokens, and q4 attention KV.
+- Attempted change: loaded the official full 27B MXFP4 checkpoint through
+  `mlx_lm` and exercised the same direct `generate_step` loop as the selected
+  affine-q4 control.
+- Benchmark evidence: MXFP4 reached **18.581608 tok/s** over 13.777064 seconds.
+  The matched affine-q4/q4-KV loop reached **19.513158 tok/s** over
+  13.119353 seconds. MXFP4 is 4.774% slower.
+- Correctness evidence: both arms completed the exact 32-token warmup and
+  256-token timing interval and returned stable token-stream digests for their
+  respective checkpoints.
+- Failure mode: current MLX MXFP4 batch-one execution has higher per-token cost
+  than affine q4 on this model and GPU.
+- Why not to retry unchanged: the regression occurs inside the direct target
+  loop, before SGLang scheduling, streaming, or sampling overhead.
+- Reopen only if: MLX ships a changed MXFP4 Metal kernel or the checkpoint is
+  paired with measured fused operators that reverse the direct-loop result.
+- Related commit or revert: no source change; checkpoint remains an immutable
+  local cache artifact.
+
+## PERF-FA068 - Full Qwen3.8-27B affine 2-bit MLX checkpoint
+
+- Hypothesis: reducing every quantized model projection to affine q2 would
+  lower batch-one weight traffic enough to clear the 20 tok/s floor while
+  retaining Qwen3.8 reasoning and tool behavior.
+- Scope: immutable revision
+  `33b90b60fd7ba16b668854e049bd65e22d6afddf` of
+  `lukaskremla/Qwen3.8-27B-2bit-MLX-TextOnly`, MLX 0.32.2, BF16 attention KV,
+  one running request, and real 131,072-token context and token pools.
+- Attempted change: loaded the complete group-64 affine-q2 checkpoint through
+  the existing MLX runner and exercised deterministic, production-sampled,
+  arithmetic, and tool-call requests.
+- Benchmark evidence: the direct target loop reached **21.134311 tok/s** with
+  BF16 KV. Five deterministic exact `128+256` server samples were
+  **21.161, 21.066, 21.054, 21.046, and 21.050 tok/s**, mean **21.0754**.
+  Five production-sampled samples were
+  **20.890, 20.902, 20.912, 20.900, and 20.912 tok/s**, mean **20.9032**.
+- Correctness evidence: `/model_info` retained the language-only surface. The
+  sampled arithmetic request ended with empty completion content instead of
+  `703`; the tool request emitted repetitive text and no valid parsed call.
+- Failure mode: whole-model q2 clears the throughput floor and loses the
+  semantic behavior required for actual work.
+- Why not to retry unchanged: both required behavior probes fail on the exact
+  full-model checkpoint that produced the speed result.
+- Reopen only if: a changed q2 checkpoint demonstrates the arithmetic and
+  exact single-tool-call gates, or layer-level sensitivity evidence supports
+  a distinct mixed-precision selection.
+- Related commit or revert: no repository source change; checkpoint remains an
+  immutable local cache artifact.
+
+## PERF-FA069 - Group-128 affine requantization of the q4 checkpoint
+
+- Hypothesis: doubling the affine group size would reduce scale/bias traffic
+  while retaining the selected q4 model's behavior.
+- Scope: in-memory MLX 0.32.2 requantization screens on the immutable affine-q4
+  checkpoint, a 128-token input, 32 warm tokens, 256 timed tokens, and BF16
+  attention KV.
+- Attempted change: first requantized all 64 MLP down projections, then
+  broadened the group-128 selection to 385 quantized linear modules while
+  retaining the linear-attention `in_proj_z`, `out_proj`, and full-attention
+  output projections at their original group size.
+- Benchmark evidence: down-only group 128 reached **19.681944 tok/s** with
+  BF16 KV. The broader 385-module selection reached **19.781749 tok/s**. The
+  selected affine-q4/BF16 direct loop is **19.643293 tok/s** and the candidate
+  remains below the direct-loop margin required for a 20 tok/s sampled server.
+- Correctness evidence: both screens completed the exact warmup and timing
+  interval. The candidate stopped at the throughput screen before promotion
+  behavior gates.
+- Failure mode: lower affine metadata traffic yields less than 0.71% over the
+  direct q4/BF16 control, leaving scheduler and sampling overhead unfunded.
+- Why not to retry unchanged: the broad selection already covers 385 modules
+  and remains about 0.22 tok/s below the absolute floor in the direct loop.
+- Reopen only if: an MLX kernel change materially increases group-128
+  batch-one efficiency or a measured selection exceeds the served-workload
+  promotion margin.
+- Related commit or revert: no checkpoint was written and no repository source
+  change remains.
+
+## PERF-FA070 - Q2 linear-attention and gate/up mixed checkpoint
+
+- Hypothesis: retain q4 embeddings, head, MLP down projections, and all full
+  attention blocks while using q2 for linear-attention modules and MLP gate/up
+  projections, combining full-q2 speed with q4 semantic anchors.
+- Scope: derived immutable artifact
+  `Qwen3.8-27B-MLX-Q2GDN-Q4Anchors-v1`, assembled from the affine-q4 base and
+  PERF-FA068 donor with 368 per-module q2 overrides, MLX 0.32.2, BF16 KV, one
+  request, and real 131,072-token context and token pools.
+- Attempted change: substituted the donor's 128 MLP gate/up and 240
+  linear-attention quantized modules, preserved every MLP down projection and
+  full-attention block from q4, and wrote a provenance manifest with hashes for
+  every artifact file.
+- Benchmark evidence: the reloaded artifact reached **20.526347 tok/s** in the
+  direct target loop. Five deterministic exact `128+256` server samples were
+  **20.309, 20.287, 20.286, 20.291, and 20.299 tok/s**, mean **20.2944**.
+  Five production-sampled samples were
+  **20.144, 20.145, 20.148, 20.156, and 20.148 tok/s**, mean **20.1482**.
+- Correctness evidence: sampled arithmetic returned `703` and `/model_info`
+  retained the language-only surface. The required tool request emitted two
+  malformed calls named `...` and ended by length instead of one parsed
+  `multiply({"a":37,"b":19})` call with `finish_reason=tool_calls`.
+- Failure mode: this precision boundary clears throughput and arithmetic while
+  damaging structured tool-call behavior.
+- Why not to retry unchanged: an exact server gate reproduces the malformed
+  tool behavior on the reloaded, hashed artifact.
+- Reopen only if: a narrower q2 linear-attention selection retains one exact
+  multiply call and clears the sampled throughput floor.
+- Related commit or revert: artifact v1 remains immutable and unqualified;
+  repository source is unchanged.
+
+## PERF-FA071 - YoozLabs quality-aware q3/q4/q6 MLX checkpoint
+
+- Hypothesis: the checkpoint's long-context-aware mixed precision would retain
+  Qwen3.8 reasoning and tool quality while its lower average weight width
+  cleared the 20 tok/s floor.
+- Scope: immutable revision
+  `55c317fadb679431afef61ddd97a4ac2522ca420` of
+  `YoozLabs/Qwen3.8-27B-lean-4bit-mlx`, MLX 0.32.2, a 128-token input,
+  32 warm tokens, 256 timed tokens, and BF16 attention KV.
+- Attempted change: loaded the published q3 gate/up, q6 self-attention value
+  and language-head, and q4 remainder through the same direct target loop used
+  for the active affine checkpoints.
+- Benchmark evidence: the exact direct loop reached **18.553117 tok/s**.
+- Correctness evidence: the immutable model loaded and completed the exact
+  warmup and timed token counts. Its model card's quality claims remain
+  external evidence; the local performance screen stopped before serving.
+- Failure mode: current MLX affine-q3 batch-one execution makes this
+  quality-aware layout about 7.2% slower than the absolute throughput floor
+  before scheduler and sampling costs.
+- Why not to retry unchanged: the deficit occurs in the direct model loop and
+  leaves no server-overhead margin.
+- Reopen only if: a native q3 matvec specialization or changed MLX q3 kernel
+  demonstrates at least an 8% direct-loop gain on this exact artifact.
+- Related commit or revert: no repository source change; the pinned checkpoint
+  remains a redownloadable cache artifact.
+
+## PERF-FA072 - PocketAiHub group-32 q2 AWQ checkpoint and selective mixing
+
+- Hypothesis: group-32 AWQ q2 weights would provide the full-q2 bandwidth win
+  with better quality than RTN q2, either unchanged or as selective overrides
+  on the affine-q4 base.
+- Scope: immutable revision
+  `dcc3732f8c93ccf5580bf7a55e4ae639a40f194c` of
+  `PocketAiHub/Qwen3.8-27B-MLX`, its `2bit` artifact, MLX 0.32.2, BF16 KV,
+  and the exact direct Qwen tool prompt.
+- Attempted change: measured the complete AWQ checkpoint, then substituted its
+  gate/up and linear-attention modules into the q4 base; a broader arm also
+  substituted the MLP down projections.
+- Benchmark evidence: the complete checkpoint reached **20.796459 tok/s**.
+  The gate/up plus linear-attention mix reached **20.298 tok/s**; adding down
+  projections reached **20.758 tok/s**.
+- Correctness evidence: the complete checkpoint emitted placeholder-example
+  loops instead of one multiply call. The first selective mix produced empty
+  output, and the broader mix produced only `</think>`.
+- Failure mode: AWQ's transformed module weights are not independently
+  interchangeable with the q4 model, while the complete artifact fails the
+  required raw tool behavior.
+- Why not to retry unchanged: all measured full and mixed forms fail before a
+  parsed server tool gate despite clearing or approaching the speed floor.
+- Reopen only if: the artifact's complete AWQ transform metadata can be
+  applied coherently at a validated layer boundary and exact tool behavior
+  passes before serving.
+- Related commit or revert: no repository source change; the pinned checkpoint
+  remains a redownloadable cache artifact.
+
+## PERF-FA073 - Four-step MLX streaming and scheduler receive cadence
+
+- Hypothesis: reducing output and receive bookkeeping from every token to
+  every four tokens would raise the sampled mixed-checkpoint floor.
+- Scope: `Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2`, radix disabled,
+  BF16 KV, real 131K pools, one request, and the required sampled `128+256`
+  workload.
+- Attempted change: changed only `--stream-interval` and
+  `--scheduler-recv-interval` from one to four.
+- Benchmark evidence: five candidate samples were
+  **20.082, 20.074, 20.067, 20.082, and 20.076 tok/s**, mean **20.0762**.
+  The matched one-step mean was **20.0626 tok/s**, a
+  **0.0136 tok/s / 0.068%** difference.
+- Correctness evidence: every exact timing request completed 128 prompt and
+  256 sampled output tokens.
+- Failure mode: the difference is below ordinary run noise, and source tracing
+  shows the MLX overlap loop receives requests through its direct receiver
+  call rather than the generic scheduler receive-interval path.
+- Why not to retry unchanged: the five-sample server window produces no
+  material user-visible gain.
+- Reopen only if: scheduler attribution identifies cadence bookkeeping above
+  0.25 ms/token on the reachable MLX path.
+- Related commit or revert: no source change; the radix launch retains the
+  four-step output cadence as a low-cost configuration choice.
+
+## PERF-FA074 - Early-out27 selective RTN q2 artifact as an actual-work lane
+
+- Hypothesis: q2 gate/up, qkv, z, and the first 27 linear-attention output
+  projections would preserve the raw arithmetic and tool boundary while
+  funding sampled serving above 20 tok/s.
+- Scope: immutable derived artifact
+  `Qwen3.8-27B-MLX-Q2Expand-QKVZ-EarlyOut27-v2`, MLX 0.32.2, BF16 KV,
+  real 131,072 context and token pools, five auxiliary-state slots, radix
+  prefix caching, and the frozen Codex 0.151.0 xhigh client.
+- Attempted change: selected 251 RTN-q2 modules over the affine-q4 base and
+  served them with 512-token prefill chunks and four-step output cadence.
+- Benchmark evidence: five radix-enabled sampled `128+256` samples were
+  **20.091, 20.092, 20.074, 20.068, and 20.081 tok/s**, mean
+  **20.0812**. During the real 6.2K-token Codex turn, server telemetry fell to
+  about **19.2 tok/s**.
+- Correctness evidence: standalone sampled arithmetic returned `703` and the
+  first tool probe produced exactly one parsed multiply call. Three sampled
+  continuation cycles then produced one contradictory length-truncated answer,
+  one clean `703`, and one duplicate multiply call. The frozen xhigh Codex
+  turn emitted a blank message and an invalid exec request; its continuation
+  ended in a Metal out-of-memory command-buffer failure.
+- Failure mode: the short timing window clears the floor narrowly, while
+  realistic context loses that floor, structured behavior is unstable, and
+  the radix continuation exceeds available Metal residency.
+- Why not to retry unchanged: the exact frozen-client gate reproduces all
+  three actual-work failures on the hashed artifact.
+- Reopen only if: a memory-residency change survives the same continuation,
+  long-prefix decode stays at or above 20 tok/s, and repeated tool cycles are
+  stable.
+- Related commit or revert: artifact v2 remains immutable and unqualified;
+  repository source is unchanged.
+
+## PERF-FA075 - One-GiB MLX recycled-buffer cache cap
+
+- Hypothesis: bounding MLX's recycled Metal buffers before model load would
+  release enough transient residency for the 6.2K cached-prefix continuation.
+- Scope: early-out27 v2, BF16 131K shared KV pool, five auxiliary slots,
+  512-token prefill chunks, radix enabled, and
+  `SGLANG_MLX_CACHE_LIMIT_GB=1` as the only memory change.
+- Attempted change: applied the existing pre-load cache cap and replayed both
+  the sampled short window and a deterministic 6,257-token two-request radix
+  continuation.
+- Benchmark evidence: five short sampled samples were
+  **20.069, 20.069, 20.063, 20.068, and 20.054 tok/s**, mean
+  **20.0646**, only 0.083% below the uncapped mean. The first long request
+  completed; the immediate second request disconnected during its prefix-hit
+  extend.
+- Correctness evidence: server logs identify the same
+  `kIOGPUCommandBufferCallbackErrorOutOfMemory` at
+  `tp_worker._async_extend_batch -> mx.async_eval`.
+- Failure mode: recycled-buffer residency is not the dominant peak; live
+  model, pool, and fallback prefill state exceed Metal's working set.
+- Why not to retry unchanged: the exact bounded reproducer reaches the same
+  crash while the cap has already demonstrated throughput neutrality.
+- Reopen only if: independent allocator telemetry shows more than 1 GiB of
+  reclaimable cache remains live at the failing submission.
+- Related commit or revert: no source change; the environment override is
+  rejected as a standalone fix.
+
+## PERF-FA076 - Halve cached-prefix prefill chunks to 256
+
+- Hypothesis: halving the new-token extend graph would cut the transient peak
+  enough for the cached-prefix continuation to complete.
+- Scope: PERF-FA075's exact early-out27 v2 launch and bounded 6,257-token radix
+  replay, changing only `--chunked-prefill-size 512 -> 256`.
+- Attempted change: restarted cleanly with 256-token chunks and replayed the
+  same two requests.
+- Benchmark evidence: cold chunks held about 106--110 prompt tok/s. The first
+  request completed, then the second request failed after its cache match.
+- Correctness evidence: the failure again occurred in
+  `_async_extend_batch -> mx.async_eval` with Metal insufficient memory.
+- Failure mode: source tracing and the control show that the restore misses
+  deferred auxiliary-state COW and reruns the entire cached prompt; the
+  6,144-token fallback graph dominates the new 256-token chunk.
+- Why not to retry unchanged: 512 and 256 produce the same failure at the same
+  request boundary.
+- Reopen only if: auxiliary restore succeeds and profiling then attributes a
+  residual memory peak to the new-token chunk itself.
+- Related commit or revert: no source change; the server was stopped and the
+  512-token production-shaped baseline remains authoritative.
+
+## PERF-FA077 - Native graph through the Python chunked-prefill handoff
+
+- Hypothesis: selecting the native C++ graph with ordinary 4,096-token chunks
+  would preserve the native path across a realistic multi-chunk Codex prompt.
+- Scope: early-out27 v2, native graph enabled, one request, real 131,072
+  context/token pools, and a deterministic 6,257-token prompt.
+- Attempted change: launched with `--chunked-prefill-size 4096` and allowed the
+  scheduler to hand the unfinished request to the next extend chunk.
+- Benchmark evidence: the first 4,096-token native chunk ran at about
+  **57.79 prompt tok/s**. The next chunk reached
+  `MlxModelRunner.extend_start` and raised
+  `TypeError: 'types.SimpleNamespace' object is not callable`.
+- Correctness evidence: source tracing shows the native route installs a
+  `SimpleNamespace` model surface while the later chunk invokes
+  `self.model(...)`. A single 8,192-token chunk completes the same 6,257-token
+  prompt natively.
+- Failure mode: the Python chunk transition leaves the compiled engine path
+  and calls a model object that is intentionally non-callable in native mode.
+- Why not to retry unchanged: chunk size alone cannot make the second native
+  chunk reachable through the current dispatch contract.
+- Reopen only if: the compiled C++ engine gains a native multi-chunk prefill
+  entry point, or the shared dispatch owner routes every chunk through the
+  existing native C ABI without adding Python implementation code.
+- Related commit or revert: no source change retained; the 8,192-token launch
+  is an experiment-only bridge and does not establish 131K prompt capacity.
+
+## PERF-FA078 - Online native MLX split-K decode attention
+
+- Hypothesis: dividing a 6.2K BF16 attention history across independent Metal
+  workgroups would overcome the serial decode cost left after reusable K/V
+  storage.
+- Scope: native early-out27 v2, exact 6,237-token deterministic history, 32
+  warm tokens, 128 timed tokens, 16 or 32 history splits, and 256-dimensional
+  24-query/4-KV-head GQA.
+- Attempted change: first assigned four SIMD groups to each query-head/split;
+  then grouped paired query heads over one shared K/V stream with 16 and 32
+  splits. A second kernel merged numerically stable softmax partials.
+- Benchmark evidence: per-query split-16 reached **15.931997 tok/s**. The
+  paired-head split-16 and split-32 variants reached **13.068068** and
+  **15.863200 tok/s**. The reusable-cache MLX SDPA control is
+  **19.151623 tok/s**.
+- Correctness evidence: every arm reproduced the exact control digest
+  `382dd93cb724783226eae6ede000d6b62bbbc6439c8a39178cb9bb0ba8a27112`.
+- Failure mode: per-query work overproduces Metal groups and duplicate cache
+  reads; paired-head sharing leaves too little latency-hiding work per group.
+- Why not to retry unchanged: both sides of the occupancy tradeoff were
+  measured and each is materially slower than MLX SDPA.
+- Reopen only if: one workgroup can reuse K/V across all six GQA heads through
+  matrix tiles or a fused reduction eliminates the second dispatch.
+- Related commit or revert: experimental C++/Metal source was removed.
+
+## PERF-FA079 - Tiled simdgroup-matrix native MLX decode attention
+
+- Hypothesis: porting the retained 8-query by 64-key tiled MPS kernel to MLX's
+  custom Metal interface over contiguous BF16 caches would beat MLX SDPA.
+- Scope: the PERF-FA078 exact workload, one workgroup per KV-head/history
+  split, four SIMD groups, bounded 20.1-KiB threadgroup storage, fast math, and
+  8, 16, or 32 splits.
+- Attempted change: shared six GQA query heads per KV tile, used BF16
+  simdgroup-matrix QK/PV operations, retained online softmax partials, and
+  merged them in a 256-thread reduction kernel.
+- Benchmark evidence: 8, 16, and 32 splits reached **18.475598**,
+  **19.117317**, and **18.922351 tok/s**, respectively, against the
+  **19.151623 tok/s** reusable-cache MLX SDPA control. Disabling row-contiguous
+  normalization and selecting fast math changed the 8-split arm only from
+  **18.460132** to **18.475598 tok/s**.
+- Correctness evidence: every arm reproduced exact control digest
+  `382dd93cb724783226eae6ede000d6b62bbbc6439c8a39178cb9bb0ba8a27112`.
+- Failure mode: the extra partial-reduction dispatch and MLX custom-kernel
+  scheduling cost consume the tiled attention gain at this history length.
+- Why not to retry unchanged: the complete 8/16/32 occupancy sweep stayed at
+  or below the selected MLX SDPA implementation.
+- Reopen only if: attention is fused with adjacent gate/output work, partials
+  are reduced inside one launch, or profiling shows a longer-history crossover
+  that improves full-model throughput.
+- Related commit or revert: experimental C++/Metal source was removed.
+
+## PERF-FA080 - Greedy native C ABI as a frozen Codex xhigh lane
+
+- Hypothesis: native mixed-width execution plus exact prefix reuse would make
+  the frozen 131K/xhigh Codex request usable before sampled decoding landed.
+- Scope: native early-out27 v2, one 8,192-token prefill chunk, real 131,072
+  context/token pools, exact prefix reuse, and the frozen Codex 0.151.0 tool
+  command.
+- Attempted change: served the native C ABI, whose current output contract is
+  greedy token IDs, and ran the strict ephemeral xhigh tool round trip for 180
+  seconds.
+- Benchmark evidence: the 6,236-token prompt completed in about **74.6 s** at
+  **83.62 prompt tok/s**. Decode began around **18.51 tok/s** and declined to
+  roughly **17.95--18.0 tok/s** before the bounded client ended.
+- Correctness evidence: the request aborted cleanly and the endpoint remained
+  healthy, but no valid Codex JSON tool event or exact final response appeared.
+- Failure mode: long-history decode remained below 20 tok/s and greedy output
+  rambled instead of satisfying the tool protocol.
+- Why not to retry unchanged: the C ABI ignores request sampling parameters,
+  and the exact frozen gate already exposed both speed and behavior failures.
+- Reopen only if: native sampling preserves temperature 1.0, top-p 0.95,
+  top-k 20, and presence penalty 1.5, while measured long-history decode clears
+  20 tok/s.
+- Related commit or revert: prefix reuse and cache-storage wins remain; the
+  greedy actual-work configuration is unqualified.
+
+## PERF-FA081 - Materialized native affine gate/up row fusion
+
+- Hypothesis: one double-height affine quantized matmul per MLP would remove a
+  launch from every target layer and the MTP layer while preserving independent
+  row arithmetic.
+- Scope: native early-out27 v2 target and MTP weight loading plus the shared
+  `Engine::mlp` owner; process-isolated deterministic `6237+128` serving with
+  real 131,072 context/token pools.
+- Attempted change: concatenated packed weights, scales, and biases at load,
+  released the layer-owned input handles, issued one quantized matmul, and
+  split its output into gate/up halves.
+- Benchmark evidence: the signed `14fd46b11a` control reached **18.845 tok/s**,
+  **58.100626 s** TTFT, and **64.839787 s** end to end. The adjacent candidate
+  reached **18.782 tok/s**, **58.605376 s** TTFT, and **65.367119 s** end to
+  end, a **0.334%** decode regression. Startup-reported available unified
+  memory fell from **28.92 GB** to **22.28 GB**.
+- Correctness evidence: both arms produced exact `6237+128` counts,
+  `finish_reason=length`, and output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`.
+  The focused native suite passed all **8 tests**.
+- Failure mode: materializing concatenated affine storage leaves large buffers
+  resident in MLX's allocator and the larger quantized matmul does not reduce
+  the measured long-history decode wall.
+- Why not to retry unchanged: the exact end-to-end A/B is slower and the
+  additional residency directly weakens the real 131K capacity margin.
+- Reopen only if: a native quantized kernel can consume the original gate/up
+  tensors in one dispatch without a concatenated copy, with separately measured
+  MLP-boundary and served gains.
+- Related commit or revert: the experimental engine diff was removed; only the
+  evidence record remains.
+
+## PERF-FA082 - Linear-attention b/a affine row fusion
+
+- Hypothesis: combining the two tiny 48-row b/a projections would remove one
+  affine launch from each of 48 recurrent layers with negligible duplicated
+  storage.
+- Scope: native early-out27 v2 `Engine::gated_delta`; process-isolated exact
+  deterministic `6237+128` serving with real 131,072 context/token pools.
+- Attempted change: concatenated only `in_proj_b` and `in_proj_a` packed
+  weights, scales, and biases at load, then split one 96-row quantized-matmul
+  result inside the shared recurrent-layer owner.
+- Benchmark evidence: the adjacent separate-projection control reached
+  **18.845 tok/s**. The candidate reached **18.511 tok/s**, **58.055139 s**
+  TTFT, and **64.915750 s** end to end, a **1.772%** decode regression. It
+  retained **28.89 GB** startup-reported available unified memory.
+- Correctness evidence: exact `6237+128`, `finish_reason=length`, and
+  output/reasoning SHA-256
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5`
+  matched the control. The focused native suite passed all **8 tests**.
+- Failure mode: MLX's separate 48-row operations schedule more efficiently at
+  batch one than one 96-row operation; dispatch-count reduction alone does not
+  reduce the asynchronous graph wall.
+- Why not to retry unchanged: the exact served regression is well beyond the
+  immediately observed run-to-run difference, with memory held constant.
+- Reopen only if: a native fused kernel consumes both original tensors while
+  also eliminating a downstream b/a transform, and its full boundary timing
+  beats the two asynchronous MLX operations.
+- Related commit or revert: the experimental engine diff was removed.
+
+## PERF-FA083 - Native 4-bit MTP-2 draft and recurrent target verification
+
+- Hypothesis: the existing Qwen3.8 MTP head would emit enough accepted tokens
+  per target verification to carry the selected native-MLX lane beyond the
+  20 tok/s floor.
+- Scope: signed fused-convolution target engine, pinned
+  `mlx-community/Qwen3.8-27B-MTP-4bit` revision
+  `b643c01b6d3b094e325edb6ebd832e16c486c575`, deterministic direct
+  `128 / 32 warm / 256 timed`, and the existing two-draft greedy verifier.
+- Attempted change: loaded the native sidecar through the established C ABI and
+  instrumented the C++ benchmark with exact refill counts and emitted widths.
+- Benchmark evidence: target-only measured **20.187702923 tok/s**. MTP measured
+  **9.649959984 tok/s**, a **52.199%** regression, across 135 timed refills with
+  mean width **1.888888889**.
+- Correctness evidence: both paths produced digest `8ea2430e3fa3d56e`, last
+  token `198`, and 256 timed outputs. The sidecar loaded successfully and every
+  refill emitted a nonempty block.
+- Failure mode: two sequential MTP forwards followed by a multi-token target
+  forward traverse the general recurrent sequence path. The accepted-token
+  yield does not amortize that block cost.
+- Why not to retry unchanged: sidecar representation alone cannot change the
+  target recurrent verification owner that dominates this topology, and the
+  measured gap is larger than the remaining target-only optimization gap.
+- Reopen only if: an isolated recurrent verification kernel or materially new
+  target batch implementation first demonstrates a block cost low enough for
+  the measured acceptance distribution to exceed 20 tok/s.
+- Related commit or revert: the C++ benchmark retains optional MTP/refill
+  telemetry; engine behavior is unchanged.
+
+## PERF-FA084 - Full-attention affine q/k/v row concatenation
+
+- Hypothesis: one affine q4 product could emit q+gate, k, and v rows while
+  removing two product launches from each of 16 full-attention layers.
+- Scope: native early-out27 v2 full-attention loading and `Engine::full_attn`;
+  exact direct `128 / 32 warm / 256 timed` full-model screens.
+- Attempted change: concatenated packed q4 weights, scales, and biases at load,
+  evaluated and detached the combined storage, then split one product output.
+  A second form retained the established q+gate product and combined only the
+  equal-shaped k/v rows.
+- Benchmark evidence: the all-row form reached **20.721377944 tok/s** and the
+  k/v-only form reached **20.672271140 tok/s**. The immediately selected short
+  control record was **20.630307745 tok/s**.
+- Correctness evidence: a synthetic C++20 parity test matched six-row separate
+  and concatenated products bit-for-bit and confirmed detached packed storage.
+  The full model exposed production-shape divergence: all-row digest
+  `12bb3edf3d51feac` and k/v-only digest `af06cc7ce5e094be` differed from exact
+  control `8ea2430e3fa3d56e`; all three ended at token `198`.
+- Failure mode: changing the output-row geometry selects a different MLX
+  affine accumulation path for production k/v shapes, and recurrent decoding
+  amplifies those float differences into a different token trajectory.
+- Why not to retry unchanged: both useful concatenation boundaries failed the
+  first full-model digest gate, so a longer throughput window cannot qualify
+  them as semantics-preserving wins.
+- Reopen only if: MLX exposes a fixed accumulation-geometry control or a native
+  multi-output kernel reproduces each separate product's bit order while
+  sharing input work.
+- Related commit or revert: every experimental C++ and test change was removed;
+  the native dylib is rebuilt from the selected source before the next screen.
+
+## PERF-FA085 - Recurrent beta and decay inside q/k normalization
+
+- Hypothesis: the idle lanes in the dual-output q/k normalization dispatch
+  could calculate the small `sigmoid(b)` and `compute_g` arrays, removing two
+  MLX launches from each of 48 recurrent layers.
+- Scope: native early-out27 v2 single-token `Engine::gated_delta`; direct exact
+  `6237 / 32 warm / 256 timed` process-isolated adjacent pairs.
+- Attempted change: added beta and decay inputs/outputs to the existing q/k
+  Metal owner. The final exact form reproduced compiled MLX log-add-exp with
+  fast `exp`/`log`, preserved precise outer exponentials, and used an
+  independent decay input type.
+- Benchmark evidence: beta-only controls/candidates averaged
+  **19.602405132 / 19.600900659 tok/s**, a **0.007675%** regression. The full
+  beta/decay controls averaged **19.641655398 tok/s** and candidates averaged
+  **19.547612476 tok/s**, a **0.478793%** regression; every adjacent pair
+  favored the control.
+- Correctness evidence: widened production, nonaligned, extreme-value, float32
+  q/k, and twelve-outstanding-output cases passed exact parity. All ten final
+  model runs retained digest `faaecee6edebe116`, last token `19360`.
+- Failure mode: scalar exponentials execute serially within the q/k dispatch,
+  giving up asynchronous overlap already available between the independent MLX
+  graphs. Saved dispatches fail to offset that serialized work.
+- Why not to retry unchanged: both the beta-only isolation and complete exact
+  fusion have five-pair evidence at the actual long-history decode shape.
+- Reopen only if: one downstream recurrent-update kernel consumes raw beta and
+  decay parameters directly, or profiling demonstrates genuine idle ALU work
+  with preserved overlap.
+- Related commit or revert: the experimental C++ and test diff was removed;
+  selected source and its exact short digest were restored.
+
+## PERF-FA086 - Global and decode-only MLX SDPA block override
+
+- Hypothesis: halving MLX's 128-block long-history SDPA reduction to 64 blocks
+  would retain the established output while removing enough attention overhead
+  to carry client-observed serving beyond 20 tok/s.
+- Scope: native early-out27 v2 full-attention prefill/decode; exact direct
+  `6237 / 32 warm / 256 timed` screens and deterministic served `6237+128`
+  requests with real 131,072 context/token pools.
+- Attempted change: first installed `MLX_SDPA_BLOCKS=64` before every native
+  attention call. A narrowed form restored MLX's adaptive prefill policy,
+  fully materialized its first token, and selected 64 blocks only for decode.
+  Explicit process environment values retained precedence in both forms.
+- Benchmark evidence: 32/64/96/128 direct screens reached
+  **19.116925846 / 20.419125823 / 19.541540885 / 20.139173026 tok/s**; a
+  second 64-block screen reached **20.391260024**. Global 64-block serving
+  reached **20.146 client tok/s** and decode-only reached **20.127**.
+- Correctness evidence: every direct screen retained digest
+  `faaecee6edebe116`, last token `19360`. Both served forms changed the
+  established deterministic response digest from
+  `e56e48a5587cc7b4d9981bc58ff1bdb227266ba83c2062fea8737d356f0955e5` to
+  `69f3577805ed5ae85d2f8253eb3ec10f89ac7246897d6d5de9061ee6f665715c`.
+- Failure mode: changing SDPA partial count changes floating-point reduction
+  grouping. The direct token sequence had sufficient logit margin; the served
+  prompt exposed a changed greedy trajectory even after its adaptive prefill
+  was preserved.
+- Why not to retry unchanged: both broad and decode-only placements clear the
+  speed target while failing the fixed-work digest gate on the authoritative
+  real server path.
+- Reopen only if: attention work around the reduction can be removed while
+  retaining MLX's 128-partial arithmetic, or a fixed-order native kernel first
+  proves exact logits and the established served digest.
+- Related commit or revert: both experimental C++ forms were removed; the
+  selected A050 dylib hash and short digest were restored.
+- Sampled-lane disposition, 2026-08-31: the deterministic default rejection
+  remains closed. The user-authorized xhigh lane now applies the dependency's
+  process-scoped `MLX_SDPA_BLOCKS=64` override only with native stochastic
+  sampling. One real Codex xhigh shell round trip passed, and five sampled
+  real-131K client requests averaged **20.1722 tok/s** with every sample above
+  20. The source default and its deterministic arithmetic remain unchanged.
+
+## PERF-FA087 - Renormalize top-p over only the selected top-k candidates
+
+- Hypothesis: discarding the full-vocabulary log-sum-exp after top-k would
+  remove enough sampling overhead to clear 20 tok/s with MLX's default SDPA
+  reduction topology.
+- Scope: native early-out27 v2 sampler, seed 67396869, direct 6,237-history
+  decode and the real 131K Codex xhigh shell-tool turn.
+- Attempted change: converted and normalized only the 20 selected candidate
+  logits before cumulative top-p filtering, preserving the asynchronous
+  two-token pipeline and device-resident Gumbel selection.
+- Benchmark evidence: two direct `6237 / 32 warm / 256 timed` samples reached
+  **20.112478513** and **20.120420191 tok/s** with the same
+  `48d911de593ab4fc` digest. Seed 42 reached **20.211157783 tok/s** with a
+  different `d2b13675c7615ce6` digest.
+- Correctness evidence: the real Codex turn issued the requested first
+  `/bin/pwd`, then sampled a malformed extra tool call whose `session_id`
+  string failed the harness schema; the bounded client timed out.
+- Failure mode: changing the normalization support materially changed the
+  low-bit model's tool trajectory and failed the authoritative xhigh behavior
+  gate.
+- Why not to retry unchanged: the performance gain has full-model evidence,
+  while the required named-client continuation fails.
+- Reopen only if: a broader fixed-seed behavior suite establishes equivalent
+  or better tool reliability and a second independent throughput window keeps
+  every sample above 20.
+- Related commit or revert: the candidate normalization was removed before
+  commit; full-vocabulary normalization is restored.
+
+## PERF-FA088 - Greedy native xhigh lane with a reasoning bound
+
+- Hypothesis: greedy selection plus a bounded reasoning section would retain
+  the selected deterministic speed and make the xhigh tool turn terminate.
+- Scope: native early-out27 v2, real 131K pools, 256-token reasoning bound,
+  and the same Codex shell-tool request.
+- Attempted change: launched with native stochastic sampling disabled while
+  keeping prompt-boundary state reuse and the reasoning bound active.
+- Benchmark evidence: server decode telemetry remained around 20.1--20.2
+  tok/s.
+- Correctness evidence: Codex invoked `/bin/pwd` three times and timed out,
+  violating the request's exactly-once contract.
+- Failure mode: the greedy trajectory repeats the tool after each continuation.
+- Why not to retry unchanged: the failure reproduced across prompt-state
+  continuations and is behavioral rather than a throughput shortfall.
+- Reopen only if: model precision or tool-parser state changes enough to alter
+  the repeated greedy trajectory.
+- Related commit or revert: no source change; the selected interactive lane
+  uses native stochastic sampling with seed 42.
+
+## PERF-FA089 - Sample reasoning and switch to greedy structured output
+
+- Hypothesis: retaining temperature/top-p/top-k sampling inside `<think>` and
+  switching to argmax after `</think>` would preserve xhigh reasoning diversity
+  while stabilizing tool syntax from the low-bit checkpoint.
+- Scope: native early-out27 v2, real 131K pools, fixed request-local seeds,
+  128- and 256-token reasoning bounds, and the exact Codex `/bin/pwd` gate.
+- Attempted change: added an opt-in post-reasoning argmax policy. A follow-up
+  also discarded the already sampled two-token-pipeline lookahead when the
+  reasoning-end token was emitted and recomputed that boundary token greedily.
+- Benchmark evidence: decode telemetry remained around **20.1--20.4 tok/s**.
+  The five-request throughput workload stays wholly inside its reasoning
+  section and retained the **20.1556 tok/s** request-reseed window.
+- Correctness evidence: seed 42 with a 256-token cap completed one requested
+  tool and final marker after first attempting a disallowed escalation. A
+  128-token cap completed one `/bin/pwd` and the final marker while Codex's
+  router reported trailing function-argument characters. Recomputing the
+  reasoning-close lookahead preserved that same extra malformed tool tail.
+  Seed 67396869 produced duplicate fields and a string session handle and
+  timed out.
+- Failure mode: argmax after the reasoning boundary does not supply the tool
+  schema or the completed-command state needed to choose a valid structured
+  continuation. The low-bit model still emits malformed or unnecessary tool
+  calls.
+- Why not to retry unchanged: both the precomputed-lookahead and boundary-
+  replacement forms reached the same parser failure class across two seeds
+  and two reasoning bounds.
+- Reopen only if: checkpoint precision, schema-constrained native decoding, or
+  a measured tool-state representation changes the structured logits.
+- Related commit or revert: all greedy-after-reasoning source changes were
+  removed; request-boundary RNG ownership was retained separately.
+
+## PERF-FA090 - End each assistant response after its first tool call
+
+- Hypothesis: forcing the assistant-end token immediately after one complete
+  Qwen3-Coder tool block would remove a malformed parallel-call tail while
+  retaining sequential tools on later Codex continuations.
+- Scope: native early-out27 v2, sampled reasoning plus greedy structured
+  output, 128-token reasoning bound, exact xhigh `/bin/pwd` gate, real 131K
+  pools, and one running request.
+- Attempted change: added an opt-in native transition from the tool-call-end
+  token directly to the assistant-end token, discarding the pipeline's next
+  proposal.
+- Benchmark evidence: server decode telemetry remained around **20.0--20.4
+  tok/s** throughout the bounded run.
+- Correctness evidence: the first response emitted exactly one valid
+  `/bin/pwd`, and Codex observed `/Users/dcazares/sglang`. Each following turn
+  then tried `write_stdin` with fabricated alphanumeric handle `"85dfe4"`;
+  Codex reported schema errors and the 120-second wrapper exited **124**.
+- Failure mode: truncating the parallel tail removes the error result that had
+  prompted the model to recover. The next assistant response reconstructs the
+  same invalid `write_stdin` call, so turn serialization moves the defect
+  across requests.
+- Why not to retry unchanged: the policy worsened the authoritative behavior
+  gate from exit zero with one router error to repeated router errors and a
+  timeout.
+- Reopen only if: a native grammar can validate tool arguments against the
+  supplied schema or model quality removes the fabricated handle.
+- Related commit or revert: the one-call transition was removed before
+  commit; the native tool stream retains its original multi-call behavior.
+
+## PERF-FA091 - Restore only recurrent output projections from Q4
+
+- Hypothesis: higher-precision recurrent output anchors would repair the
+  selective-Q2 checkpoint's structured-tool trajectory while preserving the
+  established sampled throughput floor.
+- Scope: all 48 `linear_attn.out_proj` quantized tensor triplets, loaded from
+  immutable `mlx-community/Qwen3.8-27B-4bit` revision
+  `3e6447f082e89cc7f0bc6e5441afd38dfce760ff` into early-out27 v2; native
+  sampled real-131K serving and the pinned Codex xhigh shell gate.
+- Attempted change: added an opt-in checkpoint overlay and ran one complete
+  five-sample `6237+128` production window before the exact client gate.
+- Benchmark evidence: decode measured **20.111, 20.134, 20.115, 20.127, and
+  20.117 tok/s**, mean **20.1208**, with every request above 20. Prompt
+  throughput averaged **107.0072 tok/s** and every request completed exact
+  6,365 tokens with `finish_reason=length`.
+- Correctness evidence: thread `01a05bb4-576b-7a21-8cf0-2a84c94b6451`
+  prefetched 6,214 tokens and decoded continuously until GNU timeout exit
+  **124**, without a Codex tool or final event.
+- Failure mode: recurrent output precision alone preserves speed and changes
+  the model trajectory, yet it leaves the authoritative xhigh tool turn
+  unusable.
+- Why not to retry unchanged: the candidate has a full five-sample throughput
+  window and an exact named-client failure under the selected request-local
+  seed.
+- Reopen only if: another precision family, native grammar mechanism, or
+  materially different checkpoint changes the structured-output distribution.
+- Related commit or revert: the generic precision-overlay diagnostic remains
+  opt-in while `qkv`, `z`, and complete recurrent families are narrowed; the
+  output-only candidate is closed.
+
+## PERF-FA092 - Broaden the DFlash small-batch QMM to 5,120 outputs
+
+- Hypothesis: routing the target and draft `17408 -> 5120` down projections
+  through the custom batch-eight affine product would extend its isolated
+  microbenchmark gain across the full verification cycle.
+- Scope: full-Q4 target, affine-W4 DFlash2 draft, seven proposed tokens,
+  selected recurrent tape commit, and the existing output-tiled Metal QMM.
+- Attempted change: first admitted every affine projection with at least
+  5,120 outputs, then narrowed the experiment to the exact
+  `17408 -> 5120` down-projection shape.
+- Benchmark evidence: the selected `N >= 6144` route measured steady draft
+  **34.211--37.378 ms** and verify **305.130--305.604 ms**. The exact-down arm
+  regressed to **34.906--38.626 ms** draft and **314.693--315.150 ms** verify.
+  The broader 5,120-output route also regressed the full-Q4 cycle.
+- Correctness evidence: the standalone `17408 -> 5120` comparison remained
+  within BF16 accumulation tolerance; this rejection is based on reachable
+  full-model cost.
+- Failure mode: the broader predicate also reaches draft projection families
+  whose shapes favor MLX's stock product, while the isolated down-projection
+  saving does not repay the changed whole-cycle schedule.
+- Why not to retry unchanged: both the broad and exact-shape dispatches lose
+  against an adjacent selected full-model control.
+- Reopen only if: a role-aware target-only dispatch or a different K-split
+  kernel wins the complete verification cycle.
+- Related commit or revert: both experimental predicates were removed; the
+  retained opt-in dispatch requires at least 6,144 output features.
+
+## PERF-FA093 - Fixed four-token DFlash2 block
+
+- Hypothesis: drafting three tokens per verification would halve the current
+  target pass and raise throughput when the seven-token block has modest
+  acceptance.
+- Scope: full-Q4 target, affine-W4 DFlash2 draft, block size four, three draft
+  tokens, selected QMM and accepted-prefix tape commit.
+- Attempted change: changed the fixed block from eight to four and screened
+  the same direct random-token workload.
+- Benchmark evidence: steady draft measured **18.735--19.078 ms**, verify
+  **170.274--170.941 ms**, and total **191.727--192.747 ms**. Mean emitted
+  width was **1.142857**. Perfect width four would provide only about
+  **20.85 tok/s** before server and client overhead.
+- Correctness evidence: the candidate completed the direct decode screen; the
+  production constants were restored to block eight and seven draft tokens.
+- Failure mode: the reduced target work also caps useful emission, leaving no
+  operating margin at the 20 tok/s gate under ordinary acceptance.
+- Why not to retry unchanged: measured acceptance is far below the width
+  required to exploit the already narrow perfect-acceptance ceiling.
+- Reopen only if: an adaptive policy predicts high-confidence short blocks
+  from current logits and a real-client A/B window clears 20 with margin.
+- Related commit or revert: the fixed block-four source change was removed.
+
+## PERF-FA094 - Four-way M8 K split
+
+- Hypothesis: halving the M8 affine kernel from eight to four K partitions
+  would reduce threadgroup storage, final reduction work, and scheduling cost.
+- Scope: the opt-in full-Q4 target plus affine-W4 DFlash2 M=8 verification
+  path, with identical 32x16 BF16 weight tiles and FP32 accumulation.
+- Attempted change: assigned one quarter of K to each of four SIMD groups and
+  reduced the threadgroup from 256 to 128 threads.
+- Benchmark evidence: gate/up `K=5120,N=17408` regressed from the SG8
+  **0.978217 ms** sample to **1.027962 ms**. Down `K=17408,N=5120` improved
+  from **1.026783** to **1.016329 ms**. The reachable whole-model verifier
+  regressed from about **225.5--226.7 ms** to **233.3--234.5 ms**. One sampled
+  direct run reached **11.592581 tok/s** through a changed mean emitted width
+  of **3.097561**.
+- Correctness evidence: checkpoint microbenchmarks stayed within the existing
+  BF16 parity bound and the direct decode completed.
+- Failure mode: the dominant gate/up family loses more execution time than
+  the down projection saves. The one sampled throughput increase came from a
+  changed stochastic acceptance trajectory while fixed cycle cost regressed.
+  The sixteen-way candidate improves execution cost and throughput by a much
+  larger margin.
+- Why not to retry unchanged: it is dominated by the retained SG16 geometry
+  on both verifier time and sampled direct throughput.
+- Reopen only if: a future device has materially different occupancy limits
+  and matched fixed-cycle measurements favor four groups.
+- Related commit or revert: the SG4 constants were replaced during the same
+  experiment; no repository commit contains the candidate.
+
+## PERF-FA095 - Eight-way K split with 32-column output tiles
+
+- Hypothesis: doubling the M8 affine output tile would reduce threadgroup
+  count and amortize dequantization/launch cost enough to beat SG16/B16.
+- Scope: full-Q4 target plus affine-W4 DFlash2 M=8 verification, using eight K
+  partitions and one private 32x32 BF16 weight tile per SIMD group.
+- Attempted change: used 256-thread groups, 32 output columns, four FP32 8x8
+  accumulators per SIMD group, and the existing FP32 cross-group reduction.
+- Benchmark evidence: gate/up measured **0.993133 ms** and down
+  **0.957713 ms**, versus SG16/B16 **0.975192** and **0.972296 ms**. The full
+  verifier improved to generally **203.5--205.8 ms**, yet one direct sampled
+  run reached only **11.680308 tok/s**, 46 refills, and mean emitted width
+  **2.913043**.
+- Correctness evidence: real checkpoint tensor comparisons remained within
+  the existing BF16 parity bound and full direct decode completed with digest
+  `d3c38ed2009d8f81` and last token 735.
+- Failure mode: returning from sixteen to eight K partitions changes BF16
+  reduction grouping and the fixed-seed sampled trajectory. Its small fixed
+  execution win does not offset the observed acceptance loss. SG16/B32 then
+  lowers the verifier further to **185.4--186.7 ms** and raises the repeated
+  sampled mean to **31.327334 tok/s**.
+- Why not to retry unchanged: the retained SG16/B32 geometry dominates this
+  candidate in both fixed verifier cost and sampled throughput.
+- Reopen only if: another device cannot admit the SG16/B32 512-thread,
+  32-KiB threadgroup and a device-specific matched server window favors SG8.
+- Related commit or revert: the SG8/B32 constants were replaced during the
+  same experiment; no repository commit contains the candidate.
+
+## PERF-FA096 - Dense BF16 DFlash2 as the production draft
+
+- Hypothesis: loading the official BF16 DFlash2 matrices directly would
+  recover proposal accuracy lost during affine-W4 conversion and could reduce
+  draft cost through optimized dense MLX products.
+- Scope: the exact immutable 81-tensor
+  `incoai/Qwen3.8-27B-DFlash2` checkpoint with the unchanged full-Q4 target,
+  SG16/B32 target verifier, stochastic selector, and exact p/q rejection.
+- Attempted change: extended the native linear owner and DFlash loader to
+  accept BF16 `[output,input]` matrices directly, then compared the BF16
+  checkpoint against affine-W4 through one candidate dylib and identical
+  `128 / 32 warm / 128 timed` sampling settings.
+- Benchmark evidence: the adjacent affine-W4 control reached **30.992508
+  tok/s**, 19 refills, mean emitted width **6.684211**, and digest
+  `46bd4bb035b72c2b`. Dense BF16 repeated at **9.005226** traced and
+  **9.044043 tok/s** untraced, 61 refills, mean width **2.114754**, digest
+  `408f99f917ffffcc`, and last token 96968. Its steady draft stage also rose
+  from about **26--32 ms** affine to **41.5--42.1 ms** dense.
+- Correctness evidence: the exact 81-tensor artifact loaded and completed both
+  runs. Dense-QLinear bit parity, strict warning-as-error library/test builds,
+  the standalone affine/dense suite, and the focused native suite passed.
+- Failure mode: this BF16 proposal distribution takes a much lower-acceptance
+  fixed-seed path and reads three times as much draft weight. The untraced
+  result is **21.948464 tok/s / 70.818614%** below the adjacent affine control.
+- Why not to retry unchanged: affine-W4 dominates both accepted width and
+  draft execution cost on this device and workload.
+- Reopen only if: proposal policy changes, another workload demonstrates a
+  repeatable BF16 acceptance advantage, or a dense kernel removes the measured
+  bandwidth cost while a matched production window clears the selected path.
+- Related commit or revert: signed `6cf95442cc` retains dense loading as
+  official-checkpoint compatibility; production continues to select the
+  affine-W4 artifact.
+
+## PERF-FA097 - Greedy DFlash2 proposals for sampled xhigh serving
+
+- Hypothesis: matching the official SGLang DFlash worker's greedy target-head
+  proposal rule would eliminate selector work and raise acceptance by choosing
+  each draft position's most likely token.
+- Scope: affine-W4 DFlash2 with the selected SG16/B32 verifier, exact
+  temperature-1/top-p-0.95/top-k-20 target distribution, exact deterministic-q
+  rejection, and unchanged real 131K pools.
+- Attempted change: added an experimental C++ environment switch that replaced
+  the learned top-16 selector distribution with LM-head argmax proposals. The
+  residual sampler used a one-token proposal support with probability one.
+- Benchmark evidence: five synthetic direct samples reached **37.537356,
+  37.505550, 37.500870, 37.532174, and 37.517706 tok/s**, mean
+  **37.518731**, with mean width **7.9375**. The exact real `6237+128` sampled
+  request then fell to **9.512 tok/s**, versus learned-selector **15.328
+  tok/s**, and took **70.236581 s** end to end.
+- Correctness evidence: both direct and served runs completed exact requested
+  token counts. The real request ended with `finish_reason=length` and output
+  SHA-256 `62bc27d075d3d68fd4eb9fbbf8d4db312390c505bd36ddfe578086720c2b656e`.
+- Failure mode: the synthetic repeated-token prompt makes later block tokens
+  nearly deterministic and overstates greedy acceptance. Natural sampled
+  reasoning frequently accepts zero or one greedy token, reducing real
+  throughput by **5.816 tok/s / 37.943633%** from the selected learned
+  selector.
+- Why not to retry unchanged: the production-shaped request directly rejects
+  the candidate, and its apparent **19.763562%** direct gain is a benchmark
+  artifact.
+- Reopen only if: the production contract changes to greedy target sampling,
+  or a representative prompt corpus shows a matched learned-selector loss.
+- Related commit or revert: the experimental switch was removed with
+  `apply_patch`; no repository commit contains the candidate.
+
+## PERF-FA098 - Independently top-k/top-p-filtered DSpark proposals
+
+- Hypothesis: filtering each DSpark proposal row through the target's top-k 20
+  and top-p 0.95 rule would remove proposal mass that the verifier's target
+  distribution can never accept and raise overlap.
+- Scope: native affine-W4 DSpark, the selected full-Q4 target and SG16/B32
+  verifier, seed 42, exact dense-q rejection, and the direct
+  `128 / 1 warm / 32 timed` sampled screen.
+- Attempted change: added an opt-in C++ switch that replaced each full-vocab
+  DSpark softmax with the existing target-side `sampling_probabilities`
+  mechanism, then sampled and verified against that exact filtered q.
+- Benchmark evidence: the unchanged full-softmax baseline reached **10.050625
+  tok/s**, 14 refills, and mean emitted width **2.428571**. The aligned-filter
+  candidate fell to **6.997461 tok/s**, 20 refills, and mean width **1.6**.
+  Steady draft cost also rose from generally **36.55--40.07 ms** to
+  **38.71--42.40 ms**.
+- Correctness evidence: exact p/q rejection completed all 32 timed tokens;
+  the candidate produced digest `b149ae20f95e9c7b` and last token 8420. The
+  strict warning-as-error candidate library built successfully.
+- Failure mode: the draft and target rank different top-20 supports.
+  Independently truncating q removes lower-ranked draft tokens that overlap
+  target support, reduces accepted width, and adds seven vocabulary
+  partition/sort operations per refill.
+- Why not to retry unchanged: both acceptance and fixed draft execution cost
+  regress decisively on the first exact screen.
+- Reopen only if: a shared target-informed support is available before draft
+  sampling or measured proposal/target support overlap changes materially.
+- Related commit or revert: the experimental switch was removed with
+  `apply_patch`; no repository commit contains the candidate.
+
+## PERF-FA099 - BF16 DSpark Markov output projection
+
+- Hypothesis: retaining `markov_head.markov_w2` in BF16, matching the upstream
+  CUDA lane's precision preference, would improve proposal/target overlap
+  enough to offset its larger matrix and dense product.
+- Scope: native DSpark with the selected full-Q4 target, five-layer affine-W4
+  draft backbone, exact dense-q rejection, seed 42, SG16/B32 verifier, direct
+  `128 / 1 warm / 32 timed`, and real-131K-pool sampled `6237+128` serving.
+- Attempted change: taught the standalone C++ converter to retain only Markov
+  W2 in source BF16 and the native linear loader to accept the resulting exact
+  134-tensor hybrid contract. The distinct derived checkpoint carried full
+  source provenance and SHA-256
+  `73b829d7845a72ac34794e9dd74bd96eae2189a5bcd7b45c2099a2b45638674f`.
+- Benchmark evidence: direct throughput fell from **10.050624654 to
+  7.044992356 tok/s** (**-29.904930%**), refills rose from 14 to 20, and mean
+  emitted width fell from **2.428571429 to 1.65**. The representative request
+  reached **11.294 tok/s** versus the all-affine **11.242 tok/s**, a
+  **+0.052 / +0.462551%** movement on a different sampled trajectory. The
+  hybrid artifact was **87.148 MiB** larger.
+- Correctness evidence: converter reload/provenance verification, strict
+  warning-as-error native build, direct exact p/q execution, focused native
+  pytest (**8 passed**), real exact 6,365-token completion, language-only
+  `/model_info`, and post-request health all passed. Served output/reasoning
+  SHA-256 was
+  `47690f3aaf04561fa6abe2cd3205724c59204b43a4f3eb4a8e1c525d584da3b1`.
+- Failure mode: this isolated precision change moves proposal sampling onto a
+  sharply lower-acceptance direct trajectory, adds residency, and produces
+  only a sub-percent served movement that is inseparable from trajectory
+  variation. It remains **8.706 tok/s** below the required floor.
+- Why not to retry unchanged: direct acceptance evidence is adverse and the
+  representative result provides no material, repeatable margin.
+- Reopen only if: fixed-context teacher-forced overlap analysis demonstrates
+  a consistent BF16 Markov-W2 advantage across representative prompts, or a
+  fused dense projection removes its residency/execution cost and a matched
+  repeated served window clears the selected path.
+- Related commit or revert: converter and loader changes were removed with
+  `apply_patch`; the 1,227,639,900-byte derived artifact was deleted and is
+  reproducible from the immutable source using the experiment record.
+
+## PERF-FA100 - Fixed shortened DSpark verification
+
+- Hypothesis: verifying fewer than seven DSpark proposals would reduce target
+  work enough to offset the smaller maximum emitted width.
+- Scope: affine-W4 DSpark, the selected full-Q4 target, exact dense-q
+  rejection, seed 42, accepted-prefix tape commit, and direct
+  `128 / 1 warm / 32 timed` sampling.
+- Attempted change: generalized the shared verifier to checked one-through-seven
+  draft prefixes and swept each fixed prefix while retaining the identical
+  seven-position proposal graph.
+- Benchmark evidence: draft counts one through seven reached
+  **11.920230932 / 8.861865636 / 8.353200099 / 7.544333347 / 4.104265970 /
+  4.139508352 / 10.025000236 tok/s**. The corresponding mean widths were
+  **1.6 / 1.523809524 / 1.777777778 / 1.941176471 / 1.571428571 /
+  1.571428571 / 2.428571429**. M=6/7 verification cost roughly **327--332
+  ms**, while the selected M=8 kernel takes about **186--188 ms**.
+- Correctness evidence: every prefix completed exact p/q execution. Default
+  seven-token DSpark reproduced digest `5a38c7070d7badeb` and last token 16;
+  DFlash reproduced its selected digest `46bd4bb035b72c2b` and last token 20.
+- Failure mode: shortened blocks cap useful emission, and target matrices with
+  six or seven rows fall into a particularly slow generic affine-QMM tier.
+  The best fixed short block reaches 11.920231 tok/s, 8.079769 below the floor.
+- Why not to retry unchanged: all fixed shortened widths are below both the
+  required 20 tok/s and the retained target-only lane.
+- Reopen only if: a faster M=2 verifier plus materially improved proposal
+  survival clears the real-client floor, or an adaptive policy assigns M=2
+  only where its measured expected throughput exceeds M=8.
+- Related commit or revert: the checked bounded verifier is retained as
+  opt-in profiling and adaptive-scheduling infrastructure; default remains
+  seven drafts.
+
+## PERF-FA101 - Underpriced DSpark full-width cost ratio
+
+- Hypothesis: a **1.4** full-to-short cycle-cost ratio, selected by the best
+  short direct screen, would assign M=8 often enough to maximize natural-prompt
+  DSpark throughput.
+- Scope: affine-W4 DSpark, selected full-Q4 target, trained current-block
+  confidence, exact dense-q rejection, seed 42, real 131,072 context/token
+  pools, and the exact sampled `6237+128` representative request.
+- Attempted change: enabled the native M=2/M=8 confidence budget with
+  `SGLANG_MLX_NATIVE_DSPARK_CONFIDENCE_COST_RATIO=1.4`; all server arguments,
+  checkpoint paths, sampling controls, and request fields matched the adjacent
+  fixed-M=8 control.
+- Benchmark evidence: the fixed-M=8 control reached **11.313 tok/s**,
+  **109.114 prompt tok/s**, **57.160628 s TTFT**, and **68.386711 s** end to
+  end. Ratio 1.4 reached **10.916 tok/s**, **109.712 prompt tok/s**,
+  **56.848776 s TTFT**, and **68.483064 s** end to end. Live warmed cycles
+  measured about **146 ms** for M=2 and **259 ms** for M=8, a ratio near
+  **1.77**.
+- Correctness evidence: the candidate completed exact 6,365 tokens with
+  `finish_reason=length`, coherent reasoning, and recorded SHA-256 prefix
+  `095e73b6`. Server health and language-only metadata passed, followed by
+  clean verified shutdown.
+- Failure mode: the short direct trajectory underestimates the natural-history
+  full-width cost. Ratio 1.4 selects M=8 for blocks whose expected survival
+  does not repay the measured 1.77x complete-cycle cost.
+- Why not to retry unchanged: the exact representative admission screen
+  regresses the adjacent control by **0.397 tok/s / 3.509%**.
+- Reopen only if: target kernels or history shape move the measured M=8/M=2
+  complete-cycle ratio near 1.4, with a fresh adjacent real-prompt control.
+- Related commit or revert: the generic budget mechanism is retained; the
+  selected opt-in ratio is **1.75**, which averages **13.6058 tok/s** across
+  five consecutive representative samples.
+
+## PERF-FA102 - Accepted-width-triggered DSpark cooldown
+
+- Hypothesis: scheduling target-only cooldown from the last block's actual
+  emitted width would identify low-value M=8 verifications that the trained
+  confidence budget misclassified.
+- Scope: native affine-W4 DSpark, ratio 1.75, 16 bypass refills, exact sampled
+  `128 / 32 warm / 256 timed`, selected full-Q4 target, and seed 42.
+- Attempted change: temporarily triggered cooldown when the preceding block
+  emitted fewer than three, five, or six tokens, independent of whether the
+  confidence scheduler had selected M=2 or M=8.
+- Benchmark evidence: minimum widths three/five/six reached respectively
+  **16.160295443 / 19.319338815 / 18.686185376 tok/s**. The retained
+  confidence-tier trigger reaches **24.332648695 tok/s** at the same cooldown
+  and workload; its no-cooldown control reaches **24.494388127 tok/s**.
+- Correctness evidence: every candidate completed exact sampled decoding.
+  Width five and six shared digest `104b9dd15cebf891`; width three produced
+  `8f2080982a3e9adb`. Strict warning-as-error builds passed throughout.
+- Failure mode: actual sampled acceptance changes the following target token
+  and random stream. Treating a low realized width as a stable predictor
+  repeatedly enters cooldown on the resulting low-yield trajectory.
+- Why not to retry unchanged: every threshold trails the confidence-tier
+  trigger by at least **5.01331088 tok/s** on the admission screen.
+- Reopen only if: a teacher-forced corpus demonstrates accepted-width
+  autocorrelation under a fixed target-token trajectory, with a policy that
+  does not feed its own sampling changes back into the predictor.
+- Related commit or revert: the accepted-width trigger and its threshold
+  control were removed; PERF-A074 retains only the trained-confidence M=2
+  trigger.
+
+## PERF-FA103 - Alternate fixed DSpark cooldown lengths
+
+- Hypothesis: a shorter or longer target-only interval after each M=2 choice
+  would find high-confidence regions sooner or amortize low-value probes more
+  effectively than sixteen refills.
+- Scope: native affine-W4 DSpark, ratio 1.75, exact sampled
+  `128 / 32 warm / 256 timed`, selected full-Q4 target, and seed 42.
+- Attempted change: screened fixed cooldowns **4, 8, 16, 32, 64, and 128** through the
+  checked runtime control while preserving every other direct setting.
+- Benchmark evidence: the six settings reached **19.198827552 /
+  17.781301933 / 24.332648695 / 19.215717015 / 18.401520476 /
+  19.663812056 tok/s**. Their respective refill counts were
+  **151 / 175 / 104 / 173 / 249 / 235**, and every setting followed a
+  different exact sampled trajectory. The no-cooldown ratio-1.75 control was
+  **24.494388127 tok/s**. The longer settings approach target-only behavior
+  with mean widths **1.028112450 / 1.089361702**.
+- Correctness evidence: all settings completed exact 256-token sampling with
+  finite nonempty output; strict warning-as-error candidate builds passed.
+- Failure mode: fixed cooldown changes target sampling and therefore the
+  future confidence/acceptance trajectory. Four and eight probe too often;
+  thirty-two misses useful high-confidence regions on this screen.
+- Why not to retry unchanged: 4/8/32/64/128 trail the selected 16-refill
+  screen by **5.116931143 / 6.551346762 / 5.116931680 / 5.931128219 /
+  4.668836639 tok/s** respectively.
+- Reopen only if: a representative teacher-forced trace supplies a stable
+  counterfactual trajectory or a cheap current-token predictor replaces
+  periodic probing.
+- Related commit or revert: the generic checked cooldown remains; PERF-A074
+  selects **16** only as an opt-in measured setting.
+
+## PERF-FA104 - DSpark target-state anchor bypass
+
+- Hypothesis: the trained confidence projection evaluated on the current
+  normalized target hidden state and current-token Markov embedding could
+  identify low-value draft cycles before paying for the five-layer DSpark
+  block.
+- Scope: native affine-W4 DSpark, ratio 1.75, exact sampled direct
+  `128 / 32 warm / 256 timed`, the representative real-131K-pool
+  `6237+128` request, selected full-Q4 target, and seed 42.
+- Attempted change: added a checked temporary threshold that executed exact
+  target-only refill whenever the trace-only target-state score exceeded the
+  configured value. Thresholds 0.475, 0.5, 0.525, 0.55, and 0.6 were screened.
+- Benchmark evidence: direct rates were **16.393088197 / 30.299622883 /
+  33.221518376 / 30.796768648 / 16.111013104 tok/s**. Threshold 0.525 repeated
+  at **32.788326664** and **32.834047040 tok/s**. The real threshold-0.525
+  request reached only **13.652 tok/s**, below cooldown-16's **16.6396 tok/s**
+  mean. Its adjacent no-threshold trace reached **13.580 tok/s**.
+- Correctness evidence: each direct screen and both real requests completed
+  exact sampled decoding. The threshold request completed 6,365 tokens with
+  `finish_reason=length` and recorded SHA-256 `c92e4510...`; health,
+  language-only metadata, and verified cleanup passed.
+- Failure mode: the synthetic trace's score relation does not transfer to the
+  natural prompt. On 48 no-policy real cycles, M=2/M=8 score ranges overlap,
+  score versus accepted width has Pearson **0.140841**, and threshold 0.525
+  classifies 13 cycles from each budget tier as bypasses.
+- Why not to retry unchanged: a one-sample **0.072 tok/s** movement over the
+  adjacent baseline is far below the selected cooldown and the required floor,
+  while the predictor has no useful real-prompt separation.
+- Reopen only if: a calibrated current-token feature demonstrates stable
+  held-out natural-prompt separation and improves cooldown-16 in a complete
+  five-sample real window.
+- Related commit or revert: the threshold parser, state, and scheduling branch
+  were removed. PERF-A075 retains only target-state score telemetry under the
+  existing speculative trace flag.
+
+## PERF-FA105 - DFlash2 on the faster mixed-precision target
+
+- Hypothesis: attaching DFlash2 to the QKV-restored target that already clears
+  20 tok/s would preserve enough proposal overlap to add speculative margin.
+- Scope: affine-W4 DFlash2, native exact p/q verification, selected early-out27
+  v2 target, immutable Q4 recurrent-projection donor, QKV-only and complete
+  recurrent override scopes, seed 42, and direct sampled
+  `128 / 32 warm / 128 timed`.
+- Attempted change: changed the target checkpoint and existing precision
+  override only; the DFlash artifact, learned selector, verifier, sampler, and
+  kernels stayed fixed.
+- Benchmark evidence: QKV-only reached **10.130497494 tok/s**, 49 refills, and
+  width **2.653061224**. Complete recurrent restoration reached
+  **7.841259160 tok/s**, 64 refills, and width **1.984375**. The compatible
+  full-Q4 target reproduces **31.317933897 tok/s**, 19 refills, and width
+  **6.684210526**.
+- Correctness evidence: both mixed-target screens completed exact rejection
+  sampling with finite 128-token output and recorded deterministic digests.
+- Failure mode: the draft is trained against the full-Q4 target distribution;
+  the faster mixed target changes logits enough to collapse accepted width.
+- Why not to retry unchanged: both precision scopes lose more than 21 tok/s
+  directly before server overhead.
+- Reopen only if: a DFlash2 checkpoint is trained or distilled against the
+  selected mixed target, with measured natural-prompt proposal overlap.
+- Related commit or revert: no source change was retained; both existing
+  checkpoints remain immutable.
+
+## PERF-FA106 - Two-phase 64-column M8 affine verifier tile
+
+- Hypothesis: one threadgroup covering 64 output columns could reuse four M=8
+  input fragments across two 32-column weight-staging phases and halve the
+  output grid within the selected 32 KiB storage budget.
+- Scope: SG16 affine-W4 M=8 verifier, full-Q4 target, affine-W4 DFlash2,
+  selected direct `128 / 32 warm / 128 timed`, and exact p/q sampling.
+- Attempted change: temporarily doubled the output tile to 64, retained a
+  32-column staging tile, held eight FP32 SIMD-matrix accumulators, and reused
+  four BF16 input fragments across both output halves.
+- Benchmark evidence: direct throughput fell from the restored 32-column
+  **31.317933897 tok/s** to **8.960931772 tok/s**, a
+  **22.357002125 tok/s / 71.387219%** regression. Both arms used 19 refills and
+  mean width **6.684210526**.
+- Correctness evidence: warning-as-error library/test builds passed. Synthetic
+  M8 parity passed K/N `512/256`, `5120/64`, and `512/6144`; the full-model
+  candidate reproduced digest `46bd4bb035b72c2b` and last token 20.
+- Failure mode: the eight accumulator fragments plus retained input fragments
+  create severe register/occupancy pressure, while halving the threadgroup grid
+  removes parallelism.
+- Why not to retry unchanged: exact whole-model throughput regresses by more
+  than 70% with unchanged acceptance.
+- Reopen only if: a device or kernel representation can hold the wider tile
+  without register pressure and an isolated real-tensor microbenchmark first
+  beats SG16/B32.
+- Related commit or revert: the 64-column source was removed; the signed
+  SG16/B32 kernel remains exact and selected.
+
+## PERF-FA107 - DFlash2 selector temperatures outside the retained 1.15 arm
+
+- Hypothesis: rescaling the learned DFlash selector's unary-plus-transition
+  logits can increase target overlap enough to improve sampled serving.
+- Scope: full-Q4 target, affine-W4 DFlash2, seven-token learned proposal,
+  exact p/q rejection, selected SG16/B32 verifier, and the representative
+  real-131K-pool `6237+128` request.
+- Attempted change: screened selector temperatures
+  **0.7/0.85/0.95/1.05/1.15/1.3** while leaving request temperature, target
+  probabilities, and exact verifier unchanged.
+- Benchmark evidence: direct `128 / 32 warm / 128 timed` rates for
+  0.7/0.85/0.95/1.05/1.15/1.3 were respectively
+  **14.838952659 / 11.185534971 / 37.171244579 / 10.998405302 /
+  26.936073462 / 9.563179041 tok/s**, versus identity
+  **31.291292321**. The apparent 0.95 direct winner regressed the real request
+  to **13.739 tok/s**. The retained 1.15 arm averaged **15.8866 tok/s** across
+  five real requests versus the adjacent identity mean **15.4424**.
+- Correctness evidence: the retained implementation forwards each selected
+  token's exact rescaled q into the common rejection sampler. All real
+  requests completed exact 6,365 tokens with `finish_reason=length` and a
+  stable coherent digest within each setting. Invalid zero fails closed.
+- Failure mode: repeated-token direct trajectories do not rank proposal
+  calibration reliably for natural reasoning. Every screened arm apart from
+  1.15 either lost directly or, for 0.95, failed the representative served
+  gate.
+- Why not to retry unchanged: the full sweep already isolates the selector
+  scale, and 0.95's synthetic lead reverses on the admission workload.
+- Reopen only if: a new target/draft pairing, selector checkpoint, request
+  distribution, or adaptive calibration signal changes proposal overlap.
+- Related commit or revert: PERF-A076 retains only the checked opt-in scale;
+  identity remains default and 1.15 is the measured selected arm.
+
+## PERF-FA108 - M=8 gate/up paired dispatch and sequential fused SwiGLU
+
+- Hypothesis: consuming the original gate/up tensors in one native M=8
+  dispatch can remove 64 projection submissions and intermediate elementwise
+  work from each DFlash verification.
+- Scope: full-Q4 target MLPs, eight-row SG16/B32 affine-W4 products, exact
+  BF16 SiLU/multiply boundaries, affine-W4 DFlash2, selector temperature 1.15,
+  and direct `128 / 32 warm / 128 timed` decoding.
+- Attempted change: first ran gate and up sequentially inside one workgroup and
+  emitted SwiGLU directly. Then retained independent workgroups on two z-grid
+  planes in one Metal submission, emitted separate gate/up arrays, and left
+  MLX SiLU/multiply unchanged.
+- Benchmark evidence: the sequential fused form changed traced throughput
+  **26.801071247 -> 26.413620964 tok/s** and steady verify about
+  **186.2--187.3 -> 189.4--190.5 ms**. Five adjacent paired-grid controls and
+  candidates averaged **26.943319961 / 26.964966176 tok/s**, only
+  **+0.08034%**; two pairs were flat/slower.
+- Correctness evidence: standalone K/N `512/256` products were bit-exact for
+  both paired outputs, and the sequential SwiGLU result was bit-exact against
+  separate selected products plus BF16 MLX SiLU/multiply. Every full-model arm
+  reproduced 22 refills, width **6.090909091**, digest `6de63586df62ab2b`,
+  and last token 220. Strict builds and tests passed.
+- Failure mode: sequential fusion halves grid concurrency and adds about 3.3
+  ms. Paired submission preserves concurrency, while Metal submission savings
+  are only noise-scale beside two roughly one-millisecond products per layer.
+- Why not to retry unchanged: both the execution-merging and launch-only
+  limits were measured, with one regressing and one lacking a material margin.
+- Reopen only if: a kernel can share weight or input work across gate/up while
+  retaining grid-level concurrency, or it fuses the following down projection
+  without changing BF16 boundaries.
+- Related commit or revert: every candidate source/test change was removed;
+  the selected separate SG16/B32 products remain unchanged.
+
+## PERF-FA109 - DFlash2 mean-q thresholds outside the retained 0.62 arm
+
+- Hypothesis: a lower or higher selected-q boundary may improve the balance
+  between 133--135 ms M=2 cycles and 247--250 ms M=8 cycles on the natural
+  reasoning request.
+- Scope: full-Q4 target, affine-W4 DFlash2, selector temperature 1.15, exact
+  sparse-q rejection sampling, real 131,072 context/token pools, and sampled
+  `6237+128` serving.
+- Attempted change: screened mean-q6 thresholds 0.55, 0.62, and 0.65 through
+  the same checked native scheduler and otherwise identical foreground server
+  and client commands.
+- Benchmark evidence: the thresholds reached **15.191 / 16.151 / 16.056
+  tok/s** respectively. The retained 0.62 arm then averaged **16.1776 tok/s**
+  over five requests, while an adjacent threshold-disabled control averaged
+  **15.8974 tok/s**.
+- Correctness evidence: every arm completed exact 6,365 tokens with
+  `finish_reason=length` and coherent reasoning. Each five-request setting
+  reproduced one stable output digest. Exact selected sparse q continues into
+  the prefix verifier and residual sampler.
+- Failure mode: 0.55 leaves too many low-yield full-width cycles; 0.65
+  shortens additional borderline cycles whose useful accepted prefixes repay
+  M=8 cost. Both produce weaker exact sampled trajectories than 0.62 on the
+  representative admission workload.
+- Why not to retry unchanged: the bracketing screens isolate the useful local
+  boundary, and the retained arm has a full matched five-sample window.
+- Reopen only if: target M=2/M=8 cost, selector temperature, draft checkpoint,
+  target checkpoint, or representative request distribution changes.
+- Related commit or revert: PERF-A078 retains only the checked opt-in
+  scheduler; threshold 0.62 is selected and the default remains full M=8.
+
+## PERF-FA110 - One-shot full-Q4 target-only long prefill
+
+- Hypothesis: the existing one-shot target-only prefill can admit the exact
+  6,237-token representative request within M1 Max unified-memory residency.
+- Scope: native full-Q4 target-only engine, one 6,237-token native prefill,
+  BF16 KV, real 131,072 context/token pools, and one running request.
+- Attempted change: first launched the target-only server with its unchanged
+  one-shot native prefill. A stale `.venv-mps` build-prefix selection caused
+  the initial launcher build to miss MLX headers; rebuilding with the active
+  `.venv` prefix isolated the runtime result.
+- Benchmark evidence: the rebuilt server reached the exact request and then
+  exhausted Metal residency during the 6,237-token native prefill, before any
+  generation sample. The same target with opt-in 2,048-token internal chunks
+  completes directly and through the real 131K serving surface.
+- Correctness evidence: the retained chunked arm completes exact 6,365 tokens
+  with `finish_reason=length` and coherent reasoning. Single-chunk sampled
+  controls preserve the exact 256-token digest and final token.
+- Failure mode: the one-shot graph retains the whole-prompt working set across
+  64 target layers and exceeds available Metal residency on this model and
+  request shape.
+- Why not to retry unchanged: the failure is deterministic under the recorded
+  full-Q4, 6,237-token, 131K-pool contract, and internal chunking directly
+  removes the residency lifetime.
+- Reopen only if: model residency, MLX command-buffer lifetime, unified-memory
+  capacity, or target prefill storage ownership changes materially.
+- Related commit or revert: PERF-A079 retains checked opt-in target-only
+  internal chunking at 2,048; the absent-value default preserves one-shot
+  behavior.
+
+## PERF-FA111 - One-SIMD-per-output affine-W4 batch-one QMV
+
+- Hypothesis: a dedicated batch-one Metal QMV can beat MLX's generic affine
+  quantized product across the full-Q4 target projections and close the final
+  target-only decode gap.
+- Scope: affine-W4/G64 BF16-input target products, full-Q4 target-only direct
+  decoding, and exact short `128 / 32 warm / 128 timed` admission.
+- Attempted change: assigned one SIMD group to each output row and eight output
+  rows to each 256-thread group. The first form loaded scale and bias per
+  packed word. A second form loaded each parameter pair once per quantization
+  group and broadcast it across the corresponding eight lanes.
+- Benchmark evidence: stock MLX reached **20.339874670 tok/s**. The independent
+  parameter-load form reached **10.456143330 tok/s** (**-48.593%**), and the
+  subgroup-broadcast form reached **7.773375044 tok/s** (**-61.783%**).
+- Correctness evidence: strict library/test builds passed. Batch-one parity at
+  K/N `128/128`, `5120/64`, and `512/6144` stayed within **0.03125** maximum
+  absolute BF16 difference. Both full-model candidates completed 128 tokens
+  with one shared digest and final token.
+- Failure mode: scalar-output SIMD geometry leaves MLX's tuned matrix/vector
+  memory and instruction schedule far ahead. `simd_shuffle` plus divergent
+  parameter ownership further increases the full-model cost.
+- Closure basis: two parameter-loading strategies lose by roughly twofold or
+  more at the reachable whole-model path, leaving no admission margin for
+  narrower shape tuning of this geometry.
+- Reopen only if: a matrix-tiled batch-one kernel, dependency-level QMV
+  primitive, or fused downstream consumer first beats stock MLX on real target
+  tensors.
+- Related commit or revert: all experimental C++/Metal/header/test changes
+  were removed; PERF-A080 records the result.
+
+## PERF-FA112 - Unchanged Bartowski Q5_K_M on native Metal GGUF
+
+- Hypothesis: the balanced Q5_K_M source artifact can load and serve directly
+  through the existing heterogeneous GGUF execution path.
+- Scope: pinned Bartowski revision
+  `f0eec4a4bb4975114a030d048952d83c0a53c034`, exact
+  `Qwen3.8-27B-Q5_K_M.gguf`, M1 Max, native MPS GGUF quantization, float32
+  model dtype, BF16 KV, one request, and a 1,024-token pool.
+- Attempted change: downloaded and checksum-verified the immutable source,
+  passed its actual-file Q4_0/Q5_K/Q6_K native arithmetic gate, then launched
+  the ordinary SGLang GGUF loader with conservative caches.
+- Benchmark evidence: server startup did not reach warmup or a generation
+  sample. The loader raised `NotImplementedError` while processing mixed
+  merged weights because that native Metal path does not support Q8_0 shards.
+- Correctness evidence: actual-file batch-one parity passed Q4_0, Q5_K, and
+  Q6_K before startup. The source is exactly 20,752,787,040 bytes and verifies
+  as SHA-256 `e731e180...caa8`.
+- Failure mode: Q5_K_M's heterogeneous merged tensors include Q8_0 members at
+  a loader boundary whose supported native set excludes Q8_0.
+- Why not to retry unchanged: the exception is deterministic during weight
+  transformation and precedes all cache sizing and serving work.
+- Reopen only if: the exact mixed-merge owner gains Q8_0 support or a
+  provenance-preserving derived artifact converts the affected merged shards.
+- Related commit or revert: PERF-A082 selects the narrower Q5_K_S source and a
+  distinct token-embedding derivative. The immutable Q5_K_M source remains
+  available as a control.
+
+## PERF-FA113 - Unchanged Bartowski Q5_K_S token embedding
+
+- Hypothesis: the smaller Q5_K_S source artifact can complete native Metal
+  startup without artifact transformation.
+- Scope: pinned Bartowski revision
+  `f0eec4a4bb4975114a030d048952d83c0a53c034`, exact
+  `Qwen3.8-27B-Q5_K_S.gguf`, M1 Max, native MPS GGUF quantization, float32
+  model dtype, BF16 KV, one request, and a 1,024-token pool.
+- Attempted change: downloaded and checksum-verified the immutable source,
+  passed actual-file Q4_0/Q5_K/Q6_K native arithmetic, and launched the same
+  conservative SGLang configuration used for Q5_K_M.
+- Benchmark evidence: weight loading completed in **43.06 s** at **20.00 GB**
+  residency with **11.99 GB** available. Mamba and 1,024-token BF16 KV caches
+  allocated. Automatic warmup then raised `NotImplementedError` because the
+  native Metal GGUF embedding path does not support Q5_K.
+- Correctness evidence: the source is exactly 19,680,945,760 bytes, verifies
+  as SHA-256 `b52fbc24...e569`, and passes representative packed-tensor parity.
+- Failure mode: `token_embd.weight` is Q5_K; the current embedding dispatch
+  supports a narrower set than the native quantized matrix owner.
+- Why not to retry unchanged: every first-token forward reaches the same
+  unsupported embedding dispatch after successful weight and cache setup.
+- Reopen only if: native Q5_K embedding support reaches the shared execution
+  owner. The derived F16-embedding artifact already supplies the active path.
+- Related commit or revert: PERF-A082 converts only the source token embedding
+  to F16 and retains all other source tensor encodings.
+
+## PERF-FA114 - Q5_K four-lane row mapping on 1,024-row projections
+
+- Hypothesis: doubling the Q5_K batch-one output cohort to 32 rows will also
+  improve the compact full-attention K/V projections.
+- Scope: native Metal Q5_K batch-one matvec, representative
+  `blk.3.attn_k.weight` shape `(1024,5120)`, aligned compact storage, eight
+  warmups, and 25 synchronized timed iterations.
+- Attempted change: selected the four-lane-per-row, eight-weight-per-lane,
+  32-row-per-threadgroup mapping across every aligned Q5_K batch-one shape.
+- Benchmark evidence: the established eight-lane mapping measured
+  **0.327208 ms / 10.329 GiB/s**; the wider-row candidate measured
+  **0.337792 ms / 10.006 GiB/s**, a **3.23%** latency regression. Wider
+  5,120--17,408-row target projections supplied positive served evidence under
+  the thresholded route.
+- Correctness evidence: actual-file prefixes, odd row tails, long-K compact
+  views, alignment fallback, and synthetic packed extrema all passed.
+- Failure mode: the compact 1,024-row grid supplies too little output work to
+  amortize the reduced lanes per row and wider threadgroup cohort.
+- Why not to retry unchanged: the production checkpoint has a stable 1,024-row
+  K/V family and the established kernel is already faster on its exact shape.
+- Reopen only if: GPU family, Metal compiler, row geometry, lane mapping, or a
+  fused downstream consumer changes the compact-shape economics.
+- Related commit or revert: PERF-A084 retains the four-lane mapping only for
+  output sizes at least 5,120, the smallest measured winning shape, and
+  preserves the prior 1,024-row owner.
+
+## PERF-FA115 - Same-GGUF three-step NEXTN as the complete Q5 serving lane
+
+- Hypothesis: the Qwen3.8 checkpoint's bundled NEXTN block, three speculative
+  steps, four verify tokens, and a faster Q6_K batch-four target verifier would
+  raise the derived Q5 lane above target-only throughput.
+- Scope: the existing synchronous EAGLE/NEXTN worker v2, the same derived Q5
+  GGUF as target and draft source, top-k-one linear proposals, and a 1K
+  conservative MPS server pool.
+- Attempted change: first launched the same GGUF draft without an explicit
+  draft quantizer, then corrected the retained ordering boundary with
+  `--speculative-draft-model-quantization gguf`; measured the retained
+  batch-four kernel against `SGLANG_MPS_Q6_K_BATCH4_ROWS16=0`.
+- Benchmark evidence: explicit GGUF draft loading reduced draft residency from
+  all **10.62 GB** remaining memory to **1.00 GB** and served successfully.
+  Five candidate `128+128` generation samples were
+  `3.643,3.799,3.711,3.699,3.662 tok/s`, mean **3.7028**. The selected
+  target-only median is **7.500 tok/s**. The batch-four kernel itself remains
+  a win: its matched disabled mean was **3.3384 tok/s**.
+- Correctness evidence: all ten matched served requests completed exact
+  256-token length responses with reasoning preserved. Candidate/control mean
+  accepted lengths were **2.960/3.024**. Direct candidate, tail, batch-three
+  fallback, and existing batch-eight arithmetic checks pass.
+- Failure mode: repeated draft forwards plus multi-token target verification
+  consume more time than the accepted-token yield saves on this M1 Max
+  topology. The first missing-quantizer attempt also exhausted memory before
+  KV allocation because configuration propagation preceded target GGUF
+  detection.
+- Why not to retry unchanged: corrected same-GGUF NEXTN is **50.629%** below
+  target-only serving and remains **16.2972 tok/s / 5.4013x** from the
+  requested floor.
+- Reopen only if: a materially smaller/faster trained draft, a lower-cost
+  target verification topology, or measured acceptance/cycle evidence changes
+  the complete-path economics.
+- Related commit or revert: PERF-A085 retains the independent Q6_K exact-batch-
+  four kernel win; the same-GGUF NEXTN launch remains unselected.
+
+## PERF-FA116 - Exact 131K BF16 KV beside the derived Q5 artifact
+
+- Hypothesis: the 32 GB unified-memory machine can retain the 21.37 GB derived
+  model, exact 131,072-token BF16 attention cache, and runtime working set at
+  interactive throughput.
+- Scope: M1 Max 32 GB, derived Q5_K_S/F16-embedding artifact, float32 compute,
+  exact 131,072 context and token pool, one request, one FP32 Mamba slot,
+  page size one, and ordinary sampled `128+32` serving.
+- Attempted change: launched the existing target-only server with exact
+  `context_length=max_total_tokens=131072` and BF16 KV.
+- Benchmark evidence: startup and warmup passed with 21.37 GB model residency,
+  a 0.29 GB Mamba slot, and 4.00 GB each for K and V. One exact request reached
+  **5.271 prompt tok/s**, **24.284058 s TTFT**, **0.102 generation tok/s**,
+  and **329.689187 s E2E**. Memory pressure fell to 28--50% free and swap
+  traffic rose materially.
+- Correctness evidence: health, model-list length 131,072, language-only model
+  metadata, exact 160-token length completion, and 32 preserved reasoning
+  fragments all passed.
+- Failure mode: model, cache, and transient working-set residency exceed the
+  practical unified-memory budget and generation becomes page-fault bound.
+- Why not to retry unchanged: the exact configuration is already capacity-
+  functional and **98.576%** slower than the selected 1K-pool Q5 mean.
+- Reopen only if: model or KV residency shrinks materially, the memory budget
+  changes, or a measured residency control eliminates the paging boundary.
+- Related commit or revert: PERF-A086 records this capacity result. PERF-A088
+  changes only the token embedding to Q4_K, recovers 1.37 GB of runtime
+  residency, and improves the matched exact-pool result to **0.315 tok/s**;
+  the unchanged BF16 cache still pages heavily.
+
+## PERF-FA117 - Stock float8 KV tensors on MPS
+
+- Hypothesis: existing `--kv-cache-dtype fp8_e4m3` support can halve the exact
+  Q5 attention-cache residency without source changes.
+- Scope: PyTorch 2.11.0 MPS, `torch.float8_e4m3fn`, allocation, FP32
+  conversion, indexed write, gather, and conversion back to FP32.
+- Attempted change: ran an isolated capability probe before another server
+  launch.
+- Benchmark evidence: the first FP32-to-FP8 MPS conversion immediately raised
+  `TypeError: Trying to convert Float8_e4m3fn to the MPS backend but it does
+  not have support for that dtype.` No timing sample was admitted.
+- Correctness evidence: byte-backed float8 views and indexed gathers were
+  subsequently proven functional. The unchanged framework conversion itself
+  still fails, and the isolated process exited cleanly.
+- Failure mode: the generic KV pool maps `fp8_e4m3` to a torch float8 dtype
+  whose value conversion is absent from the active stock MPS backend.
+- Why not to retry unchanged: every generic pool allocation reaches the same
+  framework dtype boundary.
+- Reopen only if: PyTorch MPS adds native float8 conversion or a later runtime
+  changes this exact boundary.
+- Related commit or revert: PERF-A087 records the unchanged-framework screen.
+  PERF-A089 retains an SGLang native Metal conversion over the already
+  byte-backed pool and therefore changes the premise without changing the
+  stock result.
+
+## PERF-FA118 - Exact 131K E4M3FN cache as the complete Q5 speed solution
+
+- Hypothesis: halving the exact attention cache from BF16 to E4M3FN restores
+  the small-pool Q5 decode rate while preserving requested capacity.
+- Scope: Q4_K-embedding Q5 artifact, one FP32 Mamba slot, exact 131,072-token
+  FP8 K/V pool, native Metal conversion, and ordinary sampled `128+32` serving.
+- Attempted change: launched signed PERF-A089 with
+  `context_length=max_total_tokens=131072` and `kv_cache_dtype=fp8_e4m3`.
+- Benchmark evidence: K/V residency fell **8.00 -> 4.00 GB** and reported
+  headroom rose **0.99 -> 6.99 GB**. Five cache-flushed samples measured
+  **3.098 / 3.299 / 3.264 / 3.273 / 3.251 tok/s**, mean **3.237**. This is
+  **10.276x** the matched BF16 result and **55.419%** below the 1K FP8 mean.
+- Correctness evidence: exact pool allocation, automatic warmup, health,
+  maximum model length, language-only metadata, exact sampled token counts,
+  reasoning, arithmetic `703`, and one parsed multiply call all pass.
+- Failure mode: the 4.00 GB fully allocated pool still creates a material
+  residency penalty on the 32 GB unified-memory machine. Long populated
+  histories also retain generic FP8-to-FP32 gather materialization.
+- Why not to retry unchanged: five warmed sequential samples establish a
+  stable 3.237 tok/s region, **16.763 tok/s / 6.179x** from the floor.
+- Reopen only if: another resident-byte reduction changes the full-pool
+  boundary or fused compressed attention removes the long-history conversion
+  path.
+- Related commit or revert: PERF-A090 retains exact FP8 capacity and records
+  this incomplete-speed boundary.
+
+## PERF-FA119 - Unchanged Q4-tuned DFlash controls on affine Q5
+
+- Hypothesis: the selected DFlash2 temperature and mean-q budget can lift the
+  new native affine-Q5 target above 20 tok/s without another kernel change.
+- Scope: immutable affine-Q5/G64 target, affine-W4 DFlash2 draft, native
+  sampling seed 42, selector temperature 1.15, mean-q6 threshold 0.62, and
+  direct `128 / 32 warm / 128 timed` decode.
+- Attempted change: reused the complete selected full-Q4 DFlash environment
+  while changing only the target checkpoint to affine Q5.
+- Benchmark evidence: target-only reached **16.322505765 tok/s**. The unchanged
+  DFlash composition reached **11.506669050 tok/s**, 56 refills, and mean
+  emitted width **2.232142857**. M=2 verification was about 114 ms and M=8
+  verification about 363--368 ms.
+- Correctness evidence: the target and draft loaded, exact p/q rejection ran,
+  128 timed tokens completed, and the process exited cleanly.
+- Failure mode: the retained M=8 K-split Metal verifier accepts affine bits
+  two/four only. Five-bit target matrices fall through to generic MLX QMM;
+  the Q4-calibrated proposal controls also yield too few tokens on this direct
+  trajectory to repay that cost.
+- Why not to retry unchanged: it is **4.815836715 tok/s / 29.505%** slower
+  than the adjacent target-only result and **8.493330950 tok/s** below the
+  required floor.
+- Reopen only if: a native affine-five-bit verifier materially reduces fixed
+  M=8/M=2 cost, followed by selector/budget recalibration on the natural
+  request.
+- Related commit or revert: PERF-A091 retains the checkpoint and baseline;
+  no source change was made by this failed composition.
+
+## PERF-FA120 - Five-bit MTP as a sampled production accelerator
+
+- Hypothesis: the official affine-five-bit MTP head can preserve native
+  top-k/top-p sampling and lift the affine-Q5 target above 20 tok/s.
+- Scope: pinned target revision `2568951b...c2f05`, pinned MTP revision
+  `1faa5a80...3d85`, exact dense-q rejection sampling, blocks two through
+  eight, and direct seed-42 decode.
+- Attempted change: made the standard MTP block size opt-in through two to
+  eight tokens, sampled every recurrent proposal from its recorded dense q,
+  and reused the common exact p/q verifier.
+- Benchmark evidence: matched deterministic block three reaches
+  **17.919995235 tok/s** at width **3**; M=8 reaches
+  **31.380317186 tok/s** at width **8**. Exact sampled calibration at
+  temperatures 0.25/1.15/1.5/2.0
+  reaches **3.990054799 / 4.821419896 / 6.380162135 / 5.062826830 tok/s**;
+  the best width is **2.285714286**. Top-k four at temperature 1.5 reaches
+  **3.780318328 tok/s** and width **1.26**.
+- Correctness evidence: dense q flows into the established rejection sampler,
+  target p/q acceptance and residual sampling complete, exact output counts
+  return, and both deterministic probes preserve target digest
+  `e446d211f2e2ff25` and last token 15.
+- Failure mode: the trained head aligns strongly at argmax while its sampled
+  distribution overlaps the target too weakly to amortize the roughly
+  228--230 ms M=8 verification cycle.
+- Why not to retry unchanged: the best sampled arm trails target-only
+  **16.322505765 tok/s** by **9.942343630 tok/s** and the floor by
+  **13.619837865 tok/s**.
+- Reopen only if: a matched draft distribution materially increases exact
+  sampled overlap or target verification cost falls enough for a mean width
+  near 2.3 to win.
+- Related commit or revert: PERF-A093 retains exact sampled semantics and the
+  block-size probe; calibration-only temperature/top-k controls were removed.
+
+## PERF-FA121 - Existing 64-column small-batch kernel for affine Q5 M=3
+
+- Hypothesis: exact five-bit unpacking in the retained small-batch QMM can
+  accelerate the default three-token MTP verification batch.
+- Scope: native affine-Q5 target, matched MTP head, greedy block three, and
+  the existing RowTile-8/OutputTile-64 Metal geometry.
+- Attempted change: added exact eight-value/five-byte unpacking and admitted
+  Q5 M=2 through M=8 to the small-batch kernel.
+- Benchmark evidence: the adjacent greedy block-three result changes from
+  **17.472384559 to 10.679521956 tok/s**, a **38.877%** regression.
+- Correctness evidence: M=3 and M=4 K/N `512/256` parity both pass with
+  maximum absolute error **0.03125**.
+- Failure mode: the 64-column threadgroup staging geometry loses occupancy and
+  scheduling efficiency at the three-row target batch.
+- Why not to retry unchanged: full-model evidence is decisive even though the
+  arithmetic is correct.
+- Reopen only if: a measured M=3-specific geometry changes weight staging or
+  split-K economics.
+- Related commit or revert: the Q5 small-batch branch and its temporary tests
+  were removed before PERF-A093.
+
+## PERF-FA122 - Alternate affine-Q5 batch-one QMV geometries
+
+- Hypothesis: increasing output-row reuse, pack depth, SIMD-group count, or a
+  narrower K cohort can improve the direct affine-Q5 decode kernel.
+- Scope: native affine-Q5/G64 target-only sampled `128 / 32 warm / 128 timed`
+  screens with seed 42 and exact BF16/FP32 arithmetic.
+- Attempted change: swept SIMD-groups/results/packs geometries `2/4/2`,
+  `2/8/2`, `2/4/1`, `2/4/4`, `4/4/2`, and `8/4/2`, then a 16-K-lane/two-row
+  cohort.
+- Benchmark evidence: the corresponding full-model results were
+  **17.466385085 / 16.016573901 / 16.956398080 / 16.837489631 /
+  17.505461879 / 17.422819885 tok/s**. The 16-lane cohort passed parity and
+  reached only **14.839742878 tok/s**. The selected four-SIMD/four-row/two-pack
+  form later reached **17.823163930 tok/s** after fixed FMAs, packed loads,
+  K specialization, and command-buffer controls.
+- Correctness evidence: representative parity remained within the selected
+  **0.25** BF16 acceptance bound. The one-pack form admitted K=256 and thus
+  intentionally failed the selected-geometry fail-closed test.
+- Failure mode: additional result rows and weight packs raise register
+  pressure; narrower K cohorts reduce input reuse; fewer output rows underuse
+  each activation fragment.
+- Why not to retry unchanged: every alternate geometry trails the selected
+  result by at least **0.350211221 tok/s**, and the 16-lane form trails it by
+  **2.983421052 tok/s**.
+- Reopen only if: shader attribution or occupancy counters identify a distinct
+  bottleneck and a geometry changes both register pressure and weight-load
+  coalescing.
+- Related commit or revert: alternate source strings were removed before
+  PERF-A094; only the selected four/four/two source remains.
+
+## PERF-FA123 - FP16 local accumulation in affine-Q5 QMV
+
+- Hypothesis: half-precision local dot products can reduce register bandwidth
+  while a final FP32 accumulation preserves sufficient output accuracy.
+- Scope: selected four-SIMD/four-row/two-pack Q5 kernel and the pinned
+  affine-Q5 target.
+- Attempted change: accumulated each unpacked weight/input product in FP16,
+  converted each group dot to FP32, and retained FP32 cross-group/reduction
+  arithmetic. The first explicit half-`fma` form failed Metal overload
+  resolution; a half multiply/add form compiled.
+- Benchmark evidence: the compiled form reached **16.743742934 tok/s**,
+  **1.079420996 tok/s** below the selected FP32-local result.
+- Correctness evidence: the representative synthetic maximum errors remained
+  within the test bound, while the full-model sampled digest changed.
+- Failure mode: conversions and half arithmetic cost exceed any register
+  saving, and reduced precision changes the target sampling trajectory.
+- Why not to retry unchanged: it is both slower and semantically less stable
+  than fixed explicit FP32 FMAs.
+- Reopen only if: a native packed-dot instruction can replace the scalar
+  conversion sequence while preserving the selected BF16 output trajectory.
+- Related commit or revert: the FP16-local branch was removed before
+  PERF-A094.
+
+## PERF-FA124 - Concurrent MLX streams for affine-Q5 gate/up projections
+
+- Hypothesis: submitting independent gate and up affine-Q5 products on two
+  persistent Metal streams can overlap their weight traversal.
+- Scope: batch-one affine-Q5 `Engine::mlp`, two `mx::StreamContext` scopes,
+  and the selected target-only full-model benchmark.
+- Attempted change: created persistent gate/up GPU streams, built one
+  projection on each stream, and consumed both through the ordinary SwiGLU
+  and down projection.
+- Benchmark evidence: the first full-model candidate retained about **14 GB**,
+  consumed **0.0% CPU**, and made no progress for more than one minute. Stack
+  inspection placed later custom-Metal probes in
+  `IOSurfaceSharedEvent::waitUntilSignaledValue`; a stock MLX arithmetic probe
+  completed in **0.388 seconds**.
+- Correctness evidence: no candidate output completed. The exact benchmark PID
+  was terminated with status 143. Temporary stream code was removed and the
+  restored sequential source passes strict warning-as-error compilation.
+- Failure mode: graph construction across independent MLX streams lacks an
+  explicit event/dependency lifetime joining gate/up production to their
+  default-stream consumer, leaving a custom-Metal event unsignaled.
+- Why not to retry unchanged: the first execution stalls and contaminates
+  subsequent custom-kernel validation until the Metal session recovers.
+- Reopen only if: a minimal isolated C++ proof establishes explicit
+  cross-stream event ownership, completion, and asynchronous array lifetime
+  before any full-model launch.
+- Related commit or revert: all parallel-stream source was removed before
+  PERF-A094; sequential `Engine::mlp` remains authoritative.
+
+## PERF-FA125 - Q5 aligned-load, vector-input, dot, and parameter-broadcast variants
+
+- Hypothesis: fewer dynamic Q5 weight loads, wider activation transactions,
+  grouped FP32 dot instructions, or shared scale/bias loads can raise the
+  selected affine-Q5 batch-one kernel by the remaining five percent.
+- Scope: selected A094 Q5/G64 Metal QMV at exact gate/up `5120x17408`, down
+  `17408x5120`, attention-output `6144x5120`, and value `5120x1024` shapes;
+  process-isolated order/reverse `100 / 1000` timing.
+- Attempted change: evaluated A103 three-word overlapping weight loads, A104
+  four `float4` dots, A106 four aligned 64-bit activation reads, A108
+  four-lane parameter broadcast, and shape-specific `2/4/2` and `8/4/2`
+  threadgroup mappings.
+- Benchmark evidence: A103 was consistently slower than A094 across all four
+  shapes. A104 and A106 exchanged sub-percent order effects and converged in
+  reverse timing. A108 regressed representative latency by roughly **4--22%**.
+  Shape-specific geometries converged with control and supplied no durable
+  full-model funding signal. Raw means are retained under the corresponding
+  PERFORMANCE_LOG entry.
+- Correctness evidence: A103, A104, A106, and A108 pass representative parity
+  at maximum errors **0.03125 / 0.03125 / 0.0234375**. Their four complete
+  production-shape digests match A094 exactly.
+- Failure mode: the Metal compiler/hardware already coalesces the ordinary
+  input and parameter traffic effectively. Explicit funnels, vector
+  conversions, leader branches, shuffles, and changed reduction grouping
+  add instruction or scheduling cost without reducing streamed weight bytes.
+- Why not to retry unchanged: exact production-shape timing resolves each
+  mechanism, and none projects close to the remaining five-percent full-model
+  gap.
+- Reopen only if: a compiler/GPU change, shader-counter attribution, or a new
+  mapping reduces total streamed Q5 bytes or proves a distinct occupancy
+  bottleneck.
+- Related commit or revert: candidates remain isolated in persistent detached
+  worktrees; selected A094 source on `main` is unchanged.
+
+## PERF-FA126 - Custom affine-Q4 QMV in the mixed Q5-class target
+
+- Hypothesis: enabling the existing custom Q4 batch-one path for the mixed
+  artifact's 162 Q4 linears will compound the selected Q5 QMV gain.
+- Scope: pinned 4.951-bpw mixed target, seed 42, exact direct
+  `128 / 32 warm / 128 timed`, with Q4 and Q5 QMV switches independently
+  controlled.
+- Attempted change: measured generic QMM, Q5-only, Q4-only, and combined QMV
+  arms with all other command-buffer and sampling controls fixed.
+- Benchmark evidence: generic reached **18.121698566 tok/s**, Q5-only
+  **19.032187257**, Q4-only **17.221199280**, and both **17.987099210**.
+- Correctness evidence: every arm completed the exact token contract. The Q5
+  selected and adjacent clean-A094 arms share digest `d0193f6d413b68c1`.
+- Failure mode: the custom Q4 geometry remains slower than MLX's generic
+  batch-one owner on this model, erasing part or all of the Q5 gain.
+- Why not to retry unchanged: both isolated and combined full-model arms
+  directly measure the reachable mixed-target path.
+- Reopen only if: a new Q4 kernel beats generic MLX at the exact mixed-model
+  shapes under matched microbenchmarks before another full-model launch.
+- Related commit or revert: the Q4 switch remains opt-in and disabled for the
+  selected mixed-Q5 configuration.
+
+## PERF-FA127 - Published Q4 MTP head on the mixed Q5-class target
+
+- Hypothesis: the smaller published Q4 MTP head plus corrected post-norm seed
+  can amortize target verification and lift mixed-Q5 sampled throughput.
+- Scope: pinned mixed target, namespaced Q4/G64 MTP head, exact p/q sampling,
+  block three, original/post-norm target seed, and optional Q4 QMV.
+- Attempted change: ran three isolated direct smokes varying only seed and Q4
+  draft execution around the retained compatibility loader.
+- Benchmark evidence: original seed reached **9.122242179 tok/s**, width
+  **1.882352941**; post-norm reached **9.507655940**, width **1.764705882**;
+  Q4 QMV with original seed reached **11.341033334**, width **2.285714286**.
+- Correctness evidence: the head loads through its `mtp.` namespace, exact p/q
+  verification runs, and each arm completes its requested token count.
+- Failure mode: accepted width remains too low to repay draft and multi-token
+  target verification; the Q4 QMV improves draft cost while staying far below
+  target-only execution.
+- Why not to retry unchanged: the best arm trails the selected target-only
+  screen by **7.691153923 tok/s** and the required floor by
+  **8.658966666 tok/s**.
+- Reopen only if: a measured proposal-distribution or target-verification
+  breakthrough materially changes accepted tokens per refill or cycle cost.
+- Related commit or revert: loader and post-norm controls remain retained for
+  correctness research; the composition is unselected.
+
+## PERF-FA128 - Dense BF16 recurrent b/a row fusion
+
+- Hypothesis: combining the mixed artifact's two `[48,5120]` dense recurrent
+  b/a projections removes 48 Metal matmul dispatches per generated token.
+- Scope: pinned mixed target, selected A094 Q5 QMV, seed 42, exact
+  `128 / 32 warm / 128 timed`, and two independent balanced five-versus-five
+  process-isolated windows.
+- Attempted change: concatenated each layer's dense b/a weights at load,
+  issued one `[96,5120]` product, split its result at 48, and preserved the
+  original quantized path as fallback.
+- Benchmark evidence: window-one means were control **18.987806897** and
+  fusion **19.008612939 tok/s**. Independent window-two means were control
+  **18.998960565** and fusion **18.977830522**. Aggregate ten-sample means are
+  control **18.993383731** and fusion **18.993221731**, a
+  **-0.000162000 tok/s / -0.000853%** movement.
+- Correctness evidence: strict C++20/O3 warnings-as-errors compilation and
+  `git diff --check` pass. All 20 timed outputs reproduce digest
+  `d0193f6d413b68c1` and last token `11406`.
+- Failure mode: the removed tiny dense dispatches do not own measurable
+  end-to-end time; the larger product and result split offset their encoding
+  savings.
+- Why not to retry unchanged: the independent balanced window cancels the
+  first window's apparent 0.11% gain and the aggregate result is flat to four
+  significant decimal places.
+- Reopen only if: a fused native kernel also consumes b/a in the recurrent
+  update or profiling attributes a larger dense-dispatch cost under a changed
+  runtime.
+- Related commit or revert: candidate remains outside `main` in persistent
+  detached worktree `perf-ab-fusion`; no source revert is required.
+
+## PERF-FA129 - Paired Q5 word loads and 128-bit activation reads
+
+- Hypothesis: halving Q5 weight-load instructions with lane sharing or halving
+  activation-load transactions can improve the selected A100 kernel further.
+- Scope: exact gate/up, down, attention-output, and value-projection shapes;
+  selected `100 / 1000` process-isolated order/reverse microbenchmark.
+- Attempted change: A101 has even lanes load five 32-bit words for each
+  adjacent lane pair and supplies odd lanes with three SIMD shuffles. A107
+  reads each lane's 32 activation bytes through two `uint4` transactions and
+  converts their four 64-bit halves as `bfloat4`.
+- Benchmark evidence: A101 regresses gate/up, down, and attention-output by
+  roughly **5--9%** across paired means and is also slower at value width.
+  A107 regresses gate/up and down in both directions, has a mixed attention-
+  output result, and is slower at value width. Exact raw means are retained in
+  `PERFORMANCE_LOG.md`.
+- Correctness evidence: both candidates compile under strict warnings, pass
+  representative parity at **0.03125 / 0.03125 / 0.0234375**, and reproduce
+  every control digest.
+- Failure mode: A101 replaces coalesced lane-local loads with a masked branch
+  and three shuffle dependencies. A107 changes transaction width while
+  retaining all conversions and arithmetic, leaving the streamed Q5 weights
+  and dominant dependency chain unchanged.
+- Why not to retry unchanged: every high-byte production shape is flat or
+  slower, so neither mechanism can fund the remaining 4.521% full-model gap.
+- Reopen only if: a future compiler removes the masked/shuffle overhead, the
+  activation base contract or cache hierarchy changes, or the wider reads fuse
+  with a separate input consumer.
+- Related commit or revert: selected A100 remains in signed commit
+  `59a50653c4`; A101/A107 artifacts remain outside `main`.
+
+## PERF-FA130 - Hand-inlined affine-Q4 helper arithmetic
+
+- Hypothesis: an aggressively inlined Q4/G64 dot body can combine the new
+  four-SIMD output cohort with compiler scheduling that beats stock MLX.
+- Scope: mixed 4.951-bpw target, its 162 Q4 linears, selected A100 Q5 kernel,
+  seed 42, and exact `128 / 32 warm / 128 timed` direct generation.
+- Attempted change: loaded each four-nibble word into a local `ushort`, kept
+  input and dot loops directly inside the dynamic Metal kernel body, and
+  accumulated four output rows per each of four SIMD groups.
+- Benchmark evidence: paired gate/up timing improved from stock
+  **0.464814646 ms** to **0.434910417 ms**. One full-model candidate reached
+  **19.413641543 tok/s** against **19.129950306** with the Q4 switch unset.
+- Correctness evidence: the candidate completed all shapes, while parity
+  reported **0 / 0.00195312 / 0.0078125** maximum BF16 error at K/N
+  `512/64`, `5120/128`, and `5120/17408`. The full-model digest changed from
+  `d0193f6d413b68c1` with last token 11406 to `70b8328e7074a21e` with last
+  token 12.
+- Failure mode: Apple Metal reassociates the hand-inlined FP32 expression
+  enough to cross BF16 rounding boundaries. The resulting sampled trajectory
+  violates the fixed-work digest gate.
+- Why not to retry unchanged: the apparent speedup depends on arithmetic
+  lowering that changes observable model output.
+- Reopen only if: generated-code evidence identifies a load or scheduling
+  change that retains MLX's helper/expression structure and bit-exact BF16
+  output. PERF-A111 demonstrates that exact boundary.
+- Related commit or revert: the hand-inlined source was replaced in the
+  detached candidate worktree before promotion; no revert is required.
+
+## PERF-FA131 - Remaining affine-Q4 output, load, lane-work, and unroll forms
+
+- Hypothesis: more output rows, fewer threadgroups, wider weight transactions,
+  more packs per lane, or compile-time unrolling can compound A111's Q4 gain.
+- Scope: mixed 4.951-bpw target, its 162 Q4 linears, selected A100+A111,
+  bit-exact synthetic parity, gate/up `100 / 1000` microbenchmarks, and exact
+  `128 / 32 warm / 128 timed` full-model screens.
+- Attempted change: evaluated exact `8x4`, `4x8`, and `2x8` output cohorts;
+  one `packed_ushort4` load; four packs per lane; a helper-local `ushort`; and
+  forced full unrolling of the K-specialized outer loop.
+- Benchmark evidence: `8x4` is flat at control/candidate **19.229939742 /
+  19.230535491 tok/s**. `4x8` and `2x8` fall to **18.840786855** and
+  **18.851060160**. The vector load moves five-sample means only
+  **19.222120223 -> 19.232188501**. Four packs per lane reaches
+  **18.928908455** full-model tok/s. The local word regresses paired gate/up
+  **0.454020313 -> 0.464569500 ms**, and full unrolling regresses one gate/up
+  run **0.468931459 -> 1.799243958 ms**.
+- Correctness evidence: every geometry, vector-load, local-word, and unroll
+  form is bit-exact at the focused parity shapes. Four packs per lane has one
+  `0.000488281` BF16 mismatch at `5120x17408` and changes the target digest to
+  `92ae190a68ee376b`, last token 8.
+- Failure mode: larger row cohorts lose occupancy; fewer threadgroups lose
+  useful parallelism; the vector transaction yields no full-model margin;
+  larger lane work changes FP32 grouping; explicit full unrolling sharply
+  increases generated-kernel cost.
+- Why not to retry unchanged: the complete cohort family and direct load/
+  unroll variants are measured on the exact production shapes and target.
+- Reopen only if: a compiler/GPU change or new shader counters prove a
+  different occupancy/register regime, or a load-sharing mechanism reduces
+  streamed bytes while retaining A111's FP32 reduction order.
+- Related commit or revert: all candidates remain isolated outside `main`;
+  signed A111 in `22408c50c4` remains selected.
+
+## PERF-FA132 - Fast-exponent fused affine-Q4 gate/up/SwiGLU arithmetic
+
+- Hypothesis: one batch-one Metal dispatch can consume both Q4 gate/up
+  matrices and emit the BF16 SwiGLU product while eliminating intermediate
+  arrays and elementwise kernels.
+- Scope: mixed 4.951-bpw Q5-class target, its 128 Q4 MLP gate/up linears,
+  selected A100+A111, production-shape microbenchmarks, synthetic parity, and
+  one sampled direct `128 / 32 warm / 128 timed` screen.
+- Attempted change: one 8-SIMD by four-paired-row kernel retains MLX's Q4
+  load/dot expression and explicitly materializes the gate, up, SiLU, and
+  final product BF16 rounding points. The rejected form evaluates sigmoid
+  with `metal::exp`; the route is opt-in through
+  `SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU`.
+- Benchmark evidence: separate/fused production-shape means are
+  **0.598734317 / 0.557800892 ms**, a **6.837%** isolated reduction. The
+  full model reaches **19.406869588 tok/s** during active host indexing.
+- Correctness evidence: focused synthetic tests report zero mismatches at all
+  selected shapes. The real model changes digest/last token from
+  `d0193f6d413b68c1` / 11406 to `f2a59800c8d89f75` / 19. A temporary
+  real-weight/real-hidden trace localizes the first mismatch to layer 62,
+  element 36: gate and up are exact, while sigmoid rounds to BF16 `0x3a8c`
+  instead of MLX's `0x3a8b`. The difference propagates through SiLU
+  (`0xbbf0` versus `0xbbee`) and the final product (`0x3c8f` versus
+  `0x3c8e`).
+- Failure mode: the separate MLX kernels use safe/precise exponential
+  arithmetic. `metal::exp` inside this fused custom kernel changes one real
+  sigmoid rounding boundary. Volatile BF16 locals and explicit
+  BF16-to-`ushort`-to-BF16 round trips do not repair it.
+- Why not to retry unchanged: the full-model fixed-work trajectory is part of
+  the performance contract, and the fast-exponent source fails it.
+- Reopen only if: a future Metal/MLX compiler change makes `metal::exp`
+  demonstrably bit-exact to the safe separate path at every real boundary.
+  Replacing it with `metal::precise::exp` is materially different evidence,
+  not a retry of this failed arm.
+- Related commit or revert: the corrected precise-exp A114 candidate remains
+  materially distinct from this failed arm. Its 64-layer trace, dedicated
+  boundary negative control, focused parity, and two paired throughput windows
+  pass; precise-exp A114 is promoted while the fast-exp source stays closed.
+
+## PERF-FA133 - Four-SIMD fused affine-Q4 gate/up/SwiGLU geometry
+
+- Hypothesis: halving A114's threadgroup from eight to four SIMD groups may
+  reduce per-threadgroup register pressure and improve occupancy enough to
+  offset twice as many threadgroups.
+- Scope: the selected precise-exp fused Q4/G64 gate/up/SwiGLU kernel at the
+  production K/N shape `5120/17408`.
+- Attempted change: change only shader and host `SimdGroups` from eight to
+  four while retaining two packs per lane and four paired results per SIMD
+  group.
+- Benchmark evidence: balanced 5,000-iteration control samples are
+  **0.567918008, 0.564163733 ms**, mean **0.566040871**. Candidate samples are
+  **0.566923292, 0.567484408 ms**, mean **0.567203850**, about **0.205% slower**.
+- Correctness evidence: the focused Q4 QMV, fused SwiGLU, and precise
+  sigmoid-boundary tests all pass bit-exactly.
+- Failure mode: doubling the output-grid threadgroup count outweighs any
+  register/occupancy benefit at the measured production shape.
+- Why not to retry unchanged: the exact geometry and production shape have a
+  balanced microbenchmark regression; a full-model launch has no supporting
+  mechanism or signal.
+- Reopen only if: new shader counters or a materially different fused kernel
+  changes register pressure, occupancy, or per-threadgroup work.
+- Related commit or revert: candidate stayed outside `main`; selected A114
+  eight-SIMD geometry remains in signed `ca524c3282`.
+
+## PERF-FA134 - Dynamically indexed lane-parallel fused-Q4 epilogue
+
+- Hypothesis: lanes 0--3 can execute A114's four precise sigmoid/SiLU/product
+  chains concurrently after the SIMD reductions, removing four serial
+  `metal::precise::exp` operations from lane zero.
+- Scope: the selected eight-SIMD/four-result fused Q4/G64 gate/up/SwiGLU
+  kernel at production shape `5120/17408`.
+- Attempted change: reduce all four gate/up accumulators first, then use
+  `thread_index_in_simdgroup` as a dynamic index into the two four-element
+  thread-local result arrays for lanes 0--3.
+- Benchmark evidence: an initial balanced 5,000-iteration window appeared to
+  improve control/candidate **0.566223700 -> 0.564063788 ms**, but the longer
+  reversed 10,000-iteration window averages candidate
+  **0.564099544 ms** versus control **0.562567529 ms**, about **0.272% slower**.
+- Correctness evidence: all focused production shapes and the `-6.84375`
+  precise sigmoid boundary pass bit-exactly.
+- Failure mode: dynamic thread-local array selection likely adds addressing,
+  register-spill, or compiler-selection cost that exceeds the parallel
+  epilogue benefit.
+- Why not to retry unchanged: the longer order-reversed microbenchmark
+  overturns the shorter apparent gain.
+- Reopen only if: generated-shader evidence proves the dynamic arrays stay in
+  registers under a new compiler, or the result storage/layout changes
+  materially.
+- Related commit or revert: candidate stayed outside `main`; PERF-A117's
+  compile-time register selection is materially different and is retained in
+  signed `00d09138ce`.
+
+## PERF-FA135 - Explicit vector transaction in the fused-Q4 load helper
+
+- Hypothesis: one `packed_ushort4` transaction can replace the fused Q4
+  helper's two packed-word reads and reduce load-instruction cost across the
+  gate and up streams.
+- Scope: selected A117 exact fused affine-Q4/G64 gate/up/SwiGLU at production
+  shape `5120/17408`; ordinary Q4 execution is unchanged.
+- Attempted change: load the same eight packed bytes through one explicit
+  four-element 16-bit vector, then preserve the existing MLX-compatible
+  nibble unpack, FP32 reduction, and lane-parallel precise epilogue.
+- Benchmark evidence: two 10,000-iteration candidate samples are
+  **0.563729096 / 0.558256000 ms**, mean **0.560992548**. A117 controls are
+  **0.558807537 / 0.556857937 ms**, mean **0.557832737**. Candidate latency
+  increases **0.003159811 ms / about 0.566%**.
+- Correctness evidence: all focused Q4 QMV shapes, both fused shapes, and the
+  `-6.84375` precise sigmoid boundary pass exactly.
+- Failure mode: the wider source transaction does not reduce the dominant
+  paired weight stream or arithmetic and lowers less efficiently than the
+  compiler-selected scalar form in this two-stream fused shader.
+- Why not to retry unchanged: the exact selected production shape regresses
+  in two long samples despite bit-exact output.
+- Reopen only if: generated shader evidence shows a compiler or alignment
+  change that removes the current vector-lowering cost, or the load is shared
+  across materially more arithmetic.
+- Related commit or revert: candidate remained outside `main`; exact A117 was
+  restored before the next experiment.
+
+## PERF-FA136 - Load-time row concatenation of Q5 `qkv` and `z`
+
+- Hypothesis: the 48 linear-attention layers can replace two affine-Q5/G64
+  input-projection launches with one `N=16384` launch because `qkv` and `z`
+  consume the same BF16 hidden state.
+- Scope: production `K=5120`, `Nqkv=10240`, `Nz=6144`; selected A100 Q5
+  kernel, A111/A114/A113/A117 target, and exact sampled direct benchmark.
+- Attempted change: concatenate each projection pair's packed weights,
+  scales, and biases by output row during model load, execute the resulting
+  QLinear once, and split its output at row 10240. The path is opt-in through
+  `SGLANG_MLX_NATIVE_Q5_QKV_Z_FUSION`.
+- Benchmark evidence: ten order/reverse 2,000-iteration micros improve
+  two-launch/one-launch aggregate **0.426645998 -> 0.420592346 ms**
+  (**1.418893%**). Full-model fusion then reaches
+  **19.441971742 / 19.406059113 tok/s** around adjacent same-dylib disabled
+  control **19.469521945**; both candidate comparisons lose.
+- Correctness evidence: micro output is byte-exact with digest
+  `555793dfc2cf896f`; the focused Q5 suite passes; every full-model arm
+  retains digest `d0193f6d413b68c1` and last token 11406.
+- Failure mode: the isolated launch saving does not survive the load-time
+  copied tensor representation and runtime split graph in the full target.
+- Why not to retry unchanged: the implementation is exact but negative in
+  both adjacent full-model comparisons, and temporarily adds copied-weight
+  residency during model load.
+- Reopen only if: the implementation consumes the two original matrices and
+  writes the original two outputs directly in one native dispatch, removing
+  both concatenation and split, or new profiling proves those costs absent.
+- Related commit or revert: candidate remained outside `main`; A117 source was
+  restored byte-for-byte after the screen.
+
+## PERF-FA137 - Native two-output Q5 `qkv`/`z` dispatches
+
+- Hypothesis: one custom Metal dispatch over the two original affine-Q5/G64
+  matrices can retain A119's launch saving while removing copied weights and
+  the runtime split graph.
+- Scope: production `K=5120`, `Nqkv=10240`, `Nz=6144`; exact A100 unpack/FMA
+  order and deterministic `200 / 2000` process-isolated microbenchmarks.
+- Attempted change: A120 uses four-SIMD/16-row threadgroups across one combined
+  grid and makes a threadgroup-uniform choice between the original matrices
+  and outputs. A121 instead maps the exact 5:3 row ratio into every eight-SIMD
+  threadgroup: five groups emit 20 qkv rows and three emit 12 z rows.
+- Benchmark evidence: A120 aggregate separate/paired is
+  **0.421745535 / 0.427401865 ms**, a **1.341171%** regression with all ten
+  pairs negative. A121 aggregate is
+  **0.423397846 / 0.426008156 ms**, a **0.616515%** regression. Forward and
+  reverse windows agree for both.
+- Correctness evidence: first-compile smoke and every timed arm are byte-exact
+  for both outputs with joined digest `555793dfc2cf896f`.
+- Failure mode: the second-output ABI, buffer/output selection, and larger
+  eight-SIMD topology consume more than the saved submission. Neither form
+  reduces the dominant streamed Q5 weight bytes or per-row arithmetic.
+- Why not to retry unchanged: both split-free representations regress in two
+  order directions before any model integration, while A119's only isolated
+  win already failed the full-model gate.
+- Reopen only if: a kernel shares staged activation or decoded weight work
+  across the two products, reduces total weight-side instructions, or a new
+  compiler removes the measured selection cost.
+- Related commit or revert: both candidates stayed outside `main`; exact A117
+  engine/header content was restored against signed `00d09138ce`.
+
+## PERF-FA138 - Interleaved gate/up issue order in fused Q4 SwiGLU
+
+- Hypothesis: alternating each gate-row dot with the corresponding up-row dot
+  can expose the two independent weight streams sooner and shorten the fused
+  kernel's dependency chain without changing arithmetic.
+- Scope: selected A117 affine-Q4/G64 gate/up/SwiGLU at production shape
+  `K=5120`, `N=17408`; eight SIMD groups, scalar packed-word loads, unchanged
+  reductions, and the compile-time lane-parallel precise epilogue.
+- Attempted change: replaced the separate four-row gate and four-row up loops
+  with one four-row loop that issues gate then up. Each accumulator retains
+  its exact per-K update order and expression.
+- Benchmark evidence: five forward A117/A122 pairs average
+  **0.561355594 / 0.570393451 ms**. Five reversed A122/A117 pairs average
+  **0.567740174 / 0.556083303 ms**. Aggregate A117/A122 is
+  **0.558719448 / 0.569066813 ms**, a **1.851979%** regression; all ten
+  paired deltas are negative.
+- Correctness evidence: the strict C++/Metal suite passes ordinary Q4
+  `512/64`, `5120/128`, and `5120/17408`, fused `512/64` and `5120/17408`,
+  and the `-6.84375` precise-sigmoid boundary exactly. Every timed arm reports
+  digest `8a9031349585365a` and first output `0.875`.
+- Failure mode: alternation reduces neither weight traffic nor arithmetic and
+  produces a consistently worse compiler schedule, plausibly by disrupting
+  grouped-stream locality or extending live state across the two products.
+- Why not to retry unchanged: two complete order directions lose every pair
+  by an aggregate **0.010347364 ms**, far outside the local noise scale.
+- Reopen only if: a Metal compiler change or generated-shader evidence proves
+  different register/load scheduling, or a materially different fused body
+  removes work while interleaving it.
+- Related commit or revert: candidate stayed outside `main`; exact signed-A117
+  engine/header content was restored before the next experiment.
+
+## PERF-FA139 - Affine-Q5 result-row read-ahead
+
+- Hypothesis: issuing packed-weight, scale, and bias reads for later output
+  rows before the current row's long unpack/FMA chain can expose more memory
+  latency while preserving A100's exact arithmetic.
+- Scope: selected four-SIMD/four-row/two-pack Q5/G64 kernel and the traced
+  K=17,408, K=5,120, and K=6,144 production families.
+- Attempted change: A123 prefetches all four rows into thread-local arrays.
+  A124 prefetches two rows at a time to halve the extra live state. Neither
+  changes weight bytes, unpack expressions, per-result FMA order, reductions,
+  or BF16 stores.
+- Benchmark evidence: A123's ten-pair order/reverse aggregates are A100/A123
+  **0.432488694 / 0.434353889 ms** at K=17,408 and
+  **0.360067748 / 0.362687827 ms** at K=5,120, regressions of
+  **0.431270% / 0.727663%**. K=6,144 measures
+  **0.327001153 / 0.326540605 ms**, but the forward order favors A123 while
+  reverse order favors A100, leaving only a noise-sized **0.140840%**
+  aggregate. A124's decisive K=17,408 `500 / 10000` window measures
+  **0.428486222 / 0.429494958 ms**, a **0.235419%** regression; A124 wins four
+  of ten pairs.
+- Correctness evidence: both strict focused builds pass Q5 K/N `512/64`,
+  `5120/128`, and `17408/32` at the exact A100 maximum errors
+  **0.03125 / 0.03125 / 0.0234375**. Every micro retains the corresponding
+  exact digest and first output.
+- Failure mode: additional live packed words and parameters consume registers
+  without changing dominant weight traffic. Process-order effects exceed the
+  residual scheduling movement, and the longer balanced gate is negative.
+- Why not to retry unchanged: both four-row and reduced-state two-row forms
+  have been measured across every traced K family; the decisive largest-owner
+  window rejects the narrower form.
+- Reopen only if: generated Metal evidence shows materially different load
+  issuance/register allocation under a new compiler, or read-ahead also
+  removes bytes or unpack work.
+- Related commit or revert: both candidates stayed outside `main`; exact A117
+  engine/header content was restored against signed `00d09138ce`.
+
+## PERF-FA140 - Dense 20-bit affine-Q5 parameter reconstruction
+
+- Hypothesis: losslessly reducing the scale/bias stream by 37.5% and placing
+  four output rows in one dense bundle can offset bit extraction while leaving
+  quantized weights, FP32 FMA order, reductions, and BF16 stores unchanged.
+- Scope: all 240 Q5 matrices in the immutable mixed 4.951-bpw checkpoint and
+  selected A100's four-SIMD/four-result batch-one Metal kernel. Generic prefill
+  retains the original BF16 parameter tensors.
+- Attempted change: a C++ packer proves and encodes pairwise-opposite signs,
+  per-tensor scale-exponent bases, the Q5 exponent delta 4/5, and both BF16
+  mantissas in 20 bits. Four row codes occupy ten bytes. Each decode iteration
+  issues three packed four-byte loads, extracts four codes, reconstructs exact
+  BF16 bit patterns, and runs A100's unchanged dot sequence.
+- Benchmark evidence: at production K=17,408/N=5,120, forward
+  regular/compact measures **0.431460250 / 0.458926500 ms** and reverse
+  compact/regular measures **0.461158805 / 0.438137875 ms**. Aggregate
+  regular/compact is **0.434799063 / 0.460042653 ms**, a
+  **0.025243590 ms / 5.805806%** regression.
+- Correctness evidence: the checkpoint scan covers **419,840,000** pairs with
+  no zero, subnormal, infinity, or NaN and proves exact width bounds. Small and
+  production compact kernels are byte-exact against the regular kernel at
+  digests `5dfe43d38768b898` and `4c08a11e47576b08`.
+- Failure mode: three unaligned packed-window loads plus per-row exponent,
+  sign, mantissa, and BF16 reconstruction lengthen the instruction path more
+  than the reduced parameter-cache footprint shortens it.
+- Why not to retry unchanged: the largest profiled Q5 family regresses by
+  nearly six percent in both process orders, far beyond local variance.
+- Reopen only if: the representation eliminates most reconstruction work,
+  hardware/compiler support provides a cheaper bitfield decode, or a raw
+  interleaving control proves enough locality benefit to fund compression.
+- Related commit or revert: A125 remains isolated in the detached candidate
+  worktree only long enough to derive the raw-interleave control; it was never
+  wired into a model dylib or production default.
+
+## PERF-FA141 - Raw four-row affine-Q5 parameter interleaving
+
+- Hypothesis: one aligned 16-byte load for four unchanged scale/bias pairs can
+  improve parameter locality without A125's extraction and BF16 reconstruction
+  cost; limiting it to a microbenchmark winner can preserve a full-model gain.
+- Scope: selected A100's affine-Q5 batch-one kernel across K=17,408, K=5,120,
+  and K=6,144, followed by a K=17,408-only mixed-model gate.
+- Attempted change: a C++ load-time packer copied raw BF16 pairs into four-row
+  bundles while retaining original tensors for prefill. The Metal kernel read
+  one `uint4`, bitcast each pair exactly, and kept the selected dot, reduction,
+  and store paths unchanged. A127 prepared the duplicate stream only when
+  `input_features == 17408`.
+- Benchmark evidence: K=17,408 improves **0.4315079725 -> 0.4295822229 ms**,
+  **0.446284%**, with only five of ten pair wins. K=5,120 regresses
+  **0.3587223191 -> 0.3624250267 ms**, **1.032193%**, and K=6,144 regresses
+  **0.3169493750 -> 0.3407608625 ms**, **7.512710%**. The shape-gated complete
+  model regresses **19.4281991915 -> 19.3109191455 tok/s**, **0.603659%**.
+- Correctness evidence: every micro digest is exact. All full-model samples
+  preserve canonical digest `d0193f6d413b68c1`, last token 11406, and exact
+  timed length.
+- Failure mode: the vector parameter load does not reduce bytes or arithmetic,
+  and its shape-local micro movement does not survive 64 duplicate parameter
+  arrays, added residency, and the complete decode schedule.
+- Why not to retry unchanged: the only favorable shape failed a same-dylib
+  full-model control in both process orders; the other production shapes are
+  directly negative.
+- Reopen only if: the packed layout replaces rather than duplicates original
+  tensors through both prefill and decode, or it removes parameter bytes or
+  instructions in a fused consumer.
+- Related commit or revert: A126/A127 remained opt-in in the detached candidate
+  worktree. `apply_patch` restored engine/header Git blobs
+  `5912bc2fe9b1e8f34bdace0b1a009f8aa1223d04` and
+  `512335f1ae677f48ee76a77d2f097bef720e71ce`, exactly matching signed
+  `00d09138ce`.
+
+## PERF-FA142 - Uncapped A128 long prefill
+
+- Hypothesis: A128's 680 MiB duplicate Q4 parameter stream could coexist with
+  the selected 2,048-token native prefill chunks without another residency
+  control; halving only the chunk would be sufficient if the command-buffer
+  working set alone owned the peak.
+- Scope: mixed 4.951-bpw Q5-class checkpoint, all selected A100/A111/A114/
+  A113/A117/A128 switches, real 131,072 SGLang context and token admission,
+  one request, one outer admission chunk, and sampled `8192+16` serving.
+- Attempted change: first retained the direct-benchmark 2,048-token internal
+  chunk, then changed only that chunk to 1,024 while leaving MLX's recycled
+  buffer cache uncapped.
+- Benchmark evidence: both served arms reached the native C++ prefill and
+  disconnected after about 40 seconds. A separate process with the same A128
+  dylib and 1,024-token internal chunk completed `8192 / 1 warm / 1 timed`, so
+  the smaller native engine path is functional outside full-server residency.
+- Correctness evidence: both server tracebacks end at
+  `NativeQwen38Engine.prefill` with Metal
+  `kIOGPUCommandBufferCallbackErrorOutOfMemory`; each crash handler removed
+  the complete verified server tree. Ports, model/compiler processes, memory,
+  and thermals returned to their clean prelaunch state after each failure.
+- Failure mode: full-server process and recycled-buffer residency consume the
+  remaining headroom. Internal chunk reduction alone does not make the A128
+  duplicate stream safe for realistic prompts.
+- Why not to retry unchanged: the failure reproduced across two native chunk
+  sizes, while adding the existing one-GiB cache cap made the identical
+  `8192+16` request complete.
+- Reopen only if: A128 stops duplicating its original parameter planes, the
+  server sheds material resident state, or allocator evidence shows a new
+  independent peak and the exact same 8K request is rerun.
+- Related commit or revert: no source change; PERF-A129 retains the successful
+  cache-capped configuration.
+
+## PERF-FA143 - Cache-capped stock SDPA at exact 32K IDs
+
+- Hypothesis: a one-GiB MLX recycled-buffer cap and 1,024-token native prefill
+  chunks, which pass exact `8192+16`, would leave enough working memory for
+  progressively longer prompts under the real 131,072-token server contract.
+- Scope: the pinned mixed 4.951-bpw Q5-class checkpoint, selected A128 dylib,
+  all selected decode switches, one request, language-only serving, real
+  `context_length=max_total_tokens=131072`, and a 3,600-second watchdog.
+- Attempted change: sent 32,768 literal token ID 100 values plus 16 requested
+  output tokens through `/generate` using the compiled read-only Rust probe.
+  This bypasses all tokenizer and prompt-calibration paths.
+- Benchmark evidence: the request ran for about 66 seconds, then the scheduler
+  failed inside `NativeQwen38Engine.prefill` with Metal
+  `kIOGPUCommandBufferCallbackErrorOutOfMemory`. No HTTP response headers were
+  emitted before the verified server tree exited.
+- Correctness evidence: the same configuration already passed exact
+  `8192+16`. After failure, listener PID 15355 and children 15358/15359/15360
+  were absent, port 30000 was free, memory recovered to 92%, throttled pages
+  were zero, and there was no thermal or performance warning.
+- Failure mode: capping allocator recycling does not bound the live
+  full-attention working set. The engine geometrically grows contiguous BF16
+  K/V and calls stock SDPA for each query chunk against all accumulated keys;
+  its dense score transient scales with chunk length times context length.
+- Why not to retry unchanged: exact IDs eliminate the earlier 344,115-token
+  tokenizer overshoot, so this is a direct 32K native capacity failure.
+  Extrapolating the same dense mechanism to 131K is not credible.
+- Reopen only if: prefill attention becomes fixed-memory, KV residency is
+  materially reduced, or direct allocation telemetry identifies and removes
+  a different independent peak before rerunning this exact probe.
+- Related commit or revert: no source change; PERF-A130 takes over the
+  capacity path.
+
+### Follow-up after PERF-A131
+
+On-demand quantized embedding removes **1,827,635,200 bytes / 1.702 GiB** and
+extends the identical exact-ID request from about 66 to about 180 seconds
+before the same Metal insufficient-memory exception. This reopens and closes
+the exact control under a materially smaller resident model: the shifted
+boundary proves that embedding residency mattered, while the remaining failure
+confirms that allocator capping plus model-residency reduction does not make
+the stock full-attention mechanism a 32K or 131K solution.
+
+## PERF-FA144 - Always-on fixed-memory attention for short prompts
+
+- Hypothesis: the native online-softmax kernel could replace stock MLX SDPA
+  for every multi-token prefill while preserving the deterministic complete-
+  model trajectory.
+- Scope: the selected mixed-Q5 target, A128 and A131 switches, native sampling
+  seed 42, batch one, 128 prompt tokens, 32 warm tokens, and 128 timed tokens.
+- Attempted change: enabled fixed-memory attention for all multi-token chunks,
+  including the initial 128-token prompt.
+- Benchmark evidence: decode remains healthy at **19.667817477 tok/s**, but
+  the token digest changes from canonical `d0193f6d413b68c1` to
+  `b49d27b0ba43fd0c`; the last token changes from 11406 to 125363. Disabling
+  only fixed attention in the same repaired dylib restores
+  **19.699758875 tok/s**, the canonical digest, and last token 11406.
+- Correctness evidence: isolated output differences are small—five focused
+  shapes stay within maximum absolute error `0.000244141`—but they are enough
+  to cross a sampled decision boundary in the complete model.
+- Failure mode: the online reduction order is numerically equivalent within
+  BF16 tolerance but not bit-identical to stock SDPA, so unconditional use
+  changes ordinary deterministic behavior.
+- Why not to retry unchanged: short-prompt stock SDPA is already safe and the
+  model-level golden control rejects this policy even though tensor parity is
+  tight.
+- Reopen only if: the native reduction becomes bit-identical to MLX SDPA or a
+  new golden contract explicitly qualifies the changed sampled trajectory.
+- Related commit or revert: signed `ee0bf40711` retains the kernel only above
+  8,192 active tokens, preserving the canonical short path while exact 32K
+  serving passes.
+
+## PERF-FA145 - Full 131K BF16 attention-cache reserve
+
+- Hypothesis: allocating each full-attention K/V cache at its final
+  131,072-token capacity on the first long chunk would remove geometric-growth
+  replacement lifetimes, and metadata-only append-only snapshots would remove
+  the remaining prompt-snapshot tensor owners, allowing A130 to scale from
+  exact 32K to exact 131K without changing cache precision.
+- Scope: the selected mixed 4.951-bpw Q5 target, A130 fixed-memory attention,
+  A131 on-demand embedding, all selected decode switches, sixteen BF16 K/V
+  pairs, one request, and real `context_length=max_total_tokens=131072`.
+- Attempted change: set `SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE=131072` and
+  `SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT=1`, then sent the exact literal-
+  ID `32768+16` capacity probe to a fresh server.
+- Benchmark evidence: the request failed after about 16 seconds with Metal
+  `kIOGPUCommandBufferCallbackErrorOutOfMemory`, substantially earlier than
+  A130's geometric BF16 cache, which completes the same request in
+  **373.179259 s**. A same-dylib short direct pair is neutral/slightly slower:
+  **19.685169420 -> 19.672600916 tok/s**, with canonical output in both arms.
+- Correctness evidence: the cache-growth policy passes aligned boundary and
+  invalid-input tests. Appending a generated suffix, rolling logical metadata
+  back, and overwriting the suffix preserves the complete prompt prefix and
+  replacement suffix exactly. All five A130 fixed-attention parity shapes
+  continue to pass with maximum absolute error at most `0.000244141`.
+- Failure mode: final BF16 K/V storage is 8 GiB. Scheduler RSS before the
+  request was 18,225,056 KiB (approximately 17.38 GiB), while MLX reports a
+  26,800,603,136-byte recommended working-set limit (approximately 25 GiB).
+  Eagerly making both resident exceeds the safe Metal allocation boundary
+  before prompt scratch or display/OS headroom.
+- Why not to retry unchanged: the representation's final live bytes alone
+  cross the current system limit; removing geometric copies cannot make that
+  final state fit. Raising the wired limit would require a privileged system
+  change and would consume unsafe unified-memory headroom on this 32 GiB
+  display machine.
+- Reopen only if: the model's resident footprint materially drops or a safely
+  qualified higher wired limit supplies at least the complete model plus 8 GiB
+  K/V and operating headroom. Otherwise use a compressed cache.
+- Related commit or revert: record-only A133 checkpoint; its metadata-only
+  snapshot mechanism is retained provisionally for PERF-A134's affine-Q8/G64
+  cache.
+
+## PERF-FA146 - 128 MiB command buffers for the mixed-Q5 target
+
+- Hypothesis: the 128 MiB MLX command-buffer budget that improved the earlier
+  Q2/full-Q4 native lane would reduce submission stalls enough to close the
+  mixed-Q5 target's remaining 1.3% short-decode gap.
+- Scope: pinned mixed 4.951-bpw target, selected A100/A111/A114/A113/A117/A128/
+  A130/A131 controls, sampled direct `128 / 32 warm / 128 timed`, and process-
+  start command-buffer configuration.
+- Attempted change: changed only `MLX_MAX_MB_PER_BUFFER=256` to `128`; retained
+  64 SDPA blocks, 100 operations per buffer, fast synchronization, native
+  sampling seed 42, and every selected model/kernel switch.
+- Benchmark evidence: 128 MiB reaches **19.422060304 tok/s**. Adjacent 256 MiB
+  forward/reverse controls reach **19.738568824** and **19.641604528 tok/s**,
+  mean **19.690086676**. The candidate regresses
+  **0.268026372 tok/s / 1.361225%**.
+- Correctness evidence: all three arms emit exact 128-token timed output,
+  canonical digest `d0193f6d413b68c1`, last token 11406, and exit zero.
+- Failure mode: this mixed Q4/Q5 projection and fused-MLP schedule benefits
+  from the larger command-buffer budget; the earlier model-specific result
+  does not transfer.
+- Why not to retry unchanged: the regression exceeds the complete gap to the
+  requested floor and reproduces against controls on both sides of the arm.
+- Reopen only if: model/kernel composition changes materially or a Metal trace
+  identifies a new submission boundary specifically addressed by 128 MiB.
+- Related commit or revert: record-only PERF-FA146 checkpoint; no source
+  changed.
+
+## PERF-FA147 - Fixed split count for affine-Q8/G64 cache attention
+
+- Hypothesis: A134's automatic key-split count underutilizes the M1 Max at
+  batch-one decode, so a fixed split topology would remove enough per-layer
+  attention cost to repair its long-history full-model regression.
+- Scope: the A134 affine-Q8/G64 fixed-memory attention shader, 24 query heads,
+  four KV heads, dimension 256, 8,192 or 32,768 active tokens, 16,384 or
+  131,072 allocated cache slots, and one through 32 key splits.
+- Attempted change: added a temporary validated process-start split override,
+  rebuilt the candidate dylib and isolated benchmark, measured 1/2/4/8/16/32
+  plus the automatic policy, then removed the control.
+- Benchmark evidence: at 8,192 active tokens and 16,384 capacity, 1/2/4/8/16/32
+  take **7.4532 / 3.8310 / 2.0462 / 1.1594 / 1.2400 / 2.1842 ms** and auto
+  takes **2.0348 ms**. At 32,768 active tokens and 131,072 capacity, fixed
+  8/16/32 take **3.9262 / 2.2349 / 2.3279 ms** versus **2.2791 ms** auto.
+  No fixed value dominates both histories or approaches the approximately
+  4.079 tok/s end-to-end deficit.
+- Correctness evidence: every arm uses the focused-tested A134 Q8 shader. The
+  retained test passes Q8 and BF16 parity, invalid cache growth rejection, and
+  exact append/rollback invariants. The temporary symbol is absent and the
+  restored engine hash is
+  `cfe798131b88e37de331bc7706d2e173f221e260`.
+- Failure mode: optimal split parallelism changes with active length and
+  allocation state, and the existing automatic policy is already competitive
+  at the decisive 32K shape. The integrated regression is larger and lies
+  elsewhere in cache quantization/update/dependency composition.
+- Why not to retry unchanged: a full 1--32 sweep measured both the short-long
+  boundary and a larger history; pinning the best isolated value would make
+  other histories slower and adds a production knob without a model win.
+- Reopen only if: a materially different shader changes per-split work or a
+  full-model Metal trace identifies split reduction as the dominant owner.
+- Related commit or revert: temporary override removed before commit; record-
+  only checkpoint.
+
+## PERF-FA148 - Fifty operations or 512 MiB per MLX command buffer
+
+- Hypothesis: more frequent submission at 50 operations or fewer submissions
+  at 512 MiB would improve the selected mixed-Q5 decode stream enough to clear
+  the remaining short-work gap.
+- Scope: selected A100/A111/A114/A113/A117/A128/A130/A131 direct mixed-Q5
+  workload, 64 SDPA blocks, fast synchronization, native sampling seed 42,
+  and `128 / 32 warm / 128 timed`.
+- Attempted change: measured 256 MiB with 50 operations, then 512 MiB with the
+  selected 100 operations, changing no model or kernel source.
+- Benchmark evidence: 50 operations reaches **19.529132775 tok/s** and 512 MiB
+  reaches **19.652952905 tok/s**. Adjacent 256 MiB/100-operation controls are
+  **19.738568824 / 19.641604528**, mean **19.690086676**, making the two arms
+  **0.817436%** and **0.188591%** slower respectively.
+- Correctness evidence: both candidates emit exact 128-token output, digest
+  `d0193f6d413b68c1`, last token 11406, and exit zero.
+- Failure mode: neither shorter operation batches nor larger byte batches
+  improve the current fused Q4/Q5 command stream; the 512 MiB difference is
+  noise-sized but has no winning evidence.
+- Why not to retry unchanged: the selected 256 MiB/100-operation setting beats
+  both candidates and the configuration-only family cannot provide the needed
+  repeatable margin.
+- Reopen only if: a source-level kernel or graph change materially changes the
+  command stream and a new trace identifies submission cadence as an owner.
+- Related commit or revert: record-only checkpoint; no source changed.
+
+## PERF-FA149 - Precise-exp fallback inside the fast fused-Q4 sigmoid
+
+- Hypothesis: using fast Metal exp for ordinary BF16 gates while branching to
+  precise exp for the sole finite mismatch and non-finite patterns would
+  preserve exact behavior and recover the fast-exp instruction saving.
+- Scope: the shared sigmoid helper used by regular-parameter and raw-parameter
+  fused affine-Q4 gate/up/SwiGLU batch-one kernels.
+- Attempted change: compute fast exp first, detect BF16 input `0xc0db` or an
+  all-ones exponent, and overwrite the exponential with
+  `metal::precise::exp` on that branch.
+- Benchmark evidence: four alternating `raw 5120 17408 1000 10000` runs
+  average **0.554598152 ms** for unconditional precise exp and
+  **0.555708195 ms** for conditional fallback, a
+  **0.001110043 ms / 0.200153%** regression.
+- Correctness evidence: the standalone Metal analyzer covers all 65,536 BF16
+  patterns and reports zero corrected sigmoid and SiLU mismatches. Existing
+  production-shape and `-6.84375` boundary tests also pass bit-for-bit.
+- Failure mode: retaining the precise exponential in the compiled shader adds
+  enough instruction/control cost to exceed any benefit from the ordinary
+  fast path, even though the exceptional branch is not reached by the
+  benchmark fixture.
+- Why not to retry unchanged: the exact production-shape micro directly
+  measures the complete fused dispatch and repeatedly favors unconditional
+  precise exp.
+- Reopen only if: the Metal compiler proves it can isolate a cold precise path
+  without charging the ordinary shader, or a new architecture has materially
+  different branch/function lowering.
+- Related commit or revert: no source retained. PERF-A137 encodes the one
+  exceptional result directly, remains complete-domain exact, and wins the
+  full-model gate in signed `24d745ff38`.
+
+## PERF-FA150 - Four-row preassembled affine-Q5 weight windows
+
+- Hypothesis: assembling each lane's continuous 80 Q5 bits offline into two
+  32-bit windows and a 16-bit tail would remove cross-load window construction
+  from the selected A100 shader while preserving the exact code stream.
+- Scope: selected affine-Q5/G64 batch-one QMV, four output rows per SIMD group,
+  and the dominant production `K=17408, N=5120` shape.
+- Attempted change: built a standalone C++/Metal candidate with a four-row
+  decode layout. Each lane loads two `uint` windows and one `ushort` tail per
+  row, then executes the original sixteen FP32 FMAs and reductions.
+- Benchmark evidence: six balanced control samples are **0.433717917,
+  0.435563750, 0.432788396, 0.433503229, 0.436652416, and 0.441011375 ms**,
+  mean **0.435539514 ms**. Six candidate samples are **0.442219354,
+  0.434076438, 0.445240729, 0.440354771, 0.439044145, and 0.446590625 ms**,
+  mean **0.441254344 ms**. The candidate regresses
+  **0.005714830 ms / 1.312127%**.
+- Correctness evidence: small deterministic parity is bit-exact. Every
+  production arm emits digest `d05378cc8066dc41` and first output `2.03125`.
+- Failure mode: the alternate row-group address stream and simultaneous live
+  weight vectors cost more than assembling the original aligned 16-bit loads.
+- Why not to retry unchanged: the balanced production window is consistently
+  slower on the trace-dominant Q5 shape and changes neither bytes nor arithmetic.
+- Reopen only if: compiler evidence shows materially different register/load
+  lowering or a new layout shares the assembled values across additional work.
+- Related commit or revert: no source retained. Artifact
+  `bench_qwen38_a139_q5_window_layout` hashes to
+  `c118bca6ad87d624ef553e448242ad8bc6157305f12f127a0b884f8df2ff22f8`;
+  source-at-measurement hashes to
+  `1e43497fdaf05460834dc15eb4147906a796385d6d6b49c3593369b3cf1e9537`.
+
+## PERF-FA151 - Row-local preassembled affine-Q5 weight windows
+
+- Hypothesis: A139 lost to four-row live state, so loading only one row's two
+  32-bit windows and 16-bit tail at a time would retain offline assembly while
+  restoring occupancy.
+- Scope: the same selected affine-Q5/G64 batch-one QMV and dominant production
+  `K=17408, N=5120` shape.
+- Attempted change: rebuilt the standalone C++/Metal candidate with row-local
+  layout addressing and no four-row weight vectors.
+- Benchmark evidence: the first matched control/candidate pair is
+  **0.418530771 / 0.453039271 ms**, a
+  **0.034508500 ms / 8.245152%** regression. This is too large to justify a
+  repeated or full-model gate.
+- Correctness evidence: small deterministic parity is bit-exact. Both
+  production arms emit digest `d05378cc8066dc41` and first output `2.03125`.
+- Failure mode: narrower liveness does not compensate for the alternate
+  layout/addressing and load form; it materially worsens the decisive shape.
+- Why not to retry unchanged: the exact adjacent comparison is an order of
+  magnitude larger than normal run variance and has no compensating resource
+  or behavior benefit.
+- Reopen only if: a materially different representation simplifies Q5
+  extraction rather than merely rearranging identical 32-bit windows.
+- Related commit or revert: no source retained. Artifact
+  `bench_qwen38_a140_q5_row_window_layout` hashes to
+  `2eeb79c17ffa35657dcb706127ced8176163ff4cebf8ac4c54e04af18a18c7af`;
+  source-at-measurement hashes to
+  `65d9b19993ae921291afec6a67e1f09733c9d64bb92a0d4ca3c2160dd94fba46`.
+
+## PERF-FA152 - Affine-Q5 low-nibble/high-bit-plane representation
+
+- Hypothesis: separating each code's low nibble from one shared high-bit plane
+  would simplify continuous five-bit extraction without increasing bytes.
+- Scope: selected A100 batch-one Q5/G64 QMV and dominant production
+  `K=17408, N=5120` shape.
+- Attempted change: repacked each sixteen-code/ten-byte lane segment as eight
+  low-nibble bytes plus a 16-bit high plane and reconstructed each exact code
+  before the original sixteen FP32 FMAs.
+- Benchmark evidence: the first adjacent control/candidate pair is
+  **0.432100013 / 0.457164583 ms**, a
+  **0.025064570 ms / 5.800641%** regression.
+- Correctness evidence: small deterministic parity is bit-exact. Both
+  production arms emit digest `d05378cc8066dc41` and first output `2.03125`.
+- Failure mode: every code now needs high-plane extraction and merge, which
+  costs more than A100's two cross-window special cases.
+- Why not to retry unchanged: the representation preserves bytes but adds
+  integer work to all sixteen values and loses far beyond run variance.
+- Reopen only if: a native packed-bit expansion instruction eliminates the
+  per-value high-plane work or the representation enables a fused dot primitive.
+- Related commit or revert: no source retained. Executable SHA-256 is
+  `fbd7a7cab21ebc42189bd88112b79aaa4cb4ade69d2a5de396928acee248a0c4`;
+  source-at-measurement is
+  `14826a49a9437ca3f65b253c93be571500e4c08a129908057b3c3013c515b43b`.
+
+## PERF-FA153 - Sixteen-row affine-Q5 K-block interleave
+
+- Hypothesis: placing all sixteen rows owned by a threadgroup contiguously for
+  each 512-value K block would improve locality while retaining A100 exactly.
+- Scope: selected A100 batch-one Q5/G64 QMV and dominant production
+  `K=17408, N=5120` shape.
+- Attempted change: transposed only physical block order across sixteen rows;
+  five aligned 16-bit loads, unpack, FP32 arithmetic, and weight bytes stayed
+  unchanged.
+- Benchmark evidence: order/reverse controls **0.430670796 / 0.427456629 ms**
+  average **0.429063712 ms**. Candidates **0.435351171 / 0.435724954 ms**
+  average **0.435538062 ms**, a **1.508948%** regression.
+- Correctness evidence: small parity and every production arm are bit-exact
+  with digest `d05378cc8066dc41` and first output `2.03125`.
+- Failure mode: threadgroup-wide interleaving increases each SIMD group's
+  next-K-block stride and supplies no reuse for weights consumed once.
+- Why not to retry unchanged: both order directions lose with unchanged work.
+- Reopen only if: multiple SIMD groups demonstrably share a block or a future
+  cache/TLB profile identifies row-major page locality as a material owner.
+- Related commit or revert: the strict build initially rejected one unused
+  C++ constant; removing it produced the clean artifact. Executable SHA-256
+  is `4444c02d3097b8fce03b627ef6fe9c33416191d79f9d5bb1c0a22aacc721d9ca`;
+  source-at-measurement is
+  `b803e08fb27925767aaa4ba667c01822f6b758a2f91d828f953f843a5ec89f7a`.
+
+## PERF-FA154 - Four-row affine-Q5 K-block interleave
+
+- Hypothesis: matching physical interleave to the four rows actually owned by
+  one SIMD group would recover A142's stride loss while improving row locality.
+- Scope: selected A100 batch-one Q5/G64 QMV and dominant production
+  `K=17408, N=5120` shape.
+- Attempted change: interleaved unchanged 320-byte blocks across four rows and
+  retained every selected load, unpack, FMA, reduction, and output boundary.
+- Benchmark evidence: six controls average **0.432163523 ms**; six candidates
+  average **0.434392635 ms**, a **0.002229112 ms / 0.515803%** regression.
+  Only the first candidate wins its adjacent pair.
+- Correctness evidence: small parity and all production outputs are bit-exact
+  with digest `d05378cc8066dc41` and first output `2.03125`.
+- Failure mode: the first **0.426242704 ms** candidate was not repeatable;
+  five later candidates are flat/slower and the balanced aggregate loses.
+- Why not to retry unchanged: six-per-arm evidence resolves the apparent
+  initial win without any byte or instruction reduction.
+- Reopen only if: a production trace proves current row stride causes a cache
+  or TLB bottleneck under a materially different allocation state.
+- Related commit or revert: no source retained. Executable SHA-256 is
+  `1abec2f4d7fdcfe636ce6addb8e2fbb6dc79e44d70d3115b98780639b7382562`;
+  source-at-measurement is
+  `b68f313d7e193b39ea36b68aac6ef32589a9c708c9126697b3e5b0a422b6bac4`.
+
+## PERF-FA155 - Combined affine-Q5 weight and raw-parameter stream
+
+- Hypothesis: co-locating the eight scale/bias pairs with each 320-byte weight
+  block would turn three buffers into one and improve exact stream locality.
+- Scope: selected A100 batch-one Q5/G64 QMV and dominant production
+  `K=17408, N=5120` shape.
+- Attempted change: built a 352-byte row-block stream containing unchanged Q5
+  codes and raw BF16 scale/bias bits. The kernel accepts that buffer plus the
+  activation and executes the original arithmetic.
+- Benchmark evidence: the adjacent control/candidate pair is
+  **0.426560525 / 0.442184463 ms**, a
+  **0.015623938 ms / 3.662772%** regression.
+- Correctness evidence: small parity and both production outputs are bit-exact
+  with digest `d05378cc8066dc41` and first output `2.03125`.
+- Failure mode: the 352-byte stride disrupts the selected 320-byte weight
+  traversal; separate scale/bias traffic was not a material owner.
+- Why not to retry unchanged: the candidate changes no bytes or arithmetic
+  overall and loses well outside timing noise.
+- Reopen only if: parameters can be embedded without padding/stride cost or a
+  downstream consumer shares the combined representation.
+- Related commit or revert: no source retained. Executable SHA-256 is
+  `9546192afc40011d561a62b151a24ceb8e702972d8f21ede85a9790a975df747`;
+  source-at-measurement is
+  `025ff210a0cfe6917fd288dcab7b0ca510f294200a5491357b31c25f0bf5db56`.
+
+## PERF-FA156 - Lossless affine-Q5 compression and selective Q4 substitution
+
+- Hypothesis: the mixed checkpoint's Q5 symbols or local blocks might be
+  compressible enough to cut streamed weight bytes by the complete measured
+  actual-work gap; alternatively, only high-value Q5 projection families
+  might be replaced by exact-kernel Q4 storage.
+- Scope: all 240 affine-Q5 tensors in pinned mixed checkpoint revision
+  `596b8067f7cf429007bb668874ffee7e917c8340`; selected A100 batch-one Q5
+  QMV and the corresponding exact custom-Q4 microkernels.
+- Attempted change: a strict standalone C++ analyzer sampled four separated
+  4,096-group windows per tensor and measured symbol entropy, high-plane
+  sparsity/transitions, local ranges, distinct symbols, palettes, and
+  optimistic storage reductions. Existing kernels then compared Q5 and Q4
+  on the three material production shapes.
+- Benchmark evidence: **983,040 groups / 62,914,560 codes** have aggregate
+  Shannon entropy **4.722514 bits/code** and ideal static-Huffman length
+  **4.748775 bits/code** versus five stored bits. Zero groups fit a width-four
+  range; optimistic palette/sparse-high reductions are only
+  **0.000726% / 0.091079%**. Q4 improves `17408x5120`
+  **0.440694188 -> 0.406988542 ms** (**7.648307%**), improves
+  `5120x10240` only **0.836249%**, and regresses `6144x5120`
+  **2.054733%**.
+- Correctness evidence: checkpoint analysis is read-only; the source
+  checkpoints and production engine remain untouched. Existing Q4/Q5
+  deterministic micro harnesses preserve their exact output contracts.
+- Failure mode: entropy leaves only about five percent ideal Q5-byte savings,
+  and decoder/metadata cost makes the achievable reduction lower. At the
+  measured **49.061847%** Q5 owner, even a zero-cost ideal decoder projects
+  to only about **2.5%** end to end. Down-only Q4 projects to about
+  **1.6658%** and changes the model's quantized weights.
+- Why not to retry unchanged: neither route can cover the current
+  **5.047909%** actual-work gap by itself, and Q4 needs full semantic,
+  reasoning, tool, and capacity requalification for a lower ceiling.
+- Reopen only if: a decoder fuses into otherwise-required arithmetic with
+  essentially zero overhead and exploits cross-tensor structure absent from
+  these samples, or a precision-changing composition is paired with another
+  measured win and passes the complete behavior contract.
+- Related commit or revert: no production source changed. Analyzer binary
+  SHA-256 is
+  `fb42b64ab1525c00fa422bde3f84affdd8e355e40b9c6405a7ea91dd147b435e`;
+  source-at-measurement is
+  `3eb5d69ca943a85f7318f17bb81333a681ba7bd1a2e77d82839711c5bf4a0b9a`.
+
+## PERF-FA157 - Probability-ordered sparse standard-MTP proposal sampling
+
+- Hypothesis: retaining only the top-20/top-p proposal support would remove
+  redundant full-vocabulary scatter, categorical, and verifier storage.
+- Scope: selected mixed-Q5 target, official affine-5-bit MTP revision
+  `1faa5a803c972c57cfc1beed606184e726ad3d85`, sampled block two, seed 42.
+- Attempted change: sampled the probability-sorted 20-entry support directly
+  and passed its IDs/probabilities through the existing sparse-q verifier.
+- Benchmark evidence: the flag-disabled binary reaches **15.230953312 tok/s**
+  with 71 refills and width **1.802816901**. Sparse sampling reaches only
+  **6.983233096 tok/s**, 107 refills, and width **1.196261682**, a
+  **54.151044%** regression.
+- Correctness evidence: proposal q lookup, exact p/q acceptance, residual
+  sampling, state commit, and 128-token completion all succeed. Output digest
+  changes from `b10401e93371a45e` to `2822024397f42e25`.
+- Failure mode: MLX 0.32.2 uses inverse-CDF sampling for this single
+  distribution. Sorting support by probability changes the deterministic CDF
+  order and therefore the seeded proposal/acceptance trajectory.
+- Why not to retry unchanged: the result is distributionally valid but loses
+  more than half the throughput on the required seed and violates the fixed
+  seeded trajectory used for attribution.
+- Reopen only if: sampling preserves vocabulary-order CDF and exact RNG
+  consumption; PERF-A147 measures that form.
+- Related commit or revert: source restored. A146 binary/source SHA-256 values
+  are `7d605fcb95403f0ec8715cbe9fc770e15b1ab9f20d84bd463b58939023036707`
+  and `4439ba4e3551118f91eae05c8502dce2493bd92165746c516d6fee95719bc495`.
+
+## PERF-FA158 - Seed-exact vocabulary-ordered sparse MTP proposals
+
+- Hypothesis: sorting the sparse support by token ID would reproduce MLX's
+  dense inverse-CDF order and make sparse q both exact and faster.
+- Scope: the same mixed-Q5/5-bit-MTP block-two sampled contract as PERF-FA157.
+- Attempted change: sorted the 20 support entries by ascending vocabulary ID
+  before categorical sampling, retained one-uniform RNG consumption, and
+  passed sparse q to the established verifier.
+- Benchmark evidence: control/candidate are **15.230953312 / 15.222551699
+  tok/s**, a **0.008401613 tok/s / 0.055161%** regression. Both use 71
+  refills and mean width **1.802816901**.
+- Correctness evidence: the 128-token digest `b10401e93371a45e`, last token
+  2466, refill count, and width are exact. A 16-token trace also reproduces
+  digest `1db9bc7ba5d021ea`, last token 198, all target probabilities, and the
+  complete acceptance sequence.
+- Failure mode: dense proposal scatter and q retention are not material beside
+  the approximately 103 ms target verification pass; sparse bookkeeping adds
+  enough work to remain flat/slightly slower.
+- Why not to retry unchanged: the complete exact cycle directly measures no
+  gain, and the candidate cannot approach the **5.047909%** actual-work gap.
+- Reopen only if: sparse p and q are consumed by a fused verifier/sampler that
+  also removes measured target-side work rather than only representation.
+- Related commit or revert: A137 source restored. Final A147 binary/source
+  SHA-256 values are
+  `8fb728c107d57d942313f32e28b3fd145994b3519d51807762fb7dafe345911a` and
+  `d560ac0942d6b9cc7c295b012f91110464ab4c78dba0ff3e82308be8d8500ec9`.
+
+## PERF-FA159 - Rowwise and generic-small-batch M=2 verification
+
+- Hypothesis: applying the selected batch-one Q4/Q5 kernels independently to
+  each of the two target-verification rows, or reusing the existing generic
+  small-batch kernel, might outperform MLX's stock M=2 quantized matmul with
+  no new production kernel.
+- Scope: affine-Q4/Q5 G64 projections under standard block-two MTP at the
+  production `17408x5120`, `5120x10240`, `6144x5120`, `5120x17408`, and
+  `5120x248320` shapes.
+- Attempted change: a standalone strict C++ benchmark sliced `[1,2,K]` into
+  two `[1,1,K]` views and invoked the selected exact QMV kernels, then also
+  tested the existing affine small-batch Q4 implementation.
+- Benchmark evidence: rowwise Q5 reaches **0.631188333 / 0.510780958 /
+  0.455329792 ms** on the three production shapes versus stock M=2
+  **0.650288541 / 0.515946083 / 0.462342208 ms** in the initial window.
+  It still reads all Q5 weights twice. Rowwise Q4 at `5120x17408` is
+  **0.605062208 ms** versus stock **0.584932708 ms**, and the vocabulary head
+  is effectively neutral at **4.183139590 / 4.184156250 ms**. The existing
+  small-batch Q4 kernel takes **1.111526333 ms** at `5120x17408`, almost twice
+  stock cost.
+- Correctness evidence: the small Q4/Q5 cases are bit-exact. Production Q5
+  rowwise output differs from stock by at most **0.015625** because its
+  reduction order matches batch-one rather than MLX's generic M=2 kernel;
+  the Q4 head remains exact. All outputs are finite and correctly shaped.
+- Failure mode: rowwise execution cannot share weight bytes or unpack work,
+  while the generic small-batch matrix kernel stages/dequantizes far more
+  work than M=2 can amortize. Q4 is neutral or materially slower.
+- Why not to retry unchanged: the measured forms leave the main cost intact
+  or regress. A149/A150 are materially different: they decode each Q5/Q4
+  weight once into two-row vector accumulators and fuse the Q4 MLP.
+- Reopen only if: a later MLX scheduler makes the two row slices overlap
+  without duplicate weight traffic, or the generic small-batch tile is
+  redesigned specifically for M=2 and beats the shared kernels.
+- Related commit or revert: no production source retained from A148. The
+  standalone source-at-measurement evolved into the A149/A150 harness; its
+  current SHA-256 is
+  `225db31626fb18ebe27ec68f5b6b149ff9a5d8e54576fb8903f6c2c0b97b2b7d`.
+
+## PERF-FA160 - One packed Q4 word per verifier lane
+
+- Hypothesis: reducing each lane's Q4 work and register state could improve
+  occupancy in the shared two-row fused MLP.
+- Scope: A150 fused affine-Q4 gate/up/SwiGLU at `K=5120,N=17408,M=2`.
+- Attempted change: halved packed words per lane while preserving scalar
+  arithmetic and the selected result geometry.
+- Benchmark evidence: **0.593897 ms** versus A150 **0.574944 ms**, a
+  **3.30%** regression.
+- Correctness evidence: representative output remained within the established
+  A150 BF16 parity bound.
+- Failure mode: extra lane/grid work costs more than the reduced local state.
+- Why not to retry unchanged: the adjacent production micro is materially
+  slower.
+- Reopen only if: a different device/compiler shows occupancy pressure in the
+  selected two-pack kernel.
+- Related commit or revert: experimental source was restored; no commit.
+
+## PERF-FA161 - Four-SIMD shared-Q4 verifier geometry
+
+- Hypothesis: fewer SIMD groups could reduce threadgroup overhead without
+  reducing useful output reuse.
+- Scope: the same A150 production fused-Q4 M=2 kernel.
+- Attempted change: reduced the selected SIMD-group count to four.
+- Benchmark evidence: **0.583183 ms**, **1.43%** slower than **0.574944 ms**.
+- Correctness evidence: output retained the established finite BF16 bound.
+- Failure mode: reduced grid parallelism outweighs any scheduling reduction.
+- Why not to retry unchanged: the production micro directly rejects it.
+- Reopen only if: output tiling changes enough to restore parallel occupancy.
+- Related commit or revert: experimental source was restored; no commit.
+
+## PERF-FA162 - Sixteen-SIMD shared-Q4 verifier geometry
+
+- Hypothesis: a larger output cohort could amortize each input load across more
+  result rows.
+- Scope: M1 Max custom Metal threadgroup geometry.
+- Attempted change: expanded the fused-Q4 verifier to sixteen SIMD groups.
+- Benchmark evidence: the geometry requires 512 threads per threadgroup.
+- Correctness evidence: no kernel ran; Metal rejected the geometry before
+  useful execution because this device permits at most 384 threads.
+- Failure mode: hard device threadgroup limit.
+- Why not to retry unchanged: the requested launch cannot execute on the target
+  M1 Max.
+- Reopen only if: the cohort is split across legal threadgroups or the target
+  GPU exposes at least 512 threads.
+- Related commit or revert: no source retained and no artifact promoted.
+
+## PERF-FA163 - Two-SIMD/two-result shared-Q4 verifier geometry
+
+- Hypothesis: fewer result registers per SIMD group could improve occupancy.
+- Scope: A150 production fused-Q4 M=2 verifier.
+- Attempted change: assigned two result rows to each of two SIMD groups.
+- Benchmark evidence: **0.640386 ms**, **11.38%** slower than A150
+  **0.574944 ms**.
+- Correctness evidence: representative output remained finite and within the
+  existing parity bound.
+- Failure mode: severe loss of output-side parallelism.
+- Why not to retry unchanged: the regression is far outside timing noise.
+- Reopen only if: a fused downstream consumer removes enough additional work
+  to fund the lost parallelism.
+- Related commit or revert: experimental source was restored; no commit.
+
+## PERF-FA164 - Eight-SIMD affine-Q5 two-row verifier
+
+- Hypothesis: doubling Q5 output parallelism could improve the A149 shared-load
+  verifier.
+- Scope: production Q5/G64 M=2 projections.
+- Attempted change: expanded the selected four-SIMD Q5 kernel to eight SIMD
+  groups.
+- Benchmark evidence: **0.471944 ms** versus **0.469182 ms**, a **0.59%**
+  regression.
+- Correctness evidence: representative Q5 output retained the established
+  parity tolerance.
+- Failure mode: larger threadgroups and register pressure erase the added
+  output parallelism.
+- Why not to retry unchanged: the adjacent production micro is slower.
+- Reopen only if: compiler register allocation or projection geometry changes.
+- Related commit or revert: experimental source was restored; no commit.
+
+## PERF-FA165 - Explicit affine-Q5 unpack arithmetic
+
+- Hypothesis: inlining the packed-code extraction expressions could remove
+  helper overhead while preserving scalar accumulation order.
+- Scope: A149 shared-load Q5 verifier production shapes and complete sampled
+  block-two model.
+- Attempted change: replaced the selected helper structure with explicit
+  unpack/extraction expressions.
+- Benchmark evidence: production micros regress **2.6--4.0%**. Full sampled
+  throughput is approximately **19.767 tok/s** versus A150 **19.796 tok/s**.
+- Correctness evidence: full-model digest, last token, refill count, and width
+  are unchanged.
+- Failure mode: generated extraction code is more expensive despite semantic
+  equivalence.
+- Why not to retry unchanged: both micro and full-model gates lose.
+- Reopen only if: generated Metal instructions demonstrably change under a new
+  compiler.
+- Related commit or revert: experimental source was restored; no commit.
+
+## PERF-FA166 - Explicit affine-Q4 dot arithmetic
+
+- Hypothesis: directly spelling the Q4 dot expression could reduce helper
+  overhead in A150.
+- Scope: production fused-Q4 two-row verifier.
+- Attempted change: replaced the selected dot helper with explicit scalar
+  expressions.
+- Benchmark evidence: **0.583195 ms**, **1.43%** slower than A150.
+- Correctness evidence: representative output remains exact or within the
+  established A150 parity bound.
+- Failure mode: the compiler already lowers the helper more efficiently.
+- Why not to retry unchanged: the production micro regresses.
+- Reopen only if: new shared work or compiler evidence changes generated code.
+- Related commit or revert: experimental source was restored; no commit.
+
+## PERF-FA167 - Lower-temperature MTP proposal sampling
+
+- Hypothesis: proposal temperature 0.8 could improve accepted width while exact
+  p/q rejection preserves the official target distribution.
+- Scope: selected mixed-Q5 target, official five-bit MTP, seeds 42--44.
+- Attempted change: changed only internal proposal temperature from identity to
+  0.8; target temperature/top-p/top-k remained **1.0/0.95/20**.
+- Benchmark evidence: seed 42 reaches approximately **23.35 tok/s**, while
+  seeds 43 and 44 reach only **15.57 / 15.14 tok/s**.
+- Correctness evidence: exact p/q rejection remains distributionally valid,
+  but each seed follows its corresponding stochastic proposal path.
+- Failure mode: the apparent threshold win is strongly seed-dependent and does
+  not generalize.
+- Why not to retry unchanged: two of three seeds materially regress below the
+  selected exact verifier.
+- Reopen only if: a multi-seed policy with an official or measured robust
+  criterion beats identity in repeated production windows.
+- Related commit or revert: the override remains outside selected source; no
+  commit. Qwen publishes no recommendation for internal proposal temperature.
+
+## PERF-FA168 - Maximum-proposal-probability depth signal
+
+- Hypothesis: maximum draft probability could cheaply predict accepted width
+  and choose a profitable verifier depth.
+- Scope: natural standard-MTP traces at seeds 42 and 43.
+- Attempted change: related each cycle's maximum proposal probability to later
+  exact accepted width and screened a fixed threshold.
+- Benchmark evidence: the direction of the relationship reverses between the
+  two seeds; no shared threshold separates profitable depths.
+- Correctness evidence: trace-only collection did not change generated output.
+- Failure mode: maximum probability is not a stable acceptance predictor across
+  the sampled trajectories.
+- Why not to retry unchanged: a fixed threshold overfits one seed.
+- Reopen only if: a pre-draft signal predicts cross-seed target/draft agreement
+  under held-out repeated windows.
+- Related commit or revert: trace control removed; no commit.
+
+## PERF-FA169 - Vector arithmetic in the shared Q4 vocabulary head
+
+- Hypothesis: one `float2` accumulator could share each packed Q4 head word
+  across both verifier rows and close the remaining A150 gap.
+- Scope: standard-MTP affine-Q4/G64 `K=5120,N=248320,M=2` vocabulary head.
+- Attempted change: loaded each packed word once and accumulated both input
+  rows through vector input/result locals.
+- Benchmark evidence: stock is approximately **4.167805 ms** and the vector
+  kernel **2.673959 ms**. Full sampled execution reaches only
+  **19.561130627 tok/s**, 76 refills, and width **1.684210526**.
+- Correctness evidence: production output has maximum absolute error
+  **0.0078125** and 10,703 mismatches; sampled digest and acceptance path change.
+- Failure mode: vector expression lowering changes floating-point operation
+  order relative to stock MLX.
+- Why not to retry unchanged: the arithmetic difference invalidates attribution
+  and regresses full sampled throughput despite the faster micro.
+- Reopen only if: vector lowering can be proven bit-exact on all production
+  shapes and repeated full-model trajectories.
+- Related commit or revert: rejected A162 dylib/benchmark SHA-256 values are
+  `302e551be114bd137e98177555a67cec9b205f087eaaba00fadaf47e07a1e56d` and
+  `a2004cec2482853a1e855c79a4985c7bc426aeaa58a9df8667cc853e496c21cb`.
+  A163 replaced it with independent scalar row arithmetic in signed
+  `94ca4ff7fa`.
+
+## PERF-FA170 - Empty-cache standard MTP at actual-work history
+
+- Hypothesis: A163's qualified short standard-MTP path would retain its
+  acceptance and clear 20 tok/s after a 6,237-token coding-shaped prompt.
+- Scope: selected mixed-Q5 target, official five-bit MTP, block two, sampled
+  `6237 / 32 warm / 256 timed` direct workload.
+- Attempted change: no code change; reran the exact qualified A163 artifact on
+  the actual-work shape.
+- Benchmark evidence: MTP reaches **7.839819833 tok/s**, 248 refills, and mean
+  width **1.032258065**. The same artifact target-only reaches
+  **19.057906040 tok/s**, digest `9ec00ec01f8781e1`, and last token 20.
+- Correctness evidence: requests complete at their exact requested lengths;
+  ordinary exact p/q verification remains active.
+- Failure mode: every proposal starts with an empty MTP KV cache at the
+  target's absolute long-history position, so draft/target agreement collapses.
+- Why not to retry unchanged: an independent optimized Q4 MTP checkpoint also
+  falls from **26.491661416** short to **7.516953814 tok/s** long and width
+  **1.003921569** under the same state policy.
+- Reopen only if: the native engine constructs one-token-shifted prompt
+  history and retains only target-committed MTP state across cycles.
+- Related commit or revert: no source change in this failed arm; signed
+  `b92c21d69d` subsequently implements PERF-A164 and improves the optimized-
+  Q4-MTP long workload to a clean **23.821754359 tok/s** mean.
+
+## PERF-FA171 - Uniform-Q5 target as the MTP acceptance repair
+
+- Hypothesis: the uniform five-bit target might align better with the official
+  five-bit MTP and avoid changing MTP state management.
+- Scope: pinned uniform-Q5 target revision `2568951b...c2f05`, official MTP,
+  short sampled direct workload.
+- Attempted change: changed only the target checkpoint.
+- Benchmark evidence: **14.606495312 tok/s**, 86 refills, and width
+  **1.488372093**, below the selected mixed-target A163 short result.
+- Correctness evidence: the request completed at the exact requested length.
+- Failure mode: checkpoint substitution neither beats the selected route nor
+  addresses the long-history empty-cache defect.
+- Why not to retry unchanged: it is already slower on the favorable short
+  workload and does not provide committed history.
+- Reopen only if: a materially different matched target/MTP checkpoint clears
+  the full behavior, actual-work, and 131K contracts.
+- Related commit or revert: none; immutable checkpoint left unchanged.
