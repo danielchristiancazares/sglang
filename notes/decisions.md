@@ -4,7 +4,9 @@ This ledger records choices that still govern the native-Windows Qwen3.8
 system. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** 2026-09-02 02:20 PDT.
+**Reconciled through:** Windows 2026-09-12 retained checkpoint/cache decisions;
+Apple 2026-09-02 committed-MTP history selection. September 12 Git integration
+preserves the distinct measured Windows and official coding sampling profiles.
 
 ## Selected production choices
 

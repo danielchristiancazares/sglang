@@ -24989,3 +24989,51 @@ mean 13.929045  17.125658 446.051        39.730
   behavior. The user accepted the labeled contention observation and directed
   work to continue; exact served 131K and a real Responses/Codex `xhigh`
   coding turn are now the critical path.
+
+### 2026-09-12 14:50 PDT - integrate remote main and prepare the Apple native PR
+
+- The user requested `git pull`, then a new branch and pull request. Started
+  on `main` at `ac444b4cec15b53121b215c69d75d82b384af1e3` with three
+  pre-existing native engine/header/test modifications and an empty index.
+  `git pull` stopped because `pull.rebase=true` rejects unstaged changes.
+  `git fetch origin` advanced the remote to
+  `1a452ba5a90591844aafa0b5836ed1eb45add62a`: 127 local-only commits and
+  eight remote-only commits.
+- Preserved the original history at local branch
+  `backup/pre-pull-20260912-ac444b4cec` and saved the dirty files with
+  `git stash push -m 'pre-pull-20260912 user-owned work'`. Rebased all 127
+  commits with `git rebase origin/main`, ending at `c0839118b8`, then used
+  `git stash apply 'stash@{0}'`. The recovery stash remains retained. Original
+  signed commit IDs in older measurements refer to the preserved source
+  history; the rebase assigns new IDs without rerunning those measurements.
+- Resolved the Metal dispatch conflict at `decode_gqa`: eligible BF16 keeps
+  tiled/split-history attention, BF16 fallback keeps its existing pipeline,
+  FP32 above 7,936 slots keeps the remote online kernel and bounded scratch,
+  and shorter FP32 retains its original kernel. The source-only range diff
+  shows this combined selection as the sole substantive conflict adaptation;
+  other Metal differences in the range diff are context labels. The committed
+  MLX engine/header and small-batch test are identical to the pre-pull tip.
+- Combined both branches' recovery entries and kept timeline dates ordered.
+  Reconciled compact document cutoffs by platform. Preserved the Windows
+  measured presence-1.5 scoreboard separately from the official coding
+  presence-0.0 controls, keeping matching native-client examples. No new
+  performance result, checkpoint selection, or launcher promotion was made.
+- All three restored file blob hashes exactly match their pre-pull contents:
+  engine `0260ff714075fd6dc01619a544d7071870d75955`, header
+  `40e375e39ce8035c8777a46f4d9b45488f4d250e`, and test
+  `bb42de39fbe8315b4a3a5819b0e498e6617fb739`. They remain unstaged and are
+  excluded from the PR. Created branch `perf/qwen38-mlx-native-20260912` from
+  the rebased tip; the separate experimental worktrees were not changed.
+- Fresh validation: `.venv/bin/python -m pytest -q
+  test/registered/unit/layers/attention/test_torch_native_mps_decode_dispatch.py`
+  passed all three tests. `py_compile` passed for the three changed existing
+  Windows Python benchmark/probe scripts; PowerShell AST parsing passed for
+  `scripts/windows/opencode_qwen.ps1`. Worktree and full-PR `git diff --check`
+  passed. No Python code was added during integration.
+- A read-only process check found another active GPU benchmark at PID 15506,
+  parented by timeout PID 15505: `bench_qwen38_a194_current` using
+  `libqwen38_a196.dylib`, the pinned mixed-Q5 target and optimized MTP sidecar,
+  with workload `6237 32 256`. Port 30000 had no listener. Left that process
+  tree untouched; native builds, Metal execution, graph replay, and full-model
+  gates were not rerun. The PR must distinguish the fresh CPU/static checks
+  from historical native accuracy and performance evidence.

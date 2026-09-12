@@ -1,10 +1,11 @@
 # Current state
 
-**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-02
-03:35 PDT.
+**Reconciled through:** [`experiment-log.md`](experiment-log.md), Windows
+2026-09-12 DeepSeek V4.1 admission and pinned TurboQuant35 layouts; Apple
+2026-09-02 03:35 PDT. The September 12 Git integration preserves both records.
 
-**Live runtime at reconciliation:** no SGLang server is running and port 30000
-is free. All verified SGLang, benchmark, and CUDA compiler processes are
+**Windows runtime at its recorded reconciliation:** no SGLang server is running
+and port 30000 is free. All verified SGLang, benchmark, and CUDA compiler processes are
 absent. After the pinned TurboQuant35 replay, the RTX 5090 reported **1,329
 MiB used / 30,859 MiB free**, 18% sampled display utilization, 32 C, and 78.90
 W on driver `616.92`; 51,294 MiB of host RAM was available and disk traffic
