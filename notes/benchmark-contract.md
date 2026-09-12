@@ -83,6 +83,7 @@ temperature, free VRAM, listener, process tree, and competing WDDM clients.
 | Historical control | `6213/128`, temperature 0 | Compare early GGUF and base-NVFP4 results |
 | Current fixed control | `6213/512`, temperature 0, simulated accepted length 3 | Attribute deterministic execution and dispatch cost on the selected linear topology |
 | Primary production scoreboard | `6213/512`, normal rejection sampling | Measure production generation throughput over repeated clean windows |
+| Recorded Windows scoreboard profile | Temperature `1.0`, top-p `0.95`, top-k `20`, presence `1.5` | Reproduce the retained Windows qualification windows under their measured contract |
 | Sampled thinking profile | Temperature `1.0`, top-p `0.95`, top-k `20`, min-p `0.0`, presence `0.0`, repetition `1.0` | Match Qwen3.8's official thinking/coding recommendation |
 | Native acceptance | The qualified Python probe, with the C++23 candidate matched against it under sampled production settings | Pair TPS with emitted/accepted length, proposal counts, histograms, and verify cycles |
 | Long ladder | `32768/16`, `32768/512`, `65536/16` | Catch prefill, residency, repeated-request, and long-decode regressions |
@@ -130,7 +131,11 @@ Greedy current-shape control:
   --temperature 0
 ```
 
-Primary ordinary-sampling production scoreboard:
+Official thinking/coding control:
+
+The retained Windows production scoreboard above used presence penalty `1.5`.
+Use that value to reproduce those historical windows; the official coding
+profile below uses `0.0`. Keep the profiles distinct when comparing results.
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py `
