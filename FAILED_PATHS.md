@@ -1228,6 +1228,23 @@ standing.
   measured residual gap below the codec's independently proven net gain.
 - Related commit or revert: no serving codec retained.
 
+The 2026-09-12 user-directed V4.1 follow-up also screened actual mixed-bit
+residual coding rather than another E2M1 rotation. The retained native SM120
+admission harness implements TurboQuant35's 4/3-bit groups, structured
+Hadamard MSE projection, Lloyd-Max centroids, one-bit QJL residual, FP16
+norms, fused quantize/store, packed-cache attention, and graph replay. Its
+independent CPU encoder matched every CUDA payload byte and all norm fields.
+The retained harness pins TurboQuant35 segment 512 at both lengths, FP8
+segment 512 at 6,213, and FP8 segment 2,048 at 199K; segment 1,024 and the
+other nonselected sweep call sites were removed. In the complete sweep, the
+selected 199K layouts measured **11,540.973 us** for TurboQuant35 and
+**3,074.226 us** for FP8, while relative-L2 error was **0.199575** with cosine
+**0.980717**. The selected 6,213-token layouts measured **417.863 versus
+119.514 us**, relative L2 **0.214638**. This is slower and less accurate than
+the earlier admission bounds despite saving 53.125% of KV bytes. The isolated
+benchmark remains available for future codec research; no cache ABI, launcher
+option, or serving dispatch was added.
+
 ## PERF-F071 - Retune exact SM120 FP4 tactics and disable PDL
 
 - Hypothesis: stale M4 file-cache tactics or unproductive CUTLASS PDL were

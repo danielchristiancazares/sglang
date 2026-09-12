@@ -1,15 +1,44 @@
 # Current state
 
-**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-08
-NVIDIA setup and benchmark handoff.
+**Reconciled through:** [`experiment-log.md`](experiment-log.md), 2026-09-12
+DeepSeek V4.1 admission and pinned TurboQuant35 layouts.
 
 **Live runtime at reconciliation:** no SGLang server is running and port 30000
-is free. The three task-owned benchmark server trees were stopped leaf-first;
-all verified PIDs and CUDA compiler workers are absent. At 19:26:11 PDT the
-RTX 5090 reported **1,404 MiB used / 30,784 MiB free**, 3% utilization,
-31 C, and 58.69 W on driver `616.56`. Unrelated desktop and CPU-work processes
-were preserved. This supersedes the September 1 live-server snapshot, not its
-qualified production selection. Recheck ownership before every GPU action.
+is free. All verified SGLang, benchmark, and CUDA compiler processes are
+absent. After the pinned TurboQuant35 replay, the RTX 5090 reported **1,329
+MiB used / 30,859 MiB free**, 18% sampled display utilization, 32 C, and 78.90
+W on driver `616.92`; 51,294 MiB of host RAM was available and disk traffic
+was 0.524 MiB/s. Unrelated desktop and CPU-work processes were preserved. This
+supersedes the earlier September 12 live-runtime snapshot, not its qualified
+production selection. Recheck ownership before every GPU action.
+
+## DeepSeek V4.1 ideas without retraining
+
+Qwen3.8-27B has 48 recurrent GDN layers and 16 ordinary global-attention
+layers. It has no sliding-window-attention stack, and the production launcher
+does not enable HiCache or SSD persistence. A causal encoder/decoder split
+would change learned residual flow, while CSA2 cache reuse would substitute
+one layer's learned K/V projections for another. Neither preserves this
+checkpoint without architectural training. Removing persistent SWA state has
+no active storage to remove on this lane.
+
+The directly applicable lower-bit global KV experiment is closed. Current
+source reached readiness with native target NVFP4 only after routing
+multi-token target verification through the prefill backend, then failed the
+first deterministic arithmetic gate by hallucinating unrelated conversations
+for all 256 tokens instead of deriving `703`. A separate native SM120
+TurboQuant35 admission benchmark then implemented mixed 4/3-bit groups,
+Hadamard MSE coding, a one-bit residual, FP16 norms, fused cache writes, packed
+attention, and CUDA graph replay. It would save **53.125%** of FP8 KV bytes,
+or a projected **3.242 GiB** across the 16 global layers at 200K. The validated
+codec nevertheless produced **0.199575** relative-L2 error. The retained
+benchmark now pins its fastest sweep layouts: TurboQuant35 segment 512 at both
+lengths, FP8 segment 512 at 6,213, and FP8 segment 2,048 at 199K. Their
+historical 199K sweep medians were **11,540.973 us** and **3,074.226 us**;
+the established XQA FP8 authority remains **271.584 us**. Segment 1,024 and
+the other nonselected sweep call sites are gone. No serving cache ABI or
+launcher option was added. The MTP-bearing AttnNVFP4 target and explicit
+DSpark-v2 draft path remain selected, with no fallback route introduced.
 
 ## NVIDIA stock checkpoint option
 
