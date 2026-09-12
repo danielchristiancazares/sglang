@@ -127,6 +127,7 @@ milestone after closing the requested 150 tok/s gate.
 | GGUF as production checkpoint | Superseded | Base NVFP4 improved prompt throughput by roughly 12.8x and E2E by 4.2x on `6213/128` |
 | FlashInfer 0.6.11 attention | Rejected | Faster synthetic result produced degenerate repetition on the real long OpenCode prompt |
 | Native target NVFP4 KV | Rejected | Recovered about 2.2 GiB but corrupted thinking and tool behavior |
+| Native TurboQuant35 target KV | Rejected before serving integration | The retained harness pins TurboQuant35 segment 512 at both lengths and FP8 segments 512/2,048 at 6,213/199K. The codec saves a projected 3.242 GiB across 16 global layers, but has **0.199575** relative-L2 error and its selected 199K sweep median is **11,540.973 us** versus **3,074.226 us** for the fastest FP8 layout and **271.584 us** for the established XQA FP8 authority |
 | Stock `nvfp4_online` for draft | Superseded by dense experiment | The checkpoint is dense; the original MoE-only path left draft storage and lost fixed work |
 | Full online FP8 MTP | Rejected for throughput | **167.023 tok/s** fixed versus the **171.263** BF16 control; activation quantization erased the GEMM saving |
 | Full online MXFP8 MTP | Rejected for throughput | Mechanism qualified end to end but reached **163.457 tok/s** fixed |

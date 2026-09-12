@@ -888,6 +888,29 @@ code changes, or process state matter.
   restored. Full raw results are retained in
   `benchmark/windows/nvidia_qwen38_20260908.json`.
 
+## 2026-09-12
+
+### 12:51-13:07 - DeepSeek V4.1 cache ideas fail the no-training gate
+
+- Qwen3.8's 48 GDN plus 16 global-attention topology leaves no persistent SWA
+  state to remove. Retrofitting the causal encoder/decoder split or CSA2
+  cross-layer K/V reuse would change learned residual flow or substitute
+  distinct learned projections, so neither preserves the checkpoint without
+  training.
+- Current-source native target NVFP4 reached readiness when speculative target
+  verification used the prefill backend, recovered the expected cache memory,
+  then hallucinated unrelated conversations for a full 256-token deterministic
+  arithmetic response instead of deriving `703`.
+- A standalone native SM120 TurboQuant35 path implemented the mixed-bit MSE and
+  residual codec, direct packed attention, and graph replay at the production
+  shape. It saves 53.125% of FP8 cache bytes, but the independent encoder parity
+  gate was followed by **0.199575** relative-L2 attention error and
+  **11,540.973 us** at 199K, versus **3,310.600 us** for matched FP8 and the
+  established **271.584 us** XQA FP8 authority.
+- The codec remains an isolated benchmark. Serving cache layout and launcher
+  defaults stay unchanged; the MTP-bearing AttnNVFP4 target and explicit
+  DSpark-v2 draft remain selected.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:

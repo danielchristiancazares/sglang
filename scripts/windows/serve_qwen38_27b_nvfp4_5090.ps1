@@ -140,7 +140,8 @@ if (-not (Test-Path -LiteralPath $SGLang -PathType Leaf)) {
     throw "Native SGLang launcher not found at $SGLang"
 }
 
-. (Join-Path $PSScriptRoot 'initialize_cuda_build_env.ps1')
+# A cold FlashInfer FP4 build can hold several GiB in each CUDA compiler.
+. (Join-Path $PSScriptRoot 'initialize_cuda_build_env.ps1') -MaxJobs 2
 
 $ServeArgs = @(
     'serve'
