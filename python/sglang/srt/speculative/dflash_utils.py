@@ -17,7 +17,10 @@ from sglang.srt.layers.sampler import (
     top_p_normalize_probs_torch,
 )
 from sglang.srt.managers.schedule_batch import Req
-from sglang.srt.speculative.spec_utils import sample_simulated_acc_len
+from sglang.srt.speculative.spec_utils import (
+    sample_simulated_acc_len,
+    use_sparse_top_p_renorm,
+)
 from sglang.srt.utils import is_cuda, is_hip, is_musa, is_npu
 
 DEFAULT_DFLASH_MASK_TOKEN = "<|MASK|>"
@@ -915,14 +918,14 @@ def build_dflash_verify_target_probs(
     expanded_temperature = torch.repeat_interleave(
         sampling_info.temperatures, draft_token_num, dim=0
     )
-    scaled_logits = next_token_logits / expanded_temperature
+    scaled_logits = None
     sparse_topk_applied = False
 
     if use_sparse_topk and need_top_k:
         repeated_top_ks = torch.repeat_interleave(
             sampling_info.top_ks, draft_token_num, dim=0
-        ).to(dtype=torch.int64)
-        vocab_size = int(scaled_logits.shape[-1])
+        ).to(dtype=torch.int32)
+        vocab_size = int(next_token_logits.shape[-1])
         repeated_top_ks.clamp_(min=1, max=vocab_size)
         if max_top_k is None:
             max_top_k = int(repeated_top_ks.max().item())
@@ -935,26 +938,67 @@ def build_dflash_verify_target_probs(
 
         # Sparse exact path for top-k/top-p (top-k-first semantics), then scatter to dense.
         if 0 < max_top_k < vocab_size:
-            topk_logits, topk_indices = torch.topk(scaled_logits, k=max_top_k, dim=-1)
-            if uniform_top_k_value is None or int(uniform_top_k_value) != max_top_k:
+            use_sorted_top_p = (
+                need_top_p
+                and max_top_k <= 32
+                and next_token_logits.is_cuda
+                and next_token_logits.dtype
+                in (torch.float32, torch.float16, torch.bfloat16)
+                and use_sparse_top_p_renorm()
+            )
+            topk_source = (
+                next_token_logits
+                if use_sorted_top_p
+                else next_token_logits / expanded_temperature
+            )
+            topk_logits, topk_indices = torch.topk(
+                topk_source, k=max_top_k, dim=-1
+            )
+            if (
+                not use_sorted_top_p
+                and (
+                    uniform_top_k_value is None
+                    or int(uniform_top_k_value) != max_top_k
+                )
+            ):
                 ranks = torch.arange(max_top_k, device=device, dtype=torch.int64)[
                     None, :
                 ]
                 valid = ranks < repeated_top_ks.unsqueeze(1)
                 topk_logits = topk_logits.masked_fill(~valid, float("-inf"))
 
-            topk_probs = F.softmax(topk_logits, dim=-1)
-            if need_top_p:
+            if use_sorted_top_p:
+                from sglang.kernels.ops.sampling.sparse_top_p_renorm import (
+                    sorted_top_k_top_p_normalize,
+                )
+
                 repeated_top_ps = torch.repeat_interleave(
                     sampling_info.top_ps, draft_token_num, dim=0
                 )
-                topk_probs = _dflash_top_p_renorm_prob(topk_probs, repeated_top_ps)
+                topk_probs = sorted_top_k_top_p_normalize(
+                    topk_logits,
+                    expanded_temperature,
+                    repeated_top_ks,
+                    repeated_top_ps,
+                )
+            else:
+                topk_probs = F.softmax(topk_logits, dim=-1)
+                if need_top_p:
+                    repeated_top_ps = torch.repeat_interleave(
+                        sampling_info.top_ps, draft_token_num, dim=0
+                    )
+                    topk_probs = _dflash_top_p_renorm_prob(
+                        topk_probs, repeated_top_ps
+                    )
 
-            target_probs = torch.zeros_like(scaled_logits, dtype=topk_probs.dtype)
+            target_probs = torch.zeros_like(
+                next_token_logits, dtype=topk_probs.dtype
+            )
             target_probs.scatter_(1, topk_indices, topk_probs)
             sparse_topk_applied = True
 
     if not sparse_topk_applied:
+        scaled_logits = next_token_logits / expanded_temperature
         target_probs = F.softmax(scaled_logits, dim=-1)
         if need_top_k:
             target_probs = _dflash_top_k_renorm_prob(

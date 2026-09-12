@@ -15,6 +15,7 @@ from sglang.kernels.ops.speculative.dspark.dspark_accept import (
     SelectMixedAccept,
     SoftmaxTemp,
     accept_greedy_triton,
+    dspark_sparse_accept,
     finalize_accept_lens_triton,
 )
 from sglang.kernels.ops.speculative.dspark.dspark_verify_window import (
@@ -26,12 +27,16 @@ from sglang.kernels.ops.speculative.dspark.dspark_verify_window import (
     build_unified_commit_inject_layout,
     scatter_compact_to_strided_into,
 )
+from sglang.srt.environ import envs
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, ForwardMode
 from sglang.srt.speculative.dflash_info import DFlashVerifyInput
 from sglang.srt.speculative.dflash_info_v2 import DFlashDraftInputV2
-from sglang.srt.speculative.dflash_utils import apply_dflash_verify_logits_adjustments
+from sglang.srt.speculative.dflash_utils import (
+    apply_dflash_verify_logits_adjustments,
+    build_dflash_verify_target_probs,
+)
 from sglang.srt.speculative.dspark_components.dspark_draft import DraftBlockResult
 from sglang.srt.speculative.dspark_components.dspark_kv_inject import (
     TargetHiddenKvInjector,
@@ -482,11 +487,13 @@ class DsparkVerifyEpilogue:
         verify_num_draft_tokens: int,
         device,
         commit_ctx: Optional[CommitInjectCtx] = None,
+        static_graph_kv_commit: bool = False,
     ) -> None:
         self.max_bs = int(max_bs)
         self.stride = int(verify_num_draft_tokens)
         self.gamma = self.stride - 1
         self.commit_ctx = commit_ctx
+        self.static_graph_kv_commit = bool(static_graph_kv_commit)
         self.inject_gate_buf = torch.zeros((1,), dtype=torch.int32, device=device)
         self.verify_lens_buf = torch.zeros(
             (self.max_bs,), dtype=torch.int64, device=device
@@ -514,7 +521,12 @@ class DsparkVerifyEpilogue:
         self.strided_hidden: Optional[torch.Tensor] = None
 
     def capture_hook(self, runner, out, forward_batch, num_tokens) -> None:
-        if runner.model_runner.is_draft_worker or not runner.ragged_verify_mode:
+        if runner.model_runner.is_draft_worker:
+            return
+        if self.static_graph_kv_commit:
+            self._commit_static_verify_rows(out, forward_batch, num_tokens)
+            return
+        if not runner.ragged_verify_mode:
             return
         if (
             not isinstance(out, LogitsProcessorOutput)
@@ -530,6 +542,25 @@ class DsparkVerifyEpilogue:
             req_pool_indices=forward_batch.req_pool_indices,
             bs=forward_batch.batch_size,
         )
+
+    def _commit_static_verify_rows(self, out, forward_batch, num_tokens) -> None:
+        if (
+            not forward_batch.forward_mode.is_target_verify()
+            or not isinstance(out, LogitsProcessorOutput)
+            or out.hidden_states is None
+        ):
+            return
+        ctx = self.commit_ctx
+        if ctx is None:
+            return
+        pool = ctx.resolve_pool()
+        with torch.inference_mode():
+            ctx.draft_model.write_target_hidden_kv(
+                target_hidden=out.hidden_states[:num_tokens],
+                pool=pool,
+                positions=forward_batch.positions[:num_tokens],
+                cache_loc=forward_batch.out_cache_loc[:num_tokens],
+            )
 
     def begin_step(self, verify_lens, armed: bool) -> None:
         if verify_lens is None:
@@ -557,6 +588,10 @@ class DsparkVerifyEpilogue:
             return False
         pool = self.commit_ctx.resolve_pool()
         return hasattr(pool, "set_swa_key_buffer_radix_fused_norm_rope")
+
+    @property
+    def folds_static_graph_kv_commit(self) -> bool:
+        return self.static_graph_kv_commit and self.commit_ctx is not None
 
     def _ensure_out(
         self, buf: Optional[torch.Tensor], compact: torch.Tensor
@@ -710,11 +745,47 @@ def accept_draft_tokens(
             cutoff_verify_lens=cutoff_verify_lens,
         )
     bs, gamma_rows, vocab = draft_block.corrected_logits.shape
-    draft_probs = SoftmaxTemp.execute(
-        logits=draft_block.corrected_logits.reshape(bs * gamma_rows, vocab),
-        temperatures=draft_block.temperatures,
-        rows_per_request=gamma_rows,
-    ).view(bs, gamma_rows, vocab)
+    if (
+        envs.SGLANG_DSPARK_SPARSE_ACCEPT.get()
+        and not draft_block.truncated_sampling
+        and not sampling_info.is_any_greedy
+        and sampling_info.need_top_k_sampling
+        and not sampling_info.need_min_p_sampling
+        and 0 < int(draft_input.max_top_k) <= 32
+        and target_logits.is_cuda
+        and target_logits.dtype in (torch.float32, torch.float16, torch.bfloat16)
+        and draft_block.corrected_logits.is_cuda
+        and draft_block.corrected_logits.dtype
+        in (torch.float32, torch.float16, torch.bfloat16)
+    ):
+        return dspark_sparse_accept(
+            candidates=candidates,
+            target_logits=target_logits,
+            draft_logits=draft_block.corrected_logits,
+            target_temperatures=sampling_info.temperatures,
+            draft_temperatures=draft_block.temperatures,
+            top_ks=sampling_info.top_ks,
+            top_ps=sampling_info.top_ps,
+            max_top_k=int(draft_input.max_top_k),
+            cutoff_verify_lens=cutoff_verify_lens,
+        )
+    if draft_block.truncated_sampling:
+        draft_probs = build_dflash_verify_target_probs(
+            next_token_logits=draft_block.corrected_logits.reshape(
+                bs * gamma_rows, vocab
+            ),
+            sampling_info=sampling_info,
+            draft_token_num=gamma_rows,
+            bs=bs,
+            max_top_k=32,
+            uniform_top_k_value=None,
+        )
+    else:
+        draft_probs = SoftmaxTemp.execute(
+            logits=draft_block.corrected_logits.reshape(bs * gamma_rows, vocab),
+            temperatures=draft_block.temperatures,
+            rows_per_request=gamma_rows,
+        ).view(bs, gamma_rows, vocab)
     expect(_VERIFY_DRAFT_PROBS, draft_probs)
     if not sampling_info.is_any_greedy:
         return AcceptSampling.execute(

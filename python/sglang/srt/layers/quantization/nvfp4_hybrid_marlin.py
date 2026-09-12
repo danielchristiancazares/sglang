@@ -7,15 +7,12 @@ import torch
 
 from sglang.kernels.ops.quantization.nvfp4_marlin_relayout import (
     nvfp4_marlin_relayout_,
+    nvfp4_marlin_scale_relayout_,
     preload_nvfp4_marlin_relayout,
 )
-from sglang.srt.layers.quantization.marlin_utils import (
-    marlin_make_workspace,
-    marlin_permute_scales,
-)
+from sglang.srt.layers.quantization.marlin_utils import marlin_make_workspace
 from sglang.srt.layers.quantization.marlin_utils_fp4 import (
     nvfp4_marlin_process_global_scale,
-    nvfp4_marlin_process_scales,
 )
 from sglang.srt.layers.utils import copy_or_rebind_param
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
@@ -28,9 +25,10 @@ logger = logging.getLogger(__name__)
 
 _MARLIN_TILE_K = 16
 _MARLIN_TILE_N = 64
+_CUTLASS_SCALE_TILE_N = 128
+_CUTLASS_SCALE_TILE_GROUPS = 4
 _MAX_RELAYOUT_WEIGHT_BYTES = 128 << 20
-_MAX_MARLIN_TOKENS = 4
-_SELECTED_GATE_UP_SHAPE = (34816, 5120)
+_MAX_MARLIN_TOKENS = 8
 
 
 def use_hybrid_marlin_for_num_tokens(num_tokens: int) -> bool:
@@ -46,9 +44,11 @@ def prepare_nvfp4_layer_for_hybrid_marlin(
     size_k = layer.input_size_per_partition
     weight_bytes = layer.weight.numel() * layer.weight.element_size()
     if (
-        (size_n, size_k) != _SELECTED_GATE_UP_SHAPE
+        getattr(layer, "_accepts_prequantized_fp4", False)
         or size_n % _MARLIN_TILE_N != 0
         or size_k % _MARLIN_TILE_K != 0
+        or size_n % _CUTLASS_SCALE_TILE_N != 0
+        or (size_k // _MARLIN_TILE_K) % _CUTLASS_SCALE_TILE_GROUPS != 0
         or weight_bytes > _MAX_RELAYOUT_WEIGHT_BYTES
         or getattr(layer, "bias", None) is not None
     ):
@@ -59,15 +59,24 @@ def prepare_nvfp4_layer_for_hybrid_marlin(
     if param_dtype not in (torch.float16, torch.bfloat16):
         raise RuntimeError("Hybrid NVFP4 Marlin requires FP16 or BF16 activations.")
 
-    raw_scale = layer.weight_scale.T.contiguous().to(param_dtype)
-    marlin_scale = marlin_permute_scales(
-        s=raw_scale,
-        size_k=size_k,
-        size_n=size_n,
-        group_size=16,
-    )
-    marlin_scale = nvfp4_marlin_process_scales(marlin_scale)
+    expected_scales = size_n * size_k // _MARLIN_TILE_K
+    scale_bytes = layer.weight_scale.view(torch.uint8)
+    if (
+        layer.weight_scale.dtype != torch.float8_e4m3fn
+        or not layer.weight_scale.is_contiguous()
+        or layer.weight_scale.numel() != expected_scales
+        or not bool((scale_bytes <= 126).all())
+    ):
+        layer._nvfp4_hybrid_marlin = False
+        logger.warning_once(
+            "Hybrid NVFP4 Marlin requires contiguous, finite, non-negative "
+            "E4M3 block scales; leaving an incompatible layer on Cutlass."
+        )
+        return
+
+    marlin_scale = layer.weight_scale.view(size_k // _MARLIN_TILE_K, size_n)
     copy_or_rebind_param(layer, "weight_scale_marlin", marlin_scale)
+    layer.weight_scale_marlin.data = marlin_scale
 
     marlin_global_scale = nvfp4_marlin_process_global_scale(
         weight_global_scale.to(param_dtype)
@@ -82,6 +91,7 @@ def prepare_nvfp4_layer_for_hybrid_marlin(
         size_n * 2,
     )
     layer.workspace_marlin = marlin_make_workspace(layer.weight.device)
+    layer._nvfp4_hybrid_marlin_scale_inplace = True
     layer._nvfp4_hybrid_marlin = True
 
 
@@ -144,6 +154,13 @@ class Nvfp4HybridMarlinManager:
             weight = layer.weight.view(torch.uint8).reshape(-1)
             nvfp4_marlin_relayout_(
                 weight,
+                self.scratch,
+                size_n=layer.output_size_per_partition,
+                size_k=layer.input_size_per_partition,
+                to_marlin=to_marlin,
+            )
+            nvfp4_marlin_scale_relayout_(
+                layer.weight_scale,
                 self.scratch,
                 size_n=layer.output_size_per_partition,
                 size_k=layer.input_size_per_partition,

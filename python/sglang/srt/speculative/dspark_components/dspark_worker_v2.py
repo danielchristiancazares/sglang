@@ -223,8 +223,13 @@ class DSparkWorkerV2(BaseSpecWorker):
             dp_moe_sync=self._draft_is_moe and server_args.enable_dp_attention,
         )
         self._verify_epilogue = None
+        static_graph_kv_commit = (
+            envs.SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT.get()
+            and self._verify_planner.mode_value == "static"
+            and not self._draft_is_moe
+        )
         if (
-            self._verify_planner.is_compact_mode
+            (self._verify_planner.is_compact_mode or static_graph_kv_commit)
             and self._decode_graph_allowed
             and is_cuda()
         ):
@@ -240,6 +245,7 @@ class DSparkWorkerV2(BaseSpecWorker):
                         self.model_runner.req_to_token_pool.req_to_token
                     ),
                 ),
+                static_graph_kv_commit=static_graph_kv_commit,
             )
             self.model_runner.capture_tail_hooks.append(
                 self._verify_epilogue.capture_hook
@@ -724,7 +730,12 @@ class DSparkWorkerV2(BaseSpecWorker):
             commit_lens=accept.commit_lens,
         )
 
-        folded_commit = folded_accept and epilogue.folds_commit
+        folded_commit = (folded_accept and epilogue.folds_commit) or (
+            not run_compact
+            and can_run_cuda_graph
+            and epilogue is not None
+            and epilogue.folds_static_graph_kv_commit
+        )
         if not folded_commit:
             self._verify_executor.commit_hidden(
                 batch=batch,

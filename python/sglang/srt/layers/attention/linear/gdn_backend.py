@@ -750,7 +750,11 @@ class GDNAttnBackend(MambaAttnBackendBase):
                     cache_indices=cache_indices,
                     query_start_loc=query_start_loc,
                     retrieve_parent_token=retrieve_parent_token,
-                    max_tree_depth=forward_batch.spec_info.max_tree_depth,
+                    max_tree_depth=getattr(
+                        forward_batch.spec_info,
+                        "max_tree_depth",
+                        forward_batch.spec_info.draft_token_num,
+                    ),
                 )
             elif use_replayssm_spec:
                 core_attn_out = self._replayssm_target_verify(

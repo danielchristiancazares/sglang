@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import msgspec
 import torch
 import triton
 import triton.language as tl
 
+from sglang.kernels.jit.utils import cache_once, load_jit
 from sglang.kernels.ops.speculative.dspark.dispatch import inputs_on_cuda
 from sglang.kernels.ops.speculative.reject_sampling import (
     chain_speculative_sampling_triton,
@@ -17,6 +18,109 @@ from sglang.srt.speculative.dflash_utils import (
     build_dflash_verify_target_probs,
     compute_dflash_correct_drafts_and_bonus,
 )
+
+if TYPE_CHECKING:
+    from tvm_ffi.module import Module
+
+
+@cache_once
+def _jit_dspark_sparse_accept_module() -> Module:
+    return load_jit(
+        "dspark_sparse_accept",
+        cuda_files=["speculative/dspark_sparse_accept.cuh"],
+        cuda_wrappers=[("accept", "DSparkSparseAcceptKernel::run")],
+    )
+
+
+def dspark_sparse_accept(
+    *,
+    candidates: torch.Tensor,
+    target_logits: torch.Tensor,
+    draft_logits: torch.Tensor,
+    target_temperatures: torch.Tensor,
+    draft_temperatures: torch.Tensor,
+    top_ks: torch.Tensor,
+    top_ps: torch.Tensor,
+    max_top_k: int,
+    cutoff_verify_lens: Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Bind the exact finite-target-support DSpark rejection sampler."""
+    bs, num_slots = candidates.shape
+    gamma = draft_logits.shape[1]
+    vocab_size = draft_logits.shape[2]
+    if num_slots != gamma + 1:
+        raise ValueError(
+            f"DSpark sparse accept requires slots == gamma + 1, got "
+            f"{num_slots} and {gamma}."
+        )
+    if target_logits.shape != (bs * num_slots, vocab_size):
+        raise ValueError(
+            "DSpark sparse accept target logits shape mismatch: "
+            f"expected {(bs * num_slots, vocab_size)}, got "
+            f"{tuple(target_logits.shape)}."
+        )
+    if not 1 <= max_top_k <= 32:
+        raise ValueError(
+            f"DSpark sparse accept max_top_k must be in [1, 32], got {max_top_k}."
+        )
+
+    target_topk_logits, target_topk_indices = torch.topk(
+        target_logits, k=max_top_k, dim=-1
+    )
+    target_topk_logits = target_topk_logits.view(bs, num_slots, max_top_k)
+    target_topk_indices = target_topk_indices.view(bs, num_slots, max_top_k)
+    draft_logits = draft_logits.contiguous()
+    candidates = candidates.to(dtype=torch.int64).contiguous()
+    target_temperatures = (
+        target_temperatures.reshape(bs).to(dtype=torch.float32).contiguous()
+    )
+    draft_temperatures = (
+        draft_temperatures.reshape(bs).to(dtype=torch.float32).contiguous()
+    )
+    top_ks = top_ks.reshape(bs).to(dtype=torch.int32).contiguous()
+    top_ps = top_ps.reshape(bs).to(dtype=torch.float32).contiguous()
+    if cutoff_verify_lens is not None:
+        cutoff_verify_lens = (
+            cutoff_verify_lens.reshape(bs).to(dtype=torch.int64).contiguous()
+        )
+
+    uniform_samples = torch.rand(
+        (bs, gamma), dtype=torch.float32, device=candidates.device
+    )
+    uniform_samples_final = torch.rand(
+        (bs,), dtype=torch.float32, device=candidates.device
+    )
+    num_splits = (vocab_size + 8191) // 8192
+    partial_max = torch.empty(
+        (bs * gamma, num_splits), dtype=torch.float32, device=candidates.device
+    )
+    partial_sum = torch.empty_like(partial_max)
+    draft_log_normalizers = torch.empty(
+        (bs * gamma,), dtype=torch.float32, device=candidates.device
+    )
+    correct_len = torch.empty((bs,), dtype=torch.int32, device=candidates.device)
+    bonus = torch.empty((bs,), dtype=torch.int64, device=candidates.device)
+    cap_trim_lens = torch.empty_like(correct_len)
+    _jit_dspark_sparse_accept_module().accept(
+        target_topk_logits,
+        target_topk_indices,
+        draft_logits,
+        candidates,
+        target_temperatures,
+        draft_temperatures,
+        top_ks,
+        top_ps,
+        uniform_samples,
+        uniform_samples_final,
+        cutoff_verify_lens,
+        partial_max,
+        partial_sum,
+        draft_log_normalizers,
+        correct_len,
+        bonus,
+        cap_trim_lens,
+    )
+    return correct_len, bonus, cap_trim_lens
 
 
 class AcceptSampling:

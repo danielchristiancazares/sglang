@@ -248,46 +248,65 @@ preserved in [`notes/experiment-log.md`](notes/experiment-log.md) and
 
 ---
 
-# Native-Windows 200K Context Benchmark
+# Native-Windows DSpark-v2 200K Serving Benchmark
 
-This is the primary performance scoreboard for the native-Windows
-Qwen3.8-27B serving lane. The numbers that matter are measured at the exact
-near-limit context workload: **199,000 prompt tokens plus 16 generated tokens
-inside the real 200,000-token context and token pools**.
+This is the primary production scoreboard for the native-Windows Qwen3.8-27B
+serving lane. Generation is measured with **6,213 uncached prompt tokens plus
+512 generated tokens under ordinary Qwen sampling**: temperature 1.0, top-p
+0.95, top-k 20, presence penalty 1.5, thinking enabled, and one admitted
+request. Exact **199,000+16** execution inside the real 200,000-token target
+and draft pools remains a separate mandatory capacity gate.
 
-## Current record
+## Current production record
 
-| Metric | Current record |
+| Metric | Argument-free DSpark-v2 record |
 |---|---:|
-| Prompt processing | **3,078.058 tok/s** |
-| Generation | **114.617 tok/s** |
-| Time to first token | **64.651152 s** |
-| End-to-end time | **64.782022 s** |
+| Five-run mean generation | **162.500 tok/s** |
+| Best request generation | **191.357 tok/s** |
+| Mean prompt processing | **12,604.673 tok/s** |
+| Mean time to first token | **0.492930 s** |
+| Mean end-to-end time | **3.663612 s** |
+| Capacity | **200,000 target + 200,000 draft tokens; exact `199000+16` passed** |
 
-## Next target
+The five consecutive samples were:
 
-| Metric | Next target |
+| Sample | Prompt tok/s | Generation tok/s | TTFT (s) | E2E (s) |
+|---:|---:|---:|---:|---:|
+| 1 | 12,676.237 | **151.139** | 0.490130 | 3.871124 |
+| 2 | 12,595.924 | **165.951** | 0.493255 | 3.572485 |
+| 3 | 12,513.812 | **151.000** | 0.496491 | 3.880595 |
+| 4 | 12,704.150 | **191.357** | 0.489053 | 3.159452 |
+| 5 | 12,533.242 | **153.054** | 0.495722 | 3.834405 |
+
+Every sample individually reached at least 150 tok/s and returned exact
+`6213+512`, `finish_reason=length`, and preserved ordinary reasoning/content.
+An independent exact-200K explicit-switch window measured
+`157.176, 173.614, 135.338, 152.884, 160.793 tok/s`, mean **155.961 tok/s**.
+
+The literal argument-free launcher capacity result was:
+
+| Capacity metric | Result |
 |---|---:|
-| Prompt processing | **>= 3,100 tok/s** |
-| Generation | **>= 120 tok/s** |
-| Time to first token | **<= 64.20 s** |
-| End-to-end time | **<= 64.35 s** |
+| Prompt processing | **3,118.215 tok/s** |
+| Time to first token | **63.818572 s** |
+| End-to-end time | **64.236571 s** |
+| Short 16-token decode | **35.885 tok/s** |
+| Token/finish contract | **199,000+16=199,016; `length`** |
 
-The two time targets are tied directly to the throughput targets on this exact
-request: `199000 / 3100 = 64.1935` seconds to first token, followed by 15
-measured decode intervals at 120 tok/s for approximately 64.32 seconds end to
-end. Exact completion of `199016` tokens with `finish_reason=length` remains an
-eligibility gate, not a fifth performance target.
+The 16-token rate spans only 15 post-first-token intervals and is reported as
+capacity telemetry, not substituted for the 512-token generation scoreboard.
+An independent explicit-switch capacity run reached 3,118.323 prompt tok/s,
+63.816352 s TTFT, and 64.233185 s E2E with the same deterministic digest.
 
-This record was measured on the native-Windows launcher configuration with
-benchmark seed `615388882`: the selective target-NVFP4 checkpoint
-`C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4` with the
-width-three NEXTN topology, chunk size 7680, native draft-k1 proposal
-construction, and in-place Cutlass-prefill/Marlin-decode gate/up weights.
-The target's ordinary 16,384-token EXTEND pass used the selected FlashInfer
-FP4 tactics recorded in the detailed contract. The request completed with
-`finish_reason=length`, exact `199000+16` usage, and output SHA-256
-`9a0e20749e2930a697fefdd3bdd7863a067abe4d9860e6d1e7d9b80a62668b37`.
+This record uses the selective target-NVFP4 checkpoint
+`C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4`, immutable
+trained draft `C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2`, online-FP8
+draft weights, gamma seven/eight-row linear verification, 4,096-token prefill
+chunks, five FP32 Mamba slots, FP8 target/draft KV, Triton draft attention,
+TRT-LLM target verify/decode, folded draft proposal/sampling, static
+target-graph draft-KV commit, and in-place Cutlass-prefill/Marlin-decode target
+gate/up weights. The server keeps exact 200K pools, one request, Qwen3
+reasoning/Qwen3-Coder tools, and a language-only model surface.
 
 Launch the accepted profile with:
 
@@ -295,11 +314,10 @@ Launch the accepted profile with:
 .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1
 ```
 
-An independent no-override relaunch with a process-selected seed reached
-**3,052.437 prompt / 114.053 generation tok/s**, **65.193816 s TTFT**, and
-**65.325334 s** end to end. It also beat all four prior record values in one
-exact request. Base RadixArk and the older Cutlass/top-k20 route remain
-available through explicit launcher overrides for controls.
+The earlier NEXTN/chunk-7680 exact-16 record remains a historical long-context
+control. Base RadixArk and the older Cutlass/top-k20 route remain available
+through explicit launcher overrides. No new native-Windows performance target
+is active after qualification of the requested 150 tok/s production gate.
 
 ## Benchmark command
 
@@ -323,10 +341,76 @@ Record prompt throughput, generation throughput, TTFT, end-to-end time, token
 counts, finish reason, resolved launcher arguments, GPU/process environment,
 and cache treatment.
 
-A target result must clear all four thresholds in the same exact request.
-Because generation spans only 15 post-first-token intervals, it also requires
-the repeated matched evidence defined by the detailed contract below.
+A replacement production result must preserve exact 200K capacity and every
+behavior/client gate, then clear its declared ordinary-sampling threshold in
+at least five clean exact `6213+512` samples and an independent launcher
+restart. A short exact-16 capacity result alone is not generation-promotion
+evidence.
 
 Detailed qualification rules and historical evidence remain in
 [`notes/benchmark-contract.md`](notes/benchmark-contract.md) and
 [`notes/experiment-log.md`](notes/experiment-log.md).
+
+## NVIDIA stock checkpoint evaluation - 2026-09-08
+
+`nvidia/Qwen3.8-27B-NVFP4` revision
+`fed99d815f4e8c7c616dd3dd6780076e26d5fb61` is installed and works through
+the existing native-Windows launcher without source or dependency changes.
+It is a **mixed NVFP4/FP8** checkpoint with **21.922 GB / 20.416 GiB** of
+weight files. All 19 upstream file sizes and all upstream LFS hashes were
+verified. The production attention-selective RadixArk/DSpark default above
+remains unchanged.
+
+The checkpoint-only comparison below uses **target-only serving**, not
+speculative decoding: real 200K context and target KV, five FP32 Mamba slots,
+FP8 KV, chunk 4096, one request, full batch-one decode graphs, and the same
+FlashInfer/hybrid-Marlin backends. Both checkpoints use the identical tokenizer
+and chat template. The RTX 5090 used driver `616.56`; ordinary desktop clients
+and unrelated CPU work were retained.
+
+Each row averages five consecutive exact uncached **6213+512** requests with
+one 16-token same-shape warmup per sample, temperature 1.0, top-p 0.95, top-k
+20, presence penalty 1.5, and thinking enabled:
+
+| Stock checkpoint | Prompt tok/s | Generation tok/s | TTFT (s) | E2E (s) |
+|---|---:|---:|---:|---:|
+| NVIDIA NVFP4/FP8 | **9,469.619** | **64.064** | **0.656153** | **8.633376** |
+| Original RadixArk NVFP4/FP8 | **9,552.382** | **63.996** | **0.650634** | **8.635972** |
+
+NVIDIA generation samples were
+`63.234, 63.269, 64.686, 64.553, 64.578 tok/s`; original RadixArk samples
+were `63.091, 63.849, 64.272, 64.238, 64.530 tok/s`. NVIDIA's **0.11%**
+mean generation difference is within the observed run variation: there is
+**no material throughput improvement** in this matched target-only comparison.
+The original stock RadixArk control is not the attention-selective DSpark
+production configuration.
+
+NVIDIA also passed exact **199000+16=199016**, including a same-shape warmup,
+at **2,720.158 prompt tok/s**, **73.157527 s TTFT**, and
+**73.500594 s E2E**. The short 16-token decode rate was 43.723 tok/s.
+Sampled arithmetic, preserved reasoning, exactly one parsed multiply call,
+tool-result continuation, thinking-disabled output, and language-only
+reporting passed. Cache flush after the capacity gate restored **2,660 MiB
+free**. NVIDIA speculative serving, independent-restart/client promotion
+gates, and the published accuracy benchmark suites were not run.
+
+Reproduce the installed option without changing production defaults:
+
+```powershell
+.\.venv\Scripts\hf.exe download nvidia/Qwen3.8-27B-NVFP4 `
+  --revision fed99d815f4e8c7c616dd3dd6780076e26d5fb61 `
+  --local-dir C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-NVIDIA `
+  --max-workers 3 --quiet
+
+.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 `
+  -ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-NVIDIA `
+  -SpeculativeNumSteps 0
+```
+
+All benchmark servers were stopped after measurement; port 30000 is free.
+Full samples, output digests, exact capacity data, source/checkpoint
+provenance, and GPU brackets are preserved in
+[`benchmark/windows/nvidia_qwen38_20260908.json`](benchmark/windows/nvidia_qwen38_20260908.json).
+The initial higher-residency DSpark control is retained there but excluded
+from the checkpoint-only comparison. See the September 8 entries in
+[`notes/experiment-log.md`](notes/experiment-log.md) for the complete handoff.

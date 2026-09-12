@@ -4,7 +4,11 @@ import pytest
 import torch
 from flashinfer.sampling import top_k_renorm_prob, top_p_renorm_prob
 
-from sglang.kernels.ops.sampling.sparse_top_p_renorm import sparse_top_p_renorm
+from sglang.kernels.ops.sampling.sparse_top_p_renorm import (
+    sorted_top_k_top_p_normalize,
+    sorted_top_k_top_p_sample,
+    sparse_top_p_renorm,
+)
 from sglang.test.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(
@@ -23,6 +27,130 @@ def _top_k_probs(seed: int, rows: int, vocab_size: int, top_k: int) -> torch.Ten
     torch.manual_seed(seed)
     logits = torch.randn(rows, vocab_size, dtype=torch.float32, device="cuda")
     return top_k_renorm_prob(torch.softmax(logits, dim=-1), top_k)
+
+
+def _compact_top_k_top_p_reference(
+    logits: torch.Tensor,
+    temperatures: torch.Tensor,
+    top_ks: torch.Tensor,
+    top_ps: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    scaled = logits.float() / temperatures[:, None]
+    ranks = torch.arange(logits.shape[1], device="cuda")[None, :]
+    valid = ranks < top_ks[:, None]
+    probs = torch.softmax(scaled.masked_fill(~valid, float("-inf")), dim=-1)
+    prefix_before = probs.cumsum(-1) - probs
+    cutoff_rank = (
+        (valid & (prefix_before < top_ps[:, None]))
+        .to(torch.int32)
+        .sum(-1)
+        .sub(1)
+        .clamp_min(0)
+    )
+    cutoff = probs.gather(1, cutoff_rank[:, None])
+    probs = torch.where(
+        valid & (probs >= cutoff), probs, torch.zeros_like(probs)
+    )
+    return scaled, probs / probs.sum(-1, keepdim=True)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_sorted_top_k_top_p_normalize_and_sample(dtype: torch.dtype) -> None:
+    torch.manual_seed(41200)
+    rows, width, vocab_size = 5, 32, 248320
+    full_logits = torch.randn(rows, vocab_size, dtype=dtype, device="cuda")
+    logits, indices = torch.topk(full_logits, width, dim=-1)
+    temperatures = torch.tensor([1.0, 0.73, 1.4, 0.91, 1.0], device="cuda")
+    top_ks = torch.tensor([20, 7, 32, 3, 1], dtype=torch.int32, device="cuda")
+    top_ps = torch.tensor([0.95, 0.63, 1.0, 0.4, 1.0], device="cuda")
+    greedy = top_ks == 1
+    noise = torch.empty(rows, vocab_size, device="cuda").exponential_()
+    scaled, expected = _compact_top_k_top_p_reference(
+        logits, temperatures, top_ks, top_ps
+    )
+
+    actual = sorted_top_k_top_p_normalize(
+        logits, temperatures, top_ks, top_ps
+    )
+    sampled, sample_probs, retained_indices = sorted_top_k_top_p_sample(
+        logits, indices, temperatures, top_ks, top_ps, noise, greedy
+    )
+
+    torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
+    torch.testing.assert_close(sample_probs, expected, rtol=2e-5, atol=2e-6)
+    assert torch.equal(actual > 0, expected > 0)
+    assert torch.equal(retained_indices, indices)
+    scores = expected / noise.gather(1, indices)
+    scores[greedy] = scaled[greedy]
+    scores.masked_fill_(expected <= 0, float("-inf"))
+    best = scores.max(-1, keepdim=True).values
+    expected_tokens = torch.where(
+        scores == best,
+        indices,
+        torch.full_like(indices, torch.iinfo(torch.int64).max),
+    ).min(-1).values
+    assert torch.equal(sampled, expected_tokens)
+
+
+def test_sorted_top_k_top_p_sample_graph_replay() -> None:
+    torch.manual_seed(41201)
+    rows, width, vocab_size = 5, 32, 248320
+    static_logits = torch.randn(
+        rows, width, dtype=torch.bfloat16, device="cuda"
+    ).sort(dim=-1, descending=True).values
+    static_indices = torch.arange(width, device="cuda", dtype=torch.int64)[
+        None, :
+    ].repeat(rows, 1)
+    static_indices.add_(torch.arange(rows, device="cuda")[:, None] * width)
+    static_noise = torch.empty(rows, vocab_size, device="cuda").exponential_()
+    temperatures = torch.tensor([1.0, 0.73, 1.4, 0.91, 1.0], device="cuda")
+    top_ks = torch.tensor([20, 7, 32, 3, 1], dtype=torch.int32, device="cuda")
+    top_ps = torch.tensor([0.95, 0.63, 1.0, 0.4, 1.0], device="cuda")
+    greedy = top_ks == 1
+    sorted_top_k_top_p_sample(
+        static_logits,
+        static_indices,
+        temperatures,
+        top_ks,
+        top_ps,
+        static_noise,
+        greedy,
+    )
+    torch.cuda.synchronize()
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        graph_tokens, graph_probs, graph_indices = sorted_top_k_top_p_sample(
+            static_logits,
+            static_indices,
+            temperatures,
+            top_ks,
+            top_ps,
+            static_noise,
+            greedy,
+        )
+
+    for _ in range(3):
+        static_logits.copy_(
+            torch.randn_like(static_logits).sort(dim=-1, descending=True).values
+        )
+        static_noise.exponential_()
+        graph.replay()
+        scaled, expected = _compact_top_k_top_p_reference(
+            static_logits, temperatures, top_ks, top_ps
+        )
+        torch.testing.assert_close(graph_probs, expected, rtol=2e-5, atol=2e-6)
+        scores = expected / static_noise.gather(1, static_indices)
+        scores[greedy] = scaled[greedy]
+        scores.masked_fill_(expected <= 0, float("-inf"))
+        best = scores.max(-1, keepdim=True).values
+        expected_tokens = torch.where(
+            scores == best,
+            static_indices,
+            torch.full_like(static_indices, torch.iinfo(torch.int64).max),
+        ).min(-1).values
+        assert torch.equal(graph_tokens, expected_tokens)
+        assert torch.equal(graph_indices, static_indices)
 
 
 @pytest.mark.parametrize("seed", [41001, 41002, 41003, 41004])

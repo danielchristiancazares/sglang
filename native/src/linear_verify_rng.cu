@@ -341,17 +341,20 @@ __device__ __forceinline__ float stateful_coin(uint32_t value) {
   return static_cast<float>(value >> 8U) * 0x1p-24F;
 }
 
-__global__ void seeded_linear_verify_rng_kernel(const uint64_t *seed,
-                                                const uint64_t *sequence_length,
-                                                float *accept_uniforms,
-                                                float *bonus_uniforms,
-                                                uint32_t *device_status,
-                                                uint32_t num_slots) {
+__global__ void seeded_linear_verify_rng_kernel(
+    const uint64_t *seed, const uint64_t *sequence_length,
+    float *accept_uniforms, float *bonus_uniforms, uint32_t *device_status,
+    uint32_t num_slots, bool require_ready_status) {
+  __shared__ uint32_t valid;
   const uint32_t draw = threadIdx.x;
   if (draw == 0U) {
-    device_status[0] = static_cast<uint32_t>(LinearVerifyRngDeviceCode::kOk);
+    valid = !require_ready_status || device_status[0] == 0U ? 1U : 0U;
+    if (valid != 0U) {
+      device_status[0] = static_cast<uint32_t>(LinearVerifyRngDeviceCode::kOk);
+    }
   }
-  if (draw > num_slots) {
+  __syncthreads();
+  if (valid == 0U || draw > num_slots) {
     return;
   }
   const float coin =
@@ -363,11 +366,9 @@ __global__ void seeded_linear_verify_rng_kernel(const uint64_t *seed,
   }
 }
 
-__global__ void stateful_linear_verify_rng_kernel(uint64_t *state,
-                                                  float *accept_uniforms,
-                                                  float *bonus_uniforms,
-                                                  uint32_t *device_status,
-                                                  uint32_t num_slots) {
+__global__ void stateful_linear_verify_rng_kernel(
+    uint64_t *state, float *accept_uniforms, float *bonus_uniforms,
+    uint32_t *device_status, uint32_t num_slots, bool require_ready_status) {
   __shared__ uint64_t seed;
   __shared__ uint64_t subsequence;
   __shared__ uint64_t first_counter;
@@ -377,6 +378,9 @@ __global__ void stateful_linear_verify_rng_kernel(uint64_t *state,
   const uint32_t thread = threadIdx.x;
   if (thread == 0U) {
     valid = 0U;
+    if (require_ready_status && device_status[0] != 0U) {
+      return;
+    }
     const uint32_t groups = (num_slots + 4U) / 4U;
     LinearVerifyRngDeviceCode code = LinearVerifyRngDeviceCode::kOk;
     if (state[0] != kLinearVerifyRngStateDescriptorV1) {
@@ -414,9 +418,12 @@ __global__ void stateful_linear_verify_rng_kernel(uint64_t *state,
 
 } // namespace
 
-NativeRuntimeError launch_seeded_linear_verify_rng(
-    const CudaExecutionContext &context,
-    const SeededLinearVerifyRngBuffers &buffers) noexcept {
+namespace {
+
+NativeRuntimeError
+launch_seeded_impl(const CudaExecutionContext &context,
+                   const SeededLinearVerifyRngBuffers &buffers,
+                   bool require_ready_status) noexcept {
   LinearVerifyRngShape shape{};
   const NativeRuntimeError layout_status =
       validate_seeded_layout(context, buffers, &shape);
@@ -431,7 +438,7 @@ NativeRuntimeError launch_seeded_linear_verify_rng(
       reinterpret_cast<float *>(buffers.accept_uniforms.data_bytes()),
       reinterpret_cast<float *>(buffers.bonus_uniforms.data_bytes()),
       reinterpret_cast<uint32_t *>(buffers.device_status.data_bytes()),
-      static_cast<uint32_t>(shape.num_slots));
+      static_cast<uint32_t>(shape.num_slots), require_ready_status);
   const cudaError_t launch_status = cudaGetLastError();
   if (launch_status != cudaSuccess) {
     return make_error(NativeRuntimeCode::kCudaRuntimeFailure,
@@ -442,9 +449,10 @@ NativeRuntimeError launch_seeded_linear_verify_rng(
   return native_runtime_ok();
 }
 
-NativeRuntimeError launch_stateful_linear_verify_rng(
-    const CudaExecutionContext &context,
-    const StatefulLinearVerifyRngBuffers &buffers) noexcept {
+NativeRuntimeError
+launch_stateful_impl(const CudaExecutionContext &context,
+                     const StatefulLinearVerifyRngBuffers &buffers,
+                     bool require_ready_status) noexcept {
   LinearVerifyRngShape shape{};
   const NativeRuntimeError layout_status =
       validate_stateful_layout(context, buffers, &shape);
@@ -458,7 +466,7 @@ NativeRuntimeError launch_stateful_linear_verify_rng(
       reinterpret_cast<float *>(buffers.accept_uniforms.data_bytes()),
       reinterpret_cast<float *>(buffers.bonus_uniforms.data_bytes()),
       reinterpret_cast<uint32_t *>(buffers.device_status.data_bytes()),
-      static_cast<uint32_t>(shape.num_slots));
+      static_cast<uint32_t>(shape.num_slots), require_ready_status);
   const cudaError_t launch_status = cudaGetLastError();
   if (launch_status != cudaSuccess) {
     return make_error(NativeRuntimeCode::kCudaRuntimeFailure,
@@ -467,6 +475,141 @@ NativeRuntimeError launch_stateful_linear_verify_rng(
                       static_cast<int32_t>(launch_status));
   }
   return native_runtime_ok();
+}
+
+template <typename Buffers> struct VerifyRngCapturePayload final {
+  const CudaExecutionContext *context;
+  const Buffers *buffers;
+};
+
+[[nodiscard]] NativeRuntimeError capture_seeded_body(void *opaque) noexcept {
+  const auto *payload = static_cast<
+      const VerifyRngCapturePayload<SeededLinearVerifyRngBuffers> *>(opaque);
+  return launch_seeded_linear_verify_rng_if_ready(*payload->context,
+                                                  *payload->buffers);
+}
+
+[[nodiscard]] NativeRuntimeError capture_stateful_body(void *opaque) noexcept {
+  const auto *payload = static_cast<
+      const VerifyRngCapturePayload<StatefulLinearVerifyRngBuffers> *>(opaque);
+  return launch_stateful_linear_verify_rng_if_ready(*payload->context,
+                                                    *payload->buffers);
+}
+
+template <std::size_t Count>
+[[nodiscard]] NativeRuntimeError require_arena_ownership(
+    const std::array<bool, Count> &owned,
+    const std::array<LinearVerifyRngArgument, Count> &arguments) noexcept {
+  for (std::size_t index = 0; index < Count; ++index) {
+    if (!owned[index]) {
+      return make_error(NativeRuntimeCode::kForeignSlice,
+                        NativeRuntimeOperation::kGraphCaptureBegin,
+                        arguments[index]);
+    }
+  }
+  return native_runtime_ok();
+}
+
+} // namespace
+
+NativeRuntimeResult<CudaCapturedGraph> capture_seeded_linear_verify_rng_graph(
+    const CudaExecutionContext &context, const GraphArenaLease &arena,
+    const SeededLinearVerifyRngBuffers &buffers) noexcept {
+  using GraphResult = NativeRuntimeResult<CudaCapturedGraph>;
+  if (!context.valid() || !arena.valid()) {
+    return GraphResult::failure(
+        make_error(NativeRuntimeCode::kInvalidArgument,
+                   NativeRuntimeOperation::kGraphCaptureBegin));
+  }
+  if (context.device_ordinal() != arena.device_ordinal()) {
+    return GraphResult::failure(
+        make_error(NativeRuntimeCode::kDeviceMismatch,
+                   NativeRuntimeOperation::kGraphCaptureBegin,
+                   LinearVerifyRngArgument::kNone, 0,
+                   static_cast<uint64_t>(context.device_ordinal()),
+                   static_cast<uint64_t>(arena.device_ordinal())));
+  }
+  const std::array<bool, 5> owned{buffers.seed.belongs_to(arena),
+                                  buffers.sequence_length.belongs_to(arena),
+                                  buffers.accept_uniforms.belongs_to(arena),
+                                  buffers.bonus_uniforms.belongs_to(arena),
+                                  buffers.device_status.belongs_to(arena)};
+  constexpr std::array<LinearVerifyRngArgument, 5> arguments{
+      LinearVerifyRngArgument::kSeed, LinearVerifyRngArgument::kSequenceLength,
+      LinearVerifyRngArgument::kAcceptUniforms,
+      LinearVerifyRngArgument::kBonusUniforms,
+      LinearVerifyRngArgument::kDeviceStatus};
+  const NativeRuntimeError ownership =
+      require_arena_ownership(owned, arguments);
+  if (!is_ok(ownership)) {
+    return GraphResult::failure(ownership);
+  }
+
+  VerifyRngCapturePayload<SeededLinearVerifyRngBuffers> payload{&context,
+                                                                &buffers};
+  return CudaCapturedGraph::capture(context, arena, &capture_seeded_body,
+                                    &payload);
+}
+
+NativeRuntimeResult<CudaCapturedGraph> capture_stateful_linear_verify_rng_graph(
+    const CudaExecutionContext &context, const GraphArenaLease &arena,
+    const StatefulLinearVerifyRngBuffers &buffers) noexcept {
+  using GraphResult = NativeRuntimeResult<CudaCapturedGraph>;
+  if (!context.valid() || !arena.valid()) {
+    return GraphResult::failure(
+        make_error(NativeRuntimeCode::kInvalidArgument,
+                   NativeRuntimeOperation::kGraphCaptureBegin));
+  }
+  if (context.device_ordinal() != arena.device_ordinal()) {
+    return GraphResult::failure(
+        make_error(NativeRuntimeCode::kDeviceMismatch,
+                   NativeRuntimeOperation::kGraphCaptureBegin,
+                   LinearVerifyRngArgument::kNone, 0,
+                   static_cast<uint64_t>(context.device_ordinal()),
+                   static_cast<uint64_t>(arena.device_ordinal())));
+  }
+  const std::array<bool, 4> owned{buffers.state.belongs_to(arena),
+                                  buffers.accept_uniforms.belongs_to(arena),
+                                  buffers.bonus_uniforms.belongs_to(arena),
+                                  buffers.device_status.belongs_to(arena)};
+  constexpr std::array<LinearVerifyRngArgument, 4> arguments{
+      LinearVerifyRngArgument::kState, LinearVerifyRngArgument::kAcceptUniforms,
+      LinearVerifyRngArgument::kBonusUniforms,
+      LinearVerifyRngArgument::kDeviceStatus};
+  const NativeRuntimeError ownership =
+      require_arena_ownership(owned, arguments);
+  if (!is_ok(ownership)) {
+    return GraphResult::failure(ownership);
+  }
+
+  VerifyRngCapturePayload<StatefulLinearVerifyRngBuffers> payload{&context,
+                                                                  &buffers};
+  return CudaCapturedGraph::capture(context, arena, &capture_stateful_body,
+                                    &payload);
+}
+
+NativeRuntimeError launch_seeded_linear_verify_rng(
+    const CudaExecutionContext &context,
+    const SeededLinearVerifyRngBuffers &buffers) noexcept {
+  return launch_seeded_impl(context, buffers, false);
+}
+
+NativeRuntimeError launch_seeded_linear_verify_rng_if_ready(
+    const CudaExecutionContext &context,
+    const SeededLinearVerifyRngBuffers &buffers) noexcept {
+  return launch_seeded_impl(context, buffers, true);
+}
+
+NativeRuntimeError launch_stateful_linear_verify_rng(
+    const CudaExecutionContext &context,
+    const StatefulLinearVerifyRngBuffers &buffers) noexcept {
+  return launch_stateful_impl(context, buffers, false);
+}
+
+NativeRuntimeError launch_stateful_linear_verify_rng_if_ready(
+    const CudaExecutionContext &context,
+    const StatefulLinearVerifyRngBuffers &buffers) noexcept {
+  return launch_stateful_impl(context, buffers, true);
 }
 
 } // namespace sglang::native

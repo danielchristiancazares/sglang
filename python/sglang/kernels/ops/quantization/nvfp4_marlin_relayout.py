@@ -16,7 +16,11 @@ def _jit_nvfp4_marlin_relayout_module() -> Module:
         "nvfp4_marlin_relayout",
         cuda_files=["gemm/marlin/nvfp4_marlin_relayout.cuh"],
         cuda_wrappers=[
-            ("nvfp4_marlin_relayout_inplace", "nvfp4_marlin_relayout_inplace")
+            ("nvfp4_marlin_relayout_inplace", "nvfp4_marlin_relayout_inplace"),
+            (
+                "nvfp4_marlin_scale_relayout_inplace",
+                "nvfp4_marlin_scale_relayout_inplace",
+            ),
         ],
     )
 
@@ -58,6 +62,52 @@ def nvfp4_marlin_relayout_(
         )
     _jit_nvfp4_marlin_relayout_module().nvfp4_marlin_relayout_inplace(
         weight,
+        scratch,
+        size_n,
+        size_k,
+        to_marlin,
+    )
+
+
+def nvfp4_marlin_scale_relayout_(
+    scale: torch.Tensor,
+    scratch: torch.Tensor,
+    *,
+    size_n: int,
+    size_k: int,
+    to_marlin: bool,
+) -> None:
+    expected_scales = size_n * size_k // 16
+    scale_bytes = scale.view(torch.uint8)
+    if (
+        size_n <= 0
+        or size_n % 128 != 0
+        or size_k <= 0
+        or size_k % 64 != 0
+        or scale.device.type != "cuda"
+        or scale.dtype != torch.float8_e4m3fn
+        or scale.ndim != 2
+        or not scale.is_contiguous()
+        or scale.numel() != expected_scales
+    ):
+        raise ValueError(
+            "NVFP4 Marlin relayout scale must use CUTLASS's 128-row/four-group "
+            "tile alignment and be a contiguous CUDA E4M3 matrix with "
+            f"{expected_scales} elements"
+        )
+    if (
+        scratch.device != scale.device
+        or scratch.dtype != torch.uint8
+        or scratch.ndim != 1
+        or not scratch.is_contiguous()
+        or scratch.numel() < expected_scales
+    ):
+        raise ValueError(
+            "NVFP4 Marlin scale relayout scratch must be a contiguous CUDA "
+            "uint8 vector on the scale device with sufficient capacity"
+        )
+    _jit_nvfp4_marlin_relayout_module().nvfp4_marlin_scale_relayout_inplace(
+        scale_bytes.reshape(-1),
         scratch,
         size_n,
         size_k,

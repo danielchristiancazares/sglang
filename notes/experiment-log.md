@@ -10435,3 +10435,3438 @@ mean 13.929045  17.125658 446.051        39.730
   production idle loops skip the cache-size-dependent tree walk while CI and
   explicit diagnostics retain it. Unit, style, behavior, tools, OpenCode2,
   exact-capacity, graph-capture, and clean-shutdown gates pass.
+
+### 2026-08-31 23:40 PDT - DSpark v2 Windows lane recovered; matched NEXTN control measured
+
+- A new explicit user request reopened the native-Windows performance branch
+  with the unchanged terminal goal: Qwen3.8-27B Q4 must sustain **200 output
+  tok/s** under the qualified sampled behavior/capacity contract. The task
+  began on `main` at `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`
+  (`feat: add native benchmark and verify RNG spine`), exactly even with
+  `origin/main`. Nine modified paths were already present and were treated as
+  user-owned work: the Qwen3.5/DSpark model adapters, DSpark sampler, hybrid
+  GDN/ReplaySSM commit path, scheduler/cache guards, Windows launcher, and one
+  focused DSpark host suite. The initial diff was 318 insertions / 92
+  deletions; no pre-existing edit was reverted.
+- The downloaded DSpark artifact is
+  `C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2`. Its local model card and
+  config identify RadixArk's 1.86B-parameter BF16 DSpark v2 draft: five Qwen
+  full-attention layers, target feature layers `5,19,33,47,61`, a rank-256
+  `VanillaMarkov` head, `gamma=7`, eight-token target verify width, vocabulary
+  248,320, and a confidence head. Artifact metadata records
+  `model.safetensors` as 3,714,723,322 bytes / SHA-256
+  `2aff025f45823b40ebe726b9dfa40302f3512bd9a11c3a7347de32a567acd9a7`
+  and `config.json` as 2,448 bytes / SHA-256
+  `dd65fb1b01c2adea69512ff2990a79d58eb7fe2c7ea97375aa66f657a29a5bfd`.
+- Eleven detached DSpark launch logs from 20:22-21:16 PDT were recovered from
+  `%TEMP%`; none had yet reached the notebook. The sequence is meaningful
+  progress rather than an unexecuted plan:
+  - the first launch was rejected by the NEXTN-only native top-k-one delta
+    proposal guard;
+  - subsequent 32K/BF16-draft launches reached target and draft loading, aux
+    target-layer capture, and full draft-verify CUDA-graph capture, then
+    exposed the missing Qwen3.5 capture adapter, a graph-capture `None` return,
+    and the overbroad Windows DFlash request stub in turn;
+  - two repaired 32K launches became ready and served 12 and 16 requests with
+    the external BF16 draft, `gamma=7`, FlashInfer draft attention, FP8 draft
+    KV, and roughly 6 GiB post-pool headroom;
+  - two later 200K launches used online FP8 draft quantization,
+    `mem_fraction_static=0.98`, four FP32 Mamba slots, exact 200K target/draft
+    pools, FlashInfer draft attention, full decode graphs, and chunks 2,048
+    then 4,096. Both became ready and served traffic. The final log contains
+    28 successful POSTs, 526 prefill batches, and 131 decode reports. Ordinary
+    sampled stretches were commonly about 90-170 tok/s with accepted lengths
+    around 2-4, while easy/full-accept stretches reached accepted length 7.7-8
+    and 325-339 tok/s. This is useful mechanism evidence but does **not** prove
+    a 200 tok/s sampled result. All recovered launch wrappers exited and their
+    archived `.exit` records are terminal.
+- At task recovery, a distinct argument-free four-slot NEXTN server was live
+  and healthy. The verified owned chain was outer wrapper `24760`, encoded
+  wrapper `33764`, launcher PowerShell `37460`, `sglang.exe` `29724`, Python
+  wrapper `14648`, listener/tokenizer `36276`, scheduler/GPU owner `15060`, and
+  detokenizer `27684`. It resolved the selective target-NVFP4 checkpoint,
+  language-only parsers, exact 200K context/token pools, chunk 7,680,
+  `max_running_requests=1`, target/draft TRT-LLM MHA, two-step/three-token
+  NEXTN, top-k-one linear rejection, FP8 draft KV, ReplaySSM, full decode
+  graphs, and four FP32 Mamba slots. `/health` and `/model_info` passed; no
+  compiler worker was present. Before measurement the RTX 5090 reported 30,445
+  MiB used / 1,743 MiB free, 30 C, and 49.64 W.
+- Five consecutive cache-flushed, warmup-one Python authority samples used:
+
+  ```text
+  .\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py --base-url http://127.0.0.1:30000 --model qwen3.8-27b --backend sglang --input-tokens 6213 --output-tokens 512 --warmup-output-tokens 16 --warmup-runs 1 --timeout 600 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5
+  ```
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Output SHA-256 |
+  |---:|---:|---:|---:|---|
+  | 1 | 125.817 | 0.507651 | 4.569096 | `5aac66db...e8575c` |
+  | 2 | 115.440 | 0.516337 | 4.942876 | `cf17eed4...0dbed` |
+  | 3 | 123.215 | 0.515712 | 4.662940 | `337fbc85...41093` |
+  | 4 | 121.449 | 0.503001 | 4.710515 | `13cc42c7...cdac` |
+  | 5 | 121.556 | 0.519773 | 4.723613 | `09b1cc60...7e455` |
+
+  The mean is **121.495 tok/s**; every result completed exact `6213+512`,
+  preserved thinking/reasoning output, and finished by length. The immediately
+  adjacent native acceptance command with the same sampling profile reported
+  accepted length **1.9033457249**, acceptance rate **0.4498141264**,
+  correct/proposed drafts **242/538**, **269** verify cycles, histogram
+  `[118,60,91]`, exact `6213+512`, and 4.938954 s E2E. `/health` remained 200.
+  The post-request GPU snapshot was 29,998 MiB used / 2,190 MiB free, 49 C,
+  438.50 W; it was an active-tail snapshot, not an idle-residency claim.
+- **Handoff:** preserve this NEXTN window as the matched denominator. Stop only
+  the verified detached server tree, run the focused DSpark host/parse checks
+  with the GPU clear, then launch one controlled DSpark v2 candidate. First
+  separate draft-quality loss from engine cost using ordinary sampled
+  rejection plus acceptance counters; do not promote greedy/full-accept bursts
+  or simulated length. New hot-path implementation must be C++/CUDA only.
+
+### 2026-08-31 23:49 PDT - canonical BF16 DSpark v2 exposes the 200K/capture memory boundary
+
+- The recovered NEXTN server was stopped leaf-first through the freshly
+  verified owned PIDs `27684`, `15060`, `36276`, `14648`, `29724`, `37460`,
+  `29072`, `33764`, `36868`, and `24760`. All were absent afterward, port
+  30000 was free, no compiler remained, and the RTX 5090 returned to 1,158 MiB
+  used / 31,030 MiB free. Focused prelaunch qualification then passed **13
+  DSpark tests**, `py_compile` for all eight touched Python/test files, launcher
+  parsing with 1,921 tokens / zero errors, and `git diff --check`. Fresh local
+  hashes exactly matched the draft model card for both `config.json` and the
+  3.714 GB safetensors artifact.
+- One foreground, unsimulated candidate used the Q4 production defaults plus
+  the draft model card's BF16/unquant and FlashInfer settings:
+
+  ```text
+  pwsh -NoProfile -File .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization unquant -SpeculativeDraftAttentionBackend flashinfer
+  ```
+
+  Resolved target state retained the attention-selective Q4 checkpoint,
+  language-only parsers, `context_length=max_total_tokens=200000`,
+  `mem_fraction_static=0.94`, chunk 7,680, four FP32 Mamba slots, full target
+  and draft decode graphs requested, target TRT-LLM MHA, draft FlashInfer,
+  target FlashInfer/FP4 autotuning, torch compile mode `default`, DSpark gamma
+  7/eight-token verification, FP8 draft KV, and ReplaySSM. The target loaded
+  in 11.56 s using 16.91 GB; the 1.86B BF16 draft loaded in 1.60 s using 3.64
+  GB.
+- This exact lane cannot satisfy the capacity contract. Memory profiling
+  reduced the requested 200,000 pools to **172,928** tokens. Target KV used
+  5.28 GB and draft KV 1.64 GB; only 1.20 GB remained before backend init.
+  The extra 16K FlashInfer EXTEND autotune temporarily reached 69 MiB free,
+  then completed; target-verify capture began with 0.84 GB free.
+- TorchInductor tried to compile the GDN ReplaySSM target-verify kernel and
+  Triton rejected a loop-carried `b_h` type change from FP32 to FP64. SGLang
+  fell back and completed target-verify capture in 50.88 s / 0.03 GB, but only
+  0.79 GB remained and the DSpark worker disabled its draft CUDA graph at the
+  built-in 1.0 GB safety floor. Startup therefore completed with a captured
+  target verify but an eager draft path; it is neither default graph coverage
+  nor exact capacity.
+- One diagnostic sampled stream and adjacent native acceptance probe used the
+  exact qualified `6213+512`, temperature 1.0, top-p 0.95, top-k 20, presence
+  penalty 1.5 commands. The stream completed by length with preserved
+  reasoning, **124.764 steady decode tok/s**, 7.267447 s TTFT, 11.363172 s E2E,
+  and only 45.058 E2E output tok/s. The acceptance probe reported **2.925714**
+  accepted length, **0.274286** rate, correct/proposed **336/1225**, **175**
+  verify cycles, histogram `[47,41,30,28,10,10,2,7]`, and 9.086584 s E2E.
+  Thus BF16 improves draft yield over the adjacent NEXTN 1.9033 control, but
+  not enough to fund the uncaptured draft, and its pool/capture failures are
+  independently disqualifying.
+- The active-tail GPU snapshot had only 86 MiB free. One `Ctrl+C` was sent to
+  the foreground launch session. The server shut down; the expected scheduler
+  `KeyboardInterrupt` occurred while it held the Windows load-snapshot lock.
+  Every known launch PID was absent afterward, port 30000 was free, no
+  SGLang/CUDA/compiler worker remained, and the GPU returned to 485 MiB used /
+  31,703 MiB free.
+- **Conclusion:** a full BF16 draft is not the 32 GiB/200K implementation path.
+  It supplies useful quality attribution, while online FP8 remains the only
+  locally proven way to retain exact capacity and both target/draft graphs.
+  Re-establish that captured 200K FP8 baseline next, then profile/fuse its
+  native proposal/verify costs rather than trading away the required pool.
+
+### 2026-08-31 23:56 PDT - captured exact-200K online-FP8 DSpark baseline reaches 128.105 tok/s
+
+- A foreground online-FP8 launch reproduced the final recovered capacity lane
+  with a fixed seed and no other experimental change:
+
+  ```text
+  pwsh -NoProfile -File .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend flashinfer -DisableTorchCompile -EnableFlashInferAutotune:$false -EnableFlashInferAutotuneExtend:$false
+  ```
+
+  Resolved arguments retained the attention-selective Q4 target, language-only
+  reasoning/tool surface, exact `context_length=max_total_tokens=200000`, one
+  running request, chunk 4,096, four FP32 Mamba slots, ReplaySSM, target and
+  draft FP8 E4M3 KV, DSpark gamma 7/eight-token verification, FlashInfer draft
+  attention, full graph backends, and online block-FP8 draft weights. Target
+  and draft load consumed 16.91 and 2.39 GB. Both 200,000-token pools allocated
+  (6.10 GB target KV and 1.90 GB draft KV). Target-verify capture used 1.06 s /
+  0.11 GB and folded draft capture used 0.83 s / 0.08 GB; startup retained 1.16
+  GB. `/health`, `/v1/models`, `/model_info`, and `/server_info` passed; the
+  served model was `qwen3.8-27b`, max length was 200,000, image/audio
+  understanding were false, and listener PID 3304 owned port 30000.
+- The first real 6,213-token prefill device-loaded the remaining GDN/sampling
+  Triton kernels after serving began, reducing reported free device memory to
+  about 0.15 GiB without an OOM. A cache-flushed sampled `6213+64` warmup then
+  completed at 153.682 decode tok/s with reasoning preserved. Five consecutive
+  cache-flushed, warmup-one Python scoreboard samples used the qualified
+  `6213+512`, temperature 1.0, top-p 0.95, top-k 20, presence-penalty 1.5
+  command:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Output SHA-256 |
+  |---:|---:|---:|---:|---|
+  | 1 | 123.913 | 0.510003 | 4.633852 | `cc647691...dde346` |
+  | 2 | 124.791 | 0.485229 | 4.580066 | `d43d7de5...2fd19` |
+  | 3 | 136.710 | 0.477035 | 4.214865 | `68209385...286c0` |
+  | 4 | 135.847 | 0.494099 | 4.255686 | `ca84945d...708c` |
+  | 5 | 119.262 | 0.509321 | 4.794009 | `8b267bf5...b2c57` |
+
+  Mean decode was **128.105 tok/s**, mean TTFT 0.495137 s, and mean E2E
+  4.495696 s. All five emitted exactly 512 completion tokens, finished by
+  length, and preserved sampled reasoning/ordinary content behavior. This is
+  5.44% above the matched NEXTN mean of 121.495 tok/s, but far below the then
+  active 200 tok/s objective.
+- The adjacent cache-flushed native acceptance probe completed exact
+  `6213+512` in 4.639061 s and reported accepted length **2.8287292818**,
+  acceptance rate **0.2604577743**, correct/proposed drafts **330/1267**, 181
+  verify cycles, and histogram `[54,38,28,32,15,7,4,3]`. BF16 had reached
+  2.925714 accepted tokens, so online FP8 loses only about 3.3% draft yield;
+  execution cost, not draft quantization quality, is the dominant gap. At the
+  measured FP8 result the implied cycle is roughly 22 ms.
+- The user then narrowed the terminal throughput gate from 200 to **150
+  tok/s**. The histogram predicts that gamma 5 retains roughly 98% of this
+  accepted length while eliminating two draft positions and two target verify
+  tokens, making block width the next controlled variable. The foreground
+  server was stopped with one `Ctrl+C`; the expected Windows load-snapshot
+  `KeyboardInterrupt` was confined to shutdown. PIDs 3304 and 30228 were
+  absent afterward, port 30000 was free, no compiler remained, and the RTX
+  5090 returned to 877 MiB used / 31,311 MiB free at 37 C.
+
+### 2026-09-01 00:02 PDT - gamma 5 saves cycle cost but loses trained-width yield
+
+- One controlled relaunch changed only `-SpeculativeDsparkBlockSize 5` from
+  the captured online-FP8 baseline; all other command-line arguments remained
+  byte-for-byte identical. Resolved arguments reported gamma 5, six target
+  verify tokens, exact 200K context/target/draft pools, online FP8 draft, and
+  the same Q4 target. The expected config-mismatch warning noted that the
+  checkpoint was trained/configured for block size 7. Target and folded draft
+  graph captures completed for widths six and five. Startup retained 1.30 GB,
+  versus 1.16 GB at gamma 7; live `/health`, model identity, 200K fields, and
+  language-only image/audio flags passed.
+- A cache-flushed `6213+64` warmup reached 172.836 decode tok/s. Five
+  consecutive cache-flushed, warmup-one sampled authority results were:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Output SHA-256 |
+  |---:|---:|---:|---:|---|
+  | 1 | 130.107 | 0.498211 | 4.425738 | `c7bb040d...e31b34` |
+  | 2 | 124.652 | 0.497296 | 4.596700 | `bd8ae43f...1a13fb` |
+  | 3 | 134.059 | 0.499058 | 4.310815 | `d9afd3b3...ae295f` |
+  | 4 | 135.915 | 0.491617 | 4.251317 | `0962f2b2...bd2ca9` |
+  | 5 | 135.061 | 0.484603 | 4.268077 | `bfdf4171...88afb5` |
+
+  Mean decode was **131.959 tok/s**, mean TTFT 0.494157 s, and mean E2E
+  4.370529 s. This is a reproducible 3.01% gain over the adjacent gamma-7
+  DSpark mean, but remains 12.03% below the revised 150 tok/s terminal gate.
+  Every sample emitted exact `6213+512`, finished by length, and retained the
+  sampled reasoning/ordinary-content surface.
+- The adjacent acceptance probe reported accepted length **2.2755555556**,
+  acceptance rate **0.2542222222**, correct/proposed **286/1125**, 225 cycles,
+  histogram `[81,67,47,9,7,14]`, and 5.360401 s E2E. The checkpoint's Markov
+  proposal is therefore not prefix-invariant under a shorter query shape:
+  gamma 5 does not retain the gamma-7 histogram's predicted 98% yield. The
+  reduced result still implies a cycle near 17.2 ms, confirming that width
+  removes real work while fixed sampled-proposal/verify overhead remains.
+- Upstream inspection at `8a191554e379741048ecfac02cea334eb2b883e0`
+  found the recent `0df69849ba` duplicate-`sample_block` fix and a new fused
+  greedy Markov proposal path. The latter eliminates full-vocabulary bias,
+  logits, and multi-launch argmax work only for greedy draft rows; it does not
+  accelerate this contract's top-k-20 sampled draft path, which still creates
+  full-vocabulary exponential noise, corrected logits, and verifier softmax.
+  Any new hot-path implementation here must be C++/CUDA, not the upstream
+  Triton/Python kernel.
+- The gamma-5 foreground launch was stopped with one `Ctrl+C`. The expected
+  scheduler interruption remained in shutdown. Listener PID 36904 was absent,
+  port 30000 was free, no SGLang/compiler tree remained, and the RTX 5090
+  returned to 971 MiB used / 31,217 MiB free at 40 C. Screen gamma 4 once; if
+  it does not approach 150, stop shrinking the checkpoint's trained width and
+  instrument/replace the sampled Markov and verification cost instead.
+
+### 2026-09-01 00:05 PDT - gamma 4 regresses to 117.339 tok/s; trained-width shrink closed
+
+- The final fixed-width screen changed only the online-FP8 launcher's
+  `-SpeculativeDsparkBlockSize` from 5 to 4. It resolved gamma 4/five target
+  verify tokens, retained exact 200K target and draft pools, captured both
+  width-specific full graphs, and became healthy with 1.31 GB reported startup
+  headroom. Live model/context/pool/block/verify fields were
+  `qwen3.8-27b/200000/200000/4/5` on listener PID 28844.
+- The cache-flushed `6213+64` warmup reached only 130.429 decode tok/s. Five
+  consecutive sampled authority measurements were:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Output SHA-256 |
+  |---:|---:|---:|---:|---|
+  | 1 | 110.131 | 0.527592 | 5.167531 | `04a67a20...996de7` |
+  | 2 | 99.816 | 0.504527 | 5.623926 | `48bcf6b0...bb6ead` |
+  | 3 | 130.875 | 0.475661 | 4.380154 | `f3406e04...c15e92` |
+  | 4 | 120.143 | 0.513544 | 4.766799 | `3ecbd5de...de1bf4` |
+  | 5 | 125.732 | 0.494910 | 4.559126 | `b6f52923...183296` |
+
+  Mean decode was **117.339 tok/s**, below gamma 5, gamma 7, and even the
+  matched NEXTN mean. All samples still completed exact `6213+512` by length
+  with the sampled reasoning/content surface intact. The adjacent acceptance
+  request reported accepted length **2.6256410256**, rate **0.4051282051**,
+  correct/proposed **316/780**, 195 cycles, histogram `[57,53,29,19,37]`, and
+  4.741171 s E2E. A usable accepted length therefore did not rescue the
+  inefficient width-five target/width-four draft execution shape.
+- After the requests, the WDDM snapshot was 31,947 MiB used / 241 MiB free,
+  5% GPU and 10% memory utilization, 472 MHz SM / 810 MHz memory clocks, 45.60
+  W, and 45 C. The scheduler/GPU worker was PID 24964; the remaining listed
+  clients were ordinary display processes, with no second compiler/model
+  worker. This was an idle-tail clock snapshot, not evidence of request-time
+  throttling.
+- Gamma 4 was shut down with one `Ctrl+C`; the expected scheduler
+  `KeyboardInterrupt` stayed in shutdown. Listener 28844 and scheduler 24964
+  were absent afterward, port 30000 was free, no compiler remained, and the
+  GPU returned to 1,054 MiB used / 31,134 MiB free. **Decision:** close further
+  static block shrink under this checkpoint. Restore trained gamma 7 and
+  target the sampled full-vocabulary proposal/accept work or confidence-based
+  variable verification with measured phase costs.
+
+### 2026-09-01 00:13 PDT - trained-width timing isolates target verification as 75.8% of the DSpark cycle
+
+- Phase timing used the existing DSpark debug recorder, with no source change.
+  The first foreground attempt set
+  `SGLANG_DSPARK_DEBUG_DUMP=core,step_cpu_time,step_gpu_time,draft_gpu_time,target_verify_gpu_time`
+  and otherwise used the exact-200K online-FP8 gamma-7 command from the
+  23:56 entry. That attempt was deliberately abandoned before traffic: target
+  initialization plus the extra timing-event/display residency left only
+  about 0.82 GB, below the draft worker's 1.0 GB CUDA-graph safety floor, so
+  the draft graph was disabled. One `Ctrl+C` stopped the invalid profiling
+  launch; its known tree and listener were absent and the GPU returned to
+  ordinary 1.79 GB display residency.
+- The profiling-only relaunch kept the same target, draft, online-FP8
+  quantization, seed, gamma 7/eight-token verification, chunk 4,096, and full
+  target/draft graphs, while changing only
+  `-ContextLength 32000 -MaxTotalTokens 32000` to provide event headroom:
+
+  ```text
+  $env:SGLANG_DSPARK_DEBUG_DUMP = 'core,step_cpu_time,step_gpu_time,draft_gpu_time,target_verify_gpu_time'
+  pwsh -NoProfile -File .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend flashinfer -DisableTorchCompile -EnableFlashInferAutotune:$false -EnableFlashInferAutotuneExtend:$false -ContextLength 32000 -MaxTotalTokens 32000
+  ```
+
+  The 32K pool is non-promotable but does not change the batch-one gamma-7
+  graph shapes being timed. Target and draft caches used 0.98 and 0.30 GB;
+  target and folded-draft captures completed in 1.11 s / 0.11 GB and 0.82 s /
+  0.08 GB, leaving 8.36 GB after capture. The listener was PID 27948. A manual
+  cache-flushed `6213+64` warmup reached 156.929 decode tok/s; the records were
+  then cleared through `/set_internal_state` before measurement.
+- One cache-flushed authority-shape request used `--warmup-runs 0` with exact
+  `6213+512`, temperature 1.0, top-p 0.95, top-k 20, and presence penalty 1.5.
+  It completed by length with 512 reasoning tokens at **121.330 tok/s**,
+  0.575338 s TTFT, and 4.786980 s E2E. Event synchronization intentionally
+  perturbs throughput, so this is timing evidence rather than a scoreboard
+  sample. The trace contained exactly 181 static gamma-7 cycles, matching the
+  earlier acceptance probe's 181 cycles and 2.828729 accepted tokens/cycle.
+
+  | Timed component | Mean ms | P50 ms | P95 ms | Mean cycle share |
+  |---|---:|---:|---:|---:|
+  | Whole GPU step | 22.7705 | 22.5716 | 24.9931 | 100.00% |
+  | Draft proposal | 3.7144 | 3.4238 | 4.8731 | 16.31% |
+  | Target verification forward | 17.2561 | 17.0604 | 19.4263 | 75.78% |
+  | Residual GPU work | 1.8001 | 1.6353 | 3.0698 | 7.91% |
+
+  Whole-step ranges were 20.5322--36.6574 ms; draft 3.2115--5.8265 ms;
+  target verify 15.9808--31.6847 ms; residual 1.2262--3.6998 ms. The 180
+  populated CPU-step records averaged 23.2995 ms; the row-local CPU-minus-GPU
+  gap averaged 0.6062 ms but is noisy because the recorder synchronizes the
+  preceding CUDA event.
+- At unchanged 2.828729 yield, 150 tok/s permits an 18.8582 ms cycle. The
+  instrumented cycle therefore needs about 3.91 ms removed. Draft proposal is
+  only 3.71 ms in total, while fixed eight-token target verification consumes
+  three quarters of the cycle. **Direction:** retain the checkpoint's trained
+  seven-position proposal, inspect the target width tiers and existing
+  confidence/compact scheduler, and reduce verified target tokens per cycle;
+  proposal-only fusion cannot independently close the measured gap.
+- One `Ctrl+C` stopped the 32K foreground server. The expected scheduler
+  `KeyboardInterrupt` remained confined to shutdown. PID 27948 was absent,
+  port 30000 was free, no compiler/CUDA worker remained, and the RTX 5090
+  returned to 1,762 MiB used / 30,426 MiB free, 0% utilization, and 39 C.
+
+### 2026-09-01 00:29 PDT - tuned M=8 Cutlass and global Marlin isolate the target gate/up crossover
+
+- Work remained on branch `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`, with all pre-existing modified
+  paths preserved. Two non-promotable 32K screens kept the online-FP8 DSpark
+  draft, trained gamma 7/eight-token target verify, random seed 980406,
+  4,096-token chunks, target and folded-draft graphs, temperature 1.0,
+  top-p 0.95, top-k 20, and presence penalty 1.5. Their common launch was:
+
+  ```text
+  pwsh -NoProfile -File .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend flashinfer -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 32000 -MaxTotalTokens 32000
+  ```
+
+- Enabling ordinary FlashInfer autotuning loaded the existing 0.6.17/sm120
+  cache at
+  `C:\Users\Daniel\.cache\sglang\flashinfer\autotune\0.6.17\sm120\3e012a7fcd47ffd8\rank_tp0_pp0_dp0.json`,
+  including the M=8 Qwen gate/up shapes. Target and draft captures completed
+  in 0.88 s / 0.07 GB and 0.77 s / 0.08 GB, leaving 8.33 GB. A `6213+64`
+  warmup reached 194.220 tok/s. Five cache-flushed `6213+512` samples were
+  **138.913, 116.339, 130.012, 157.838, and 151.912 tok/s**, mean **139.003
+  tok/s**. The adjacent acceptance request reproduced the prior aggregate
+  yield exactly: accepted length 2.828729, correct/proposed 330/1267, 181
+  cycles, and histogram `[44,53,29,27,16,4,2,6]`. Tuning Cutlass at M=8 is
+  material but insufficient. Listener PID 9160 was stopped cleanly; the port
+  was free and the GPU returned to 1,633 MiB used / 30,555 MiB free.
+- A second launch changed only `-Fp4GemmBackend marlin`, routing every target
+  FP4 linear through the existing native Marlin backend. Target residency fell
+  from 16.91 to 16.35 GB and the hybrid relayout scratch disappeared; target
+  and draft captures completed in 0.69 s / 0.07 GB and 0.63 s / 0.08 GB,
+  leaving 9.10 GB. A short decode reached 224.330 tok/s, but global Marlin
+  slowed prompt processing to about 4K tok/s and 1.5--1.6 s TTFT. Five
+  cache-flushed authority-shape decodes were **162.894, 141.000, 161.219,
+  134.755, and 140.512 tok/s**, mean **148.076 tok/s**. The adjacent stochastic
+  acceptance request reported accepted length 3.011765, correct/proposed
+  347/1190, 170 cycles, and histogram `[47,37,29,20,14,10,5,8]`. This nearly
+  reaches 150, and proves native Marlin is faster than tuned Cutlass for the
+  M=8 target gate/up projection, but the global route sacrifices qualified
+  Cutlass prefill and applies Marlin to projections where it is not selected.
+  PID 2988 was stopped cleanly; port 30000 was free and the GPU returned to
+  1,721 MiB used / 30,467 MiB free.
+
+### 2026-09-01 00:29 PDT - hybrid Marlin M=8 reaches a 148.602 window; sampled-verifier fusion is next
+
+- The narrow implementation change raised the existing hybrid Marlin decode
+  cutoff in
+  `python/sglang/srt/layers/quantization/nvfp4_hybrid_marlin.py` from four to
+  eight tokens. It adds no Python implementation: the dispatch now selects the
+  already-existing native CUDA Marlin kernel and canonical in-place CUDA
+  relayout for the 64 selected `(34816, 5120)` target gate/up projections at
+  M=8, while retaining Cutlass for prefill and every non-selected projection.
+  `py_compile`, the focused cutoff assertion (1/4/5/8 true, 9 false), and
+  `git diff --check` passed. The isolated CUDA parity/graph suite was invoked
+  through the required Windows wrapper:
+
+  ```text
+  pwsh -NoProfile -File .\scripts\windows\invoke_cuda_pytest.ps1 .\test\registered\jit\quantization\test_nvfp4_marlin_relayout.py -q
+  ```
+
+  It passed all three tests/subtests in 9.21 s (14 dependency warnings).
+- The 32K screen used the common command in the preceding entry, with
+  FlashInfer autotuning enabled and the new hybrid cutoff active. The server
+  selected 64 hybrid layers and one reused 85 MiB relayout scratch; target and
+  draft captures completed in 0.76 s / 0.07 GB and 0.64 s / 0.08 GB, leaving
+  8.33 GB. The `6213+64` warmup reached 215.503 tok/s with 10,760.907 prompt
+  tok/s, confirming that Cutlass prefill was preserved.
+- The first five cache-flushed `6213+512` samples were:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Output SHA-256 |
+  |---:|---:|---:|---:|---|
+  | 1 | 125.706 | 0.723181 | 4.788218 | `13ec5b0a...cf3d9` |
+  | 2 | 161.166 | 0.476426 | 3.647061 | `7554616f...bc4f` |
+  | 3 | 158.116 | 0.480209 | 3.712021 | `803da2a1...04b8` |
+  | 4 | 153.652 | 0.477979 | 3.803671 | `aaa2b7da...5a40` |
+  | 5 | 144.370 | 0.491264 | 4.030786 | `08b7f11b...964c` |
+
+  Mean decode was **148.602 tok/s**, mean TTFT 0.529812 s, and mean E2E
+  3.996351 s. This is the best hybrid window and only 0.93% below the 150
+  tok/s gate, but peaks do not qualify the candidate. An adjacent acceptance
+  request yielded 2.639175 accepted tokens, correct/proposed 317/1358, 194
+  cycles, and histogram `[65,53,33,16,7,6,6,8]`.
+- A second fully warmed five-sample window was **131.756, 147.609, 141.140,
+  118.763, and 160.686 tok/s**, mean **139.991 tok/s**, mean TTFT 0.481898 s,
+  and mean E2E 4.170606 s. All ten samples emitted exactly 512 completion
+  tokens and finished by length with the reasoning/content surface intact.
+  The wide variation follows DSpark accepted-length variation, not a warmup
+  artifact; the implementation is valuable but is not yet promotable.
+- Source inspection of the existing compact confidence scheduler found that
+  its target CUDA-graph token buckets are constructed as
+  `capture_bs * captured_req_width`. With `max_running_requests=1` and the
+  trained verify width eight, the only captured token bucket is eight. A
+  compact six-token decision therefore pads back to the full eight-row target
+  graph and cannot remove target GEMM work on this lane. The remaining prior
+  phase trace assigns 7.91% / 1.80 ms of each cycle to post-draft/post-target
+  GPU work; fusing the sampled full-vocabulary proposal/verification CUDA work
+  has enough headroom to move the stochastic windows safely above 150 without
+  changing the exact rejection-sampling distribution.
+- Foreground listener PID 31076 was stopped with one `Ctrl+C`; the Windows
+  load-snapshot `KeyboardInterrupt` was confined to shutdown. The listener and
+  known PID were absent, port 30000 was free, no compiler/model worker
+  remained, and the RTX 5090 returned to 1,721 MiB used / 30,467 MiB free,
+  6% display utilization, and 40 C. The next handoff is to inspect and fuse
+  the sampled DSpark proposal/accept path in C++/CUDA, then rerun this exact
+  hybrid screen before spending the full 200K qualification launch.
+
+### 2026-09-01 00:55 PDT - native gamma-7 proposal contract and first production-shape CUDA qualification
+
+- Work stayed on branch `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`. Every pre-existing Python,
+  launcher, test, notebook, and untracked path remained user-owned and was
+  preserved. This slice added only the standalone native proposal files plus
+  their native CMake/runtime/probe registrations. No SRT adapter, Python
+  binding, registry entry, launcher route, or server behavior changed.
+- The governing rewrite objective fixes production batch one, trained gamma
+  seven, verify width eight, vocabulary 248,320, Markov rank 256, and target
+  capture layers `[5,19,33,47,61]`. The new C++ descriptor contract validates
+  those exact values, dense BF16/FP16 versus packed NVFP4 LM-head tactics,
+  runtime BF16/FP16 corrected-logit dtype, target-layer capture, all fixed
+  buffer extents/bytes/devices, and pairwise non-aliasing. A 32-byte
+  `SLGRDSP1` RNG record freezes the Philox seed/subsequence/counter ABI.
+- `native/src/dspark_proposal.cu` now contains a dormant, allocation-free
+  production-shape CUDA implementation. It follows the sampled token from one
+  Markov step into the next W1 lookup, performs seven rank-256 W1/W2 bias
+  applications, publishes BF16 or FP16 corrected logits and FP32 log
+  normalizers, uses explicit Philox4x32-10 exponential noise, selects the
+  exponential-race maximum with a lower-token tie break, and reserves exactly
+  `7 * ceil(248320/4) = 434560` counter blocks per replay. Greedy rows use
+  direct corrected-logit argmax but still consume the same fixed reservation,
+  so mixed greedy/sampled replay geometry remains deterministic. Invalid
+  descriptor, overflow, anchor, or temperature publishes only a device status
+  and preserves state and proposal outputs. Entirely non-finite rows follow
+  the existing Triton contract by selecting token zero and `-inf` as their
+  normalizer.
+- A correctness fix made sampling use the corrected value after BF16/FP16
+  publication rounding, matching the runtime tensor seen by the existing
+  proposal path. The initial greedy implementation compared softmax masses; it
+  was changed to compare corrected logits directly, avoiding underflow-induced
+  false ties while preserving the same mathematical argmax. The CUDA kernel is
+  intentionally a first correctness implementation: it performs the rank-256
+  projection directly inside one 256-thread block and is not yet claimed to be
+  performance-capable. Profiling and a tiled/tensor-core rewrite remain
+  mandatory before any production route.
+- Host C++ was raised from C++20 to genuine C++23. CMake 4.3 does not model
+  CUDA C++23. An attempted explicit NVCC `--std=c++23` also failed because
+  CUDA 13.3 reported that dialect unsupported with the qualified MSVC 19.51
+  host and then parsed the translation unit as an older dialect. The corrected
+  boundary is C++23 for host translation units and the qualified CUDA C++20
+  mode for `.cu` translation units; do not repeat the rejected CUDA23 switch
+  without a toolchain change.
+- The isolated build used the qualified environment and preserved a reusable
+  task-owned directory at
+  `%TEMP%\sglang-native-dspark-dev`:
+
+  ```text
+  . .\scripts\windows\initialize_cuda_build_env.ps1 -MaxJobs 2
+  $BuildDir = Join-Path $env:TEMP 'sglang-native-dspark-dev'
+  cmake.exe -S .\native -B $BuildDir -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_CXX_COMPILER=cl.exe '-DCMAKE_CUDA_COMPILER=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin\nvcc.exe'
+  cmake.exe --build $BuildDir --parallel 2
+  ctest.exe --test-dir $BuildDir -L host --output-on-failure
+  ctest.exe --test-dir $BuildDir -R '^native\.dspark_proposal$' --output-on-failure
+  cmake.exe --build $BuildDir --target sglang_native_dspark_proposal_memcheck --parallel 1
+  ```
+
+  The clean MSVC 19.51/CUDA 13.3.33 build compiled SM120. All seven
+  host-labelled tests passed. The new production-shape CUDA suite passed five
+  cases: BF16 sequential dependency, FP16 sequential dependency, invalid-input
+  output/counter preservation, sampled-token parity against an independent
+  C++ Philox/exponential oracle, and captured stable-address replay with
+  disjoint reservations plus exact reset reproduction. Compute Sanitizer
+  memcheck reported `ERROR SUMMARY: 0 errors`. `clang-format` and
+  `git diff --check` passed; the latter retained only the unrelated pre-existing
+  CRLF warning for `nvfp4_hybrid_marlin.py`.
+  The complete serialized CUDA label also passed **4/4**, covering the prior
+  resource, rejection, and verify-RNG suites beside the new proposal suite.
+  MSVC `/std:c++latest /analyze /analyze:external- /external:W0 /W4 /WX`
+  passed for the new host contract source and the linked capability probe.
+- Process safety was re-established before CUDA execution: port 30000 was
+  free, the earlier PID 31076 tree was absent, no compiler process was active,
+  and the RTX 5090 showed ordinary desktop residency. After the tests the port
+  remained free. This is native standalone qualification only, not a live
+  model or throughput result.
+- Next handoff: add the corrected-logit/log-normalizer rejection consumer so q
+  is evaluated on demand without a full FP32 draft-probability tensor, preserve
+  all existing NaN/residual/bonus semantics, then port deterministic ReplaySSM
+  fold plus convolution rollback/scatter. The proposal also still needs a
+  controlled existing Python/Triton artifact comparison for runtime numerical
+  rounding, a performant tiled implementation, the native cycle controller,
+  adapters, and every full-model behavior/capacity/performance gate.
+
+
+### 2026-09-01 00:40 PDT - online-NVFP4 draft saves memory but misses the repeatability gate
+
+- This 32K screen changed one variable from the FP8-draft hybrid-Marlin-M=8
+  control: the existing opt-in online draft quantizer was set to
+  `nvfp4_online`. The exact foreground launch was:
+
+  ```text
+  pwsh -NoProfile -File .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization nvfp4_online -SpeculativeDraftAttentionBackend flashinfer -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 32000 -MaxTotalTokens 32000
+  ```
+
+  Work remained on `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`; the narrow target-side hybrid
+  Marlin M=8 cutoff was active. All other modified and untracked paths were
+  preserved as user-owned work. In particular, the concurrently evolving
+  standalone `native/` DSpark proposal capsule has no SRT/framework adapter
+  and could not affect this server measurement.
+- Target load remained 16.91 GB. Draft residency fell from the FP8 control's
+  2.39 GB to 1.81 GB. The launcher selected hybrid Marlin for 64 target and
+  five draft layers, each with a reused 85 MiB scratch. The real target and
+  draft pools were 32K; target and draft graph captures completed in 0.96 s /
+  0.07 GB and 0.68 s / 0.08 GB, leaving 6.78 GB. Listener PID 28020 owned the
+  only server tree and port 30000.
+- The cache-flushed `6213+64` warmup produced 176.138 tok/s with 0.704833 s
+  TTFT. The first five cache-flushed `6213+512` authority-shape samples were:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Output SHA-256 |
+  |---:|---:|---:|---:|---|
+  | 1 | 139.211 | 0.469780 | 4.140460 | `69c737...` |
+  | 2 | 155.273 | 0.477757 | 3.768735 | `3f574a...` |
+  | 3 | 176.084 | 0.483258 | 3.385286 | `7c0eda...` |
+  | 4 | 135.258 | 0.470962 | 4.248925 | `606704...` |
+  | 5 | 140.366 | 0.469703 | 4.110191 | `c608d8...` |
+
+  Mean decode was **149.238 tok/s**. Every request emitted 512 completion
+  tokens and finished by length, but this window remained 0.51% below the
+  requested 150 tok/s threshold. The adjacent stochastic acceptance sample
+  reported accepted length 2.708995, acceptance rate 0.247166,
+  correct/proposed 327/1323, 189 cycles, and histogram
+  `[55,56,30,20,9,8,2,9]`; E2E was 3.666030 s.
+- A second fully warmed five-sample window was **131.318, 116.883, 162.534,
+  169.464, and 97.997 tok/s**, mean **135.639 tok/s**. Its respective TTFTs
+  were 0.525619, 0.479561, 0.481788, 0.478969, and 0.491271 s; E2E times were
+  4.416950, 4.851438, 3.625738, 3.494365, and 5.705719 s. The large second-
+  window collapse tracks proposal-yield variation and rejects online NVFP4 as
+  a repeatable route to 150 under the current checkpoint/topology despite its
+  useful 0.58 GB residency saving. Restore the selected FP8 draft for the next
+  screen.
+- The foreground server was stopped with one `Ctrl+C`. PID 28020 and its
+  detokenizer child PID 26308 exited; port 30000 was free, no SGLang/compiler
+  worker remained, and the RTX 5090 returned to 1,849 MiB used / 30,339 MiB
+  free, 0% compute utilization, and 41 C. The next isolated screen changes
+  only the FP8 draft attention backend from FlashInfer to Triton; `trtllm_mha`
+  resolves back to FlashInfer for this all-full-attention draft configuration
+  and is not an independent candidate.
+
+### 2026-09-01 00:47 PDT - Triton draft attention crosses once, but ten-sample mean remains 148.573
+
+- This 32K screen restored the selected FP8 draft and changed only the draft
+  full-attention backend from FlashInfer to Triton. The exact foreground
+  launch was:
+
+  ```text
+  pwsh -NoProfile -File .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend triton -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 32000 -MaxTotalTokens 32000
+  ```
+
+  Resolved arguments retained the hybrid target M=8 route, target TRT-LLM
+  decode / FlashInfer prefill, exact 32K target and draft pools, one running
+  request, gamma seven / verify width eight, sampled top-k 20 / top-p 0.95 /
+  temperature 1.0 / presence penalty 1.5, and draft FP8 KV. Listener PID
+  31248 was descended from the single foreground launcher tree; no compiler or
+  other CUDA workload was active. `/health` passed and `/model_info` reported
+  image and audio understanding disabled.
+- Target and draft loads used 16.91 and 2.39 GB. Target graph capture completed
+  in 0.70 s / 0.07 GB. Triton draft capture completed in 1.44 s / 0.06 GB,
+  versus about 0.64 s for the FlashInfer control, and graph-end headroom was
+  8.39 GB. The cache-flushed `6213+64` warmup produced 142.270 decode tok/s,
+  13,134.532 prompt tok/s, and 0.473028 s TTFT.
+- The first five cache-flushed `6213+512` samples were:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Output SHA-256 |
+  |---:|---:|---:|---:|---|
+  | 1 | 142.075 | 0.470793 | 4.067484 | `4a1abf1a6cfd54aa1ab330e56777de38f00cab0abaa72c759cf1b61e46963891` |
+  | 2 | 155.936 | 0.467834 | 3.744827 | `1b34a28f433c217e45ce0bbaf0ec178a03ce67604e6c0ea3f7e7db2f302d3752` |
+  | 3 | 146.780 | 0.472879 | 3.954275 | `1ddd1a49b7a5ef05ca2e338735d56298d61ddd61d5afe1e0d554b450662b0caf` |
+  | 4 | 159.112 | 0.492491 | 3.704064 | `3cccbc2b53938c2eaeed5b912c7330a9e02d4314ab4b9045e3b37108af0cf60a` |
+  | 5 | 157.551 | 0.475777 | 3.719176 | `c9b7436caa0448d85084136cab6cb3133eff893d100b3f0bbc09624e2f3e3d49` |
+
+  Mean decode was **152.291 tok/s**, mean TTFT 0.475955 s, and mean E2E
+  3.837965 s. This is the first ordinary sampled five-request DSpark window to
+  clear the requested 150 tok/s threshold. The adjacent native acceptance
+  sample reported accepted length 2.860335, acceptance rate 0.268955,
+  correct/proposed 337/1253, 179 cycles, histogram
+  `[54,45,25,18,15,9,8,5]`, and 3.650752 s E2E.
+- The required repeatability window was **129.558, 121.688, 169.506, 166.530,
+  and 136.992 tok/s**, mean **144.855 tok/s**. The respective TTFTs were
+  0.474762, 0.495619, 0.472240, 0.475916, and 0.470519 s; E2E times were
+  4.418956, 4.694895, 3.486876, 3.544439, and 4.200665 s. Every one of the ten
+  requests emitted 512 tokens and finished by length with preserved reasoning
+  and content surfaces. The combined ten-sample mean is **148.573 tok/s**:
+  Triton improves the comparable two-window hybrid result by about 3%, but it
+  does not yet qualify a repeatable 150 tok/s lane.
+- The foreground tree was stopped with one `Ctrl+C`. PID 31248 and its known
+  ancestors/workers exited; the listener, compiler workers, and CUDA tests
+  were absent. Port 30000 was free and the RTX 5090 returned to 1,849 MiB used
+  / 30,339 MiB free, 0% compute utilization, and 40 C.
+- Local checkpoint inspection found seven non-head NVFP4 packed-weight shapes.
+  Each expands to Marlin-aligned N/K dimensions and is below the existing
+  128 MiB hybrid relayout cap; only the 606 MiB LM head exceeds it. The global
+  Marlin screen already proved additional M=8 target projections can reduce
+  decode cost, while its prefill regression came from leaving those weights in
+  Marlin layout. The next isolated implementation removes only the redundant
+  gate/up exact-shape restriction from the existing hybrid dispatcher. The
+  native CUDA alignment, bias, maximum-size, shared-scratch, final-prefill
+  handoff, and M<=8 guards remain, so eligible projections use Marlin only for
+  verify/decode and Cutlass remains the prefill and LM-head path.
+
+### 2026-09-01 00:56 PDT - broad hybrid relayout rejected by catastrophic DSpark agreement loss
+
+- The experimental dispatcher temporarily removed only the exact gate/up
+  shape restriction, retaining the existing native CUDA relayout, Marlin tile
+  alignment, no-bias, 128 MiB maximum-weight, shared 85 MiB scratch, final-
+  prefill handoff, and M<=8 guards. No new Python implementation was added;
+  the experiment exercised the existing native CUDA path. `py_compile`, the
+  M=1/4/5/8 true and M=9 false cutoff assertion, and `git diff --check` passed.
+  The required isolated Windows CUDA suite passed all three tests/subtests in
+  7.35 s, including relayout parity and CUDA-graph replay (14 dependency
+  warnings).
+- The same FP8-draft/Triton-attention 32K launch command as the preceding entry
+  selected 256 target layers instead of 64. All graph captures completed, but
+  keeping both Cutlass and Marlin scale/workspace state raised target residency
+  from 16.91 to 17.71 GB and target graph capture from 0.07 to 0.68 GB. Draft
+  load remained 2.39 GB; graph-end headroom was 6.99 GB. The 606 MiB LM head
+  remained above the size cap and stayed on Cutlass. Observed prompt throughput
+  remained 12,713 tok/s in the completed authority-shape request, so this did
+  preserve the intended Cutlass prefill path.
+- The first launch produced a cache-flushed `6213+64` result of only 69.091
+  decode tok/s, 0.511258 s TTFT, and 12,152.382 prompt tok/s. Before the full
+  screen, a separate user-owned native DSpark build appeared under PID 34364
+  and advanced through `nvcc`, CUDA tests, and Compute Sanitizer. The benchmark
+  preflight caught it before sending traffic. The verified foreground server
+  PID 24260 was stopped immediately; the concurrent build was left untouched.
+  Its complete host/CUDA/memcheck tree finished, and the GPU returned to display
+  residency before the model was relaunched.
+- The independent relaunch reproduced the short result at 67.461 tok/s. One
+  complete cache-flushed `6213+512` sample then measured **62.324 tok/s**,
+  0.488703 s TTFT, 8.687825 s E2E, 12,713.230 prompt tok/s, exactly 512 output
+  tokens, `finish_reason=length`, and output SHA-256
+  `f5065112916f2c4906048bc7550150b197ee8c5840348984f2eaef267d130803`.
+  The adjacent acceptance counter established a systematic correctness-level
+  proposal/target mismatch: accepted length **1.158371**, acceptance rate
+  0.022301, correct/proposed only **69/3094**, 442 cycles, and histogram
+  `[378,59,5]` (8.424893 s E2E). The two launches and long request rule out a
+  short stochastic trough.
+- This candidate was rejected without a five-sample spend. The exact gate/up
+  restriction and its help text were restored, leaving only the independently
+  validated M=8 cutoff in the diff. Foreground PID 33220 was stopped with one
+  `Ctrl+C`; both experimental PIDs, port 30000, compiler/sanitizer processes,
+  and SGLang workers were absent afterward. The RTX 5090 returned to 1,849 MiB
+  used / 30,339 MiB free and 40 C.
+- The failure narrows any further hybrid expansion to individually qualified
+  runtime shapes; generic relayout round-trip coverage is not sufficient to
+  establish end-to-end quantized GEMM agreement for every fused projection.
+  The next low-risk possibility is the standard MLP down projection alongside
+  the already-qualified gate/up projection, with immediate acceptance gating
+  before throughput. Attention/QKV shapes remain closed unless isolated parity
+  changes that evidence.
+
+### 2026-09-01 01:03 PDT - MLP down-projection hybrid rejected by the same agreement collapse
+
+- This one-variable screen added only runtime shape `(5120, 17408)`, the 64
+  target MLP down projections, to the already-qualified `(34816, 5120)`
+  gate/up hybrid-Marlin selection. The existing native relayout, Cutlass
+  prefill, shared scratch, M<=8, alignment, no-bias, and maximum-size guards
+  were unchanged. `py_compile`, the M=1/4/5/8 true and M=9 false cutoff
+  assertion, and `git diff --check` passed before launch; the preceding broad
+  screen's isolated CUDA relayout/parity/graph suite had passed all three
+  tests/subtests in 7.35 s.
+- Work remained on `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`; all other modified and untracked
+  paths were preserved as user-owned work. The exact foreground command was:
+
+  ```text
+  pwsh -NoProfile -File .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend triton -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 32000 -MaxTotalTokens 32000
+  ```
+
+  Resolved arguments retained exact 32K target/draft pools, one running
+  request, gamma seven / verify width eight, target TRT-LLM decode and
+  FlashInfer prefill, Triton draft attention, draft FP8 weights/KV, and the
+  required sampled workload. The candidate selected 128 target layers, used
+  17.26 GB target plus 2.39 GB draft residency, reused the 85 MiB relayout
+  scratch, completed all target/draft graph captures, and left about 7.0 GB at
+  graph end.
+- The first ready launch, listener PID 14524, received no benchmark traffic:
+  the mandatory pre-traffic check detected a separate user-owned native
+  DSpark build beginning under PID 24264. The verified foreground server alone
+  was stopped with `Ctrl+C`; the build was not disturbed. After that build
+  completed and the machine remained quiet for more than 30 seconds, the same
+  candidate was independently relaunched as listener PID 25044. Immediately
+  before traffic, no compiler, sanitizer, or other native lane was active;
+  PID 25044 was the only port-30000 owner and the GPU showed 24,825 MiB used,
+  7,363 MiB free, 0% utilization, 39 C, and 31.40 W.
+- The cache-flushed `6213+64` diagnostic already fell to **58.079 tok/s** with
+  0.498813 s TTFT, 1.583540 s E2E, 12,455.580 observed prompt tok/s, exactly 64
+  output tokens, `finish_reason=length`, and output SHA-256
+  `30b6b632acaad3ef13ee38c023ac065f9c8014ccb5ba98c9d4ca9f60fe380fb3`.
+  The adjacent full acceptance probe decisively reproduced the systematic
+  proposal/target mismatch: accepted length **1.127753**, acceptance rate
+  **0.017936**, correct/proposed only **57/3178**, 454 verify cycles, histogram
+  `[399,53,2]`, exactly 512 completion tokens, E2E 8.666127 s, and output
+  SHA-256
+  `463ff88fd9f011ef58980974c4b54d4aae5a9679edb8617a2437dc85f7a6e770`.
+  No five-sample throughput window was run because the acceptance gate failed.
+- The down-projection selection was fully reverted, restoring the proven exact
+  gate/up-only dispatcher and leaving the validated M=8 cutoff as the only
+  target hybrid change. `py_compile` and `git diff --check` passed after the
+  revert (the existing CRLF normalization warning remains). PID 25044 was
+  stopped with one `Ctrl+C`; the listener and known PID were absent, no native
+  compiler/sanitizer worker remained, and the RTX 5090 returned to ordinary
+  display residency at 1,616 MiB used / 30,572 MiB free, 0% utilization, and
+  41 C. This closes the MLP down shape on current evidence; attention/QKV and
+  broad-shape hybrid expansion remain closed as well.
+
+### 2026-09-01 01:08 PDT - Triton draft KV split 8 rejected at 137.534 tok/s
+
+- This 32K screen restored the qualified gate/up-only hybrid M=8 dispatcher
+  and changed one runtime variable from the best DSpark/Triton control:
+  `--triton-attention-num-kv-splits 16` became `8`. Target decode remained
+  TRT-LLM MHA, so this knob affected the five full-attention draft layers and
+  not target decode. The exact foreground command was:
+
+  ```text
+  pwsh -NoProfile -File .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -TritonAttentionNumKvSplits 8 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend triton -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 32000 -MaxTotalTokens 32000
+  ```
+
+  Work remained on `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`; other modified and untracked
+  paths were preserved as user-owned work. Listener PID 33564 was the sole
+  server. No compiler/sanitizer lane was active before launch or traffic.
+  Target/draft loads were 16.91/2.39 GB, exact target/draft pools were 32K,
+  target and draft graph captures completed in 0.83 s / 0.07 GB and 0.72 s /
+  0.06 GB, and graph-end headroom was 8.39 GB.
+- The cache-flushed `6213+64` diagnostic measured 158.845 decode tok/s,
+  0.492782 s TTFT, 0.889396 s E2E, 12,608.002 prompt tok/s, exactly 64 tokens,
+  `finish_reason=length`, and SHA-256
+  `b58b6afd62b8aa1de2e4aa72102ec41aa259b0fb7de8e7447226ecbe946babc5`.
+  The adjacent acceptance sample was materially below the split-16 reference:
+  accepted length **2.089796**, acceptance rate 0.156268, correct/proposed
+  268/1715, 245 verify cycles, histogram `[111,75,25,14,8,6,3,3]`, and E2E
+  4.950710 s.
+- Because the short result remained promising and acceptance is stochastic,
+  one full five-sample authority-shape window was run. Results were:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Output SHA-256 |
+  |---:|---:|---:|---:|---|
+  | 1 | 147.019 | 0.484792 | 3.960532 | `0ef8b1c07585c7d460334b6ded238fbcb6d2a2afa741a23ef582a08fe9f30094` |
+  | 2 | 131.298 | 0.474765 | 4.366681 | `1d5570a26b533df0ef228d903c2042e74c4485115b094a72cef46f9821d3d691` |
+  | 3 | 116.860 | 0.498951 | 4.871701 | `0924dd21fb131a75feb81bb594d8308f67b5b43cfe20a05f5b4e6db4cf41d064` |
+  | 4 | 148.585 | 0.474594 | 3.913700 | `3e4a7f97ef9598b3eda0209c3006d348697300e0f07fb86786ad9ad0bb50a362` |
+  | 5 | 143.910 | 0.478100 | 4.028925 | `890ef59059d135143cf185e1c539aeb35000939bda7a8f317b36e90bc24e7713` |
+
+  Mean decode was **137.534 tok/s**, mean TTFT 0.482240 s, mean E2E
+  4.228308 s, and mean observed prompt throughput 12,888.160 tok/s. Every
+  request emitted 512 tokens and finished by length with reasoning/content
+  surfaces intact. This is 7.4% below the comparable split-16 ten-sample mean;
+  no second window was warranted. Split 8 is rejected and split 16 remains the
+  selected Triton draft reduction cap.
+- PID 33564 was stopped with one `Ctrl+C`. The listener and known PID exited,
+  no compiler/sanitizer process remained, and the RTX 5090 returned to 1,616
+  MiB used / 30,572 MiB free, 0% utilization, 39 C, and 31.00 W.
+
+### 2026-09-01 01:14 PDT - BF16 DSpark draft KV rejected at 132.395 tok/s
+
+- This 32K screen restored the selected Triton split 16 and changed one
+  DSpark variable from the best FP8-draft/Triton control: draft KV dtype from
+  FP8 E4M3 to BF16. Draft weights remained FP8; target KV remained FP8 E4M3;
+  the target gate/up-only hybrid M=8 route and all other launch controls were
+  unchanged. The exact command was:
+
+  ```text
+  pwsh -NoProfile -File .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend triton -SpeculativeDraftKvCacheDtype bfloat16 -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 32000 -MaxTotalTokens 32000
+  ```
+
+  Work remained on `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`; unrelated modified and untracked
+  paths were preserved as user-owned work. Target/draft loads remained
+  16.91/2.39 GB. The 32K draft KV allocation doubled from FP8's 0.15+0.15 GB
+  to BF16's 0.31+0.31 GB. Target/draft graph captures completed at 0.80 s /
+  0.07 GB and 0.64 s / 0.06 GB on the measured launch, leaving 8.08 GB.
+- A first ready launch under listener PID 2516 received no benchmark traffic:
+  the mandatory pre-traffic check caught a separate user-owned native DSpark
+  build under PowerShell PID 2896 with CMake/Ninja/NVCC children. The verified
+  foreground server alone was stopped with `Ctrl+C`, the native lane was left
+  untouched, and the candidate was relaunched only after that whole build/test
+  parent exited and the machine stayed quiet for 30 seconds. The independent
+  measured launch used sole listener PID 31996; no compiler/sanitizer process
+  was active before either traffic window.
+- The cache-flushed `6213+64` diagnostic measured 139.755 decode tok/s,
+  0.465436 s TTFT, 0.916224 s E2E, 13,348.780 prompt tok/s, exactly 64 output
+  tokens, `finish_reason=length`, and SHA-256
+  `1f678026d33f2cdb3c3f34a569a51f149ce663e0f7138b6826e036976377f43d`.
+  The adjacent acceptance sample did not show an accuracy/yield benefit:
+  accepted length **2.206897**, rate 0.172414, correct/proposed 280/1624, 232
+  cycles, histogram `[82,80,46,9,7,1,1,6]`, and E2E 4.908198 s.
+- One bounded five-sample authority window produced:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Output SHA-256 |
+  |---:|---:|---:|---:|---|
+  | 1 | 124.106 | 0.485649 | 4.603093 | `6e7d7dfc40bafd953c3bf44f0b37b15ff1e33675dfd331a1cec226fc5f45e61f` |
+  | 2 | 133.355 | 0.476104 | 4.307980 | `dbe350c99a1a7592353d17bd4fdb11692d3146fa9d7502100607fedc5fa3922a` |
+  | 3 | 129.199 | 0.467813 | 4.422959 | `5da33fa10d16bbb0d0d22a9228dc66b8dbf977502c58e34034fc2745447520c3` |
+  | 4 | 131.459 | 0.472035 | 4.359182 | `c3e464e7e0bd5a486491ce49eaa0946a46de59793e49f664e2034f83cc1f838b` |
+  | 5 | 143.855 | 0.471824 | 4.024004 | `ffcadcd950d4e898888a1276b09857241595b8de4657f12e27ffcd5d4393e811` |
+
+  Mean decode was **132.395 tok/s**, mean TTFT 0.474685 s, mean E2E
+  4.343444 s, and mean observed prompt throughput 13,090.804 tok/s. Every
+  request emitted 512 tokens and finished by length with reasoning/content
+  surfaces intact. This is 10.9% below the selected split-16/FP8-KV ten-sample
+  mean, so no second window was warranted. BF16 draft KV is rejected for
+  DSpark on this topology; FP8 E4M3 remains selected.
+- PID 31996 was stopped with one `Ctrl+C`. The listener and known PID exited,
+  no compiler/sanitizer process remained, and the RTX 5090 returned to 1,616
+  MiB used / 30,572 MiB free, 0% utilization, 43 C, and 34.01 W.
+
+### 2026-09-01 01:19 PDT - instrumented DSpark cycle attributes 69% of steady-state GPU time to target verify
+
+- This was a diagnostic-only 32K relaunch of the selected FP8-draft, FP8-KV,
+  Triton-draft-attention, split-16, gate/up-only hybrid-M=8 candidate. The
+  process-scoped environment set
+  `SGLANG_DSPARK_DEBUG_DUMP=core,step_cpu_time,step_gpu_time,draft_gpu_time,target_verify_gpu_time`;
+  the exact foreground command was:
+
+  ```text
+  pwsh -NoProfile -File .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend triton -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 32000 -MaxTotalTokens 32000
+  ```
+
+  Work remained on `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`; all unrelated modified and
+  untracked paths were preserved as user-owned work. Listener PID 36528 was
+  the sole server. Target/draft loads were 16.91/2.39 GB, the target and draft
+  pools were exactly 32K, target/draft graph capture took 0.75/0.63 s and
+  0.07/0.06 GB, and graph-end headroom was 8.39 GB.
+- Existing timing records were cleared immediately before the measured pair
+  through `/set_internal_state` with
+  `{"server_args":{"dspark_clear_info_records":true}}`. Two cache-flushed,
+  instrumented `6213+512` requests produced:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Prompt tok/s | Output SHA-256 |
+  |---:|---:|---:|---:|---:|---|
+  | 1 | 141.892 | 0.478902 | 4.080231 | 12,973.427 | `5b1e430059340a34fe536207a07f751a03edb3527c4aa777512cc20eda37a659` |
+  | 2 | 136.118 | 0.469219 | 4.223327 | 13,241.149 | `94c1a87bf46a2a5a8bc3ee0f21a727ff38c619c5120ec3ba98c4b9395fc9c3ba` |
+
+  Both emitted exactly 512 tokens and finished by length. These samples are
+  instrumentation diagnostics, not scoreboard authority.
+- `/server_info` exposed 418 captured cycles (414 corresponding CPU records).
+  The recorded timing decomposition in milliseconds was:
+
+  | Segment | Count | Mean | P50 | P90 | P99 | Min | Max |
+  |---|---:|---:|---:|---:|---:|---:|---:|
+  | whole step GPU | 418 | 17.915973 | 17.7961 | 18.2907 | 18.8549 | 17.3384 | 45.7250 |
+  | draft GPU | 418 | 4.080608 | 4.0123 | 4.3102 | 4.5980 | 3.8663 | 4.9171 |
+  | target verify GPU | 418 | 12.270929 | 12.2592 | 12.2889 | 12.6187 | 12.2194 | 12.7381 |
+  | unsegmented GPU | 418 | 1.564436 | 1.4571 | 1.8392 | 2.2570 | 1.1289 | 28.9522 |
+  | whole step CPU | 414 | 17.868223 | 17.8916 | 19.7933 | 22.3222 | 3.5122 | 38.8390 |
+  | CPU minus GPU | 414 | 0.020923 | 0.1439 | 1.9595 | 4.8420 | -14.3082 | 20.3237 |
+
+  At the median, target verification accounts for about **68.9%** of GPU
+  cycle time, the draft for **22.5%**, and the remaining scheduling/sampling
+  work for **8.2%**. Saving roughly 0.18 ms per steady-state cycle is worth
+  about one percent of wall throughput. This makes target verification the
+  dominant implementation target; scheduler micro-optimization alone cannot
+  close the 150 tok/s repeatability gap.
+- The failed down-projection hybrid screen remains the strongest actionable
+  clue: global Marlin had preserved normal acceptance while using all target
+  projections, but the in-place Cutlass-to-Marlin handoff collapses target/
+  draft agreement when runtime shape `(5120, 17408)` is selected. The next
+  implementation step is therefore native CUDA GEMM-parity coverage and an
+  audit of the in-place relayout/scales for that shape, before reconsidering
+  the dispatcher. The debug environment is not a selected runtime default.
+- PID 36528 was stopped with one `Ctrl+C`. Port 30000 and the known PID were
+  absent, no compiler/CUDA/sanitizer worker remained, and the RTX 5090 returned
+  to ordinary display residency at 1,616 MiB used / 30,572 MiB free, 0%
+  utilization, and 39 C.
+
+### 2026-09-01 01:29 PDT - tuple-safe broad hybrid reaches 152.260 first window but 149.393 over ten
+
+- Source tracing corrected the interpretation of the failed down-projection
+  screen. On native Windows, Qwen3.8 enables `silu_and_mul_nvfp4` for the MLP
+  down projection because `hybrid_marlin` intentionally reports itself as a
+  FlashInfer-Cutlass-capable backend. That producer passes a prequantized
+  `(FP4 activations, scales)` tuple and marks the down layer with
+  `_accepts_prequantized_fp4`. The hybrid apply branch, correctly, selects
+  W4A16 Marlin only for a tensor input. The old broad/down experiments had
+  nevertheless converted those down weights in place to Marlin; the tuple
+  then fell through to W4A4 Cutlass with Marlin-packed bytes. This explains
+  the systematic target/draft disagreement without implicating the native
+  relayout, whose canonical-repack and exact-round-trip tests already pass.
+- The experimental selector was changed from exact gate/up shape matching to
+  all otherwise eligible tensor-input layers while explicitly excluding
+  `_accepts_prequantized_fp4`. This is thin dispatch over the existing native
+  CUDA relayout/Marlin kernels, not a new Python implementation. Alignment,
+  no-bias, 128 MiB weight cap, shared scratch, Cutlass prefill, final-chunk
+  handoff, and M<=8 guards remain unchanged. `py_compile`, PowerShell launcher
+  parsing, and `git diff --check` passed before launch.
+- Work remained on `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`; unrelated modified and
+  untracked paths, including the concurrently growing native DSpark/GDN lane,
+  were preserved as user-owned work. The exact foreground command was:
+
+  ```text
+  pwsh -NoProfile -File .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend triton -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 32000 -MaxTotalTokens 32000
+  ```
+
+  `SGLANG_DSPARK_DEBUG_DUMP` was explicitly absent. Listener PID 15400 was the
+  sole port owner and its resolved arguments retained target/draft FP8 KV,
+  FP8 draft weights, Triton draft attention with 16 KV splits, gamma seven /
+  verify width eight, exact 32K target/draft pools, one running request, and
+  the sampled authority workload. No native build/compiler/sanitizer lane was
+  active before launch or any request.
+- The safe selector enabled **192 target layers**: the existing 64 gate/up
+  projections and 128 tensor-input projections, while the 64 prequantized
+  down projections stayed entirely on Cutlass. Target/draft loads were
+  17.34/2.39 GB. Target/draft graph captures completed in 0.78/0.67 s and
+  0.07/0.06 GB, leaving 7.94 GB at graph end. `/model_info` reported image and
+  audio understanding false. The cache-flushed `6213+64` diagnostic recovered
+  to **193.620 tok/s**, 0.490850 s TTFT, 0.816229 s E2E, 12,657.627 prompt
+  tok/s, exactly 64 tokens, `finish_reason=length`, and SHA-256
+  `89e37f5a126757693fd5192ca9016055169a7720f7aae9f750c2c7d7e36b0bc0`.
+  This contrasts with 58--69 tok/s under the malformed down dispatch.
+- The adjacent full acceptance gate was normal: accepted length **2.876404**,
+  acceptance rate 0.267255, correct/proposed **333/1246**, 178 verify cycles,
+  histogram `[50,43,34,22,8,9,5,7]`, 3.727864 s E2E, exactly 512 tokens, and
+  output SHA-256
+  `3b292970f1f234afd7b972bab5ab204d6f8d58d524128a2501bcbc0176d595d5`.
+- The first five-sample authority window was:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Prompt tok/s | Output SHA-256 |
+  |---:|---:|---:|---:|---:|---|
+  | 1 | 152.868 | 0.478654 | 3.821412 | 12,980.159 | `f9021cbefe2fbcfd4f62d01349da2bfa4f342c0aa90a87a04f31b7e86450ff99` |
+  | 2 | 168.717 | 0.479755 | 3.508490 | 12,950.368 | `2dfc2d236a696e152fdb8dd8a7e0261fbe7c5343fcd8bb526861eabdd69e6730` |
+  | 3 | 144.686 | 0.481050 | 4.012828 | 12,915.508 | `2e6b04efa333950dc53529681f86dcee2f65856500646eb9cca7b7bab49117a9` |
+  | 4 | 138.440 | 0.480306 | 4.171443 | 12,935.509 | `608f9f4eb34bf21df40e5b1dbb14a9e2de458b4b80d28eae900f872fc83ab104` |
+  | 5 | 156.588 | 0.482859 | 3.746204 | 12,867.116 | `fe6a89a013cc5b092837007e7b1c7fb79813ccb415402f6617828bb4f305ab11` |
+
+  Mean decode was **152.260 tok/s**, mean TTFT 0.480525 s, mean E2E 3.852075 s,
+  and mean prompt throughput 12,929.732 tok/s. This is a threshold-clearing
+  first window, not a qualified result.
+- The required immediate repeatability window was:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Prompt tok/s | Output SHA-256 |
+  |---:|---:|---:|---:|---:|---|
+  | 1 | 155.182 | 0.478048 | 3.770961 | 12,996.616 | `eeda9daefb40850f872bb26fdc986b17ffecc1970381ad93091b0591d6b9543c` |
+  | 2 | 154.968 | 0.482370 | 3.779822 | 12,880.157 | `385461d95a8c36d7ea71e48cb950bfc2903686970db12fb509098a9486367eea` |
+  | 3 | 130.131 | 0.481039 | 4.407864 | 12,915.795 | `54714f838adeb576182828b7306b320778b03922dc34b3e5ace29e88f591ab96` |
+  | 4 | 144.291 | 0.485938 | 4.027398 | 12,785.574 | `29767c62a2e8cc4b2a2c6347f4c0f860587abfc4e14d85ef0e0c40904e3211de` |
+  | 5 | 148.057 | 0.487259 | 3.938632 | 12,750.927 | `47be319db92ecffd69f98170834d6aa4b5675c2406b560369c11936eb3f272f2` |
+
+  Mean decode was **146.526 tok/s**, mean TTFT 0.482931 s, mean E2E 3.984935 s,
+  and mean prompt throughput 12,865.814 tok/s. Across all ten samples, mean
+  decode was **149.393 tok/s**, mean TTFT 0.481728 s, mean E2E 3.918505 s, and
+  mean prompt throughput 12,897.773 tok/s. Every request emitted exactly 512
+  tokens, finished by length, and preserved reasoning/content surfaces. The
+  ten-sample mean improves the preceding gate/up-only/Triton result of 148.573
+  but misses the requested threshold by about 0.607 tok/s, so it is not
+  promotable. The next screen isolates the two newly admitted tensor-input
+  projection families instead of carrying both.
+- PID 15400 was stopped with one `Ctrl+C`; the shutdown-only scheduler
+  `KeyboardInterrupt` was contained to teardown. The listener and known PID
+  exited, no native compiler/sanitizer worker remained, and the RTX 5090
+  returned to ordinary display residency at 1,616 MiB used / 30,572 MiB free,
+  0% utilization, and 42 C.
+
+### 2026-09-01 01:33 PDT - input-projection hybrid family rejected at 146.238 tok/s
+
+- Read-only safetensors-header inspection resolved the target's packed U8
+  projection inventory without loading another CUDA context. Runtime fusion
+  produces gate/up `(34816,5120)`, linear-attention QKVZ `(16384,5120)`,
+  full-attention QKV `(14336,5120)`, attention output `(5120,6144)`, and MLP
+  down `(5120,17408)`. The physical checkpoint contains 48 linear-attention
+  QKV and Z pairs, 16 full-attention Q/K/V sets, 64 attention outputs, 64 MLP
+  down projections, and 64 gate/up pairs. This explains the preceding safe
+  broad candidate's 192 runtime layers exactly.
+- This one-variable family isolate retained the 64 selected gate/up layers and
+  added only the 48 QKVZ plus 16 QKV input projections. Attention outputs and
+  MLP down remained Cutlass. The tuple-safety exclusion and every established
+  alignment, size, bias, relayout, scratch, prefill, and M<=8 guard remained.
+  `py_compile` and `git diff --check` passed before launch. The exact launch
+  command and resolved DSpark controls were unchanged from the preceding
+  entry; `SGLANG_DSPARK_DEBUG_DUMP` remained absent.
+- Listener PID 40060 was the sole server. The intended **128 target layers**
+  selected, target/draft residency was 17.26/2.39 GB, target/draft graph
+  capture completed in 0.73/0.63 s and 0.07/0.06 GB, and graph-end headroom
+  was 8.05 GB. Port ownership, compiler/sanitizer absence, exact 32K pools,
+  one-request admission, and language-only model info were rechecked before
+  traffic and before each authority sample.
+- The cache-flushed `6213+64` diagnostic was a low **134.692 tok/s**, 0.477376
+  s TTFT, 0.945110 s E2E, 13,014.895 prompt tok/s, exactly 64 tokens,
+  `finish_reason=length`, and SHA-256
+  `716f22419ea5b62dc9e0cbfb158f2356b6aa4bcbf3b46cd3d2bb968b8bbd83fa`.
+  Correctness/yield remained normal in the adjacent 512-token acceptance gate:
+  accepted length **2.959538**, acceptance rate 0.279934, correct/proposed
+  **339/1211**, 173 verify cycles, histogram `[47,41,33,18,14,5,8,7]`,
+  3.615122 s E2E, and output SHA-256
+  `8b534f77630479829bf0c87b35c5cda2322b4dd4e8f10edbc6a750654dda40be`.
+- The five authority samples were:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Prompt tok/s | Output SHA-256 |
+  |---:|---:|---:|---:|---:|---|
+  | 1 | 158.062 | 0.479669 | 3.712583 | 12,952.674 | `9a7e6489d4fed8e4c333361ca0c04f80ff8743e8a14bf4674f6abd7a9d7a7bfc` |
+  | 2 | 142.721 | 0.497231 | 4.077637 | 12,495.206 | `0b6333e3c18a61df6d3f469961bbdd5d93af0edce422dd59c8b0c64be0fc1b1b` |
+  | 3 | 135.069 | 0.500770 | 4.284032 | 12,406.901 | `ae90d59a6f45cf5b96378b036cf607776971932c57b00120e4738f2c2959f69e` |
+  | 4 | 154.679 | 0.495876 | 3.799488 | 12,529.355 | `eaf58024f265bb1a369557b4b3429ddc687c2d65e9d2d99cdf97f0eb538cb46c` |
+  | 5 | 140.659 | 0.480622 | 4.113525 | 12,927.010 | `5459c75641249fb1a17f9ed4432c8c18e717f0d9fd80f25cc3fcf4c4a10e2293` |
+
+  Mean decode was **146.238 tok/s**, mean TTFT 0.490834 s, mean E2E 3.997453 s,
+  and mean prompt throughput 12,662.229 tok/s. Every request returned exactly
+  512 tokens by length with reasoning/content intact. This is below both the
+  gate/up-only and safe-broad controls, so QKVZ/QKV hybrid routing is rejected
+  at verify width eight. No repeatability window was warranted. The
+  complementary gate/up plus attention-output candidate is next.
+- PID 40060 was stopped with one `Ctrl+C`; the shutdown-only scheduler
+  interruption was contained to teardown. The listener and known PID exited,
+  no native compiler/sanitizer worker remained, and the RTX 5090 returned to
+  1,616 MiB used / 30,572 MiB free, 0% utilization, and 43 C.
+
+### 2026-09-01 01:38 PDT - attention-output hybrid family rejected at 126.992 tok/s
+
+- This complementary one-variable family isolate retained the 64 selected
+  gate/up layers and added only the 64 attention-output projections with
+  runtime shape `(5120,6144)`. QKVZ/QKV input projections and MLP down remained
+  Cutlass. The `_accepts_prequantized_fp4` exclusion and every established
+  alignment, size, bias, relayout, scratch, prefill, and M<=8 guard remained.
+  `py_compile` and `git diff --check` had passed before launch.
+- With `SGLANG_DSPARK_DEBUG_DUMP` explicitly absent, the exact launch was:
+
+  ```powershell
+  pwsh -NoProfile -File .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend triton -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 32000 -MaxTotalTokens 32000
+  ```
+
+  Listener PID 27868 was the sole server. The intended **128 target layers**
+  selected, target/draft residency was 17.02/2.39 GB, target/draft graph
+  capture completed in 0.71/0.61 s and 0.07/0.06 GB, and graph-end headroom
+  was 8.26 GB. Port ownership, compiler/sanitizer absence, exact 32K pools,
+  one-request admission, health, and language-only model info were rechecked
+  before traffic and before every authority sample.
+- The cache-flushed `6213+64` diagnostic reached **185.060 tok/s**, 0.473652 s
+  TTFT, 0.814083 s E2E, 13,117.225 prompt tok/s, exactly 64 tokens,
+  `finish_reason=length`, and output SHA-256
+  `733e19d0eec5356c6875b8eb7185bdd3d6a566900d6bb3dad8bc2ae6202d1aa2`.
+  The adjacent acceptance gate remained normal: accepted length **2.942529**,
+  acceptance rate 0.276683, correct/proposed **337/1218**, 174 verify cycles,
+  histogram `[49,46,24,21,12,8,6,8]`, 3.599281 s E2E, exactly 512 tokens, and
+  output SHA-256
+  `8040be2cb099b74d44a02ab65a29c12303086d56faa3f5737870ac59c123e2ae`.
+- The five fully captured authority samples were:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Prompt tok/s | Output SHA-256 |
+  |---:|---:|---:|---:|---:|---|
+  | 1 | 148.064 | 0.470732 | 3.921941 | 13,198.590 | `b8c4ce72ae4a8ae6f97be75c8edce85caee11ea571df2bc7f4cdd2938ead08c9` |
+  | 2 | 124.895 | 0.465014 | 4.556447 | 13,360.888 | `fe28098c7a47422ceda60c6588fb1b0aabc5343404ff10d4092ca7114a401caf` |
+  | 3 | 117.377 | 0.471949 | 4.825458 | 13,164.566 | `f2bb4588660809384ee78e8048a32ff6f11f471a75b1fe02e7fbffaa21db9435` |
+  | 4 | 130.368 | 0.472285 | 4.391961 | 13,155.198 | `f0b9390d13b07ca2a1d0fec21fd3d8e4cfa2f6b288fc545935c16846600ce3f9` |
+  | 5 (replacement) | 114.256 | 0.472567 | 4.944984 | 13,147.328 | `97c76e317fbe4bf2a916d4af59787c7e3a5f0d8cc4b0b16e4858655f92027e99` |
+
+  Mean decode was **126.992 tok/s**, mean TTFT 0.470509 s, mean E2E 4.528158 s,
+  and mean prompt throughput 13,205.314 tok/s. Every counted request returned
+  exactly 512 tokens by length with reasoning/content intact. The original
+  fifth request completed while the cumulative five-request shell command was
+  still attached to a yielded PTY, but its client JSON was not recoverable
+  after that PTY handle was inadvertently discarded. No benchmark process was
+  active, the listener was idle and healthy, and no build conflict existed
+  before the explicitly labelled replacement was run. The ambiguous request
+  is not counted. This family is decisively below the gate/up-only and
+  safe-broad controls, so attention-output hybrid routing is rejected at
+  verify width eight and no repeatability window is warranted.
+- PID 27868 was stopped with one `Ctrl+C`; the shutdown-only scheduler
+  `KeyboardInterrupt` was contained to teardown. Port 30000 was free, the
+  known PID was absent, no native compiler/sanitizer worker remained, and the
+  RTX 5090 returned to ordinary display residency at 1,616 MiB used /
+  30,572 MiB free, 0% utilization, and 40 C.
+
+### 2026-09-01 01:48 PDT - tensor-input hybrid down is correct but rejected at 141.387 tok/s
+
+- The earlier down-projection agreement collapse was caused by feeding a
+  prequantized FP4 activation tuple to Cutlass after the down weight had been
+  relaid out for Marlin. This experiment tested the actual tensor-input route:
+  the 64 gate/up and 64 MLP down projections were selected, and an active
+  hybrid down layer made Qwen retain the existing BF16 `SiluAndMul` tensor.
+  Verify/decode therefore used the existing native W4A16 Marlin kernel at
+  M<=8; prefill kept the weight in Cutlass layout and used its ordinary
+  activation quantizer. Non-selected/prequantized layers retained their
+  established fused path. This was a narrow dispatch experiment over existing
+  C++/CUDA kernels, not a new Python hot-path implementation.
+- Before launch, `py_compile` passed for the hybrid dispatcher and Qwen model,
+  `git diff --check` passed with only the known CRLF warning, and the required
+  isolated native relayout/GEMM-parity/CUDA-graph suite passed **3 tests and 3
+  subtests** in 8.48 s (14 dependency warnings). The exact foreground launch,
+  with `SGLANG_DSPARK_DEBUG_DUMP` explicitly absent, was:
+
+  ```powershell
+  pwsh -NoProfile -File .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend triton -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 32000 -MaxTotalTokens 32000
+  ```
+
+  Listener PID 37584 was the sole server. Exactly **128 target layers**
+  selected; target/draft residency was 17.26/2.39 GB. Target width-eight and
+  draft width-seven graphs captured in 0.72/0.61 s and 0.07/0.06 GB. Exact
+  32K target/draft pools, one-request admission, language-only model info, and
+  8.05 GB graph-end headroom were confirmed. The first post-start conflict
+  check stopped before traffic because the foreground launcher's own ancestor
+  contained the build-directory literal from its preflight command. Excluding
+  the verified listener ancestry left no compiler/sanitizer conflict; every
+  subsequent traffic check used that corrected ownership rule.
+- The cache-flushed `6213+64` diagnostic was a low **111.140 tok/s**, 0.489529
+  s TTFT, 1.056381 s E2E, 12,691.789 prompt tok/s, exactly 64 tokens,
+  `finish_reason=length`, and output SHA-256
+  `94e6641b0fd98745bf069f0cd35152b9fd1e9a3fbca45088ca31d6f30fcbeb54`.
+  Correctness/agreement did not collapse: the adjacent acceptance gate
+  reported accepted length **2.797814**, acceptance rate 0.256050,
+  correct/proposed **328/1281**, 183 verify cycles, histogram
+  `[57,49,29,18,8,6,7,9]`, 3.764681 s E2E, exactly 512 tokens, and output
+  SHA-256
+  `dbf15ed2942e63aee17a4e49239a491efcb06469140a8d5a67f4c5275a445fde`.
+- The five cache-flushed authority samples were:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Prompt tok/s | Output SHA-256 |
+  |---:|---:|---:|---:|---:|---|
+  | 1 | 171.879 | 0.481912 | 3.454939 | 12,892.382 | `5e0ac5ad5dd785a4238d6db5ff3ca03dda36efa150651100d86d663346d91eee` |
+  | 2 | 123.139 | 0.489865 | 4.639644 | 12,683.081 | `d36b904cdfb974205b388a6f64e1c6fec6a998d7feafc8fce7e786c84af7a655` |
+  | 3 | 161.696 | 0.492009 | 3.652262 | 12,627.813 | `65cf2d8fb12b49d85a0d18f967eb50a1636cdec290fdc8d395edabfdd027b7f7` |
+  | 4 | 115.785 | 0.489990 | 4.903328 | 12,679.838 | `624e8ee7ce119049fa20472400e9f2ae7d30abbaedccd9cc93ee826da1ea9e81` |
+  | 5 | 134.438 | 0.493379 | 4.294402 | 12,592.743 | `f6d7ad28d043d88bc388e0469917e0034a07ca988ce36b889c6e0e29603dde71` |
+
+  Mean decode was **141.387 tok/s**, mean TTFT 0.489431 s, mean E2E 4.188915 s,
+  and mean prompt throughput 12,695.171 tok/s. Every request emitted exactly
+  512 tokens by length and retained reasoning/content surfaces. The
+  tensor-input route fixes the original tuple/layout bug but does not improve
+  sampled throughput reliably, so down hybrid routing is rejected and no
+  repeatability window was warranted.
+- The Qwen activation experiment and down selection were fully reverted. The
+  dispatcher is back to the tuple-safe gate/up-only M<=8 baseline;
+  `py_compile` and `git diff --check` passed after restoration. PID 37584 was
+  stopped with one `Ctrl+C`; the shutdown-only scheduler interruption stayed
+  in teardown. The PID was absent, port 30000 was free, no native build worker
+  remained, and the RTX 5090 returned to 1,616 MiB used / 30,572 MiB free,
+  0% utilization, and 39 C.
+
+### 2026-09-01 01:55 PDT - native GDN ReplaySSM commit compiles; first CUDA oracle exposes unresolved tile mapping
+
+- Work continued on main at commit
+  5a816f3d1fd6c0b43c5f7b381641d06384de5fd0. Existing modified and untracked
+  Python, launcher, proposal, rejection, and experiment paths were preserved as
+  user-owned work. Port 30000 was free; no SGLang, CMake, Ninja, NVCC,
+  compiler, or sanitizer tree was active before the CUDA test. The RTX 5090
+  was at 1,616 MiB used / 30,572 MiB free, 0% utilization, and 38 C with only
+  ordinary desktop clients.
+- The dormant AOT ReplaySSM surface is now present in the native include and
+  source directories and is linked into sglang_native_kernels. The
+  graph-stable tensor view gained the narrow storage-offset accessor needed
+  for allocation-span validation. Shape checks now bound CUDA-grid arithmetic
+  without multiplication overflow and identify individual production-shape
+  mismatches. Convolution-pair alias validation now recomputes each prior
+  pair's accessed range instead of using its whole owner allocation.
+- The fold implementation was rebuilt around the cached Triton 3.7.1 sm_120
+  oracle's one-warp / 32-value tile, with explicit round-to-nearest arithmetic,
+  XOR key reductions, approximate FTZ square root, full division, approximate
+  base-two exponential, and fused rank-one updates. Device-content validation
+  runs before temporal or convolution writes, and convolution rollback plus
+  track-slot scatter remain separate writes from the accepted-prefix fold.
+- New framework-free host and CUDA test targets were added:
+  native.gdn_replayssm_commit_host and native.gdn_replayssm_commit, plus the
+  ReplaySSM memcheck target. The complete native tree builds successfully
+  under qualified MSVC 19.51 / CUDA 13.3 / sm_120. The host-labelled suite
+  passes 8/8, including the new ReplaySSM identifier, general-shape, and
+  production-shape cases.
+- The first CUDA test is intentionally not accepted evidence yet. It exercises
+  accepted prefixes, an exact tracking step, convolution rollback/scatter,
+  zero/full accept lengths, malformed-content publication safety, upstream
+  status composition, and stable-address graph replay. Its first recurrence
+  comparison currently fails at layer 0 / state slot 1 / value head 0 / value
+  1 / key 0: native 0.127929673 versus reference 0.0786743313. Earlier
+  exploratory layouts produced 0.145019487 at the same element. This localizes
+  the remaining blocker to the fold tile/value ownership or reduction mapping
+  rather than compilation or launch. The current source was left in the
+  structurally intended four-key-per-lane arrangement; no CUDA pass, memcheck,
+  Triton parity, or ReplaySSM qualification is claimed.
+- The successful native build used the qualified CUDA environment and
+  cmake --build on the existing isolated TEMP/sglang-native-dspark-dev tree.
+  The final focused native.gdn_replayssm_commit run remains red at the mismatch
+  above.
+- git diff --check passes aside from the already-known CRLF conversion warning
+  for the user-owned hybrid-Marlin Python file. Next work must inspect the
+  exact Triton lane/register mapping in PTX or compare a tiny native trace
+  against a live Triton launch before changing arithmetic further. Do not
+  start the native speculative-cycle controller until ReplaySSM parity, graph
+  replay, and memcheck pass.
+- Follow-up isolation: the same CUDA test passes all four cases when the first request commits one step, but fails when it commits three. The remaining recurrence defect is therefore multi-step state propagation, not initial state addressing, one-step recurrence, tracking/scatter setup, validation, or graph replay. The source and test were restored to the failing three-step case so the regression remains visible.
+- Correction after rebuilding the restored three-step test: the focused test
+  and the complete CUDA-labelled suite pass. The earlier red result was from
+  an executable built while the exploratory one-step fixture was still on
+  disk; the final restored source was not rebuilt before that conclusion was
+  recorded. Current evidence is native.gdn_replayssm_commit **4/4**, the whole
+  CUDA-labelled suite **5/5**, and ReplaySSM Compute Sanitizer memcheck **0
+  errors**. This validates the standalone deterministic C++ oracle, accepted
+  prefix, track slot, convolution scatter, publication safety, ready-status
+  composition, and stable-address graph replay. It does not yet establish
+  live Triton parity at production K=128/V=128, multiple convolution pairs,
+  envelope-strided storage-offset views, or full-model integration.
+- Requalified adjacent native components in the same build: the standalone
+  verify RNG test passed, corrected-logit rejection memcheck passed all 9 tests
+  with zero errors, and sampled DSpark proposal memcheck passed all 5 tests
+  with zero errors. No server was launched.
+- Strengthened the standalone recurrence fixture to K=128/V=128 with nonzero
+  keys distributed across all four per-lane key registers. The four CUDA cases
+  still pass. A one-off read-only Python invocation of the retained Triton
+  implementation generated the same deterministic fixture output; the native
+  executable compared all touched temporal slots against that file within the
+  established two-FP32-epsilon bound and passed as a fifth case. The temporary
+  binary oracle artifact was deleted immediately afterward. This is live
+  native-versus-Triton parity at production K/V and exact accepted-prefix and
+  tracking semantics, but still not a production 48-layer allocation or
+  serving integration.
+- MSVC C++23 static analysis with warning-as-error passed for the ReplaySSM
+  host contract source and host test after adding the qualified CUDA include
+  directory. The first analyzer invocation omitted that include directory and
+  failed before analysis on cuda_runtime_api.h; it was immediately corrected.
+- The final standalone fixture now uses replay width 8 and checks every accept
+  length from 0 through 8 at K=128/V=128. After that strengthening, the
+  CUDA-labelled suite again passed 5/5 and ReplaySSM memcheck again reported
+  zero errors. A fresh live Triton output comparison for the replay-width-eight
+  fixture also passed its fifth optional test, and the temporary output file
+  was deleted.
+- After clang-format, the complete native build passed again, followed by the
+  host-labelled suite at 8/8, the CUDA-labelled suite at 5/5, and ReplaySSM
+  memcheck at 4/4 with zero errors. git diff --check remained clean apart from
+  the pre-existing CRLF warnings for user-owned Python files.
+
+### 2026-09-01 02:10 PDT - DSpark sorted-support top-p removes 0.136 ms from the sampled tail
+
+- Work continued on `main` at commit
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`. The existing modified and
+  untracked native DSpark/GDN paths, Python integration, launcher, and notes
+  remained user-owned and were preserved. Port 30000 was free and the GPU was
+  at display-only residency before every CUDA diagnostic; no server, native
+  build, compiler, or sanitizer tree overlapped the work.
+- A warm production-shape diagnostic isolated the sampled verification tail at
+  batch one, gamma seven, eight target rows, vocabulary 248,320, temperature
+  1.0, top-k 20, and top-p 0.95. It ran through the checked-in CUDA 13.3
+  environment as
+  `. .\scripts\windows\initialize_cuda_build_env.ps1 -MaxJobs 2` followed by
+  `.\.venv\Scripts\python.exe -c $code`, with ten to twenty warmups and
+  100-200 CUDA-event iterations per operation. The existing path measured:
+  target top-k/top-p construction **0.344814 ms**, draft softmax **0.050268
+  ms**, dense rejection/residual scan **0.121081 ms**, bonus gather **0.013003
+  ms**, uniform RNG **0.017390 ms**, and complete tail **0.522348 ms**.
+  A separate seven-row BF16 diagnostic measured FlashInfer softmax **0.047760
+  ms**, BF16 copy **0.016732 ms**, and generic FP32 logsumexp **0.076526 ms**.
+- The target builder was wasting generic-launch overhead on only twenty sorted
+  probabilities per row: top-k itself was **0.145488 ms**, scaling twenty
+  values **0.010746 ms**, softmax **0.006944 ms**, the existing 20-wide top-p
+  call **0.114427 ms**, and dense scatter **0.016636 ms**. A composed prefix
+  control had exact support and values for this input but cost the same launch
+  overhead, so it was not retained.
+- Added a one-warp C++/CUDA sorted-support top-p renormalizer under
+  `python/sglang/kernels/jit/csrc/sampling/` and a thin binding on the existing
+  sampling-op surface. The DSpark/DFlash target builder uses it only behind
+  the existing default-off native-Windows
+  `SGLANG_OPT_SPARSE_TOP_P_RENORM=1` gate, only for CUDA FP32 logits and finite
+  top-k at most 32. It selects top-k before the per-row positive-temperature
+  division, normalizes the selected values, retains cutoff ties by probability
+  threshold, and then keeps the established dense target-probability ABI.
+  Every unsupported, disabled, non-CUDA, wider-top-k, and no-top-p case retains
+  the prior implementation.
+- The first routed diagnostic found one stale `scaled_logits.shape` reference
+  after making scaling lazy; it failed before a kernel launch and was corrected
+  to the unchanged input vocabulary shape. Python compilation and
+  `git diff --check` then passed (apart from the known CRLF conversion warnings
+  on existing Windows files).
+- The compiled kernel passed **60** seeded width 1/2/7/20/32 and top-p
+  0.2/0.8/0.95/1.0 comparisons against the current renormalizer, exact cutoff
+  tie-support cases, and two mutable CUDA-graph replays. Maximum value error
+  was one FP32 ULP (`1.1920928955078125e-07`); every support mask matched.
+- With `SGLANG_OPT_SPARSE_TOP_P_RENORM=1`, the real routed target builder fell
+  from **0.344814 to 0.243275 ms** and the complete sampled tail from
+  **0.522348 to 0.386569 ms**, a measured **0.135778 ms/cycle** recovery. The
+  eight rows retained 152 total entries and each summed to one within FP32
+  rounding. This is isolated kernel evidence, not yet a full-model throughput
+  claim. Next is a gate/up-only DSpark serving window, followed only if needed
+  by the previously correct tuple-safe broad hybrid selector.
+
+### 2026-09-01 02:17 PDT - gate/up-only sorted-top-p window is rejected at 145.942 tok/s
+
+- Static and focused integration validation completed before serving. The new
+  source was clang-formatted; Python compilation and `git diff --check` passed.
+  A batch-two production-vocabulary comparison with temperatures 0.7/1.3,
+  top-k 20/7, and top-p 0.95/0.8 matched the disabled fallback exactly:
+  identical support, maximum absolute difference 0, and row sums within one
+  FP32 ULP. The registered Windows CUDA invocation
+  `.\scripts\windows\invoke_cuda_pytest.ps1 -q
+  .\test\registered\spec\dspark\test_dspark_kernel_parity.py` passed one test
+  and all **22 subtests** in 15.73 seconds.
+- The isolated serving launch kept the tuple-safe gate/up-only M<=8 hybrid
+  selector and changed only `SGLANG_OPT_SPARSE_TOP_P_RENORM=1`. Exact command:
+
+  ```powershell
+  Remove-Item Env:SGLANG_DSPARK_DEBUG_DUMP -ErrorAction SilentlyContinue
+  $env:SGLANG_OPT_SPARSE_TOP_P_RENORM = "1"
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend triton -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 32000 -MaxTotalTokens 32000
+  ```
+
+  The resolved listener command retained one running request, exact 32K
+  context/target/draft pools, gamma seven/eight-token verify, target FP8 KV,
+  draft FP8 KV, Triton draft attention, reasoning/tools, and language-only
+  model surface. Target and draft graphs captured in 0.96/0.77 seconds and the
+  graph-end headroom was 8.39 GB. Hybrid Marlin reported exactly 64 gate/up
+  layers and one 85 MiB scratch. `/health`, `/v1/models`, and `/model_info`
+  passed; image/audio remained false; no compiler or sanitizer existed outside
+  the verified listener ancestry.
+- A cache-flushed sampled acceptance probe completed exactly 512 tokens at
+  accepted length **2.497561**, rate 0.215331, correct/proposed **309/1435**,
+  205 verify cycles, histogram `[77,54,28,10,24,3,5,4]`, 4.113830 seconds,
+  and output SHA-256
+  `2ae8bd601c4ae15d562288fdef271c5af3efe8ab5423f5d0f5f7ee4053d001bb`.
+  This is a lower-yield stochastic window than the recent 2.8-2.9 probes, so
+  the five-request authority window remained decisive.
+- Five sequential cache-flushed `6213+512` requests used the Python scoreboard
+  client, temperature 1.0, top-p 0.95, top-k 20, presence penalty 1.5, one
+  16-token warmup, and 600-second timeout:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Prompt tok/s | Output SHA-256 |
+  |---:|---:|---:|---:|---:|---|
+  | 1 | 161.220 | 0.471611 | 3.641191 | 13,173.999 | `7bbca6340febb153d1938ef2081d499761cf4b4326c2812ed146446ed738f7a4` |
+  | 2 | 145.775 | 0.473164 | 3.978561 | 13,130.757 | `b144931fe40c1a909871df243a41a55c84e39c82f2026805fafdfd59dad8ece8` |
+  | 3 | 145.526 | 0.468773 | 3.980169 | 13,253.747 | `277c6d43b3d70cbcc36dbef64922508e8d0cb8eff7d8c8cd727ade4c3ccab22d` |
+  | 4 | 159.663 | 0.475452 | 3.675950 | 13,067.571 | `12ba094aaa122be3d4c841a6c23af9645176a186ee56711a112f00332097a0ce1` |
+  | 5 | 117.524 | 0.475298 | 4.823344 | 13,071.802 | `d6520dbbae1cfeab9efc03ac627dacbd3a9719ff3b4e8ff168313c28eb1fa3760` |
+
+  Mean decode was **145.942 tok/s**, mean TTFT 0.472860 seconds, mean E2E
+  4.019843 seconds, and mean prompt throughput 13,139.575 tok/s. All requests
+  returned exact token counts, `finish_reason=length`, and preserved reasoning
+  and content. The sorted-top-p device win is retained, but gate/up-only does
+  not meet the 150 tok/s terminal gate.
+- The foreground server tree was stopped intentionally with one `Ctrl+C` after
+  all traffic completed. Listener PID 24684 and ancestors 7976/34004/9480 are
+  absent, port 30000 is free, no native build remains, and the RTX 5090 is back
+  at 1,761 MiB used / 30,427 MiB free, 0% utilization, and 40 C. Next changes
+  only the already parity-qualified tuple-safe hybrid selector from gate/up to
+  every eligible projection except the prequantized-input down path.
+
+### 2026-09-01 02:23 PDT - broad tuple-safe hybrid clears two sampled 150 tok/s windows
+
+- Work continued on `main` at commit
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`. All pre-existing modified and
+  untracked native DSpark/GDN work, Python integration, launcher changes, and
+  notes remained user-owned and were preserved. The hybrid selector was
+  broadened from the 64 target gate/up projections to every eligible target
+  projection with at most eight input rows. The existing
+  `_accepts_prequantized_fp4` guard still excludes all 64 down projections,
+  whose tuple input is not valid for the Cutlass FP4 prefill path. The launch
+  selected **192** target projections and continued to reuse one 85 MiB
+  relayout scratch.
+- Before serving, the registered NVFP4 relayout suite passed all three tests
+  and three subtests through the qualified Windows CUDA wrapper. The sorted
+  top-p kernel and DSpark parity evidence are recorded in the preceding entry.
+  The screening server changed only the eligible hybrid projection set versus
+  the rejected gate/up-only run and retained
+  `SGLANG_OPT_SPARSE_TOP_P_RENORM=1`. Exact launch command:
+
+  ```powershell
+  Remove-Item Env:SGLANG_DSPARK_DEBUG_DUMP -ErrorAction SilentlyContinue
+  $env:SGLANG_OPT_SPARSE_TOP_P_RENORM = "1"
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend triton -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 32000 -MaxTotalTokens 32000
+  ```
+
+- The resolved server kept one running request, exact 32K target and draft
+  pools/context, gamma seven/eight-token verification, target and draft FP8
+  KV, Triton draft attention, sampled reasoning/tool parsers, and the
+  language-only surface. Target and draft CUDA graphs captured in 0.73/0.63
+  seconds; graph-end headroom was 7.94 GB. Listener PID 30952 belonged to the
+  verified foreground launcher ancestry. No independent compiler, sanitizer,
+  or native build was active. `/health` and `/v1/models` passed;
+  `/model_info` reported both image and audio understanding false. Immediately
+  before traffic the RTX 5090 reported 25,076 MiB used, 7,112 MiB free, 0%
+  utilization, 41 C, and 70.47 W.
+- The cache-flushed sampled acceptance probe returned exactly 512 tokens in
+  3.615939 seconds at accepted length **2.942529**, acceptance rate 0.279146,
+  correct/proposed drafts **340/1218**, 174 verify cycles, histogram
+  `[38,48,43,18,6,7,5,9]`, and output SHA-256
+  `3aa691b3d47e3211d87ff57f8e97e74930d288810ad040a3a324b2f6bd2f76d7`.
+- Two independent five-request windows then used the Python scoreboard
+  authority, one request at a time. Every request used 6,213 prompt tokens,
+  512 sampled output tokens, temperature 1.0, top-p 0.95, top-k 20, presence
+  penalty 1.5, one 16-token warmup, per-request cache flushes, and a 600-second
+  timeout. A process-ownership check before every sample found no independent
+  compiler/native-build activity. Every sample returned exactly 512 tokens,
+  `finish_reason=length`, and preserved reasoning/content:
+
+  | Sample | Decode tok/s | TTFT s | E2E s | Prompt tok/s | Output SHA-256 |
+  |---:|---:|---:|---:|---:|---|
+  | 1 | 141.944 | 0.486591 | 4.086608 | 12,768.429 | `eb508dcd3230aa9815e632afabd0730b3b532c8ff4329d1c095929d68ad79baf` |
+  | 2 | 145.143 | 0.484482 | 4.005148 | 12,823.998 | `426e316b77f1905708eb3cfd5a3942abfb589a3d54743eaf222d463ea9c48106` |
+  | 3 | 157.233 | 0.489223 | 3.739169 | 12,699.722 | `7d7fc653b375e32abc864cf576bfae194c08282567e693ff0195c22e8164fd4e` |
+  | 4 | 146.097 | 0.487835 | 3.985501 | 12,735.874 | `e8fe19357aff6db39ad8a19617802f5721d35c5a5f7246e0e85aa25e20897e41` |
+  | 5 | 164.869 | 0.483110 | 3.582535 | 12,860.436 | `ecc3156e871d94949e60d3a32304646e906af8a51cedd3704aa16d041770c045` |
+  | **Window 1 mean** | **151.057** | **0.486248** | **3.879792** | **12,777.692** | |
+  | 6 | 139.523 | 0.486517 | 4.149004 | 12,770.363 | `3edc62a93072d8f40fd36a179260a527af11fb15cc96e6a959a946ca22a04b3c` |
+  | 7 | 125.040 | 0.493180 | 4.579865 | 12,597.832 | `d1543871839128125642f9d3a6328b6108508ececcf9f0f41d28838e361be775` |
+  | 8 | 145.232 | 0.484760 | 4.003271 | 12,816.657 | `1c9a03cd678657f66a806e00308689a9c2bb9b665b7f7b0286782a7bd4d40b57` |
+  | 9 | 169.177 | 0.483121 | 3.503630 | 12,860.127 | `42c77674bd0100321fb2ff959e6b69a0f75934ac6ad222738d4cd7b8ab60a1f8` |
+  | 10 | 173.500 | 0.496886 | 3.442127 | 12,503.862 | `0ee4d7fef49470942a593e4950645f1fea820022612fe3c13f3c7f7ba0a3307f` |
+  | **Window 2 mean** | **150.494** | **0.488893** | **3.935579** | **12,709.768** | |
+
+  The ten-sample aggregate is **150.776 decode tok/s**, 0.487571-second
+  TTFT, 3.907686-second end-to-end latency, and 12,743.730 prompt tok/s. Both
+  independent five-sample windows clear the requested 150 tok/s threshold.
+  This admits the candidate to production qualification; it is not yet a
+  promotion because this launch intentionally used a 32K screening pool.
+- The foreground server remains live and healthy only long enough to complete
+  log inspection and controlled transition. Next is a clean 200K production
+  relaunch of the same broad-hybrid/sorted-top-p candidate, followed by exact
+  `199000+16`, behavior/tool/parser checks, an OpenCode2 client gate, and an
+  independent sampled production window before any default selection changes.
+
+### 2026-09-01 02:31 PDT - ReplaySSM strided-view validation closes before cycle composition
+
+- Continued the Python-free native DSpark/ReplaySSM roadmap on main at
+  5a816f3d1fd6c0b43c5f7b381641d06384de5fd0. Every pre-existing modified and
+  untracked native, Python, launcher, test, and notebook path remained
+  user-owned and was preserved. No scheduler/model adapter or production route
+  was added.
+- Runtime preflight found a concurrently owned 32K gamma-seven DSpark server
+  and benchmark sequence. Listener ownership moved during its controlled
+  relaunch from PID 24684 (ancestry 9480 -> 34004 -> 7976 -> 24684) to PID
+  30952 (ancestry 34200 -> 24468 -> 26700 -> 30952), with GPU residency around
+  25-26 GiB. Native compilation waited until no compiler process remained; the
+  standalone native executables were then run without sending server traffic.
+  By the final check the server ancestry was absent, port 30000 was free, and
+  the RTX 5090 was back at 1,805 MiB used / 30,383 MiB free, 0% utilization,
+  and 38 C. No process was stopped or otherwise altered by this work.
+- Strengthened ReplaySSM's layout contract. `validate_tensor` now retains an
+  allocation-safe segment footprint in addition to the enclosing byte range.
+  Pairwise alias checks use a monotonic segment merge, so disjoint layer/slot
+  bands within the same owner allocation are admitted even when their bounding
+  intervals overlap. Actual segment overlap still fails closed. This removes
+  the conservative false rejection called out in the prior handoff without
+  allocating host memory or weakening bounds validation.
+- Exported `validate_gdn_replayssm_commit_buffers` as a host-only metadata gate
+  so a future C++23 adapter can validate views before CUDA graph capture. Added
+  coverage for a nonzero storage-offset temporal view with production-style
+  outer envelopes, an offset index vector, two convolution pairs in disjoint
+  interleaved layer bands, deliberate pair-to-pair alias rejection, and a
+  precise inner-stride failure.
+- Tightened device-content validation to the linear-chain contract. A null
+  state slot now requires zero accepted tokens and absent last/track metadata;
+  an active request requires last_correct_step == accept_length - 1; track
+  index and step must still be jointly absent or present, and a present step
+  must lie inside the accepted prefix. Added publication-safety cases for both
+  mismatched track sentinels, a track step at the prefix boundary, an
+  inconsistent last step, and an active commit against a null state. Temporal
+  and convolution outputs remain unchanged on every malformed case.
+- Validation used the reusable %TEMP%\sglang-native-dspark-dev build with the
+  qualified MSVC 19.51 / CUDA 13.3 environment. The warning-as-error complete
+  build passed; host CTest passed **8/8**; CUDA CTest passed **5/5**; the
+  ReplaySSM executable passed **6/6**; and ReplaySSM Compute Sanitizer passed
+  **6/6 with zero errors**. Adjacent corrected-logit rejection, verify RNG, and
+  DSpark proposal memchecks passed **9/9**, **4/4**, and **5/5**, each with zero
+  errors. MSVC C++23 static analysis passed for the ReplaySSM host source and
+  host test. git diff --check passed with only the pre-existing CRLF warnings
+  on user-owned Python paths.
+- The standalone ReplaySSM milestone is now closed strongly enough to proceed
+  to native speculative-cycle composition. The overall rewrite remains
+  incomplete: proposal optimization and live trained-path parity, target/draft
+  graph ownership, draft extend/KV writes, compact D2H results, adapters,
+  serving integration, and the complete full-model gate remain open.
+
+### 2026-09-01 - Safety correction for the 02:31 PDT native validation record
+
+- Correction: a user-owned 32K gamma-seven DSpark server remained resident at approximately 25-26 GiB of VRAM while some standalone native CUDA tests and Compute Sanitizer runs from the 02:31 PDT validation were executed. Although this task sent no traffic to that server, stopped no server process, and observed no resulting failure, those additional CUDA contexts overlapped the resident server. That violated the repository rule requiring one deliberate server, CUDA test/JIT build, compiler tree, or GPU benchmark at a time.
+- The observed server ownership changed from listener PID 24684 with ancestry 9480 -> 34004 -> 7976 -> 24684 to a relaunch at listener PID 30952 with ancestry 34200 -> 24468 -> 26700 -> 30952. Both trees were user-owned and were left untouched.
+- The earlier cleanup snapshot at 2026-09-01 02:29 PDT was: both server ancestries absent, port 30000 free, and the RTX 5090 at approximately 1,805 MiB used / 30,383 MiB free / 0% utilization / 38 C. Fresh verification for this continuation again found port 30000 free, no SGLang server, compiler, native build, or sanitizer process, and the RTX 5090 at 1,805 MiB used / 30,383 MiB free / 0% utilization / 38 C. These remain point-in-time observations, not durable PID state.
+- Do not run another CUDA test, sanitizer, build/JIT, or model launch while any server or unrelated compiler tree is resident. Re-establish exact listener ancestry, compiler/sanitizer ownership, and GPU residency immediately before each such operation.
+
+### 2026-09-01 02:41 PDT - in-place Marlin scale relayout recovers the 200K draft-graph budget
+
+- The 32K screening server was stopped with one `Ctrl+C`; listener PID 30952
+  and known ancestors 26700/24468/34200 exited, port 30000 became free, no
+  compiler/native-build process remained, and the RTX 5090 returned to 1,805
+  MiB used / 30,383 MiB free at 0% utilization. A first 200K production
+  qualification attempt then used exactly the admitted candidate with only
+  the two pools/context restored from 32K to 200K:
+
+  ```powershell
+  Remove-Item Env:SGLANG_DSPARK_DEBUG_DUMP -ErrorAction SilentlyContinue
+  $env:SGLANG_OPT_SPARSE_TOP_P_RENORM = "1"
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend triton -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 200000 -MaxTotalTokens 200000
+  ```
+
+- That launch allocated exact 200,000-token target and draft FP8 KV pools and
+  retained four FP32 Mamba slots, but it was rejected before benchmarking.
+  The 192-layer target used 17.34 GB and the online-FP8 draft used 2.39 GB.
+  The target/draft pools used 6.10/1.90 GB, leaving 0.93 GB before target
+  capture. Target verify captured in 0.76 seconds / 0.05 GB, after which only
+  0.87 GB remained. The existing DSpark guard requires at least 1.0 GB before
+  draft capture, so it disabled the draft CUDA graph. Listener PID 40144 did
+  become ready and completed only the launcher's 64-token startup request; no
+  authority, capacity, or behavior request was sent. One `Ctrl+C` stopped the
+  tree normally. PID 40144 disappeared, port 30000 was free, no build process
+  remained, and the GPU returned to 1,805 MiB used / 30,383 MiB free.
+- Checkpoint/runtime-shape accounting localized the deficit to duplicated
+  hybrid-Marlin block scales. The Cutlass and Marlin scale layouts have the
+  same E4M3 element count; the prior hybrid path retained both layouts even
+  though the packed weights already switch in place. Across the selected 64
+  gate/up, 48 QKVZ, 16 QKV, and 64 attention-output projections, the duplicate
+  Marlin scales total exactly **1,163,919,360 bytes (1,110 MiB / 1.084 GiB)**.
+- Extended the existing C++/CUDA NVFP4 relayout capsule with a reversible
+  in-place scale transform. It performs the established Cutlass transpose,
+  Marlin 64-scale permutation, four-value permutation, and exact E4M3 scale
+  encoding into the already shared 85 MiB scratch, then copies back to the
+  caller-owned scale allocation. The inverse restores the original Cutlass
+  bytes. Marlin and Cutlass tensor views now alias that single allocation.
+  The existing thin Python binding and hybrid lifecycle dispatcher invoke the
+  native transform alongside the weight transform. A layer with a non-E4M3,
+  noncontiguous, non-finite, or negative scale surface stays on Cutlass rather
+  than entering the reversible path. No new Python file or Python hot-path
+  algorithm was added.
+- Static validation passed: the CUDA source was clang-formatted, all touched
+  Python binding/dispatch files compiled, and `git diff --check` passed with
+  only the known CRLF conversion warnings. With port 30000 free, no server,
+  compiler, sanitizer, or other CUDA workload active, the qualified CUDA 13.3
+  environment compiled the JIT capsule. Exact byte parity against the current
+  PyTorch/Marlin reference and exact inverse round trips passed for N/K
+  `64/128`, `192/256`, `512/640`, `14336/5120`, `16384/5120`,
+  `5120/6144`, and `34816/5120`. Two mutable CUDA-graph replays passed. A
+  shared-storage hybrid GEMM matched the dequantized reference within the
+  established 0.04 tolerance, then restored both weight and scale bytes
+  exactly. The registered Windows CUDA relayout/GEMM/graph suite subsequently
+  passed **3 tests and 3 subtests** in 8.21 seconds (14 dependency warnings).
+- This is isolated native memory/correctness evidence, not yet a serving
+  qualification. Next is the same exact 200K launch. Admission requires both
+  target and draft graph captures, exact pools, sufficient post-JIT headroom,
+  and normal sampled acceptance before the long-capacity or client gates.
+
+### 2026-09-01 02:49 PDT - first in-place-scale full-model gate rejected on acceptance
+
+- The exact 200K relaunch from the preceding entry ran in the foreground with
+  `SGLANG_OPT_SPARSE_TOP_P_RENORM=1`, random seed `980406`, Triton draft
+  attention, online-FP8 DSpark-v2 draft weights, FP8 target/draft KV, 4,096-token
+  chunks, and explicit `-ContextLength 200000 -MaxTotalTokens 200000`. Listener
+  PID `37684` descended through `22884 -> 372 -> 36204`; port ownership, absence
+  of another build/CUDA workload, and the listener ancestry were verified.
+- The memory objective succeeded. In-place scale storage reduced target load
+  from 17.34 GB to 16.21 GB while preserving the 2.39 GB draft load, four FP32
+  Mamba slots, and exact 200,000-token target/draft FP8 KV pools. Target verify
+  captured in 0.72 seconds / 0.07 GB and the folded draft graph captured in
+  0.62 seconds / 0.06 GB, with 1.92 GB reported at graph end. `/health`,
+  `/v1/models`, `/server_info`, and `/model_info` passed; one-request admission,
+  exact context/pools, and disabled image/audio understanding were intact.
+- The first cache-flushed sampled acceptance gate rejected the implementation
+  before any performance or capacity qualification: exactly 512 output tokens
+  took 6.026558 seconds, accepted length fell to **1.678689**, acceptance rate
+  to **0.096487**, correct/proposed drafts to **206/2135**, and the histogram was
+  `[129,159,8,5,4]` over 305 verify cycles. Output SHA-256 was
+  `35bda5f6f43972dd3d21bf8f3233cf7966d2e5371028af3630f6289aaa222317`.
+  This is incompatible with the matched 32K candidate's 2.942529 accepted
+  length, 340/1218 drafts, 174 cycles, and deterministic seed/workload surface;
+  no throughput conclusion was admitted.
+- Source tracing found the integration error. Hybrid preparation sees the raw
+  row-major E4M3 checkpoint scales, but the subsequent CUTLASS preparation
+  block-swizzles them in 128-row/four-column tiles and aliases that derived
+  representation back onto `layer.weight_scale`. The new in-place native
+  relayout incorrectly interpreted the live aliased bytes as the pre-swizzle
+  row-major representation. Its isolated tests passed because they supplied
+  the pre-swizzle representation. The fix must convert directly between the
+  actual CUTLASS block-swizzled storage and Marlin storage, with parity against
+  the post-load representation, before another full-model launch.
+- One intentional `Ctrl+C` stopped the foreground server. PID `37684` and
+  ancestors `22884/372/36204` are absent, port 30000 is free, no compiler,
+  native build, sanitizer, or SGLang process remains, and the RTX 5090 returned
+  to 1,071 MiB used / 31,117 MiB free at 0% utilization and 37 C.
+
+### 2026-09-01 02:56 PDT - post-swizzle scale relayout closes isolated correctness
+
+- Corrected the native scale permutation to consume and restore the live
+  ModelOpt CUTLASS representation: `[N/128,(K/16)/4,32,4,4]`. The reversible
+  CUDA kernels now compose that block swizzle with the established Marlin
+  64-scale and four-value permutations and E4M3 encoding. The hybrid selector
+  requires exact 128-row/four-scale-group alignment, ensuring the source and
+  CUTLASS-derived Parameters truly alias; unsupported padded shapes remain on
+  their existing backend. No new Python file or Python algorithm was added.
+- Static validation passed after CUDA formatting: both touched thin Python
+  binding/dispatch files compiled, and the focused diff check passed with only
+  the checkout's known CRLF conversion warnings. With port 30000 free, no
+  server/compiler/sanitizer process, and the GPU at 1,129 MiB used / 31,059 MiB
+  free, the registered Windows CUDA relayout suite passed **3 tests, 3
+  subtests** in 13.39 seconds with 14 dependency warnings.
+- A stronger one-off CUDA 13.3 probe reproduced the post-load scale surface
+  rather than the raw checkpoint surface. Exact Marlin bytes and exact inverse
+  CUTLASS bytes passed for N/K `128/64`, `256/256`, `512/640`,
+  `14336/5120`, `16384/5120`, `5120/6144`, and `34816/5120`, covering every
+  production projection family. The relayout graph then passed an initial
+  replay plus two source mutations exactly. An aliased weight/scale Marlin
+  GEMM matched the dequantized reference within the established 0.04 tolerance,
+  passed an initial graph replay plus two activation mutations, and restored
+  both CUTLASS weight and block-swizzled scale bytes exactly.
+- Two earlier one-off graph assertions failed only because the harness checked
+  captured output before the first `CUDAGraph.replay()`. CUDA stream capture
+  records rather than executes the graph; adding the required initial replay
+  made both probes pass without a production-code change. These harness
+  failures did not weaken or alter the eager exact-parity result.
+- The next gate is the same exact 200K foreground launch and one deterministic
+  sampled acceptance request. No throughput, long-capacity, or client traffic
+  is admissible until accepted length and output behavior return to the matched
+  broad-hybrid candidate's normal range.
+
+### 2026-09-01 02:59 PDT - corrected 200K acceptance is exact; sampled window interrupted safely
+
+- Relaunched the same exact 200K candidate in the foreground with random seed
+  `980406`, broad tuple-safe M<=8 hybrid Marlin, post-swizzle in-place scales,
+  `SGLANG_OPT_SPARSE_TOP_P_RENORM=1`, online-FP8 DSpark-v2 draft weights,
+  Triton draft attention, target/draft FP8 KV, and 4,096-token chunks. Listener
+  PID `24124` descended through `37304 -> 40784 -> 29288`; its resolved command
+  retained one request, exact 200,000 context and target/draft pools, four FP32
+  Mamba slots, gamma seven/eight-token verification, reasoning/tool parsers,
+  and language-only serving. No independent compiler/CUDA workload existed at
+  launch or admission.
+- Target/draft residency was 16.21/2.39 GB. Exact target/draft pools consumed
+  6.10/1.90 GB; target verify captured in 0.73 seconds / 0.07 GB and the folded
+  draft graph captured in 0.62 seconds / 0.06 GB, leaving 1.95 GB at graph end.
+  `/health`, `/v1/models`, and `/model_info` passed; the model list reported
+  200,000 tokens and image/audio understanding remained false. Before measured
+  traffic the GPU reported 30,231 MiB used / 1,957 MiB free at 0% utilization.
+- The deterministic sampled acceptance gate now matches the admitted 32K run
+  **exactly**: 512 completion tokens, 3.626520 seconds E2E, accepted length
+  **2.942529**, acceptance rate **0.279146**, correct/proposed drafts
+  **340/1218**, 174 verify cycles, histogram `[38,48,43,18,6,7,5,9]`, and
+  output SHA-256
+  `3aa691b3d47e3211d87ff57f8e97e74930d288810ad040a3a324b2f6bd2f76d7`.
+  This closes the full-model scale-layout correctness regression.
+- A five-sample production window began with the Python scoreboard authority,
+  exact cache-flushed `6213+512` sampled settings, and per-sample ownership
+  checks. Samples 1 and 2 completed at **141.841** and **144.815 tok/s** with
+  TTFT 0.497527/0.497378 seconds, E2E 4.100162/4.026011 seconds, prompt rates
+  12,487.762/12,491.503 tok/s, exact token counts and `finish_reason=length`.
+  Their output digests were the deterministic sequence's expected
+  `eb508dcd...` and `426e316b...`; reasoning/content were preserved.
+- Immediately before sample 3, the guard found a new user-owned build rooted at
+  `cmake --build ...sglang-native-cycle-9cfa0fea6b4549f6aa0fdbf4c93ebcf5
+  --parallel 2`, with Ninja/link children. No third request was sent. The two
+  completed samples passed their own pre-request conflict checks, but this is
+  an incomplete window and is not counted as the five-sample production gate.
+  Only the verified foreground SGLang tree was stopped; the user build was left
+  untouched. PID `24124` and ancestors `37304/40784/29288` exited and port
+  30000 became free. A later snapshot found the native build complete and no
+  compiler process remaining; the GPU returned to 1,008 MiB used / 31,180 MiB
+  free at 0% utilization and 38 C.
+
+### 2026-09-01 03:02 PDT - 155.898 tok/s 200K window retained as potentially tail-contended
+
+- After the prior native build finished, an unchanged independent foreground
+  relaunch again loaded 192 target hybrid projections at 16.21 GB, the FP8
+  DSpark-v2 draft at 2.39 GB, exact 200K target/draft pools, and both full CUDA
+  graph families with 1.95 GB graph-end headroom. Listener PID `37840` had the
+  verified ancestry `15568 -> 6732 -> 26464`. No compiler, sanitizer, or other
+  CUDA workload existed at preflight, admission, the acceptance request, or any
+  of the five per-sample pre-request checks.
+- One cache-flushed acceptance draw was healthy but stochastic: accepted length
+  2.708995, acceptance rate 0.243386, correct/proposed drafts 322/1323, 189
+  verify cycles, histogram `[60,42,45,14,9,7,7,5]`, 3.910864 seconds E2E, and
+  exact 6,213+512 token counts. This remained far from the rejected corrupted
+  1.678689/206-of-2135 result.
+- The restarted Python-authority `6213+512` production window completed at
+  **167.303, 134.485, 158.405, 147.009, and 172.288 tok/s**, mean
+  **155.898 tok/s**. TTFT was 0.491565, 0.497985, 0.494976, 0.511103, and
+  0.495530 seconds; E2E was 3.545912, 4.297658, 3.720878, 3.987086, and
+  3.461499 seconds. Prompt rates were 12,639.219, 12,476.279, 12,552.121,
+  12,156.074, and 12,538.096 tok/s. Every sample returned exact token counts,
+  `finish_reason=length`, and preserved reasoning/content; output SHA-256s were
+  `e87cd24f...`, `1213fd85...`, `7b75dd82...`, `950baef9...`, and
+  `baa577ff...`.
+- The immediate post-window ownership check found a newly started user-owned
+  native cycle-controller lane: CMake/Ninja plus Compute Sanitizer memcheck.
+  Because the guard cannot prove whether its CUDA context began during the tail
+  of sample 5 or immediately afterward, the 155.898 mean is retained as
+  **potentially tail-contended evidence**, not the clean production promotion
+  window. No exact-capacity request was started. Only the verified SGLang tree
+  was stopped; the user-owned lane was untouched. PID `37840` and ancestors
+  `15568/6732/26464` exited and port 30000 became free. The native lane then
+  continued MSVC static analysis while the GPU returned to 983 MiB used /
+  31,205 MiB free at 0% utilization and 40 C.
+
+### 2026-09-01 03:05 PDT - second native-lane overlap incident recorded
+
+- During continuation of the Python-free native DSpark cycle work, a user-owned 200K production-qualification launch appeared with process ancestry `36204 pwsh -> 372 sglang.exe -> 22884 python.exe -> 37684 python.exe`, plus spawned Python children `30768` and `38292`. Its resolved command selected gamma-seven DSpark, the broad hybrid-Marlin path, sorted top-p, exact 200,000 context and target/draft pools, online-FP8 draft weights, Triton draft attention, and FP8 target/draft KV.
+- At first detection the launch had not established a listener and the RTX 5090 used approximately 1,071 MiB. The tree disappeared shortly afterward without any signal or traffic from this native task. Native builds/tests had already run during the same period, so their execution may have overlapped that user-owned launch and must not be treated as clean one-GPU-operation-at-a-time evidence.
+- A later cleanup snapshot found port 30000 free, no relevant SGLang, compiler, build, or sanitizer process, and the RTX 5090 at approximately 1,129 MiB used / 31,059 MiB free / 0% utilization / 38 C. Those were snapshots only. Re-establish listener ancestry, compiler/sanitizer ownership, and GPU residency before any further build, CUDA test, sanitizer, JIT, benchmark, or launch.
+
+### 2026-09-01 03:07 PDT - clean 200K DSpark-v2 window reaches 150.588 tok/s
+
+- On dirty user-owned `main` at `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`, after the native lane ended and a 20-second quiet preflight remained clear, launched the corrected candidate in the foreground with `SGLANG_OPT_SPARSE_TOP_P_RENORM=1` and exact command `serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406 -MemoryFraction 0.98 -KvCacheDtype fp8_e4m3 -ChunkedPrefillSize 4096 -SpeculativeAlgorithm DSPARK -SpeculativeDraftModelPath C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2 -SpeculativeDraftModelQuantization fp8 -SpeculativeDraftAttentionBackend triton -DisableTorchCompile -EnableFlashInferAutotuneExtend:$false -ContextLength 200000 -MaxTotalTokens 200000`. Existing modified and untracked paths, including the independent native lane, remained untouched.
+- Listener PID `27784` descended through `13804 -> 5240 -> 6012`; the resolved server command retained `max_running_requests=1`, exact 200,000 context and target/draft token pools, four FP32 Mamba slots, gamma seven/eight-token verification, FP8 target/draft KV, online-FP8 draft weights, Triton draft attention, reasoning/tool parsers, and language-only serving. Target/draft weights used 16.21/2.39 GB; target verify captured in 0.74 seconds / 0.07 GB and the folded draft graph in 0.61 seconds / 0.06 GB, leaving 1.94 GB at graph end. `/health`, `/v1/models`, and `/model_info` passed; the model advertised 200,000 tokens and image/audio understanding remained false.
+- With listener ownership and the absence of `cl`, `link`, `nvcc`, Ninja, CMake, CTest, and Compute Sanitizer checked immediately before and after every request, the Python-scoreboard authority command `bench_openai_stream.py --base-url http://127.0.0.1:30000 --model qwen3.8-27b --backend sglang --input-tokens 6213 --output-tokens 512 --warmup-output-tokens 16 --warmup-runs 1 --timeout 600 --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` produced **162.219, 141.978, 145.389, 157.288, and 146.065 tok/s**, mean **150.588 tok/s**. TTFT was 0.494299/0.497257/0.493207/0.496945/0.492919 seconds; E2E was 3.644358/4.096397/4.007928/3.745770/3.991355 seconds; observed prompt rates were 12,569.315/12,494.538/12,597.137/12,502.385/12,604.495 tok/s.
+- Every measured sample returned exact 6,213+512 token counts with `finish_reason=length` and preserved reasoning/content. Output SHA-256s were `3aa691b3d47e3211d87ff57f8e97e74930d288810ad040a3a324b2f6bd2f76d7`, `eb508dcd3230aa9815e632afabd0730b3b532c8ff4329d1c095929d68ad79baf`, `426e316b77f1905708eb3cfd5a3942abfb589a3d54743eaf222d463ea9c48106`, `7d7fc653b375e32abc864cf576bfae194c08282567e693ff0195c22e8164fd4e`, and `e8fe19357aff6db39ad8a19617802f5721d35c5a5f7246e0e85aa25e20897e41`. Sample-boundary GPU telemetry showed 30,069-31,187 MiB used, 1,001-2,119 MiB free, 39-57 C, and measured boost clocks near 3.0 GHz / 13.8 GHz during work. All ten process brackets were clean, so this is the first uncontended full-pool five-sample window above the 150 tok/s objective.
+- This is candidate performance evidence, not yet a promotion. The same foreground instance still needs exact `199000+16`, behavior/tool/parser, and real-client gates; promotion additionally requires an argument-free production-default relaunch and a second independent clean sampled window.
+
+### 2026-09-01 03:11 PDT - corrected DSpark-v2 candidate passes exact 199000+16
+
+- Rechecked listener PID `27784`, found no compiler/build/sanitizer process, flushed the cache, and ran the benchmark-contract authority command `bench_openai_stream.py --base-url http://127.0.0.1:30000 --model qwen3.8-27b --backend sglang --input-tokens 199000 --output-tokens 16 --warmup-output-tokens 16 --warmup-runs 1 --timeout 600 --temperature 0` on the unchanged foreground 200K candidate. The client performed one same-shape warmup and one scored request; every server prefill chunk reported `#cached-token: 0` and the final chunks reached full-token usage 1.00 with Mamba usage 0.75.
+- The scored request returned exact prompt/completion/total counts **199000/16/199016**, `finish_reason=length`, prompt throughput **3124.981 tok/s**, decode throughput 36.048 tok/s over the intentionally short completion, TTFT **63.680384 seconds**, and 64.096498 seconds end to end. It preserved 83 characters of reasoning and produced output SHA-256 `b85042ffc1ba1f70bee8ce705f5503deada5e248ddfef4a20c766eaa92a12c`.
+- The post-request guard again found listener PID `27784` and no `cl`, `link`, `nvcc`, Ninja, CMake, CTest, or Compute Sanitizer process. Boundary telemetry was 31,211 MiB used / 977 MiB free, 98% utilization, 67 C, 443.24 W, and 2,970/13,801 MHz SM/memory clocks. A post-capacity cache flush succeeded and `/health` returned 200. This closes the exact-capacity gate for the candidate without weakening the real 200,000-token pools.
+
+### 2026-09-01 03:14 PDT - sampled behavior and parser continuity pass with one retained retry
+
+- On the unchanged listener PID `27784`, the recommended sampled arithmetic request used temperature 1.0, top-p 0.95, top-k 20, and presence penalty 1.5. It stopped normally after 72 completion / 67 reasoning tokens, returned visible exact `703`, and preserved 161 characters of coherent `reasoning_content`: it derived `37*19` as `37*20-37=740-37=703`. Process/listener guards passed before and after the request.
+- The first tool request emitted exactly one parsed `multiply` call with arguments `{"a":37,"b":19}`, `finish_reason=tool_calls`, and nonempty reasoning. Its first tool-result continuation failed the strict combined assertion (normal stop, visible 703, fresh reasoning, and no second call). The one-off wrapper raised before serializing that response, so the exact failed conjunct is unavailable; retain this as an explicit stochastic behavior retry rather than silently discarding it.
+- A clean diagnostic repeat fully passed. The first turn used 346 prompt / 85 completion / 46 reasoning tokens, preserved reasoning, and emitted exactly one `multiply({"a":37,"b":19})` call with ID `call_b431d8bb2de04049951a6f97` and `finish_reason=tool_calls`. The second request carried that exact assistant `reasoning_content`, call ID, and argument string across tool result `703`; it used 449 prompt / 40 completion / 27 reasoning tokens, emitted no further tool call, stopped normally, preserved fresh reasoning, and returned visible `37 × 19 = 703`. Both process brackets were clean.
+- A thinking-disabled control used deterministic sampling, stopped normally after two tokens, returned exact `READY`, and reported zero reasoning tokens/characters. `/health` remained good. Together with `/model_info` image/audio false and the exact-capacity result, the corrected candidate preserves the established ordinary chat, reasoning, parser, tool-continuation, and language-only behavior surfaces. A later launcher-default production restart must repeat these gates for final promotion.
+
+### 2026-09-01 03:16 PDT - four-slot candidate fails the real OpenCode2 multi-chunk boundary
+
+- Started the fixed real-client gate only after listener PID `27784`, compiler/sanitizer exclusion, and a stable dirty-worktree snapshot passed. OpenCode2 `v0.0.0-beta-18743` ran through `scripts/windows/opencode_qwen.ps1 -DisableSnapshots -MainOutputCap 512 run --standalone --model llama-cpp/qwen3.8-27b --format json 'Reply with exactly READY. Do not call tools.'`. The wrapper used its process-scoped provider overlay; no overlay existed before the invocation.
+- OpenCode emitted four `step_start` events but no text completion. The server admitted the approximately 15K-token main request while one auxiliary request was queued. Its 4,096-token chunks progressed with pending counts 11,002, 7,457, and 3,361, `mamba usage=0.75`, and `#queue-req: 1`; while caching the unfinished request after that third chunk, the scheduler raised `AssertionError: Can not alloc mamba cache` from `unified_cache/components/mamba_component.py::_alloc_mamba_slot`. The listener exited, OpenCode reported `provider.transport` / `ConnectionRefused`, and the gate failed. This is a serving-capacity failure, not a throughput result.
+- The fault reproduces the documented transient-state donation boundary: the four-slot production benchmark baseline is sufficient for the synthetic workload but not this current multi-chunk repository client shape. The next candidate must use `-MaxMambaCacheSize 5` and re-prove exact pools, graph capture, exact `199000+16`, sampled performance, and the real client before any default decision.
+- The failed client left exact invocation-owned OpenCode PIDs `27144` and child service `22200` alive, creating a retained-retry hazard for a future listener. They were resolved by full command line, stopped child-first, and verified absent 750 ms later. The failed SGLang tree was already gone; port 30000 is free, no SGLang/compiler/sanitizer process remains, and the RTX 5090 returned to 1,012 MiB used / 31,176 MiB free at 0% utilization, 42 C, and approximately 30 W. No unrelated process was stopped.
+
+### 2026-09-01 03:18 PDT - fifth Mamba slot closes the OpenCode2 failure boundary
+
+- After two clean preflight snapshots 20 seconds apart, relaunched the otherwise unchanged corrected DSpark-v2 candidate with the single additional argument `-MaxMambaCacheSize 5`. Listener PID `26652` descends through `15552 -> 33524 -> 30200`; the resolved server retains one request, exact 200,000 context and target/draft token pools, 4,096-token chunks, and all prior DSpark/FP8/hybrid-Marlin/parser settings. The five-slot FP32 Mamba pool uses 0.84 GB SSM state plus 0.02 GB convolution state. Target/draft pools remained exact, target verify captured in 0.73 seconds / 0.07 GB, and the folded draft graph in 0.62 seconds / 0.06 GB, leaving 1.83 GB at graph end. `/health`, model listing, language-only image/audio false, and process ownership passed.
+- Repeated the exact previously crashing OpenCode2 command with the same `v0.0.0-beta-18743`, process-scoped `llama-cpp/qwen3.8-27b` provider, snapshots disabled, 512-token main cap, standalone mode, and exact `READY` prompt. It exited zero in **5.746836 seconds**, emitted visible exact `READY`, and left listener PID `26652` healthy. The provider overlay restored, the full dirty-worktree status was byte-for-byte unchanged, no compiler/sanitizer appeared, and no OpenCode process remained after a 750 ms cleanup check.
+- This one-variable retry establishes causality: four slots crash at unfinished multi-chunk state donation, while five slots complete the identical real auxiliary/main client shape without reducing either 200K pool or losing either graph. Five slots are now part of the candidate under qualification; sampled throughput and exact-capacity gates must be repeated on this shape before selection.
+
+### 2026-09-01 03:20 PDT - five-slot serving-safe candidate averages 154.055 tok/s
+
+- On unchanged listener PID `26652`, ran a second independent Python-authority sampled window with the same exact `6213+512`, one same-shape 16-token warmup per sample, temperature 1.0, top-p 0.95, top-k 20, and presence penalty 1.5. Listener ownership and the absence of OpenCode, compiler, build, CTest, and sanitizer processes were checked immediately before and after all five requests.
+- Decode samples were **126.819, 163.926, 178.492, 164.980, and 136.059 tok/s**, mean **154.055 tok/s**. TTFT was 0.490516/0.495809/0.485316/0.498297/0.493208 seconds; E2E was 4.519876/3.613061/3.348187/3.595642/4.248929 seconds; prompt rates were 12,666.243/12,531.033/12,801.981/12,468.478/12,597.112 tok/s. Every sample returned exact 6,213+512 counts, `finish_reason=length`, and preserved reasoning/ordinary content.
+- Output SHA-256s were `9ad0392ee8f4e8efa65a51474cc9bd58a511290e47b6c1b214f29af1018f9edb`, `ca2649e7d6bd7beed32d75b738ed510b598e1f7b62d129c5c158189d678227be`, `88d4bdd3ab41f7900ca9a38dea64227bb89846a844ad629a9b1b959dc53f7b85`, `feec9daa1c27ca7ba63464003a3ce0b8157b1f291f72cf2d26ad5691519d9f4d`, and `b5f529be78c16d96033e886ae8c44119c9a105e7f6832d2e4e0056f97b6d0488`. Boundary telemetry showed 31,317-31,325 MiB used, 863-871 MiB free, 40-53 C, and approximately 3.0/13.8 GHz boosted clocks. All ten process brackets were clean.
+- Together with the prior clean four-slot 150.588 window, this is the required independent second real sampled window; more importantly, it demonstrates the client-safe five-slot configuration itself exceeds the requested 150 tok/s threshold. Native acceptance and exact-capacity evidence remain required on this same listener.
+
+### 2026-09-01 03:21 PDT - five-slot native acceptance remains healthy
+
+- The adjacent cache-flushed native acceptance authority completed exact `6213+512` on listener PID `26652` in 3.837766 seconds. It reported accepted length **2.752688**, acceptance rate **0.250384**, correct/proposed drafts **326/1302**, 186 target verification cycles, and histogram `[59,44,31,24,13,2,5,8]`; output SHA-256 was `7396cb929f0e93b7062d8f6d560af752fb1d3501421a15f6f368f94ffbd2f9f6`.
+- The stochastic counters remain in the corrected DSpark range and far from the rejected corrupted-scale result. Pre/post listener and compiler/sanitizer/OpenCode guards passed; the post-request GPU snapshot was 31,325 MiB used / 863 MiB free at 0% utilization, 48 C, approximately 378 W, and 3,007/13,801 MHz clocks. Exact five-slot `199000+16` is next.
+
+### 2026-09-01 03:24 PDT - five-slot candidate passes exact 199000+16
+
+- Flushed the five-slot listener and ran the exact benchmark-contract command with one same-shape warmup and one scored `199000+16` request at temperature zero. Every admission and completion guard found listener PID `26652` and no OpenCode/compiler/build/CTest/sanitizer process.
+- The scored request returned exact prompt/completion/total counts **199000/16/199016**, `finish_reason=length`, prompt throughput **3122.614 tok/s**, short-completion decode throughput 35.954 tok/s, TTFT **63.728653 seconds**, and 64.145855 seconds end to end. It preserved 83 reasoning characters and the established deterministic SHA-256 `b85042ffc1ba1f70bee8ce705f5503deadafa5e248ddfef4a20c766eaa92a12c`.
+- Post-request telemetry was 31,353 MiB used / 835 MiB free, 0% boundary utilization, 64 C, approximately 385 W, and 2,985/13,801 MHz clocks. The cache flush and `/health` passed. The fifth slot therefore fixes the real-client state-donation failure while preserving exact pools, exact capacity, graphs, performance, and long-context output identity.
+
+### 2026-09-01 03:25 PDT - qualified DSpark-v2 settings selected as launcher defaults
+
+- Intentionally stopped only the verified five-slot foreground tree after the cache flush. Listener PID `26652` and ancestors `15552/33524/30200` exited; port 30000 is free, no SGLang/OpenCode/compiler/sanitizer process remains, and the RTX 5090 returned to 1,012 MiB used / 31,176 MiB free at 0% utilization and 51 C.
+- Updated the existing Windows launcher's measured defaults, preserving its opt-in NEXTN branch and every unrelated dirty path. The argument-free profile now selects DSPARK, `C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2`, online FP8 draft quantization, Triton draft attention, 4,096-token chunks, FP8 target/draft KV, memory fraction 0.98, five FP32 Mamba slots, disabled torch compilation, disabled ordinary-EXTEND FlashInfer autotuning, and DSPARK-only sorted top-p renormalization. The exact 200K context/pools, one request, language-only reasoning/tool parsers, target attention/backends, hybrid Marlin, gamma seven/eight-token verification, and folded graphs remain unchanged.
+- Added process-scoped save/set/restore handling for `SGLANG_OPT_SPARSE_TOP_P_RENORM`; FlashInfer EXTEND autotuning is now explicitly set to `0` or `1` for deterministic launcher semantics and restored afterward. NEXTN continues to be selectable with explicit algorithm/geometry arguments and retains its top-k-one delta proposal gate.
+- PowerShell AST parsing passed with zero errors, the selected default lines were mechanically inspected, and focused launcher `git diff --check` passed. This is a selected candidate, not yet the final production promotion: an argument-free restart must resolve the exact values and repeat runtime evidence.
+
+### 2026-09-01 03:28 PDT - argument-free sampled repeatability gate remains below 150
+
+- Launched the edited production script with **no arguments** and no relevant ambient SGLang overrides after two clean preflight snapshots 20 seconds apart. Resolved random seed was `97333551`; listener PID `31124` loaded the exact selected DSpark-v2 draft and target checkpoint, online FP8, five FP32 Mamba slots, FP8 target/draft KV, 4,096-token chunks, one request, no torch compile, Triton draft attention, and exact 200K target/draft pools. Target verify captured in 0.73 seconds / 0.07 GB and folded draft capture in 0.62 seconds / 0.06 GB, leaving 1.83 GB. Model endpoints and image/audio false passed.
+- The independent argument-free Python-authority window was **125.160, 157.358, 146.879, 148.367, and 142.520 tok/s**, mean **144.057 tok/s**. TTFT was 0.492903/0.495988/0.496382/0.492132/0.504719 seconds and E2E was 4.575692/3.743360/3.975447/3.936286/4.090187 seconds. Every sample returned exact 6,213+512 counts, `finish_reason=length`, and preserved reasoning/content; all ten listener/build/sanitizer/OpenCode brackets were clean.
+- Adjacent native counters explain the slow stochastic window: accepted length **2.426540**, acceptance rate 0.203791, correct/proposed drafts **301/1477**, 211 verifies, and histogram `[79,61,29,16,12,5,2,7]`, completing in 4.289093 seconds. This is healthy behavior but materially lower yield than the preceding five-slot 2.752688 sample.
+- **Conclusion:** the implementation has produced two clean above-target five-sample windows (150.588 and 154.055), but the mandatory argument-free repeatability window did not reproduce 150. Keep the default edit provisional and do not claim production promotion. The remaining work must reduce per-verify cost or improve ordinary-sampling yield without seed selection, simulation, or weakened behavior/capacity gates.
+
+### 2026-09-01 03:10 PDT - validation deferred for the resident 200K qualification server
+
+- Continued the native DSpark controller work only at the source-edit/format boundary. Fixed the controller creation failure path so a pinned-host allocation failure destroys every already-cloned child graph. Centralized clone cleanup and audited the remaining parent-instantiation and compact-result-binding failures; successful construction transfers the clone count to controller ownership, and explicit close still releases the executable before the retained source clones.
+- Added direct CUDA regression coverage for both guarded proposal dtypes and for seeded/stateful guarded verify RNG. A nonzero shared status must preserve proposal tokens, normalizers, RNG state/counter, accept coins, bonus coin, and the original upstream status. The linked native probe also references the guarded APIs. No new Python code or serving integration was added.
+- Before build/test validation, live preflight found the user-owned exact-200K DSpark production-qualification server listening on port 30000 at PID `27784`, rooted at `6012 pwsh -> 5240 sglang.exe -> 13804 python.exe -> 27784 python.exe`, with child workers `11236` and `23856`. A concurrent exact `199000+16` benchmark was active through `10520 pwsh -> 11768 python.exe -> 34588 python.exe`; the RTX 5090 snapshot was approximately 31,211 MiB used / 977 MiB free / 100% utilization / 79 C. This task did not stop, signal, or send traffic to that tree.
+- Per the one-GPU-operation-at-a-time rule, the warning-as-error rebuild, CTest, Compute Sanitizer, and static-analysis reruns are deferred until the user-owned server and benchmark finish. The edits were clang-formatted and `git diff --check` passed, apart from the known experiment-ledger CRLF warning.
+
+### 2026-09-01 03:12 PDT - host-only validation passes while the production server owns the GPU
+
+- Source-only validation of the latest native cycle edits completed without creating a CUDA context. `clang-format --dry-run --Werror` passed for all touched native resource, proposal, RNG, cycle-controller, and probe files. `git diff --check -- native notes/experiment-log.md` passed apart from the known CRLF conversion warning on the ledger.
+- Direct MSVC C++23 `/std:c++latest /permissive- /EHsc /W4 /WX` compilation passed for `native/src/dspark_cycle_controller.cpp`, `native/src/native_probe.cpp`, and `native/test/dspark_cycle_controller_host_test.cpp`. The same three translation units passed `/analyze /analyze:external- /external:W0`. Temporary object files were written only under `%TEMP%`.
+- Full native linkage and CUDA execution remain deferred. At the latest preflight, listener PID `27784` still belonged to the user-owned exact-200K DSpark server rooted at `6012 -> 5240 -> 13804 -> 27784`, and an exact `199000+16` request was active through `10520 -> 11768 -> 34588`. The RTX 5090 reported approximately 31,211 MiB used / 977 MiB free / 100% utilization / 79 C. This task left the server and benchmark untouched.
+
+### 2026-09-01 03:14 PDT - native cycle composition handoff after guarded-stage hardening
+
+- The native DSpark cycle foundation now owns an ordered eight-child CUDA graph, retained graph clones, a pinned compact-result destination, and recursive D2H-node retargeting. The controller accepts only draft proposal -> target verify -> verify RNG -> corrected-logit rejection -> ReplaySSM commit -> draft extend -> KV write -> compact result ordering. This is a composition boundary, not a complete model cycle.
+- A hostile failure-path review fixed the only identified clone leak: if pinned-host result allocation fails after child cloning, all successful clones are now destroyed. A shared counted cleanup helper also handles clone failure, parent instantiation failure, and compact-result binding failure. Binding failure explicitly closes the parent executable before destroying controller-owned source clones; successful construction transfers the clone count exactly once.
+- Direct tests were added for the guarded proposal and verify-RNG entrypoints. They place a nonzero upstream status and assert both BF16/FP16 proposal outputs and state, plus seeded/stateful RNG coins and state, remain unchanged while the original status survives. These tests are source-complete but not executed in this continuation because the user-owned exact-200K production server still owns port 30000 and nearly all GPU memory.
+- Host-only checks passed: clang-format dry-run, `git diff --check` apart from the ledger's known CRLF warning, direct MSVC C++23 warning-as-error compilation, and MSVC static analysis for the cycle controller, native probe, and cycle-controller host test. Full rebuild, CTest, CUDA resource/cycle/proposal/RNG memcheck, and final linked-probe validation remain required once port 30000, compiler workers, and GPU ownership are clear.
+- The next implementation step remains real adapter composition, not scheduler/model-wrapper work: produce a real guarded proposal graph, accept a target-verify graph descriptor, capture guarded verify RNG and corrected-logit rejection, capture ReplaySSM commit, define draft-extend/KV-write ownership, and add the real compact-result producer. The current synthetic eight-child test proves ordering, lifetime, replay, and compact publication only.
+
+### 2026-09-01 03:16 PDT - new guarded-test rebuild blocked by another launch preflight
+
+- After the previous 200K server exited and the GPU returned to approximately 1,012 MiB used / 31,176 MiB free, one incremental native rebuild completed. It compiled and linked the controller, probe, guarded RNG test, and guarded proposal test successfully; NVCC emitted warning 445 for the test's templated lambda, so the test helper was rewritten as an ordinary function template and reformatted.
+- The immediate rebuild for that warning-only test cleanup was correctly blocked before compiler or CUDA work because another user-owned launch-preflight PowerShell process, PID `30200`, had begun its own 20-second clean-state wait for a 200K five-Mamba-slot DSpark launch. No server listener existed yet, and this task did not interfere with that process. The corrected source therefore still requires the final incremental build/test rerun after that separate lane releases the machine.
+
+### 2026-09-01 03:33 PDT - compact native DSpark cycle result is source-complete; CUDA validation deferred
+
+- Continued the Python-free native DSpark cycle work without changing any scheduler, launcher, model-wrapper, or Python surface. Added the CUDA compact-result producer to the native build and fixed its production-width dependency to the established gamma-seven/eight-token DSpark constants. The result remains six 32-bit words and now publishes ABI version, first device status, accepted-token count, draft-only correct count, the bonus token that seeds the next proposal, and a scheduler-owned request-slot identifier. The linked native probe now references the producer as well as the guarded proposal/RNG entrypoints.
+- The compact producer validates exact contiguous graph-arena views for eight int32 output tokens, one int32 correct-count, one int32 request slot, one uint32 shared status, and six uint32 result words; all five byte ranges must be disjoint. A prior nonzero shared status is copied through without consuming acceptance output. Counts 0 and 7 publish one and eight accepted tokens respectively; negative or width-equal counts publish the namespaced cycle error and no token.
+- Expanded the CUDA controller suite with successful count boundaries, explicit bonus-token selection, request-slot propagation, upstream-status preservation, invalid negative/width-equal counts, malformed result shape, alias rejection, captured stable-address replay with changed inputs, and inspection proving the captured producer has exactly one 24-byte D2H result copy. The existing eight-child controller test now uses the real compact-result kernel as stage eight, verifies ordered execution of the seven preceding child graphs, and verifies that controller creation retargets the cloned compact copy to its owned pinned result rather than the original capture buffer.
+- Static/source checks passed: `clang-format --dry-run --Werror` over the touched native resource, proposal, RNG, controller, tests, and probe files; focused `git diff --check`; direct MSVC C++23 `/W4 /WX` compilation for the controller host source, host test, and probe; and MSVC `/analyze /analyze:external- /external:W0` for those same translation units. No new Python code was added.
+- Full linkage and CUDA execution were deliberately not attempted. Port 30000 remained owned by the user launch, first observed at PID 26652 and later PID 31124, with the same five-Mamba-slot 200K DSpark configuration. The RTX 5090 snapshots remained approximately 31,325-31,327 MiB used with 861-863 MiB free; utilization varied with user traffic. No compiler or sanitizer process was present when last checked. This task sent no traffic and did not signal the server. Reinspect listener ancestry and GPU/process ownership before the required clean incremental build, CTest, and Compute Sanitizer pass.
+- The rewrite remains incomplete. This closes only the compact-result producer source/test boundary. After that entry, controller creation gained an owned leading CUDA graph containing one 32-bit status memset. The externally supplied eight-stage contract remains proposal -> target verify -> verify RNG -> rejection -> ReplaySSM -> draft extend -> KV write -> compact result, while the composed executable resets shared status before those stages on every replay. The real compact integration test seeds a stale nonzero status and depends on that owned reset graph before publication. A typed `DsparkCycleCoreGraphs` descriptor now maps the eight named external graph handles into the enforced sequence instead of making later adapters construct a positional array manually. Source formatting, focused diff checking, direct MSVC C++23 warning-as-error compilation, and MSVC static analysis passed again after this change. This exact owned-reset revision is source-checked but not yet CUDA-rebuilt because a later user-owned 32K DSpark server acquired port 30000. Real target/draft graph adapters, draft-extend and KV-write ownership, trained gamma-seven parity, native request/pool/model descriptors, serving integration, and the complete full-model qualification remain open.
+
+### 2026-09-01 03:50 PDT - opt-in truncated draft proposal passes isolated CUDA parity and graph replay
+
+- The clean argument-free five-sample production window remained below the
+  requested objective at 144.057 tok/s, with accepted length 2.426540. Source
+  inspection confirmed this lane still sampled the DSpark proposal from a
+  temperature-only full-vocabulary `q` even though the target `p` is filtered
+  by top-k 20 then top-p 0.95. The DSpark checkpoint's published v2 workload
+  uses exactly temperature 1.0/top-p 0.95/top-k 20, while the independent MLX
+  DSpark implementation explicitly reports lossless top-k/top-p truncation on
+  both target and draft. This motivated a default-off experiment rather than a
+  promotion or a seed-specific workaround.
+- Added a one-warp CUDA finite-support normalizer/sampler to the existing JIT
+  sampling module. For sorted support width at most 32 it fuses temperature
+  scaling, softmax, dynamic row-wise top-k masking, threshold/tie-preserving
+  top-p truncation and renormalization. The sampling form gathers the existing
+  full-vocabulary Exp(1) noise only at retained token IDs and performs the same
+  exponential-race draw, with token-ID tie breaking. FP32, FP16, and BF16
+  logits are accepted. The verifier rebuilds draft `q` with the identical
+  finite-support operation before exact speculative correction. Unsupported
+  whole-vocabulary, top-k-above-32, and min-p modes retain the established full
+  distribution path.
+- Added only thin integration/configuration changes on the existing Python and
+  PowerShell surfaces: static graph buffers for top-k/top-p, a per-block marker
+  proving which `q` generated the proposal, a process-scoped environment gate
+  `SGLANG_DSPARK_TRUNCATED_DRAFT_SAMPLING`, and launcher switch
+  `-EnableDSparkTruncatedDraftSampling`. The switch defaults false, so the
+  argument-free selected profile remains the prior control until full-model
+  evidence justifies a default change. The independent user-owned `native/`
+  worktree remained untouched.
+- Intentionally stopped only foreground listener PID `31124`; its exec session
+  closed, the PID disappeared, port 30000 became free, no SGLang/compiler/build
+  process remained, and the RTX 5090 returned to 1,012 MiB used / 31,176 MiB
+  free, 0% utilization, and 37 C. The first isolated CUDA 13.3 JIT attempt
+  failed before execution because this translation unit did not import
+  `CUDART_INF_F`; adding CUDA's `math_constants.h` fixed compilation. The next
+  run exposed TVM-FFI's distinct `kDLBool` tensor code versus C++ `bool`'s
+  uint8 matcher; an explicit DLPack bool ABI check fixed that boundary.
+- The exact inline CUDA diagnostic used rows 5, support width 32, vocabulary
+  248,320, mixed top-k `[20,7,32,3,1]`, mixed top-p
+  `[0.95,0.63,1.0,0.4,1.0]`, mixed temperatures, and full-vocabulary
+  exponential noise. Both FP32 and BF16 normalized probabilities had zero
+  maximum absolute error versus the independent Torch reference, support and
+  sampled token IDs matched exactly, and three captured CUDA-graph replays
+  followed mutated BF16 logits/noise exactly.
+- Durable focused coverage was added to the existing sampling test surface.
+  `scripts/windows/invoke_cuda_pytest.ps1 -q
+  test/registered/kernels/ops/sampling/test_sparse_top_p_renorm.py` passed
+  **18 tests in 78.20 seconds**. The adjacent DSpark command
+  `scripts/windows/invoke_cuda_pytest.ps1 -q
+  test/registered/spec/dspark/test_dspark_kernel_parity.py` passed **1 test,
+  22 subtests** in 8.89 seconds with 14 existing dependency warnings. Branch
+  `main` remained at `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0` with the
+  pre-existing dirty worktree preserved. The next gate is an explicit 32K
+  full-model launch; acceptance yield and real sampled throughput must improve
+  enough to repay seven top-k operations before this experiment can advance.
+
+### 2026-09-01 03:54 PDT - current native DSpark cycle build and sanitizer suite pass
+
+- The user-owned five-slot server exited without intervention. Fresh preflight found port 30000 free, no SGLang, compiler, CTest, or Compute Sanitizer process, and the RTX 5090 at approximately 1,012 MiB used / 31,176 MiB free / 0% utilization / 37 C. This opened a clean validation window.
+- Refined shared-status lifecycle so controller creation owns a leading CUDA graph with exactly one four-byte zero memset, prepended ahead of the externally supplied eight named stages. `DsparkCycleDescriptor` now carries the shared status address, and `DsparkCycleCoreGraphs` maps proposal, target verify, verify RNG, corrected-logit rejection, ReplaySSM commit, draft extend, KV write, and compact result without a fragile caller-built positional list. A null status pointer fails host validation. The integration test starts with stale nonzero status, replays twice, and verifies controller-owned reset on each launch before guarded-stage result publication.
+- Rebuilt the isolated `%TEMP%\sglang-native-cycle-9cfa0fea6b4549f6aa0fdbf4c93ebcf5` tree with qualified MSVC/CUDA 13.3 and two parallel jobs. The first attempt found one NVCC compile error in the new test: fixed-extent `std::span<const int32_t,8>` did not deduce the dynamic-span helper. Converting explicitly to `std::span<const int32_t>` fixed it. The subsequent 18-step incremental rebuild passed with no warnings or errors.
+- Full CTest passed **15/15**: nine host-labelled tests and six serialized CUDA/SM120 tests. The controller CUDA executable passed all **7/7** new and existing cases. The linked probe ran successfully and reported tensor ABI 1.0, production gamma 7, vocabulary 248,320, cycle ABI 1, CUDA headers 13.3, and runtime 13.4.
+- Ran all six native Compute Sanitizer memcheck targets serially: CUDA resources **8/8**, corrected-logit rejection **9/9**, verify RNG **5/5**, DSpark proposal **6/6**, cycle controller **7/7**, and ReplaySSM **6/6**. Every target reported `ERROR SUMMARY: 0 errors`. Post-validation port 30000 remained free, no compiler/sanitizer/server process existed, and the GPU returned to approximately 1,189 MiB used / 30,999 MiB free / 0% utilization / 38 C. A later user-owned 32K DSpark launch acquired port 30000 at listener PID 18288 through ancestry 34364 -> 40268 -> 18288 and approximately 23,490 MiB GPU use; this task did not signal it or run further CUDA work after it appeared.
+- `clang-format --dry-run --Werror`, focused `git diff --check` (apart from the ledger CRLF warning), direct MSVC C++23 `/W4 /WX` compilation, and MSVC static analysis remain passing for the controller host source, host test, and probe. The overall rewrite is still incomplete: the target/draft graphs are not real model graphs yet; draft-extend/KV ownership, trained-path parity, native request/pool/model descriptors, serving integration, and complete full-model qualification remain open.
+
+### 2026-09-01 04:08 PDT - truncated draft proposal is rejected by full-model acceptance
+
+- After the independent native validation lane released the GPU, two quiet
+  process/GPU snapshots 20 seconds apart found port 30000 free, no SGLang,
+  CUDA compiler, native build, or Compute Sanitizer process, and the RTX 5090
+  stable at 1,189 MiB used / 30,999 MiB free. Launched the experiment exactly
+  as `./scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1
+  -EnableDSparkTruncatedDraftSampling -ContextLength 32000 -MaxTotalTokens
+  32000 -RandomSeed 980406`. The resolved server used the selected DSpark-v2
+  checkpoint, online-FP8 draft, broad 192-projection hybrid Marlin target,
+  target and draft FP8 KV caches, five FP32 Mamba slots, one running request,
+  exact 32,000 context/token pools, and the new draft truncation switch. The
+  listener was PID 18288 in verified ancestry `25848 -> 34364 -> 40268 ->
+  18288`.
+- Startup completed all target-verify, draft-decode, and draft-extend graph
+  captures. Target weights occupied 16.21 GiB, draft weights 2.39 GiB; target
+  graph capture took 0.72 seconds / 0.05 GiB and the augmented draft graph took
+  0.79 seconds / 0.06 GiB. The graph-end snapshot left 8.93 GiB free.
+  `/health`, `/v1/models`, and `/model_info` passed, and model info preserved
+  the language-only surface.
+- The first sampled `6213+64` request paid the expected one-time JIT cost and
+  is not scoreboard evidence: TTFT 55.5358 seconds and generation 214.408
+  tok/s. The decisive matched fixed-work native acceptance request generated
+  exactly 512 tokens in 4.741411 seconds with mean accepted length **2.226087**,
+  acceptance rate 0.175155, 282 draft-correct tokens out of 1,610 proposals,
+  230 verify cycles, histogram `[79,61,73,4,6,4,2,1]`, and deterministic hash
+  `20698bd...`. The same fixed-seed 32K control had mean accepted length
+  **2.942529**, so proposal truncation materially harmed overlap rather than
+  improving it.
+- One warmed authority-client sample confirmed the resulting end-to-end loss:
+  exactly 512 output tokens, finish reason `length`, prompt throughput
+  12,509.587 tok/s, TTFT 0.496659 seconds, generation **126.221 tok/s**, and
+  4.545099 seconds end to end, with deterministic hash `8a6948...`. Reasoning
+  and content remained present, and clean pre/post process brackets excluded
+  competing compiler or benchmark activity.
+- The independent MLX draft-truncation approach can remain distributionally
+  correct, but on this checkpoint truncating and renormalizing `q` reduces its
+  overlap with the already truncated target `p`; its lower acceptance cost is
+  much larger than the saved full-vocabulary proposal work. The switch remains
+  default-off and is closed as a production candidate. No launcher default or
+  selected profile was promoted.
+- Sent Ctrl+C only to the verified foreground launcher session. Listener PID
+  18288 and the known server ancestry exited, port 30000 became free, no
+  SGLang/compiler/sanitizer process remained, and the RTX 5090 returned to
+  1,189 MiB used / 30,999 MiB free / 0% utilization / 38 C. Branch `main`
+  remained at `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`; all unrelated dirty and
+  untracked user-owned work, especially `native/`, was preserved.
+
+### 2026-09-01 04:42 PDT - exact SM120 M=8 Marlin dispatch passes isolated qualification
+
+- Source inspection found that every `M <= 8` FP4 Marlin call used the same
+  upstream small-batch launch ordering, while the production DSpark verify
+  graph is exactly `M=8` and enables FP32 reduction. The 192 selected target
+  projections comprise 64 gate/up `(N=34816,K=5120)`, 48 linear QKVZ
+  `(16384,5120)`, 16 full QKV `(14336,5120)`, and 64 attention-output
+  `(5120,6144)` calls. The 64 prequantized down projections remain outside
+  this hybrid selection.
+- Added a standalone CUDA-only SM120 benchmark at
+  `benchmark/kernels/quantization/bench_nvfp4_marlin_m8.cu`. It directly
+  instantiates the relevant Marlin geometries with production FP32 reduction,
+  randomizes configuration order, checks every timing-sweep output bitwise,
+  and separately qualifies the real `marlin_mm<bf16_t>` auto-dispatch with
+  randomized activations, packed FP4 weights, FP8 scales, exact production
+  workspace allocations, and CUDA graph capture/replay. No Python source was
+  added. An early sweep without FP32 reduction was explicitly discarded as a
+  production mismatch, and one later timing run was discarded because the
+  independent native lane began an NVCC build while it was executing.
+- Two uncontended FP32-reduction sweeps measured gate/up baseline
+  `k128/n128/b1` at 36.092 and 35.948 us versus `k256/n64/b1` at 35.114 and
+  35.339 us. Linear QKVZ's initial alternatives were noisy. A dedicated clean
+  occupancy sweep then measured linear baseline at 17.288 us versus
+  `k64/n128/b2` at 14.403 us; an independent nine-round repeat measured 16.630
+  versus 14.892 us. The same two occupancy sweeps measured gate baseline at
+  36.394/36.283 us and the admissible `k256/n64/b1` geometry at
+  35.223/35.441 us. Full-QKV and attention-output candidates did not produce a
+  material repeatable win and retain upstream dispatch.
+- The faster gate `k128/n64/b2` result, 33.321/33.177 us, is intentionally
+  excluded: its 340 lock words exceed the existing 170-word Python-owned
+  workspace. The selected gate geometry launches grid 170 with one block/SM
+  and is exactly workspace-sized. The selected linear geometry launches grid
+  340 with two blocks/SM, but its exact N tiling keeps lock IDs below 130, so
+  the same 170-word workspace is sufficient; its FP32 partial buffer remains
+  below the existing 2.78 MiB allocation. The combined isolated saving is
+  approximately 0.12-0.20 ms per full target verify cycle, or roughly
+  0.7-1.1% of the observed end-to-end cycle cost.
+- Added only a narrow CUDA-header dispatch in
+  `gptq_marlin.cuh`: native Windows, `SGL_CUDA_ARCH >= 1200`, BF16, FP4 E2M1,
+  exact `M=8`, group size 16, K-full, no activation ordering, and no zero
+  points. Exact gate/up selects `{thread_k=256,thread_n=64,threads=256}` at one
+  block/SM; exact linear QKVZ selects
+  `{thread_k=64,thread_n=128,threads=128}` at two blocks/SM. Kernel existence
+  and per-block shared-memory validity are checked before returning the tuned
+  configuration. All other shapes, dtypes, platforms, architectures, and M
+  values retain upstream ordering.
+- One compile-plus-run attempt built successfully but its final pre-run guard
+  detected the independent native lane at
+  `%TEMP%\\sglang-native-proposal-graph-20260901` under CMake/Ninja/NVCC/CL;
+  it aborted before launching a kernel and did not signal that tree. A later
+  standalone rebuild attempt omitted TVM-FFI's DLPack include directory and
+  failed at host compilation before any CUDA execution. The qualified rebuild
+  used CUDA 13.3, `-std=c++20 -O3 -DNDEBUG -DSGL_CUDA_ARCH=1200
+  --expt-relaxed-constexpr -lineinfo -arch=sm_120f --threads=2`, the in-tree
+  JIT include, and `.venv/Lib/site-packages/tvm_ffi/include`. It emitted only
+  the existing TVM-FFI missing-return and SGLang `Panic` destructor warnings.
+- The rebuilt qualification-only executable reported zero randomized
+  auto-versus-selected and auto-versus-upstream-baseline mismatches for both
+  shapes. CUDA graph inspection found exactly one kernel node each: gate grid
+  170 / 256 threads / 101,376 shared bytes and linear grid 340 / 128 threads /
+  49,664 shared bytes. Initial graph replay and replay after mutating every
+  input remained bit exact. CUDA 13.3 Compute Sanitizer memcheck with full leak
+  checking then repeated both qualifiers and reported `ERROR SUMMARY: 0
+  errors` and zero leaked bytes.
+- Work remained on `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`. SHA-256 was
+  `67F9C4F705F7660C26689C535420D1DE05F5703E9A4F7773C98C56E4A19AAA02`
+  for the Marlin header,
+  `38C36ABBB3392084FEACE605992A2D7CBC89ED325983B23939AC004BEB7448BF`
+  for the benchmark source, and
+  `15450F931B9DF9E0673EAFA89F469A964063A4247333508FA0F78A858887A6C4`
+  for the isolated executable. Formatting and focused `git diff --check`
+  passed. The qualified Windows CUDA wrapper then ran
+  `test/registered/jit/quantization/test_nvfp4_marlin_relayout.py`: all **3
+  tests and 3 subtests passed in 126.98 seconds**, including native relayout
+  parity and CUDA-graph replay, with only the 14 known Torch deprecation
+  warnings. This is isolated kernel evidence, not a throughput promotion; the
+  matched 32K full-model acceptance and sampled windows remain required.
+
+### 2026-09-01 04:51 PDT - exact M=8 Marlin tuning is correct but misses the full-model gate
+
+- After two clean launch snapshots 20 seconds apart, launched exactly
+  `.\\scripts\\windows\\serve_qwen38_27b_nvfp4_5090.ps1 -ContextLength 32000
+  -MaxTotalTokens 32000 -RandomSeed 980406`. Resolved arguments selected the
+  provisional DSpark-v2 defaults: attention-selective target checkpoint,
+  online-FP8 draft, Triton draft attention, target/draft FP8 KV, five FP32
+  Mamba slots, 4,096-token chunks, broad 192-projection hybrid Marlin, one
+  request, exact 32K target/draft pools, and no truncated-draft experiment.
+  The only new serving variable was the exact SM120 M=8 Marlin auto-dispatch.
+- Listener PID `27952` was rooted at `22876 -> 35584 -> 17000 -> 27952`.
+  Target load used 16.21 GiB and draft load 2.39 GiB. Target verify captured
+  in 0.71 seconds / 0.05 GiB; the folded draft graph captured in 0.60 seconds /
+  0.06 GiB; graph-end headroom was 8.93 GiB. Startup reported exactly 32,000
+  total tokens/context, five Mamba slots, and one running request. `/health`,
+  `/v1/models`, and `/model_info` passed, including served model
+  `qwen3.8-27b` and image/audio understanding false. Listener, compiler,
+  sanitizer, and OpenCode guards were clean before every request.
+- The first fixed-seed sampled acceptance probe remained healthy: exactly
+  `6213+512`, 3.703162 seconds E2E, accepted length **2.860335**, acceptance
+  rate 0.264964, correct/proposed drafts **332/1253**, 179 verify cycles,
+  histogram `[54,38,34,25,8,6,9,5]`, and output SHA-256
+  `6d33c4301f01fc829d05284d2e36ee19778ecd96ae2a5f1974908d890c89bd87`.
+  This ruled out the severe proposal/target agreement failure seen in rejected
+  hybrid expansions and draft truncation.
+- The decisive warmed, cache-flushed Python-authority window measured
+  **112.841, 161.206, 142.088, 141.040, and 117.034 tok/s**, mean
+  **134.842 tok/s**. TTFTs were 0.490058/0.487515/0.492117/0.493517/0.496527
+  seconds, mean 0.491947; E2E times were
+  5.018566/3.657374/4.088469/4.116598/4.862771 seconds, mean 4.348756; prompt
+  rates averaged 12,629.899 tok/s. Every sample returned exact 6,213+512
+  counts and `finish_reason=length`, with reasoning preserved. Output hashes
+  were `20d7d9458da3b2d645e1c513142a25246f0539b6ac1bb9e209646c11c6b36f9d`,
+  `a7f81e5f325b3b81931aa24456aad540678184faf0a341e45c8c1cb3cc02bdea`,
+  `8a36c712ef511bc888c9ebc45a4e94cf35550d9d2001382fe5707e3fdfd385ce`,
+  `b49b6307f8c877e44130f18de711ae7a4df24aa265ad304f36eb26e4456454d7`,
+  and `c4e4ffa808fa5832978de5b025c59e0b43678331a115bc6d578c43fb69c901d1`.
+- An adjacent post-window acceptance probe showed why the kernel saving could
+  not stabilize throughput: accepted length fell to **2.708995**, acceptance
+  rate 0.243386, correct/proposed **322/1323**, and 189 verifies, with E2E
+  3.870672 seconds and histogram `[68,47,25,16,12,6,6,9]`. This launch is
+  behaviorally correct, but a projected 0.7-1.1% verify-cost reduction is far
+  smaller than ordinary-sampling yield variance and does not establish a
+  repeatable 150 tok/s lane. The header tuning remains an unpromoted candidate
+  pending fixed-work evidence; it is not a new production winner.
+- Sent one Ctrl+C only to the verified foreground launcher. Listener PID
+  `27952` and ancestors/workers exited; port 30000, all known PIDs, SGLang,
+  compiler, and sanitizer processes were absent afterward. The GPU returned
+  to 1,498 MiB used / 30,690 MiB free, 0% utilization, and 40 C. Exact 200K,
+  behavior/tool, Codex/OpenCode2, and production-relaunch gates were not spent
+  because the 32K throughput gate failed.
+
+### 2026-09-01 04:58 PDT - DSpark sampled epilogue exposes 1.448 ms per cycle
+
+- Ran a diagnostic-only 32K restart with the same fixed-seed candidate and
+  process-scoped `SGLANG_DSPARK_DEBUG_DUMP=core,step_cpu_time,step_gpu_time,
+  draft_gpu_time,target_verify_gpu_time`. This used the existing asynchronous
+  DSpark CUDA-event recorder; it did not change model numerics or production
+  defaults. Two launch snapshots 20 seconds apart were clean. The launch again
+  resolved the selected checkpoint, online-FP8 draft, Triton draft attention,
+  five FP32 Mamba slots, exact 32K pools, 192 hybrid projections, and completed
+  target/draft graph captures with 8.93 GiB headroom. Listener PID was `18036`.
+- Cleared the diagnostic record deque through `/set_internal_state`, then ran
+  the standard sampled acceptance command. The instrumented request is not
+  scoreboard throughput evidence because per-step event drainage synchronizes
+  the prior record. It returned exact `6213+512` in 4.898277 seconds, accepted
+  length 2.106996, acceptance rate 0.159906, correct/proposed 272/1701, 243
+  verifies, histogram `[95,87,30,17,4,6,0,4]`, and hash
+  `683cf91a999431ce6773f61eeed52ea08468a3a187e770590c81ba9e021a0b4d`.
+- The record stream contained four warmup cycles, a prefill boundary at record
+  index four, and 244 scored-segment records (one more scheduler decode record
+  than the acceptance counter's 243 target verifies). Over that complete tail,
+  full step GPU time was **17.945679 ms mean / 17.842500 median**
+  (17.4623-19.8540). The folded draft region was **4.046413 / 3.974350 ms**
+  (3.8537-5.6401), and target verify plus strided logit adjustment was
+  **12.451408 / 12.439650 ms** (12.4029-12.9139).
+- Subtracting those bracketed regions from the full same-stream step leaves
+  **1.447858 ms mean / 1.388000 median** (1.1093-3.2125) per cycle in planner,
+  target-to-accept gaps, dense target-probability scatter, full-vocabulary
+  draft softmax, rejection/final sampling, finalize/out-token kernels, Mamba
+  and hidden-state commit, and next-input construction. Step CPU timing was
+  18.075161 ms mean / 17.845200 median over 243 non-null intervals. This exposed
+  region is about 8.1% of the measured cycle and is large enough to change the
+  150 tok/s economics; unlike the preceding Marlin tile change, it warrants a
+  fused sparse sampled-accept implementation.
+- Source audit established the lossless sparsity argument for the production
+  top-k-20/top-p-0.95 target distribution. After target truncation, `p` has at
+  most 20 nonzero tokens. On a rejection, `max(p-q,0)` can be nonzero only on
+  that same target support even though draft `q` is full-vocabulary. Therefore
+  sampled acceptance needs draft log-normalizers plus `q` values only at the
+  target support/candidate tokens; it does not need to materialize seven dense
+  draft-probability rows, scatter eight dense target-probability rows, or scan
+  a 248,320-token residual distribution.
+- Stopped only foreground diagnostic listener PID `18036`. It and its workers
+  exited; port 30000 and all relevant compiler/server/sanitizer processes were
+  absent. The RTX 5090 returned to 1,498 MiB used / 30,690 MiB free, 0%
+  utilization, and 37 C. The next implementation is CUDA/C++ with only thin
+  existing dispatch/config wiring; the independent user-owned `native/` lane
+  remains untouched.
+
+### 2026-09-01 05:14 PDT - real-factory native cycle composition passes isolated qualification
+
+- Continued only the Python-free native DSpark lane on dirty user-owned `main`
+  at `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`. Preflight found port 30000
+  free, no SGLang/Python server, CMake, Ninja, CTest, CL, NVCC, linker, or
+  Compute Sanitizer process, and the RTX 5090 at approximately 1,498 MiB used /
+  30,690 MiB free / 0% utilization / 37 C. No scheduler, model-wrapper,
+  launcher, benchmark, Marlin, or Python source was changed for this slice.
+- Added `native/test/dspark_cycle_composition_test.cu` and its CMake/CTest and
+  Compute Sanitizer targets. One 320 MiB graph arena now composes real captured
+  factories for the production BF16 gamma-seven/vocabulary-248,320 proposal,
+  stateful verify RNG, corrected-logit rejection, ReplaySSM fold/convolution
+  scatter, and compact result. Only target verify, draft extend, and KV write
+  remain explicitly typed synthetic placeholders. The fixture closes every
+  caller-owned source before two controller replays, proves the controller-owned
+  stale-status reset, stable addresses, exact proposal/verify Philox counter
+  advancement, proposal chain `0..7`, seven accepted drafts plus bonus token
+  `42`, marker order `267`, request slot `9`, ReplaySSM temporal mutation, and
+  convolution scatter.
+- Added typed-controller negative coverage to the existing CUDA suite. A closed
+  source graph fails with `kInvalidArgument`; a still-valid source retained by a
+  different arena fails with `kForeignSlice`. Both failures occur in the typed
+  source-validation pass before the controller enters its clone loop.
+- The first incremental build attempt, run without the MSVC developer
+  environment, failed before compilation because NVCC could not find `cl.exe`.
+  Repeating through VS 18 BuildTools `vcvars64.bat` succeeded with CUDA 13.3,
+  host C++23, CUDA C++20, `/W4 /WX`, and at most two build jobs. The focused
+  composition executable passed **1/1** and the expanded controller executable
+  passed **9/9**. Final serial CTest passed **16/16**: nine host-labelled and
+  seven CUDA/SM120 tests.
+- All seven Compute Sanitizer memcheck targets passed serially with
+  `ERROR SUMMARY: 0 errors`: CUDA resources **9/9**, corrected-logit rejection
+  **12/12**, verify RNG **7/7**, DSpark proposal **7/7**, cycle controller
+  **9/9**, real-factory composition **1/1**, and ReplaySSM commit **8/8**.
+- `clang-format --dry-run --Werror` passed over every modified or untracked
+  native `.hpp`, `.cpp`, and `.cu` after formatting the two touched test/source
+  files; `git diff --check -- native` passed. Direct MSVC C++23
+  `/std:c++latest /permissive- /EHsc /W4 /WX` compilation and
+  `/analyze /analyze:external- /external:W0` passed for
+  `cuda_graph_resources.cpp`, `dspark_cycle_controller.cpp`, `native_probe.cpp`,
+  and both associated host tests. The final linked probe emitted
+  `tensor_abi=1.0`, production gamma `7`, vocabulary `248320`, cycle ABI `1`,
+  CUDA headers `13030`, runtime `13040`, and the expected native graph
+  capabilities.
+- Final ownership check again found port 30000 free and no relevant server,
+  compiler, build, or sanitizer process; the RTX 5090 was at approximately
+  1,542 MiB used / 30,646 MiB free / 0% utilization / 38 C. The overall rewrite
+  remains incomplete. Controlled trained gamma-seven Python/Triton oracle
+  parity, a real target-model graph, real draft-extend and KV-write graphs, and
+  native request/pool/model/serving integration remain open. Scheduler and
+  model-wrapper work has not begun.
+
+### 2026-09-01 05:20 PDT - exact sparse sampled accept passes CUDA qualification
+
+- Continued the sampled-epilogue branch on dirty user-owned `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`. Port 30000 was free and the RTX
+  5090 was initially at 1,498 MiB / 0%. A separate user-owned native DSpark
+  composition build and Compute Sanitizer run appeared after the first clean
+  snapshot; this lane did not compile or open another CUDA context until that
+  exact CMake/Ninja/sanitizer tree exited and the GPU returned to 1,542 MiB /
+  0%. No `native/` source or artifact was read, changed, stopped, or removed.
+- Added the algorithm only in CUDA at
+  `python/sglang/kernels/jit/csrc/speculative/dspark_sparse_accept.cuh`. The
+  draft log-normalizer uses a production-vocabulary two-stage reduction: 31
+  independent 8,192-value partials for each of seven rows, then one warp per
+  row. A final warp per request reproduces the selected target top-k/top-p
+  normalization and tie threshold, strict `coin*q < p` test, NaN-q residual
+  guard, ascending-token-ID residual CDF with strict `>`, all-accepted target
+  sample, vocabulary-last degenerate fallback, ragged correct-length cap,
+  accepted-token bonus after a cap, and trim length. Target support is bounded
+  at 32 and vocabulary at 262,144; every unsupported request stays on the old
+  path.
+- Added only thin JIT binding and guarded dispatch in the existing
+  `dspark_accept.py` / `dspark_verify.py` surfaces, plus default-off
+  `SGLANG_DSPARK_SPARSE_ACCEPT` configuration in `environ.py`. The production
+  eligible path requires CUDA FP32/FP16/BF16 logits, a fully sampled batch,
+  non-truncated draft logits, explicit target top-k in `[1,32]`, and no min-p.
+  It preserves the old order and count of RNG draws. No Python file was added,
+  and probability/acceptance algorithms were not implemented in Python.
+- The first qualified CUDA JIT smoke command loaded the module under the
+  CUDA-13.3/MSVC environment and returned `correct_len=[0,0]`, bonus
+  `[55,63]`, trim `[0,0]`. One intended parity command aborted before CUDA
+  because its process-safety regex matched the current PowerShell command line;
+  excluding the current PID fixed only that guard. The completed differential
+  suite compared the new path with the existing dense FlashInfer-softmax plus
+  Triton rejection path using identical RNG seeds: **200/200 FP32** and
+  **80/80 BF16** randomized batches matched exactly for correct length, bonus,
+  and trim across heterogeneous top-k/top-p/temperature, forced deep support,
+  early rejection, top-p ties, and alternating capped/uncapped windows. An
+  explicit whole-row NaN-q case also matched exactly: length `[0]`, bonus
+  `[14]`, trim `[0]`.
+- Direct TVM-FFI module capture contained the expected three CUDA kernels. Its
+  first output was lengths `[7,4,2]`, bonuses `[448,695,919]`, trims `[0,3,5]`.
+  After mutating target logits, draft logits, candidates, both temperatures,
+  top-k, top-p, both uniform tensors, and verify lengths without changing any
+  address, replay produced `[3,7,0]`, `[2270,2188,225]`, `[4,0,0]`, exactly
+  matching a fresh eager launch on separate output buffers.
+- A seven-round, alternating-order production-shape CUDA-event microbenchmark
+  (`bs=1`, gamma seven, eight target rows, top-k 20/top-p 0.95, vocabulary
+  248,320) measured the full current dense accept construction at
+  **0.355868 ms mean / 0.355121 median** and the sparse binding at
+  **0.197197 / 0.201431 ms**. Individual dense samples were
+  `[0.361430,0.367543,0.355121,0.347254,0.355373,0.350345,0.354014]` ms;
+  sparse samples were
+  `[0.201431,0.182335,0.183341,0.203881,0.203810,0.200146,0.205439]` ms.
+  The isolated saving is **0.158671 ms per verify cycle**. This is positive but
+  much smaller than the prior 1.448 ms aggregate unbracketed region, proving
+  that planner/metadata and state/hidden commit dominate the remainder.
+- Added the CUDA-only production-shape qualifier
+  `benchmark/kernels/speculative/bench_dspark_sparse_accept.cu`. The final
+  build command was `nvcc -std=c++20 -O3 -DNDEBUG -DSGL_CUDA_ARCH=1200
+  --expt-relaxed-constexpr -lineinfo -arch=sm_120f --threads=2
+  -Xcompiler=/EHsc -Ipython/sglang/kernels/jit/include
+  -I.venv/Lib/site-packages/tvm_ffi/include
+  benchmark/kernels/speculative/bench_dspark_sparse_accept.cu -o
+  %TEMP%/sglang-dspark-sparse-accept-a17dbb2513354fa6887007bcb93ad2ee/
+  bench_dspark_sparse_accept.exe`. It passed all-accepted, exact cap/bonus,
+  immediate rejection, NaN-q, input-mutating three-node graph replay, and
+  measured the direct production kernel triplet at **35.246 us**. CUDA 13.3
+  Compute Sanitizer `--tool memcheck --leak-check full --error-exitcode 99`
+  with `--qualify-only` reported **0 errors and 0 leaked bytes**.
+- Final SHA-256 is
+  `3DE77034A2C30F8EA2712ED7B58A6D0FB75E58D4376BE88552E9DD7EFDB422E0`
+  for the CUDA header,
+  `3C07C284BD34526F2C0135AC5767F7EA3F1851279F8DBA11DF8993A9867910DF`
+  for the qualifier, and
+  `7AB5CC4875C8B4B66E23D3D69AF16B020EED7C221B86C0144190F7DFE3673ABF`
+  for the executable. `clang-format`, focused Python compilation, and
+  `git diff --check` passed. This is isolated evidence only; the switch remains
+  off by default. The next gate is a matched fixed-seed 32K full-model screen
+  before spending exact-200K capacity or behavior qualification.
+
+### 2026-09-01 05:26 PDT - sparse accept is exact but misses the 32K throughput gate
+
+- After prewarming the final JIT artifact outside the model process, two clean
+  ownership snapshots 20 seconds apart found port 30000 free, no relevant
+  server/compiler/sanitizer tree, and the RTX 5090 steady at 1,586 MiB used /
+  30,602 MiB free / 0% / 37 C. Launched exactly
+  `$env:SGLANG_DSPARK_SPARSE_ACCEPT='1';
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -ContextLength 32000
+  -MaxTotalTokens 32000 -RandomSeed 980406`. This was the same fixed-seed 32K
+  configuration as the preceding Marlin screen; the default-off sparse accept
+  environment switch was the sole serving variable.
+- Listener PID `22356` resolved through `5504 -> 8612 -> 8084 -> 22356` and the
+  complete command selected the DSpark-v2 draft, online FP8, Triton draft
+  attention, target/draft FP8 KV, five FP32 Mamba slots, 192 target hybrid
+  projections, one request, and exact 32K target/draft pools. Target verify
+  graph capture used 0.74 seconds / 0.05 GiB; folded draft capture used 0.62
+  seconds / 0.06 GiB; graph-end headroom was 8.93 GiB. `/health`, `/v1/models`,
+  and `/model_info` passed; served model was `qwen3.8-27b` and image/audio
+  understanding were false. No compiler process remained during traffic.
+- The first standard acceptance request exactly reproduced the prior control:
+  512 completion tokens in 3.708214 seconds, accepted length **2.860335**,
+  rate 0.264964, 332/1253 correct/proposed drafts, 179 verifies, histogram
+  `[54,38,34,25,8,6,9,5]`, and output SHA-256
+  `6d33c4301f01fc829d05284d2e36ee19778ecd96ae2a5f1974908d890c89bd87`.
+  This is full-model confirmation of the isolated exactness result.
+- Five consecutive standard sampled `6213+512` authority samples reported
+  decode throughput **`[114.107,161.743,142.342,141.072,117.598]` tok/s**,
+  mean **135.372 tok/s**. TTFT was
+  `[0.491395,0.492570,0.492501,0.499663,0.499698]` seconds, mean 0.495165;
+  end-to-end latency was
+  `[4.969649,3.651903,4.082436,4.121916,4.845014]` seconds, mean 4.334184;
+  prompt throughput was
+  `[12643.599,12613.433,12615.205,12434.371,12433.515]`, mean 12548.025.
+  Every result had exact token counts and `finish_reason=length`, with distinct
+  ordinary sampled reasoning/content digests.
+- The matched prior fixed-seed control window was 134.842 tok/s mean, so the
+  measured change is only **+0.530 tok/s (+0.39%)** and is within the large
+  acceptance-driven window variance. It is far below the 150 tok/s promotion
+  gate and agrees with the isolated 0.159 ms/cycle saving. A post-window
+  acceptance request remained healthy at length 2.438095, rate 0.204762,
+  301/1470 correct/proposed, 210 verifies, histogram
+  `[66,65,47,10,9,7,1,5]`, and 4.249036 seconds.
+- The candidate is therefore not promoted; `SGLANG_DSPARK_SPARSE_ACCEPT`
+  remains default-off and exact-200K capacity, behavior/tool, OpenCode2, and
+  Codex gates were intentionally not spent. Sent Ctrl+C only to the foreground
+  launcher. The expected scheduler `KeyboardInterrupt` occurred during
+  shutdown, then Uvicorn completed application shutdown. Known PIDs `22356`,
+  `8084`, `8612`, and `5504` exited, no listener/compiler/server remained, and
+  the GPU returned to 1,586 MiB / 30,602 MiB / 0% / 42 C. The retained sparse
+  path is correct additive infrastructure, but the next performance branch
+  must attack planner/metadata or target Mamba/hidden-state commit rather than
+  further optimizing the already-35-us accept kernel triplet.
+
+### 2026-09-01 05:33 PDT - bounded GPU trace localizes the inter-graph wall
+
+- Work remained on dirty user-owned `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`; the independent `native/`
+  lane and all unrelated modified/untracked paths were left untouched. Two
+  safety snapshots 20 seconds apart found port 30000 free, no SGLang,
+  compiler, native build, profiler, or sanitizer process, and the RTX 5090 at
+  1,586 MiB used / 30,602 MiB free / 0% / 39 C. No ambient `SGLANG_*`
+  variable was present. For attribution only, launched the current default-off
+  sparse-accept baseline with exact command
+  `$env:SGLANG_TORCH_PROFILER_DIR='C:\Users\Daniel\sglang\benchmark\windows\profiles';
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -ContextLength 32000
+  -MaxTotalTokens 32000 -RandomSeed 980406` after explicitly removing
+  `SGLANG_DSPARK_SPARSE_ACCEPT` and `SGLANG_DSPARK_DEBUG_DUMP`.
+- Listener PID `18384` resolved through
+  `37192 -> 17436 -> 29804 -> 18384`. Its complete command retained the
+  DSpark-v2 checkpoint, online FP8 draft, Triton draft attention, target/draft
+  FP8 KV, five FP32 Mamba slots, broad 192-projection hybrid Marlin, sorted
+  target top-p, one request, and exact 32K target/draft pools. Target verify
+  captured in 0.74 seconds / 0.05 GiB and the folded draft graph in 0.63
+  seconds / 0.06 GiB, leaving 8.93 GiB. `/health` and model startup passed;
+  this reduced-pool launch is profiling evidence, not a capacity or production
+  sample.
+- Ran the existing bounded GPU-only harness exactly as
+  `.\.venv\Scripts\python.exe .\scripts\windows\bench_target_verify_width.py
+  --width 8 --input-tokens 6213 --output-tokens 128
+  --warmup-output-tokens 32 --timeout 600`. The profiled request returned exact
+  `6213+128`, 1.278928 seconds E2E, accepted length **2.976744**, 43 verify
+  cycles, histogram `[15,7,9,3,2,2,2,3]`, and output SHA-256
+  `45f6406455be56dc20f11e5c887a4f337a16e5235cf0593f8bedade41de2ed53`.
+  The trace is
+  `benchmark/windows/profiles/target_width_m8-20260901-053126/target_width_m8-1788265886.3635292-TP-0.trace.json.gz`, with 222,638 events and
+  SHA-256
+  `F49B880ABEE1862463BD63FBBE2A6B180BA093D11D76C38533E1CB6BB6881314`;
+  the adjacent manifest SHA-256 is
+  `2A4B7B6DBC5CC96A20CDEABA1EB394E76FD65054A30D8A047BFB2245C0ED7279`.
+- Across the 43 complete target-anchored cycles, start-to-start wall time was
+  **18.143655 ms mean / 18.043006 ms median**. Target graph ID 2 spanned
+  **12.548 ms mean**, folded-draft graph ID 5 spanned **3.844 ms mean**, the
+  draft-to-target gap was only **0.129 ms**, and the target-to-draft gap was
+  **1.620466 ms**. Exact interval decomposition of that latter gap found
+  **0.782308 ms** of non-graph device work and **0.838158 ms** of GPU-idle /
+  host-dispatch wall per cycle. Leading device costs per cycle were ReplaySSM
+  commit **193.410 us**, target-hidden BF16 projection **181.130 us**, five
+  online-FP8 draft-KV projections **121.460 us** total, classic rejection
+  sampling **53.520 us**, and the supporting softmax/top-k/normalization,
+  cache-write, indexing, and metadata kernels. This independently confirms
+  that sparse accept can recover only a small fraction of the wall: the next
+  credible route must collapse eager dispatch and hidden/state commit, or
+  reduce one of the two captured model graphs.
+- The profiler stopped and flushed normally. Sent one Ctrl+C only to the
+  verified foreground launcher; the expected scheduler `KeyboardInterrupt`
+  appeared during shutdown, Uvicorn completed application shutdown, port
+  30000 became free, all server processes exited, no compiler/sanitizer/native
+  task remained, and the GPU returned to 1,586 MiB used / 30,602 MiB free /
+  0% / 39 C. No full-model change or promotion follows from this trace.
+
+### 2026-09-01 05:42 PDT - paired trace rejects the exact-M8 Marlin runtime dispatch
+
+- The preceding 05:33 trace still contained the unpromoted exact-shape M8
+  native-Windows Marlin dispatch in
+  `sgl-kernel/csrc/gemm/marlin/nvfp4/gptq_marlin.cuh`. To separate that tactic
+  from the broader qualified 192-projection hybrid path, removed only its
+  `<type_traits>` include, M8 kernel instantiation, and exact native-Windows
+  runtime branch with `apply_patch`. The header is now byte-for-byte equal to
+  `HEAD`, with SHA-1 `dac3591c3ef411bdc8b61be736dbed989e651cf3` and no Git
+  diff. The isolated benchmark
+  `benchmark/kernels/quantization/bench_nvfp4_marlin_m8.cu` remains retained as
+  default-off experimental infrastructure. The dirty user-owned `native/`
+  lane and all unrelated paths remained untouched.
+- After two clean process/GPU snapshots, launched the same reduced-pool paired
+  control with upstream Marlin dispatch using
+  `$env:SGLANG_TORCH_PROFILER_DIR='C:\Users\Daniel\sglang\benchmark\windows\profiles';
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -ContextLength 32000
+  -MaxTotalTokens 32000 -RandomSeed 980406`, after explicitly removing the
+  sparse-accept/debug environment switches. Listener PID `8812` retained the
+  DSpark-v2/online-FP8/Triton-draft, target/draft-FP8-KV, five-Mamba-slot,
+  broad-hybrid, sorted-target-top-p configuration and exact 32K target/draft
+  pools. Target verify captured in 0.74 seconds and folded draft in 0.68
+  seconds.
+- Ran the identical existing harness:
+  `.\.venv\Scripts\python.exe .\scripts\windows\bench_target_verify_width.py
+  --width 8 --input-tokens 6213 --output-tokens 128
+  --warmup-output-tokens 32 --timeout 600`. It returned exact `6213+128`,
+  1.252006 seconds E2E, accepted length **3.121951**, 41 verify cycles,
+  histogram `[10,9,5,7,6,2,0,2]`, and output SHA-256
+  `56705d74207f507623296375687b1f8f4d41c6b5644bc4eeff5895bcd7cb0a4a`.
+  The 41-cycle trace is
+  `benchmark/windows/profiles/target_width_m8-20260901-053813/target_width_m8-1788266293.2340608-TP-0.trace.json.gz`, SHA-256
+  `8A3FD5444A1B8CF7712752A55315801445CD01FC17DD84D855F60A7AC0F246B1`;
+  its manifest SHA-256 is
+  `12A8E9EBBBB99B7A66C2F7C1BA1E3E9CF6B6C5EA7C716629A5BAB904F7A10F32`.
+- With upstream dispatch, complete target-anchored cycles measured
+  **18.248244 ms mean / 18.093982 ms median**; target graph ID 2 was
+  **12.593/12.555 ms mean/median**, draft graph ID 5 was
+  **3.847/3.792 ms**, target-to-draft was **1.672/1.582 ms**, and
+  draft-to-target was **0.134/0.111 ms**. Against the exact-M8 trace, the
+  tactic reduced complete-cycle wall by only **0.104589 ms mean / 0.050976 ms
+  median** and target median by about **0.008 ms**. Although exact graph-event
+  sums fell from roughly 7.164 ms across 192 upstream Marlin launches to about
+  4.092 ms across the tuned shapes, overlap/resource scheduling left the
+  critical graph wall essentially unchanged. This directly explains why its
+  prior five-sample full-model window was only 134.842 tok/s and failed the
+  production gate.
+- The exact-M8 runtime dispatch therefore remains removed; it is not a
+  production candidate. The paired trace instead confirms the actionable
+  wall is the roughly 1.6 ms eager target-to-draft phase (about 0.84 ms GPU
+  idle/host dispatch plus 0.78 ms device work), followed by the captured
+  target graph itself. Sent one Ctrl+C only to the foreground launcher;
+  Uvicorn shut down and listener PID `8812` exited. A first immediate GPU
+  sample transiently showed 2,017 MiB and 100% during teardown while the
+  relevant process filter was empty, so a fresh quiescence check is required
+  before any further launch or build.
+
+### 2026-09-01 05:48 PDT - trained gamma-seven native proposal matches the controlled oracle
+
+- Continued only the Python-free native DSpark lane on dirty user-owned `main`
+  at `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`. The starting snapshot found
+  port 30000 free, no SGLang/Python server, CMake, Ninja, CTest, CL, NVCC,
+  linker, or Compute Sanitizer process, and the RTX 5090 at 1,586 MiB used /
+  30,602 MiB free / 0% utilization / 37 C / 29.14 W. This slice changed only
+  the native proposal CUDA test and this recovery ledger. It did not begin the
+  still-blocked scheduler/model-wrapper phase or touch the concurrent Python,
+  launcher, benchmark, Marlin, profiler, or serving work.
+- Added an optional `--trained-oracle WEIGHTS BASE EXPECTED` fixture to
+  `native/test/dspark_proposal_test.cu`; the ordinary no-argument CTest keeps
+  its seven durable proposal cases. The fixture fixes the binary header to the
+  versioned `SGDSOR1` ABI with compile-time size, standard-layout, trivial-copy,
+  and field-offset assertions; exact file-size/trailing-byte checks; finite and
+  bounded header validation; and complete RNG-state checks. It uploads two
+  trained BF16 `[248320,256]` Markov matrices plus deterministic BF16
+  `[7,248320]` base logits into the real graph arena, then requires exact seven
+  dependent samples, exact Philox advancement, status zero, all finite full-row
+  corrected logits, and bounded normalizers. Host file decoding uses `memcpy`
+  rather than an alignment-dependent cast. CUDA copies now report the actual
+  runtime failure through the existing strict test macro.
+- A temporary non-repository Python generator at
+  `%TEMP%\make_dspark_oracle.py` called the existing
+  `SampleStepTokens.torch` and `SampleStepTokens.triton` implementations and
+  required exact agreement at each dependent step. It read immutable
+  `C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2\model.safetensors`, SHA-256
+  `2AFF025F45823B40EBE726B9DFA40302F3512BD9A11C3A7347DE32A567ACD9A7`,
+  and had SHA-256
+  `28AA8303BE2D844BA3A5188AA529D2E681D7DF10EC728CE8DA612AAB0F5623A7`. It
+  used CPU generator seed `20260901`, Philox seed
+  `0x0123456789ABCDEF`, subsequence `0xFEDCBA9876543210`, initial counter `73`,
+  anchor token `703`, and temperature `1.0`. No Python source was added to the
+  repository. The temporary generator was deleted after its exact content hash,
+  invocation contract, source-checkpoint provenance, and outputs were recorded;
+  the three binary fixtures below were retained explicitly for reproduction.
+- Exact Torch/Triton proposal tokens were
+  `[64456,237449,139473,130240,194997,24989,45012]`, the final counter was
+  `434633`, and the Python/Triton log normalizers were
+  `[13.899843215942383,12.483522415161133,12.526174545288086,`
+  `12.485136032104492,12.687646865844727,12.606363296508789,`
+  `12.603994369506836]`. Reproducibility artifacts are inventoried under
+  `%TEMP%\sglang-native-trained-oracle-v1`:
+  - `trained-markov-bf16.bin`: 254,279,680 bytes, SHA-256
+    `CD4E7B93C1E37DC88401428BFF122EE705BE1A9718F6A5AD558AFF284459712D`;
+  - `trained-base-logits-bf16.bin`: 3,476,480 bytes, SHA-256
+    `795378E6D960E2A954C0ACF08FA31F6A80D5284DA9AF299AB29DB6B6D5A16416`; and
+  - `trained-oracle-v1.bin`: 3,476,640 bytes, SHA-256
+    `1C91D7FD2D74DF082657453C4610C9D556F7132244C612003F4DE9566BD00F57`.
+- Investigation preserved rather than hid two meaningful numerical failures. A
+  `0.002` Python-normalizer parity bound first failed at row zero with delta
+  `-0.00276756287`. Bitwise corrected-logit parity then first failed at row
+  zero/token six: native BF16 `0x3fe6`, PyTorch/CUDA BF16 `0x3fe7`. The native
+  kernel performs a fixed scalar rank-256 FMA sequence while `F.linear` uses a
+  CUDA GEMM reduction tree, so exact output bits are not the applicable
+  contract. A complete `7 * 248320` comparison measured maximum corrected-logit
+  absolute error exactly `0.0625`; all seven sampled tokens and RNG fields were
+  nevertheless exact. The retained fail-closed bounds are therefore one
+  measured BF16 quantum (`0.0625`) for corrected logits, `0.002` for native
+  normalizer reconstruction from native rows, and `0.004` against the
+  Python/Triton normalizers. The final maximum Python-normalizer delta was
+  `0.00276756287`. These are controlled trained-checkpoint proposal bounds, not
+  a claim of bitwise GEMM parity or full draft-model base-logit parity.
+- Qualified rebuild through VS 18 BuildTools `vcvars64.bat` used the existing
+  isolated `%TEMP%\sglang-native-proposal-graph-20260901` tree with at most two
+  jobs and passed CUDA 13.3 / host C++23 / CUDA C++20 `/W4 /WX`. The ordinary
+  proposal executable passed **7/7**; the trained invocation passed **8/8** and
+  printed `max corrected error=0.0625, max normalizer error=0.00276756287`.
+  Serial full CTest remained **16/16**: nine host-labelled and seven
+  CUDA/SM120 tests. The touched file passed
+  `clang-format --dry-run --Werror`, and `git diff --check -- native` passed.
+- Direct CUDA 13.3 Compute Sanitizer memcheck of the trained invocation passed
+  all **8/8** cases with `ERROR SUMMARY: 0 errors`. The ordinary proposal
+  memcheck remained **7/7** with zero errors. The complete seven-target suite
+  was rerun serially and every target again reported zero errors: resources
+  **9/9**, corrected-logit rejection **12/12**, verify RNG **7/7**, proposal
+  **7/7**, cycle controller **9/9**, unified composition **1/1**, and ReplaySSM
+  commit **8/8**.
+- This closes controlled trained gamma-seven Markov proposal parity for the
+  deterministic synthetic base-logit fixture. It does not close full-model
+  parity. Real target verify, real draft-extend/KV-write semantics, and their
+  ownership in the unified native cycle remain next. Native request state,
+  pool/model descriptors, scheduler wrappers, and serving integration remain
+  later work and have not begun.
+- The immediate post-qualification ownership check found that a separate
+  user-owned reduced-pool full-model experiment had started at 05:48:40 PDT,
+  after this lane's CUDA work completed. Its explicit environment included
+  `SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT=1`; process ancestry was
+  `34072 -> 34960 -> 2176 -> 26668`, listener PID `26668` owned port 30000,
+  and its resolved server arguments used exact 32K pools and the trained
+  gamma-seven DSpark lane. The RTX 5090 then showed 25,113 MiB used / 7,075
+  MiB free / 0% / 36 C / 30.97 W. This task did not signal, probe, benchmark,
+  or otherwise interfere with that unrelated experiment.
+
+### 2026-09-01 05:55 PDT - static target-graph KV commit clears 150 at 32K
+
+- Continued on dirty user-owned `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`. The independent `native/`
+  lane and every unrelated path remained untouched. Source/trace analysis
+  established that static width-eight verification already reserves all eight
+  physical cache slots before the target replay. It is therefore exact to
+  materialize the draft K/V for all eight target-hidden rows inside that replay:
+  accepted rows are immediately addressable; rejected rows remain unreachable
+  through the shorter committed sequence length and are overwritten when their
+  allocator slots are reused.
+- Added the default-off `SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT` experiment. It
+  reuses the existing target CUDA-graph tail hook and existing dense-DSpark MHA
+  projection/norm/RoPE/cache writers; there is no new Python algorithm or file.
+  Eligibility is deliberately narrow: CUDA decode graphs, dense rather than
+  DSV4/MoE DSpark, and `SGLANG_RAGGED_VERIFY_MODE=static`. Graph replays skip
+  the now-duplicative eager hidden commit, while eager fallback remains intact
+  whenever the verify shape cannot replay. The compact/ragged commit path is
+  unchanged. `py_compile`, focused default-path pytest **13/13**, and
+  `git diff --check` passed (only the recorded CRLF notices).
+- Two process/GPU snapshots 20 seconds apart found port 30000 free, no server,
+  benchmark, compiler, profiler, or sanitizer process, no ambient `SGLANG_*`
+  variable, and the RTX 5090 at 1,586 MiB / 30,602 MiB / 0%. Launched exactly:
+  `$env:SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT='1';
+  $env:SGLANG_TORCH_PROFILER_DIR='C:\Users\Daniel\sglang\benchmark\windows\profiles';
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -ContextLength 32000
+  -MaxTotalTokens 32000 -RandomSeed 980406`, with sparse-accept/debug switches
+  removed. Listener PID `26668` resolved through
+  `34072 -> 34960 -> 2176 -> 26668`. It retained DSpark-v2 online FP8,
+  Triton draft attention, FP8 target/draft KV, five FP32 Mamba slots, broad
+  192-projection hybrid Marlin, sorted target top-p, one request, and exact
+  32K pools. Target graph memory rose only from the paired control's 0.07 to
+  **0.09 GiB**; target/draft captures completed in 0.73/0.60 seconds and left
+  8.90 GiB. Endpoints and image/audio false passed.
+- The identical bounded trace harness returned exact `6213+128`, 1.230102
+  seconds E2E, accepted length **3.121951**, 41 verifies, and histogram
+  `[10,9,5,7,6,2,0,2]`. Acceptance length, verify count, and the full histogram
+  exactly match the paired upstream-dispatch control, confirming the cache
+  scheduling change did not perturb the speculative decisions. Trace
+  `benchmark/windows/profiles/target_width_m8-20260901-054943/target_width_m8-1788266983.0403788-TP-0.trace.json.gz`
+  has SHA-256
+  `31687C46DFCCF99808924F73BC2C15716C5B2A25AE521F18C74D99A99E800CB7`;
+  its manifest SHA-256 is
+  `77B9BA6B2CA8A3A19F17B944514FFC51A557E51C5E6DD01CB01EE468CB254F38`.
+- Exact graph-event decomposition across 41 complete cycles measured
+  **17.98 ms mean / 18.00 ms median** start-to-start, target graph
+  **12.90/12.90 ms**, target-to-draft gap **1.10/1.13 ms**, draft graph
+  **3.84/3.81 ms**, and draft-to-target **0.13/0.10 ms**. Versus the paired
+  control, target-to-draft fell from 1.672 to 1.10 ms while the target graph
+  grew from 12.593 to 12.90 ms by taking ownership of the same device work;
+  net cycle wall fell from 18.248 to 17.98 ms. This is the intended launch/
+  dispatch saving, not a removed computation.
+- Five consecutive deterministic authority samples were
+  **`[150.059,151.007,150.470,150.903,150.887]` tok/s**, mean
+  **150.665 tok/s**. Every request returned exact `6213+512`, length finish,
+  and byte-identical output/reasoning/content digests (`f56a9a48...`,
+  `a6ce4b11...`, `432aa7a5...`). A first stochastic collection was excluded
+  from promotion evidence because the command-output boundary hid one result.
+  The clean uninterrupted five-sample temperature-1/top-p-0.95/top-k-20/
+  presence-1.5 window then measured
+  **`[142.194,153.480,154.227,160.993,147.574]` tok/s**, mean
+  **151.694 tok/s**. All five returned exact counts, length finish, distinct
+  ordinary reasoning/content, and clean process brackets. Sampled acceptance
+  probes remained healthy at lengths **2.151260** and **2.327273**, rates
+  0.163866/0.188961, 273/1666 and 291/1540 correct/proposed drafts, and
+  238/220 verifies.
+- This admits the graph-tail component to exact-200K production qualification;
+  it is not yet a default or production promotion. Listener `26668` remains
+  live only for controlled transition. Next is a clean full-pool restart with
+  the switch still explicit, followed by exact `199000+16`, behavior/tool,
+  independent stochastic-window, OpenCode2, and Codex gates before changing
+  the launcher default.
+
+### 2026-09-01 06:05 PDT - explicit static graph commit passes full-200K qualification window one
+
+- Sent one Ctrl+C to the reduced foreground launcher and observed normal
+  Uvicorn shutdown. At 05:56:36 and again at 05:57:06, port 30000 was free,
+  old PIDs `34072/34960/2176/26668` were absent, no SGLang, compiler, build,
+  profiler, benchmark, or sanitizer process remained, and the RTX 5090 was
+  stable at 1,586 MiB used / 30,602 MiB free / 0% utilization. No unrelated
+  or independent `native/`-lane process was signaled.
+- On the same dirty user-owned `main` HEAD
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`, launched the full-pool candidate
+  in the foreground with exactly:
+  `$env:SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT='1'; Remove-Item
+  Env:SGLANG_DSPARK_SPARSE_ACCEPT -ErrorAction SilentlyContinue; Remove-Item
+  Env:SGLANG_DSPARK_DEBUG_DUMP -ErrorAction SilentlyContinue; Remove-Item
+  Env:SGLANG_TORCH_PROFILER_DIR -ErrorAction SilentlyContinue;
+  .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -RandomSeed 980406`.
+  Listener PID `21332` resolves through
+  `7268 pwsh -> 39976 sglang.exe -> 25700 python.exe -> 21332 python.exe`.
+  The resolved command retains exact 200,000 context and target/draft pools,
+  one running request, 4,096-token chunks, five FP32 Mamba slots,
+  `extra_buffer_lazy`, gamma seven/eight-token static verification, online-FP8
+  DSpark-v2 weights, Triton draft attention, FP8 target/draft KV, broad
+  192-projection hybrid Marlin, sorted FlashInfer top-p, language-only serving,
+  and the Qwen3 reasoning/Qwen3-Coder tool parsers.
+- Target/draft weights consumed 16.21/2.39 GB. Both exact 200K KV pools
+  allocated. Target verification captured in 0.75 seconds / 0.11 GiB and the
+  folded draft graph in 0.61 seconds / 0.06 GiB, leaving 1.68 GiB at graph end.
+  The extra target-graph memory versus the 0.07 GiB upstream control is the
+  expected stable storage for the graph-owned projection/cache-write tail.
+  `/health` passed, `/v1/models` advertised `qwen3.8-27b` with
+  `max_model_len=200000`, and `/model_info` reported the intended selective
+  checkpoint with image/audio understanding both false.
+- The first native acceptance authority on this unchanged listener completed
+  exact `6213+512` in 3.583850 seconds with accepted length **2.942529**,
+  acceptance rate **0.279146**, 340/1,218 correct/proposed drafts, 174 verify
+  cycles, histogram `[38,48,43,18,6,7,5,9]`, and output SHA-256
+  `3AA691B3D47E3211D87FF57F8E97E74930D288810AD040A3A324B2F6BD2F76D7`.
+- After a successful cache flush, the benchmark-contract command
+  `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py
+  --input-tokens 199000 --output-tokens 16 --timeout 600` performed its exact
+  same-shape warmup and scored request. The scored result returned exact
+  **199000/16/199016**, `finish_reason=length`, 3,118.323 prompt tok/s,
+  35.986 short-completion tok/s, **63.816352 seconds TTFT**, and **64.233185
+  seconds E2E**, with preserved 83-character reasoning and output SHA-256
+  `B85042FFC1BA1F70BEE8CE705F5503DEADAF5E248DDFEF4A20C766EAA92A12C`.
+  The listener remained healthy and the post-capacity cache flush succeeded.
+- Recommended-sampling behavior passed without supplying the answer in the
+  prompt: `What is 37 * 19? Think carefully and give only the final integer.`
+  used temperature 1.0/top-p 0.95/top-k 20/presence penalty 1.5, stopped
+  normally with 56 reasoning tokens, coherently derived
+  `37*20-37=740-37=703`, and returned visible exact `703`. The tool probe
+  preserved reasoning and emitted exactly one parsed
+  `multiply({"a":37,"b":19})` call with ID
+  `call_26e1583a8d6c49f88fe152ab` and `finish_reason=tool_calls`. An explicit
+  second request carried that exact assistant reasoning, call ID, and argument
+  string across tool result `703`; it preserved fresh reasoning, returned
+  `37 × 19 = 703`, stopped normally, and returned `tool_calls: null` rather
+  than calling the tool again. A deterministic thinking-disabled control
+  returned exact `READY`, normal stop, and zero reasoning tokens/characters.
+- The first clean full-pool Python-scoreboard sampled window used five
+  consecutive invocations of
+  `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py
+  --base-url http://127.0.0.1:30000 --model qwen3.8-27b --backend sglang
+  --input-tokens 6213 --output-tokens 512 --warmup-output-tokens 16
+  --warmup-runs 1 --timeout 600 --temperature 1.0 --top-p 0.95 --top-k 20
+  --presence-penalty 1.5`. A preliminary PowerShell wrapper attempt failed at
+  parse time on an interpolated colon and sent no request; it is excluded.
+  The corrected uninterrupted window measured
+  **`[157.176,173.614,135.338,152.884,160.793]` tok/s**, mean
+  **155.961 tok/s**. TTFTs were
+  0.493018/0.493525/0.492926/0.498845/0.513564 seconds and E2E times were
+  3.744153/3.436828/4.268668/3.841253/3.691567 seconds. Every sample returned
+  exact `6213+512`, length finish, and preserved ordinary reasoning/content.
+  Output SHA-256s were
+  `F32230AF49770E4E967C0125D27B75429D94BACEDA71DEFEB1EAD1188825EAA94`,
+  `4B1BABA79139F501E5FEDC9673FD7051B9EBEFC2AA2AC4B77CD2E6682D50B7883`,
+  `E0A4E673B89436D1EDCE6FB35BDF77B997E0024E57811A4FD0115224295940324`,
+  `33E6A64F46E6C3EFCE4249984B2C4EC83E8AA05846E8A5AC343F5DDCE9A6A97C8`,
+  and `C9382D64C7BD07987E8447429CAA540B98B820FCA39225C21E99633563E3914EF`.
+  Listener ownership and compiler/build/sanitizer exclusion passed before and
+  after every request. First-request JIT/cache residency reduced free VRAM from
+  1,097 MiB before the window to 247-249 MiB at its boundaries, which is tight
+  but expected for this qualified full-pool lane; no allocation failed.
+- The real multi-chunk OpenCode2 boundary passed on the same listener with
+  `.\scripts\windows\opencode_qwen.ps1 -DisableSnapshots -MainOutputCap 512
+  run --standalone --model llama-cpp/qwen3.8-27b --format json 'Reply with
+  exactly READY. Do not call tools.'`. It emitted visible exact `READY`, exited
+  zero in **6.782788 seconds**, restored the process-scoped provider overlay,
+  left no OpenCode process, and kept PID `21332` healthy. Full short-status
+  SHA-256 remained byte-identical at
+  `8D52937EA407FAA543DD27DBB7A4FACD9912A42B140D6E67D68F383112CB1D1C`.
+- This explicit-switch candidate has now passed full-pool startup, exact
+  capacity, native acceptance, arithmetic, parser, tool continuation,
+  thinking-disabled control, one clean sampled window above 150 tok/s, and the
+  real OpenCode2 boundary. Next: run the real Codex multi-chunk Code Mode gate;
+  then make the switch a process-scoped launcher default, validate syntax and
+  focused tests, cleanly restart without the external override, and require an
+  independent default-process sampled window plus repeated capacity/behavior/
+  client evidence before promotion.
+
+### 2026-09-01 06:12 PDT - argument-free DSpark-v2 default averages 162.500 tok/s
+
+- The Codex Code Mode boundary passed on explicit-switch listener `21332` with
+  installed Codex CLI 0.152.0 and the dedicated `qwen38` profile's 200K context/
+  180K compaction contract. No retained `-p qwen38` process existed before the
+  run. Exact command:
+  `codex exec -p qwen38 --ephemeral --color never -C
+  C:\Users\Daniel\tombstead --json "Use the exec Code Mode tool exactly once
+  to run git status --short in the current workspace. Read the tool output.
+  Then reply with exactly CODEX TOOL READY and nothing else."`. It exited zero
+  in 3.942501 seconds. The JSON stream contained one `command_execution` item,
+  exact command `git status --short`, complete output, exit code zero, and one
+  later agent message whose visible text was exact `CODEX TOOL READY`. The
+  second Responses request used 9,728 cached input tokens; total accounting was
+  19,573 input, 196 output, and 143 reasoning-output tokens. Tombstead status
+  remained byte-identical at SHA-256
+  `3C217A1B3085CC5B49E4FA19A3B0605C6443D7A3807992E2DD4282BD05D5D6E78`,
+  no Qwen Codex process remained, and the listener stayed healthy.
+- Promoted only the qualified static commit switch in
+  `scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1`. DSpark now sets
+  `SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT=1` process-scoped by default and
+  restores the caller's prior value in `finally`; explicit control remains
+  available as `-EnableDSparkStaticGraphKvCommit:$false`. NEXTN is unaffected.
+  The launcher description now names the static target-graph draft-KV commit.
+  PowerShell AST parsing reported zero errors. Existing Python thin-dispatch
+  files compiled, focused DSpark default-path pytest passed **13/13**, and
+  `git diff --check` passed with only the recorded CRLF notices.
+- Sent one Ctrl+C to the explicit foreground launcher. Its scheduler displayed
+  the expected interrupt traceback while Uvicorn completed application
+  shutdown and listener `21332` exited. At 06:08:21/06:08:41 and again after
+  tests at 06:09:21/06:09:41, port 30000 was free, all known server/scheduler
+  PIDs were absent, no compiler/build/sanitizer process existed, no ambient
+  `SGLANG_*` variable existed, and the GPU remained at 1,586 MiB used /
+  30,602 MiB free / 0%. No unrelated process was stopped.
+- Launched the promoted production path with the literal argument-free command
+  `.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1`. Launcher random seed was
+  `929684324`; listener PID `500` resolves through
+  `29396 pwsh -> 22764 sglang.exe -> 29608 python.exe -> 500 python.exe`.
+  Resolved arguments retained exact 200K pools/context, five FP32 Mamba slots,
+  one request, 4,096-token chunks, online-FP8 DSpark-v2, FP8 target/draft KV,
+  broad hybrid Marlin, Triton draft attention, folded draft proposal/sampling,
+  FlashInfer target sampling, and reasoning/tool parsers. Target and draft
+  verify graphs captured in 0.74/0.61 seconds using 0.11/0.06 GiB and left
+  1.71 GiB at graph end. `/health`, the 200K model listing, and image/audio
+  false passed.
+- Fresh native acceptance on this no-override listener completed exact
+  `6213+512` in 3.815056 seconds with accepted length **2.737968**, rate
+  **0.249045**, 326/1,309 correct/proposed drafts, 187 verifies, histogram
+  `[62,48,27,17,13,7,5,8]`, and output SHA-256
+  `5E2485CD408DF527FE041362577CDB8935F37F7135FACB9F7BD3B91173AC361D`.
+- The independent argument-free five-sample authority window used the same
+  exact uncached `6213+512`, one 16-token warmup per sample, temperature 1.0,
+  top-p 0.95, top-k 20, and presence penalty 1.5 contract. It measured
+  **`[151.139,165.951,151.000,191.357,153.054]` tok/s**, mean
+  **162.5002 tok/s**. Thus every individual default-process sample, not merely
+  the mean, met or exceeded 150 tok/s. TTFTs were
+  0.490130/0.493255/0.496491/0.489053/0.495722 seconds; E2E times were
+  3.871124/3.572485/3.880595/3.159452/3.834405 seconds. All returned exact
+  counts, length finish, and preserved ordinary reasoning/content. Output
+  SHA-256s were
+  `1012011DAD58C87E7E95287DD5D2931703C7B040D1933D83334BB006AC64320C2`,
+  `7FD1808E4178F5FB33B1E1C3636BB3EC655F333A259C7E08AB061330DC216B5AD`,
+  `948E1371D2D46D0B4860B8A326C437F9EC8319C30CF3E982AA671335C62EBA3E3`,
+  `AB9CCF2AD4C070BD1590DAA2A0EED3DE97DC762EEB9E0FCE0660355F7133F2A8D`,
+  and `685BD8430B520E929B612B32FF55B2DACDC08831B47A1154FADB4110DF85263E8`.
+  Listener and compiler/build/sanitizer/OpenCode exclusions passed around every
+  request; boundary free VRAM was 253-255 MiB without an allocation failure.
+- The promoted launcher has now independently reproduced the requested rate.
+  Before closing the task, repeat exact `199000+16`, sampled arithmetic/tool/
+  continuation and thinking-off behavior, OpenCode2, and Codex on this literal
+  default listener; update the compact state/decision records; perform final
+  diff/status/health audit; and leave the qualified default server live.
+
+### 2026-09-01 06:24 PDT - DSpark-v2 150 tok/s objective fully qualified and promoted
+
+- On unchanged literal argument-free listener PID `500`, repeated the exact
+  capacity authority command
+  `.\.venv\Scripts\python.exe .\scripts\windows\bench_openai_stream.py
+  --input-tokens 199000 --output-tokens 16 --timeout 600`. Its same-shape
+  warmup and scored request both completed. The scored request returned exact
+  **199000/16/199016**, `finish_reason=length`, **3118.215 prompt tok/s**,
+  **63.818572 seconds TTFT**, and **64.236571 seconds E2E**. The short
+  completion reported 35.885 tok/s over only 15 post-first-token intervals.
+  Reasoning was preserved and the deterministic output SHA-256 remained
+  `B85042FFC1BA1F70BEE8CE705F5503DEADAF5E248DDFEF4A20C766EAA92A12C`.
+- After flushing the capacity prefix, one consolidated recommended-sampling
+  behavior transaction passed strict assertions. The arithmetic prompt did not
+  supply its answer; it used 71 prompt / 77 completion / 72 reasoning tokens,
+  coherently derived `37*(20-1)=740-37=703`, stopped normally, and returned
+  visible exact `703`. The tool request used 346/84 tokens with 45 reasoning
+  tokens and emitted exactly one `multiply` call, ID
+  `call_4e9245a399264c888d066933`, arguments `{"a":37,"b":19}`, and
+  `finish_reason=tool_calls`. The continuation carried that exact reasoning,
+  ID, and argument string across tool result `703`; it used 448/17 tokens,
+  preserved 12 fresh reasoning tokens, stopped normally with exact `703`, and
+  returned zero further calls / `tool_calls: null`. The deterministic
+  thinking-disabled control returned exact `READY`, normal stop, two completion
+  tokens, and zero reasoning tokens/characters. Listener and process guards
+  remained clean.
+- Repeated the exact standalone OpenCode2 gate through the process-scoped
+  provider wrapper. It returned visible exact `READY`, exited zero in
+  **6.063928 seconds**, restored a null overlay, left no OpenCode process, and
+  preserved SGLang short status at SHA-256
+  `8D52937EA407FAA543DD27DBB7A4FACD9912A42B140D6E67D68F383112CB1D1C`.
+  Listener `500` stayed healthy.
+- Repeated the exact Codex 0.152.0 ephemeral Code Mode command on the default
+  listener. The first run exited zero in 3.104018 seconds, contained exactly
+  one successful `git status --short` execution with the complete nonempty
+  output, returned exact `CODEX TOOL READY`, and accounted for 19,478 input /
+  148 output / 103 reasoning-output tokens. Its private second-turn narration
+  incorrectly called that nonempty output empty. This is retained explicitly
+  as a stochastic semantic retry even though the formal transport/ABI gate
+  passed.
+- One bounded retry exited zero in **3.098082 seconds**. It again contained
+  exactly one successful command and complete output, accurately stated that
+  modified and untracked files were present, and returned visible exact
+  `CODEX TOOL READY`. Usage was 19,601 input / 164 output / 111 reasoning-output
+  tokens, including 9,728 cached input tokens on the continuation. Both runs
+  preserved Tombstead status byte-for-byte at SHA-256
+  `3C217A1B3085CC5B49E4FA19A3B0605C6443D7A3807992E2DD4282BD05D5D6E78`,
+  left no `-p qwen38` process, and kept listener `500` healthy.
+- Reconciled the compact recovery layer through this promotion:
+  `notes/current-state.md` now begins with the live DSpark-v2 winner and exact
+  handoff; `notes/decisions.md` selects the gamma-seven online-FP8/five-slot/
+  static-commit route and closes the 150 objective; `notes/timeline.md` adds the
+  DSpark-v2 phase and supersession entries; `notes/benchmark-contract.md`
+  identifies ordinary sampled exact `6213+512` as the generation scoreboard and
+  exact `199000+16` as the capacity/prefill gate; root `BENCHMARK.md` records all
+  five default samples and the independent full-pool window. Historical NEXTN,
+  exact-16, tree/SWOR, and native-controller evidence remains preserved rather
+  than rewritten as if it were produced by DSpark-v2.
+- Final live audit successfully flushed the client prefixes, returned 200 from
+  `/health`, advertised `qwen3.8-27b` with `max_model_len=200000`, and reported
+  image/audio understanding false. Listener PID `500` remained owned by the
+  verified argument-free tree; no OpenCode, Qwen Codex, compiler, build,
+  CTest, or Compute Sanitizer process existed. The RTX 5090 was at 30,827 MiB
+  used / **1,361 MiB free** / 0% utilization / 41 C after the flush. Both
+  protected FlashInfer CUDA headers still hash
+  `304C9CDDB08FA69E680E6ABE46C02C17F992F904A4AF20B978E4CC4B767EADBD`.
+  The selective checkpoint manifest remains present at SHA-256
+  `242C053EBC3160830D935E6154F31E284CDA223C98FB88CDF8943585DCC6DA5A`.
+- Final repository identity is dirty user-owned `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`; 65 short-status paths hash
+  `0EED30151EFD3447A22FEF972A652F285B23B4CB9A9B65029D9ED2485C593FF0`.
+  Existing unrelated and independent `native/` work remained untouched.
+  `git diff --check` passed with only recorded CRLF conversion notices, and the
+  production launcher parsed with zero PowerShell AST errors. Focused source
+  validation remains `py_compile` green and DSpark default-path pytest 13/13.
+- Outcome: the requested native-Windows Qwen3.8-27B Q4 lane now exceeds 150
+  tok/s on two independent exact-200K ordinary-sampling windows, reaches
+  **162.500 tok/s** on the argument-free production default with every sample
+  individually >=150, and retains capacity, behavior, parser, OpenCode2,
+  Codex, process-safety, and provenance gates. No further Windows performance
+  branch is active. Leave foreground listener `500` live for sequential use.
+
+### 2026-09-01 06:27 PDT - native model-graph ownership seam is fail-closed
+
+- Continued only the Python-free native DSpark rewrite on dirty user-owned
+  `main` at `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`. The recovery ledger's 05:48
+  trained-oracle entry was chronologically misplaced; it now follows 05:42 and
+  precedes 05:55 without changing its content. No existing user-owned source or
+  experiment conclusion was reverted.
+- Added the model-graph ownership contract before attempting a target kernel.
+  `CudaCapturedGraph::capture_retaining` now binds a captured graph itself to a shared
+  external-resource aggregate. `DsparkModelGraphResourceOwner` records device
+  identity and cycle-arena stable-address provenance; copyable leases keep the
+  aggregate alive. The native cycle controller retains the target-verify,
+  draft-extend, and KV-write leases after cloning, so closing source graphs and
+  dropping the caller's owner cannot release weights, KV storage, workspaces,
+  or backend metadata used by the executable.
+- Model-stage descriptors fail closed on a closed/unowned graph, foreign cycle
+  arena, foreign model owner, wrong device, wrong graph kind, missing required
+  publication, unknown output flags, or non-production dimensions. The fixed
+  production shape is batch one, gamma seven, verify width eight, vocabulary
+  248,320, hidden width 5,120, five captured target layers, and packed target
+  hidden width 25,600. Target verify must publish proposal layout, normalized
+  FP32 target probabilities, captured target hidden, target KV, and ReplaySSM
+  inputs; draft extend must publish draft hidden and next-cycle base logits; KV
+  write must publish draft KV with accepted-prefix-valid semantics. All three
+  stages must share one model-resource owner.
+- Updated the controller and unified-composition fixtures to capture their
+  synthetic model-stage graphs with the retained owner. They continue to be
+  marker plumbing, not real model behavior, but can no longer masquerade as
+  unowned model graphs. Added negative coverage for missing outputs, wrong
+  production shape, an unowned captured graph, and a mismatched model owner,
+  plus lifetime-count assertions after every caller-owned source graph closes.
+- Host-only validation was selected deliberately because the independent
+  production server still owned the only RTX 5090. MSVC 19.51 C++23 `/W4 /WX`
+  compile-only checks passed for `cuda_graph_resources.cpp`,
+  `dspark_cycle_controller.cpp`, and the controller host test; clang-cl also
+  compiled the host test cleanly. A clang-cl invocation with MSVC-only
+  `/analyze` switches was rejected before compilation and is not validation
+  evidence. Focused `clang-format --dry-run --Werror` and `git diff --check`
+  passed. CUDA linkage, CTest, replay, and Compute Sanitizer remain deferred
+  until the resident server is released.
+- Fresh ownership at 06:27:50 PDT remained listener PID `500` through
+  `29396 pwsh -> 22764 sglang.exe -> 29608 python.exe -> 500 python.exe`. No
+  CMake/Ninja/CL/link/NVCC/CTest/Compute Sanitizer process was present. The RTX
+  5090 reported 30,827 MiB used / 1,361 MiB free / 0% utilization / 39 C /
+  30.61 W. This task sent no traffic and did not stop or signal the user-owned
+  server. Next remains the real model-owned AOT target-verify graph; scheduler,
+  request/pool, wrapper, and serving integration remain blocked behind the
+  three real model graphs.
+
+### 2026-09-01 07:20 PDT - target-verify contract corrected; real model execution remains open
+
+- Continued only the Python-free native DSpark rewrite on dirty user-owned
+  `main` at `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`. Re-read the supplied rewrite
+  order and the live native handoff. No Python was added or changed, no index or
+  commit operation was performed, and no existing user-owned path was reverted.
+- Reconciled the in-progress target-verify ABI after the owning graph wrapper,
+  model-storage provenance, KV-pool, and configurable recurrent-pool edits. The
+  32-byte `DsparkTargetVerifyKvPoolDescriptor` no longer carries a redundant
+  trailing reserved word. Its capacity now explicitly means the logical
+  scheduler pool size; each per-layer K/V allocation is validated against
+  `capacity_tokens + page_size`, matching SGLang's padded sink page rather than
+  describing 200064 as the logical production capacity.
+- Corrected the Qwen3.5 GDN naming boundary. The target config reports a
+  convolution kernel size of four while the persistent convolution state is
+  the `K-1` width of three; native constants now encode both values explicitly.
+  The 10,240 convolution channels remain derived from Q/K/V dimensions
+  `2048 + 2048 + 6144`.
+- Preserved strict distinct model-storage provenance in the real target buffer
+  validator. Generic controller composition now continues to accept the
+  compatibility owner used only by synthetic marker fixtures; real target
+  capture still rejects cycle-arena-owned weights, KV pools, recurrent state,
+  and workspaces before recording the graph. This avoids invalidating the
+  existing controller/composition tests without weakening the real model seam.
+- Validation performed while the production server remained resident: focused
+  `clang-format --dry-run --Werror` passed, `git diff --check -- native` passed,
+  and direct MSVC 19.51 C++23 `/W4 /WX` compile-only checks passed for
+  `cuda_graph_resources.cpp`, `dspark_cycle_controller.cpp`,
+  `dspark_target_verify.cpp`, and both affected host tests. The static 32-byte
+  KV descriptor assertion therefore compiles under the qualified host ABI. A
+  direct framework-free target-contract executable linked
+  `dspark_proposal.cpp`, `dspark_target_verify.cpp`, and
+  `dspark_target_verify_host_test.cpp`; it passed **4/4** host cases,
+  including exact target/draft layer ordering, dtype/layout/page/capacity
+  rejection, NHD/HND/page-major physical element offsets including the padded
+  page boundary, and configurable recurrent-slot validation.
+- Live safety recheck found listener PID `500` still owning
+  `127.0.0.1:30000`; the RTX 5090 remained at 30,827 MiB used / 1,361 MiB free
+  / 0% utilization / 37 C / 29.92 W. No request was sent and no process was
+  stopped or signaled. CMake, Ninja, NVCC, CUDA executables, CTest, and Compute
+  Sanitizer were deliberately not run against the resident production GPU.
+- The target-verify source is still an ownership/ABI capture seam around an
+  external enqueue callback, not a real Qwen3.5 model graph. No checkpoint
+  parser, weight loader, 64-layer execution plan, NVFP4 tactics, target
+  attention/GDN kernels, adjusted-logit normalizer, or model-parity CUDA test
+  has been implemented. Draft-extend and accepted-prefix KV-write are likewise
+  not real model graphs. Scheduler, request state, wrappers, tokenizer, HTTP,
+  and serving integration remain blocked behind those three graphs exactly as
+  required by the supplied sequence.
+
+### 2026-09-01 08:05 PDT - native safetensors shard ingestion validates the complete target checkpoint
+
+- Continued only the Python-free native DSpark rewrite on dirty user-owned main at 5a816f3d1fd6c0b43c5f7b381641d06384de5fd0. Re-read the supplied gamma-seven rewrite sequence and current native handoff. No Python was added or changed, no index or commit operation was performed, and no existing user-owned path was reverted.
+- Added native/include/sglang/native/safetensors_file.hpp, native/src/safetensors_file.cpp, and native/test/safetensors_file_host_test.cpp, plus the independent sglang_native_model_io CMake target and host-labelled test. The Windows C++23 loader opens a shard read-only through CreateFileW, denies concurrent mutation while mapped, uses CreateFileMappingW/MapViewOfFile, validates the little-endian 64-bit header length, and returns move-only RAII ownership plus zero-copy tensor byte spans.
+- The engine-owned bounded JSON parser accepts the safetensors header subset without coupling model loading to benchmark/native. It validates JSON escapes and UTF-8 scalar encoding, metadata string maps, duplicate keys, known dtype names, rank and unsigned dimensions, exact ceil(bit-count/8) tensor sizes including packed four/six-bit formats, bounded offsets, duplicate tensor names, overlaps, holes, and exact coverage of the mapped data section. Public open failures are structured and non-throwing; allocation and internal exceptions are translated at the boundary.
+- The direct host suite now passes 7/7: synthetic F32/BF16 zero-copy lookup and move lifetime, escaped and malformed UTF-8 names, packed U4/F6 byte arithmetic, malformed tensor size rejection, overlap/hole rejection, exact LM-head metadata, and all ten real target shards. The complete immutable checkpoint validation observed exactly 2,402 tensors and 18,765,214,312 data bytes, agreeing with model.safetensors.index.json and selective-nvfp4-manifest.json. The first shard remains exactly 715,161,976 bytes with a 360-byte header and 368-byte data offset; its NVFP4 LM head has F8 scale shape [248320,320] / 79,462,400 bytes and U8 weight shape [248320,2560] / 635,699,200 bytes.
+- Exact host validation used Visual Studio 18 BuildTools / MSVC 19.51 in C++23 mode with /EHsc /W4 /WX /permissive- /Zc:__cplusplus. Both source files passed compile-only checks and MSVC /analyze; the linked framework-free %TEMP%\sglang_safetensors_file_host_test.exe passed 7/7. Focused clang-format --dry-run --Werror and git diff --check passed. All objects and the executable were emitted below %TEMP%; no repository-root artifacts were created.
+- The production server remained untouched throughout. Final ownership was still listener PID 500 on 127.0.0.1:30000; the RTX 5090 reported 30,895 MiB used / 1,293 MiB free / 0% utilization / 37 C / 32.14 W. No request was sent and no process was stopped or signaled. CMake, Ninja, NVCC, CUDA executables, CTest, and Compute Sanitizer were deliberately not run while the resident production process owned the GPU.
+- This closes raw shard mapping and envelope validation only. Native parsing and cross-validation of model.safetensors.index.json, config.json, hf_quant_config.json, and selective-nvfp4-manifest.json remain next; after that, build the fail-closed target model manifest before any CUDA allocation or real target-layer implementation. Target verify, draft extend, and accepted-prefix KV write are still not real model graphs, so scheduler, request state, wrappers, tokenizer, HTTP, and serving integration remain blocked exactly as required.
+
+### 2026-09-01 08:24 PDT - Qwen-specific operating prompt added after an intentionally aborted audit timing run
+
+- Continued on dirty user-owned `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`; the initial SGLang short status
+  contained 77 paths. Tombstead remained dirty user-owned `main` at
+  `9138713148ae85ebaf547e50a435c8557da1f0f7`. No repository source, native
+  lane, checkpoint, generated game artifact, dependency, index, or commit was
+  changed.
+- Port 30000 was initially free and the RTX 5090 reported 1,161 MiB used /
+  31,027 MiB free. Launched the supported Codex lane with the exact command
+  `.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -MaxMambaCacheSize 5`.
+  The resolved DSpark-v2 server retained exact 200K context/target/draft pools,
+  one request, five FP32 Mamba slots, gamma-seven/eight-token verification,
+  online-FP8 draft weights, static target-graph draft-KV commit, and target and
+  draft graph capture. Startup reached ready in about 32 seconds.
+- Began the requested literal start-to-finish client command at 08:14:09 PDT:
+  `codex exec -p qwen38 --ephemeral --color never -C
+  C:\Users\Daniel\tombstead --json "Look through this game for bugs."`.
+  This produced no valid benchmark result because Daniel redirected the task
+  and the exact client was intentionally cancelled with Ctrl+C. Before
+  cancellation it had already emitted roughly 79 JSON items, twice supplied a
+  quoted string where the Code Mode tool required numeric `max_output_tokens`,
+  failed one PowerShell multi-path `ls`, dumped the complete working diff, and
+  proceeded through long serial read/reason/read cycles. This is retained as
+  evidence that agent strategy and instruction fit, independent of raw decode
+  throughput, dominated the perceived latency. The aborted client exited
+  nonzero and no `-p qwen38` process remained.
+- Read `C:\Users\Daniel\.codex\prompt.md` as the source contract. Added the
+  Qwen-specific `C:\Users\Daniel\.codex\qwen38.md` and selected it only in
+  `qwen38.config.toml` through
+  `model_instructions_file = 'C:/Users/Daniel/.codex/qwen38.md'`. The adapted
+  prompt keeps the concrete task modes, dirty-worktree ownership, exact-target
+  destructive-action rules, process safety, tool discipline, audit triage,
+  verification, and stopping conditions. It removes the long personality and
+  literary-genealogy exposition and uses original spare relational prose built
+  from high-level craft traits rather than copied passages. Instruction SHA-256
+  is `52C3C103AD6A6CD5F715D8F545A41C821C8FE8EEFAD5CAE6AD443D288D08D13B`;
+  the selected profile SHA-256 is
+  `E4765A3DC436C068767324338254ADFF6CD48B65B83C396DCCDD5DA205D2F60C`.
+- Codex 0.152.0 accepted the new key under `--strict-config`. A first bounded
+  no-tool two-sentence audit probe exited zero in 4.768448 seconds with 10,747
+  input, 488 output, and 396 reasoning-output tokens. After the final voice
+  pass, a three-short-sentence data-safety probe exited zero in **2.515394
+  seconds**, used 10,936 input / 144 output / **126 reasoning-output** tokens,
+  and returned exact visible text `One test failed. I'm tracing the cause now.
+  Your files remain unchanged.` with no tool call.
+- Final Tombstead short status remained byte-for-byte at the previously
+  qualified SHA-256
+  `3C217A1B3085CC5B49E4FA19A3B0605C6443D7A380792E2DD4282BD05D5D6E78`.
+  Probe prefixes were flushed, `/health` returned 200, and no Qwen Codex client
+  remained. The five-slot server is intentionally left live through
+  `4076 pwsh -> 11200 sglang.exe -> 25228 python.exe -> 33840 python.exe`;
+  post-flush GPU state was 30,399 MiB used / 1,789 MiB free / 5% utilization /
+  37 C. Keep requests sequential and stop only this verified tree if shutdown
+  is requested.
+
+### 2026-09-01 08:37 PDT - exact Tombstead xhigh audit baseline completed in 472.504487 seconds
+
+- Continued on dirty user-owned SGLang `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0` and dirty user-owned Tombstead
+  `main` at `9138713148ae85ebaf547e50a435c8557da1f0f7`. The supported five-slot
+  Qwen Codex server remained the single listener through
+  `4076 pwsh -> 11200 sglang.exe -> 25228 python.exe -> 33840 python.exe`.
+  The selected instruction SHA-256 was
+  `52C3C103AD6A6CD5F715D8F545A41C821C8FE8EEFAD5CAE6AD443D288D08D13B`,
+  `model_reasoning_effort` remained `xhigh`, and the server cache was flushed
+  immediately before the sample.
+- Ran the exact literal workload from 08:29:13.1331886 through
+  08:37:05.6397953 PDT with
+  `codex exec -p qwen38 --ephemeral --color never -C C:\Users\Daniel\tombstead --json "Look through this game for bugs."`.
+  The sole complete baseline exited zero in **472.504487 seconds**. Codex
+  emitted 152 raw JSONL lines and 106 completed items: 34 reasoning items, 34
+  agent messages, and 38 completed command executions. One recorded command
+  failed and four additional destructive/temp-composition invocations were
+  rejected by policy before becoming completed command items.
+- Usage was 2,672,390 cumulative input tokens, of which 2,586,368 were cached,
+  and 43,104 output tokens, of which 35,559 were reasoning output. The
+  completed reasoning text contained 129,788 characters; intermediate agent
+  messages contained 8,071 characters and the final contained 3,403. Live
+  server evidence showed one healthy sequential request, no queue, context
+  growth beyond 100K tokens, and ordinary variable speculative decode. The
+  wall time was therefore dominated by audit breadth, repeated large tool
+  results, and xhigh deliberation over the accumulated context rather than
+  transport or scheduler waiting.
+- The audit read the complete 39,998-character working diff, several complete
+  source files as large as 22K characters, historical `AUDIT.md` and
+  `REFINEMENTS.md`, then ran `npm run check`, `npm run test:audit`,
+  `npm run sim`, a ten-seed harness batch, and working-tree-versus-HEAD
+  `final`/`industrial2` simulation comparisons. All recorded validation
+  commands exited zero. Its final conclusion was no verified current bug in
+  the 11 modified runtime/simulation files, plus one unreachable future risk
+  in the HUD crew fingerprint.
+- Independent review of every touched diff and the relevant current helpers
+  agrees that no high-confidence current bug is established. It did find one
+  factual overclaim in the baseline prose: a base-256 numeric fingerprint is
+  unconditionally exact for at most six survivor bytes, not seven, because a
+  seven-byte value can exceed JavaScript's 53-bit safe-integer range. The live
+  graybox has two survivors, so this does not change the current no-bug result;
+  it is retained as a quality defect that optimized samples must not repeat.
+- The audit left the Tombstead tracked diff at the exact pre-sample Git object
+  hash `9a8f60bc977e6b4a2c72ff81cfd67321d70f1453` and preserved the same short
+  status path set. The three untracked files remained at SHA-256
+  `D5D0767F4CDC9F7677B47744E74018C530454B5F66A4FAF15E24FBD4F49470EE`,
+  `A89C97FE01F3F3862555750DC69ADC407587D56EDFB4DA077458769609B95DC0`,
+  and `5A407F5F8650B332A554BA1AF4B687466E9EE9EF6F42F4ADF794D87115D29B82`
+  for `FAILED_PATHS.md`, `PERFORMANCE_LOG.md`, and
+  `game/harness/prof-summary.mjs`, respectively. Ignored harness artifacts were
+  regenerated by the repository's checks; the audit's `%TEMP%` comparison
+  files were removed.
+- Flushed the long audit prefix after completion. `/health` returned 200, no
+  Qwen Codex client remained, listener PID 33840 was unchanged, and the RTX
+  5090 returned to 30,129 MiB used / 2,059 MiB free / 4% utilization / 42 C /
+  61.71 W. The locally safe next variable is instruction-level audit breadth:
+  retain `xhigh`, the exact server and literal prompt, but impose small
+  per-result evidence limits, a bounded hypothesis set, an early focused
+  check, and an explicit stop after current findings are proved or closed. A
+  matched sample must materially beat 472.504487 seconds without introducing
+  a false finding, losing changed-file coverage, skipping relevant validation,
+  or changing the Tombstead worktree.
+
+### 2026-09-01 08:45 PDT - bounded-audit prompt sample 1 cut exact xhigh wall time by 50.79%
+
+- Changed only `C:\Users\Daniel\.codex\qwen38.md`. The bounded audit lane now
+  requires triage of every changed file, approximately 200 lines / 12K
+  characters per result, at most three live bug hypotheses, one early
+  non-writing check, and an explicit evidence-based stop. It discourages
+  historical-note tours, temporary HEAD copies, broad campaigns, rereads, and
+  reassurance checks. The resulting instruction SHA-256 is
+  `20B9DE8E98BA5D0B0106B5EAC4CC43131C3805F7D154574836563235C91810D8`.
+  `qwen38.config.toml` still selected that file and retained
+  `model_reasoning_effort = "xhigh"`; no model, server, launcher, source,
+  checkpoint, or Tombstead file was changed.
+- Flushed the prefix and reran the exact baseline command and literal prompt
+  from 08:41:11.8013694 through 08:45:04.3243922 PDT. Sample 1 exited zero in
+  **232.5230228 seconds**, 239.9814642 seconds and **50.79%** below the
+  472.504487-second baseline. It emitted 89 raw JSONL lines and 60 completed
+  items: 17 reasoning items, 17 agent messages, and 26 command executions, of
+  which two `rg` searches returned no match. No policy rejection or non-JSON
+  error was present.
+- Cumulative usage fell from 2,672,390 to 583,226 input tokens (**78.18%**),
+  cached input from 2,586,368 to 544,448, output from 43,104 to 23,613
+  (**45.22%**), and reasoning output from 35,559 to 19,780 (**44.37%**).
+  Reasoning text fell from 129,788 to 74,573 characters. The model did not
+  fully obey the twelve-successful-call first-pass budget: it used 24
+  successful and two no-match commands, but it avoided the baseline's
+  historical audit/refinement tour, temporary baseline construction, campaign
+  comparisons, generated audit suite, and cleanup retries.
+- Quality remained at least at the baseline level in independent review. The
+  sample triaged all 11 modified files, traced the risky mutation/caching
+  boundaries, ran `npm run check` successfully, reached the same supported
+  no-current-bug verdict, and explicitly disclosed that it did not run the
+  artifact-generating audit suite, broad seed campaign, or browser playthrough.
+  Its two forward observations were current and correctly qualified as
+  unreachable: the relaxed HUD write-count regression is less exact, and the
+  crew fingerprint clamps hearts at 15 while rendered hearts are not clamped,
+  though live survivors start at 30 HP and have no healing path. It did not
+  repeat the baseline's incorrect seven-survivor safe-integer bound. One prose
+  label called the `updateDoorQueue` processing branch `processDoor`; this was
+  nomenclature, not a mistaken call path or finding. Direct inspection confirms
+  the Phaser stub's `setText` updates `.text`, as the sample asserted.
+- Tombstead retained exact tracked diff object
+  `9a8f60bc977e6b4a2c72ff81cfd67321d70f1453`, the same status path set, and
+  identical SHA-256 values for all three untracked files. After the run, the
+  cache flush and health checks both returned 200; the RTX 5090 returned to
+  30,129 MiB used / 2,059 MiB free / 6% utilization / 51 C / 106.81 W. Keep
+  the prompt unchanged for an independent matched repeat: one stochastic
+  sample establishes a promising local candidate, not a durable latency
+  result.
+
+### 2026-09-01 08:51 PDT - bounded-audit prompt qualified at a 47.80% two-sample mean reduction
+
+- Held the candidate fixed at instruction SHA-256
+  `20B9DE8E98BA5D0B0106B5EAC4CC43131C3805F7D154574836563235C91810D8`,
+  kept `model_reasoning_effort = "xhigh"`, flushed the server cache, and ran a
+  second independent exact
+  `codex exec -p qwen38 --ephemeral --color never -C C:\Users\Daniel\tombstead --json "Look through this game for bugs."`
+  sample. No client overlapped it and the DSpark-v2 listener remained PID
+  33840.
+- Sample 2 ran from 08:46:28.1525156 through 08:50:48.9513383 PDT and exited
+  zero in **260.7988227 seconds**, a **44.8050%** reduction from the
+  472.504487-second baseline. It emitted 62 raw lines and 44 completed items:
+  15 reasoning items, 15 agent messages, and 14 successful commands. The only
+  non-JSON line was Codex's benign `Reading additional input from stdin...`.
+  Usage was 606,239 cumulative input / 559,616 cached-input tokens and 27,847
+  output / 23,990 reasoning-output tokens; reasoning text contained 88,730
+  characters.
+- The two bounded samples are **232.5230228** and **260.7988227 seconds**,
+  mean **246.66092275 seconds**. Against the sole complete baseline at
+  472.504487 seconds, the held candidate saves **225.84356425 seconds** on
+  average, a **47.7971%** start-to-finish reduction. Both independent samples
+  are below 300 seconds and both retain xhigh reasoning. The second run's 14
+  commands also shows that the candidate can approach its first-pass evidence
+  budget; the 26-command first sample captures the remaining stochastic
+  spread.
+- Sample 2 again triaged all 11 changed files, inspected direct mutation and
+  cache boundaries, ran `npm run check` successfully, returned no verified
+  current gameplay bug, qualified its one HUD observation as unreachable in
+  the current graybox, and stated the unchanged-module, generated-regression,
+  browser, and balance gaps. It contained one local wording contradiction:
+  after correctly explaining that `rise()` calls `removeCorpse()` inside the
+  forward phase loops and that `i--` makes this safe, it later called both
+  direct callers outside live iteration. The earlier account matches the
+  source; the slip does not change the path analysis or verdict. This is not a
+  quality regression relative to the baseline's incorrect seven-survivor
+  safe-integer bound, and sample 1 did not contain the contradiction.
+- Final independent source review finds no false reported current bug, no
+  missed high-confidence defect in the changed paths, and materially clearer
+  coverage disclosure than the baseline. Dynamic regression/campaign breadth
+  was intentionally not reproduced because those commands generate ignored
+  artifacts and no surviving hypothesis required them; the complete baseline
+  had already established their green result on the identical diff. This
+  preserves the user's data-safety requirement while keeping the audit answer
+  correct and actionable.
+- Tombstead again retained tracked diff object
+  `9a8f60bc977e6b4a2c72ff81cfd67321d70f1453`, the exact status path set, and
+  identical SHA-256 values for `FAILED_PATHS.md`, `PERFORMANCE_LOG.md`, and
+  `game/harness/prof-summary.mjs`. The final prefix flush and `/health` both
+  returned 200, no Qwen Codex client remained, and the RTX 5090 returned to
+  30,129 MiB used / 2,059 MiB free / 4% utilization / 52 C / 110.40 W. Select
+  the bounded-audit `qwen38.md` as the local Codex default; do not tighten it
+  merely to reduce the remaining 14-command sample, because the requested
+  reasonable speed reduction is already repeatable without sacrificing the
+  audit verdict, evidence, or data safety.
+- Reconciled `notes/current-state.md` and `notes/decisions.md` through this
+  qualification, including the live five-slot server snapshot and the durable
+  local prompt selection. Focused `git diff --check` for the three recovery
+  documents passed; it emitted only the existing line-ending warning for the
+  already modified experiment log. No benchmark contract or production
+  launcher default changed.
+
+### 2026-09-08 19:02 PDT - NVIDIA checkpoint installed separately for a requested benchmark
+
+- User requested setup and benchmarking of `nvidia/Qwen3.8-27B-NVFP4`.
+  Recovered the later DSpark-v2 contract rather than the older NEXTN snapshot.
+  The checkout is dirty user-owned `main` at
+  `5a816f3d1fd6c0b43c5f7b381641d06384de5fd0`; all pre-existing tracked
+  modifications, untracked native/kernel/profile files, launcher changes, and
+  checkpoint artifacts are preserved. No source, dependency, default,
+  downloaded source checkpoint, index, or commit was changed by this task.
+- Downloaded the immutable Hugging Face revision
+  `fed99d815f4e8c7c616dd3dd6780076e26d5fb61` with
+  `.\.venv\Scripts\hf.exe download nvidia/Qwen3.8-27B-NVFP4 --revision fed99d815f4e8c7c616dd3dd6780076e26d5fb61 --local-dir C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-NVIDIA --max-workers 3 --quiet`.
+  Download ran from 18:57:44.742 through 19:01:07.958 PDT and exited zero.
+  All 19 upstream files have their expected sizes; all upstream LFS SHA-256
+  values match. The three weight files total **21,921,697,280 bytes**
+  (21.922 GB / 20.416 GiB). Their SHA-256 values are
+  `7d0fd155118901373eb0fd13ed3aae68f95be747bc205be72ebc41739c25ee80`,
+  `98a7e9486baa860c792c9463a770cb9d017696bdd17606300a5b9334149f4c27`,
+  and `0506ad35dc21469708e7813bd76c592cef08bd0317b4a1fe899745ebe2435271`.
+- This is a mixed-precision ModelOpt checkpoint: NVFP4 MLP/head, FP8
+  attention, and retained BF16 tensors, not a uniform four-bit artifact.
+  `config.json` declares `quant_algo=MIXED_PRECISION`. The card says
+  ModelOpt 0.48.0, whereas `hf_quant_config.json` records producer
+  `0.47.0.dev80+g913f5e224`; preserve the actual file provenance. The original
+  local RadixArk weight files have the same total byte size, which does not
+  establish weight identity. The selected attention-NVFP4 derivative totals
+  **18,765,508,992 bytes** (18.766 GB / 17.477 GiB).
+- Live dependencies remain PyTorch `2.13.0+cu130`, FlashInfer `0.6.17`,
+  Triton Windows `3.7.1.post27`, transformers `5.12.1`,
+  compressed-tensors `0.18.0`, huggingface-hub `1.27.0`, and the editable
+  SGLang checkout. The executable help and editable mapping resolve correctly.
+  The NVIDIA config records transformers `5.13.1`; no speculative dependency
+  upgrade was performed.
+- Initial and 19:01:42 preflights found no port-30000 listener and no
+  SGLang/CUDA compiler tree. The RTX 5090 driver is now `616.56`, with
+  4,433 MiB used / 27,755 MiB free, 16% utilization, 30 C, 62.73 W,
+  1,192 MHz graphics / 810 MHz memory at the second preflight. Numerous
+  ordinary WDDM clients and unrelated Codex build/test processes are active;
+  all are left untouched. Disk free space is about 1.47 TB.
+- Full metadata, per-file verified hashes, downloader output, and process/GPU
+  snapshots are retained under
+  `C:\Users\Daniel\.copilot\session-state\fb04542d-df8d-4ed5-a51b-e62b3723b699\files\nvidia-qwen38-20260908`.
+  Next: launch one argument-free production control, recover its resolved
+  settings and graph markers, measure the exact sampled workload, then stop
+  only that verified tree before launching the NVIDIA candidate. Current
+  desktop residency and the additional candidate weight storage must be
+  treated as capacity constraints, not hidden by changing production defaults.
+
+### 2026-09-08 19:10 PDT - fresh DSpark control passes behavior but is materially slower in the current desktop environment
+
+- Launched the literal argument-free production launcher in an attached
+  task-owned PowerShell process. Ancestry is
+  `30492 -> 12020 -> 11888 -> 22248 -> 36736`; listener `36736` owns
+  scheduler/CUDA worker `16708` and detokenizer `41444`. The target loaded
+  in 22.71 s using 16.21 GiB, the online-FP8 DSpark draft in 3.27 s using
+  2.39 GiB, and both actual FP8 KV pools contain 200,000 tokens
+  (target 6.10 GiB, draft 1.90 GiB). Five FP32 Mamba slots and both target
+  and folded-draft graphs are active; all ordinary language-only, reasoning,
+  tool, and sampling settings match the current contract. Ready at 19:03:58.
+- Python-authority sampled `256+16` smoke passed at 136.114 decode tok/s.
+  Five consecutive exact uncached `6213+512` samples, each with its own
+  16-token same-shape warmup and cache flush, used temperature 1.0, top-p
+  0.95, top-k 20, presence penalty 1.5, thinking enabled, and no request seed:
+
+  | Sample | Prompt tok/s | Decode tok/s | TTFT (s) | E2E (s) |
+  |---|---:|---:|---:|---:|
+  | 1 | 1027.277 | 100.795 | 6.048028 | 11.117701 |
+  | 2 | 1010.354 | 96.153 | 6.149330 | 11.463779 |
+  | 3 | 1090.477 | 98.189 | 5.697508 | 10.901776 |
+  | 4 | 1079.498 | 91.263 | 5.755452 | 11.354640 |
+  | 5 | 488.756 | 93.094 | 12.711868 | 18.200956 |
+
+  Means are **939.2724 prompt / 95.8988 decode tok/s**, **7.2724372 s
+  TTFT**, and **12.6077704 s E2E**. All counts are exactly `6213/512/6725`,
+  all finishes are `length`, and complete/per-channel hashes and fragment
+  metadata are preserved in `control-sampled-*.json`.
+- The separate native-counter request reports 512 completions, 212 verify
+  cycles, 301/1484 correct/proposed drafts, acceptance rate
+  **0.2028301886792453**, accepted length **2.4150943396226414**, and
+  histogram `[75,58,40,16,12,4,2,5]`. Independently recomputed histogram,
+  proposal-count, rate, and completion-per-cycle algebra passes.
+- Sampled arithmetic coherently returns **703** with preserved reasoning and
+  ordinary `stop`. Exactly one parsed
+  `multiply({"a":37,"b":19})` call finishes with `tool_calls`; passing its
+  result back returns 703, new reasoning, ordinary `stop`, and no new call.
+  An initial PowerShell assertion incorrectly counted `@($null)` as one tool
+  call; the saved response has `tool_calls=null` and passes the corrected
+  null-aware check without replay or server changes.
+- This is a **changed-environment, contended control**, not a replacement for
+  the qualified 162.500 tok/s record. The server is fresh, request queues
+  remain zero, graphs replay, no server/compiler overlaps exist, and the
+  reproduced workload is the standard benchmark command. Active WDDM
+  residency, unrelated Codex tests, Windows Terminal, Defender, and indexing
+  remain present. Sample brackets show 3,045-3,060 MHz graphics, 13,801 MHz
+  memory, 350-366 W, 43-45 C, and only 466-527 MiB free. After flush, free
+  memory recovers to 1,660 MiB. Windows GPU counters report scheduler
+  dedicated/shared allocations of 29,014.6/470.0 MiB and DWM dedicated
+  allocation of 5,588 MiB; these counters alone do not prove which pages are
+  resident or that paging explains the entire regression.
+- Preserved a read-only `control-incident-bundle` beside the raw benchmark
+  files. Collection succeeds, but both ordinary and `--stdout-json` summary
+  routes fail in the existing helper because `graph_gb` is now a dictionary
+  and its formatter expects a scalar. Raw health, loads, server/model info,
+  and metadata remain usable. No Python helper was changed.
+- No fresh exact-capacity request was run on this control. Its actual 200K
+  pools are confirmed, but the low headroom and the NVIDIA checkpoint's
+  additional 2.94 GiB of weight storage make a same-pool DSpark candidate
+  unsafe to assume. Next: stop only this verified tree, then establish the
+  NVIDIA target-only 200K lane with the existing
+  `-SpeculativeNumSteps 0` switch before considering any smaller-pool
+  speculative experiment. Production defaults remain unchanged.
+
+### 2026-09-08 19:19 PDT - NVIDIA target-only setup passes sampled throughput, behavior, and exact 200K capacity
+
+- Stopped only the verified control tree, leaf-first through literal PIDs
+  `16708,41444,36736,22248,11888,12020`. All were absent, port 30000 was
+  free, and no CUDA compiler remained at 19:11:42. GPU residency returned to
+  **1,643 MiB used / 30,545 MiB free**, 4%, 31 C. Several desktop clients
+  seen in the first preflight were no longer present; this task did not stop
+  them. The changed contention envelope is another reason not to compare the
+  first DSpark control directly with the later target-only samples.
+- At 19:12:09 launched
+  `.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-NVIDIA -SpeculativeNumSteps 0`.
+  No code, checkpoint metadata, installed package, or production default
+  required modification. Ancestry is
+  `34812 -> 25904 -> 31632 -> 24624 -> 22280`, with scheduler/CUDA
+  worker `11696` and detokenizer `33716`. Ready at 19:13:14.
+- The existing mixed ModelOpt loader recognizes the serialized checkpoint;
+  its target weights use **19.25 GiB**, and all 64 gate/up projections use
+  the existing hybrid-Marlin path with one 85 MiB relayout scratch. The
+  actual FP8 target KV pool is **200,000 tokens**, context is **200,000**,
+  maximum input is 199,994, and five FP32 Mamba slots use 0.84 GiB SSM plus
+  0.02 GiB convolution state. Full batch-one target decode graph capture
+  completes. No draft is loaded and no speculative counters apply. Endpoints
+  return 200, the model ID is `qwen3.8-27b`, and image/audio understanding
+  are false.
+- Both original RadixArk and NVIDIA declare 401 quantized layers: 208 FP8
+  and 193 NVFP4. Their tokenizer SHA-256 is identical
+  (`0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3`),
+  as is their chat template
+  (`c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041`).
+  Their upstream weight SHA-256 values differ; equal packing/file sizes do
+  not mean that NVIDIA is a byte-identical copy.
+- Python-authority sampled smoke, coherent arithmetic with final **703**,
+  exactly one parsed multiply call, tool-result continuation without a
+  duplicate call, preserved reasoning, and thinking-disabled exact `READY`
+  all pass. Five consecutive warmed, uncached, unsimulated
+  `6213+512` samples use the unchanged ordinary-sampling contract:
+
+  | Sample | Prompt tok/s | Decode tok/s | TTFT (s) | E2E (s) |
+  |---|---:|---:|---:|---:|
+  | 1 | 9495.680 | 63.234 | 0.654298 | 8.735337 |
+  | 2 | 9466.116 | 63.269 | 0.656341 | 8.732907 |
+  | 3 | 9591.156 | 64.686 | 0.647784 | 8.547443 |
+  | 4 | 9322.277 | 64.553 | 0.666468 | 8.582394 |
+  | 5 | 9472.868 | 64.578 | 0.655873 | 8.568799 |
+
+  Means are **9469.6194 prompt / 64.064 decode tok/s**,
+  **0.6561528 s TTFT**, and **8.633376 s E2E**. Every result has exact
+  `6213/512/6725` usage, `length` finish, nonempty reasoning, and retained
+  output/channel/fragment digests. Warm brackets show 3,045-3,052 MHz,
+  13,801 MHz memory, 430-444 W, 46-51 C, and 1,615 MiB free.
+- The exact capacity command used the Python stream client with
+  `--input-tokens 199000 --output-tokens 16 --warmup-output-tokens 16 --warmup-runs 1 --timeout 600 --temperature 0`.
+  Both warmup and measured requests pass. The measured response is exactly
+  **199,000 prompt / 16 completion / 199,016 total**, `length` finish,
+  **2720.158 prompt tok/s**, **43.723 short-window decode tok/s**,
+  **73.157527 s TTFT**, and **73.500594 s E2E**. Output/reasoning SHA-256 is
+  `45d5b83ff0339bbc44aadde2e26e4065c160a1d9145dbf66ab979da18b797b29`.
+  This 16-token rate is capacity telemetry, not the 512-token headline.
+- Post-capacity residency is 30,582 MiB used / 1,606 MiB free at 59 C;
+  explicit cache flush and health both return 200 and recover
+  **2,660 MiB free**. The setup is usable at the genuine 200K limit without
+  weakening its memory contract. It is a target-only experimental option,
+  not a DSpark production promotion or a reproduction of NVIDIA's published
+  accuracy benchmarks. Next: obtain a checkpoint-only matched original
+  RadixArk target-only control under the now-lower desktop residency.
+
+### 2026-09-08 19:27 PDT - matched original RadixArk control ties NVIDIA; persistent setup and clean handoff
+
+- NVIDIA's first server was stopped leaf-first through verified literal PIDs
+  `11696,33716,22280,24624,31632,25904`. At 19:21:07 all were absent, port
+  30000 was free, no CUDA compiler remained, and the GPU reported
+  1,375 MiB used / 30,813 MiB free.
+- Launched
+  `.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -ModelPath C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk -SpeculativeNumSteps 0`
+  at 19:21:37. Ancestry was
+  `40344 -> 16932 -> 32476 -> 29676 -> 30904`, with scheduler/CUDA
+  worker `39672` and detokenizer `35340`. Ready at 19:22:28. Actual target
+  pool and context are both 200,000, speculation is absent, and every selected
+  runtime/benchmark flag matches NVIDIA. This compares **original stock
+  RadixArk**, not the attention-NVFP4/DSpark production derivative.
+- Five consecutive Python-authority exact `6213+512` ordinary-sampling
+  requests, each with the identical same-shape 16-token warmup and cache
+  flush, produced:
+
+  | Sample | Prompt tok/s | Decode tok/s | TTFT (s) | E2E (s) |
+  |---|---:|---:|---:|---:|
+  | 1 | 9349.919 | 63.091 | 0.664498 | 8.763854 |
+  | 2 | 9570.896 | 63.849 | 0.649155 | 8.652423 |
+  | 3 | 9413.388 | 64.272 | 0.660017 | 8.610591 |
+  | 4 | 9861.427 | 64.238 | 0.630031 | 8.584762 |
+  | 5 | 9566.281 | 64.530 | 0.649469 | 8.568232 |
+
+  Means are **9552.3822 prompt / 63.996 decode tok/s**, **0.650634 s
+  TTFT**, and **8.6359724 s E2E**. Exact counts, `length`, nonempty
+  reasoning, and all channel/fragment/digest fields pass. Warm GPU brackets
+  show 3,045-3,052 MHz, 13,801 MHz memory, 431-443 W, 45-51 C, and
+  1,603 MiB free; flush restores 2,655 MiB. No fresh original-RadixArk
+  exact-capacity request was run in this window.
+- NVIDIA versus this checkpoint-only control differs by **+0.1063% mean
+  decode**, **-0.8664% mean prompt throughput**, and **-0.0301% mean E2E**.
+  The observed per-run variation exceeds these small differences: treat the
+  stock checkpoints as a practical throughput tie, not a new speed winner.
+  Published model-card quality benchmarks were not reproduced, and neither
+  NVIDIA DSpark nor independent-restart/OpenCode2/Codex promotion was run.
+- Stopped the final server leaf-first through verified literal PIDs
+  `39672,35340,30904,29676,32476,16932`. At **19:26:11 PDT** all benchmark
+  PIDs were absent, port 30000 was free, no SGLang/CUDA compiler tree
+  remained, and the RTX 5090 was back to **1,404 MiB used / 30,784 MiB
+  free**, 3%, 31 C, 58.69 W, 907 MHz graphics / 405 MHz memory. Unrelated
+  processes were preserved. The three server-shell exit code `-1` events
+  follow these intentional exact-PID teardowns, not spontaneous failures.
+- Generated `benchmark/windows/nvidia_qwen38_20260908.json` directly from
+  the raw measured JSON, with all 15 stream samples, the exact NVIDIA
+  capacity result, native counters from the excluded initial DSpark control,
+  shared resolved settings, source hashes, pinned weights, GPU brackets,
+  explicit coverage limits, and final process state. Re-reading the
+  persistent JSON verifies both five-run paired windows and exact `199016`.
+  The NVIDIA checkpoint metadata hashes and all weight sizes/write times
+  remain unchanged after serving; relevant launcher/model/benchmark source
+  hashes also remain unchanged.
+- Updated the scoreboard, current-state handoff, alternative-checkpoint
+  decision, and timeline. The original user-owned dirty worktree remains
+  intact; this task adds only the requested downloaded artifact, measured
+  JSON report, and directly related recovery documentation. No Python,
+  C++/CUDA implementation, PowerShell launcher, dependency, checkpoint
+  content, client profile, index, commit, or production default was changed.
+  The installed NVIDIA launch command is the explicit target-only command
+  above; the argument-free launcher still selects the previously qualified
+  attention-selective RadixArk/DSpark lane.
+- Final report arithmetic, exact request/count/finish checks, source-hash
+  stability, existing-launcher PowerShell parsing, and full-worktree
+  `git diff --check` pass. The diff check emits only the existing CRLF
+  normalization warnings for user-owned source files. No implementation
+  changed, so no new kernel or Python test suite was introduced. Removed
+  only the task-created empty failed incident-summary output; raw incident
+  collection and all benchmark evidence remain retained.

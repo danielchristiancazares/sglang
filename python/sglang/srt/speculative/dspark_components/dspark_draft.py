@@ -62,6 +62,7 @@ class DraftBlockResult(msgspec.Struct, frozen=True):
     corrected_logits: Optional[torch.Tensor]
     greedy_mask: torch.Tensor
     temperatures: torch.Tensor
+    truncated_sampling: bool = False
 
 
 class DraftForwardResult(msgspec.Struct, frozen=True):
@@ -219,11 +220,20 @@ class DraftBlockProposer:
         folded_confidence = None
         confidence_tap = None
         folded = False
+        truncated_sampling_supported = (
+            draft_sampler is not None
+            and draft_sampler.truncated_sampling_supported(sampling_info)
+        )
         if (
             envs.SGLANG_DSPARK_FOLDED_PROPOSAL.get()
             and draft_sampler is not None
             and fwd.can_run_graph
             and (all_greedy or draft_sampler.folded_sampling)
+            and (
+                all_greedy
+                or not draft_sampler.truncated_sampling
+                or truncated_sampling_supported
+            )
         ):
             folded = True
             if draft_sampler.folded_sampling:
@@ -258,6 +268,11 @@ class DraftBlockProposer:
                 corrected_logits=corrected_logits,
                 greedy_mask=greedy_mask,
                 temperatures=temperatures,
+                truncated_sampling=(
+                    not all_greedy
+                    and draft_sampler.truncated_sampling
+                    and truncated_sampling_supported
+                ),
             )
             if draft_sampler.confidence_out is not None:
                 folded_confidence = draft_sampler.confidence_out[:bs]

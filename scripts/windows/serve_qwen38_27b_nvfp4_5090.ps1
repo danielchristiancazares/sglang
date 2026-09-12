@@ -3,12 +3,14 @@
 Starts the native NVFP4 Qwen3.8-27B checkpoint through Windows SGLang.
 
 .DESCRIPTION
-The measured defaults select the native-Windows exact-200K record profile:
-the selective target-NVFP4 RadixArk checkpoint, 7,680-token prefill chunks,
-Cutlass prefill plus Marlin gate/up decode, native draft-k1 proposal
-construction, TRT-LLM/XQA target and draft decode, FP4-only FlashInfer
-autotuning, FlashInfer sampling, FP8 draft KV, the minimum safe 128 MiB
-workspace, and partial torch compilation.
+The measured defaults select the native-Windows DSpark-v2 exact-200K profile:
+the selective target-NVFP4 RadixArk checkpoint, matching online-FP8 DSpark-v2
+draft, 4,096-token prefill chunks, five FP32 Mamba cache slots, FP8 target and
+draft KV, Cutlass prefill plus Marlin gate/up decode, TRT-LLM/XQA target decode,
+Triton draft attention, folded draft proposal/sampling graphs, FlashInfer
+sampling, static target-graph draft-KV commit, and the minimum safe 128 MiB
+workspace. NEXTN remains available as an explicit compatibility and control
+mode.
 The checkpoint is loaded as a standalone language model, preserving VRAM that
 the unused vision encoder would otherwise consume.
 #>
@@ -27,19 +29,19 @@ param(
     [ValidateRange(2048, 262144)]
     [int] $MaxTotalTokens = 200000,
     [ValidateRange(0.1, 0.98)]
-    [double] $MemoryFraction = 0.94,
+    [double] $MemoryFraction = 0.98,
     [ValidateSet('auto', 'fp8_e4m3', 'bf16', 'bfloat16', 'nvfp4', 'fp4_mx_block16')]
-    [string] $KvCacheDtype = 'auto',
+    [string] $KvCacheDtype = 'fp8_e4m3',
     [ValidateSet(1, 8, 16, 32, 64, 128)]
     [int] $PageSize = 64,
     [ValidateRange(1, 1024)]
-    [int] $MaxMambaCacheSize = 4,
+    [int] $MaxMambaCacheSize = 5,
     [ValidateSet('no_buffer', 'extra_buffer', 'extra_buffer_lazy')]
     [string] $MambaRadixCacheStrategy = 'extra_buffer_lazy',
     [ValidateSet('float32', 'bfloat16', 'float16')]
     [string] $MambaSsmDtype = 'float32',
     [ValidateRange(256, 16384)]
-    [int] $ChunkedPrefillSize = 7680,
+    [int] $ChunkedPrefillSize = 4096,
     [ValidateRange(1, 64)]
     [int] $TritonAttentionNumKvSplits = 16,
     [ValidateRange(1, 16)]
@@ -57,11 +59,11 @@ param(
     [ValidateSet('triton', 'flashinfer', 'trtllm_mha')]
     [string] $DecodeAttentionBackend = 'trtllm_mha',
     [ValidateSet('triton', 'flashinfer', 'trtllm_mha')]
-    [string] $SpeculativeDraftAttentionBackend = 'trtllm_mha',
+    [string] $SpeculativeDraftAttentionBackend = 'triton',
     [ValidateSet('prefill', 'decode')]
     [string] $SpeculativeAttentionMode = 'decode',
     [ValidateSet('', 'unquant', 'fp8', 'mxfp8', 'nvfp4_online')]
-    [string] $SpeculativeDraftModelQuantization = '',
+    [string] $SpeculativeDraftModelQuantization = 'fp8',
     [ValidateSet('pytorch', 'flashinfer')]
     [string] $SamplingBackend = 'flashinfer',
     [ValidateSet('auto', 'flashinfer_cutlass', 'flashinfer_cutedsl', 'flashinfer_trtllm')]
@@ -76,8 +78,13 @@ param(
     [string] $LinearAttentionVerifyBackend = 'triton',
     [ValidateSet('auto', 'flashinfer_cutlass', 'flashinfer_cudnn', 'hybrid_marlin', 'marlin')]
     [string] $Fp4GemmBackend = 'hybrid_marlin',
+    [ValidateSet('NEXTN', 'DSPARK')]
+    [string] $SpeculativeAlgorithm = 'DSPARK',
+    [string] $SpeculativeDraftModelPath = (Join-Path $env:USERPROFILE 'models\Qwen3.8-27B-DSpark-v2'),
+    [ValidateRange(1, 64)]
+    [int] $SpeculativeDsparkBlockSize = 7,
     [ValidateRange(0, 8)]
-    [int] $SpeculativeNumSteps = 2,
+    [int] $SpeculativeNumSteps = 1,
     [ValidateRange(1, 16)]
     [int] $SpeculativeNumDraftTokens = 3,
     [ValidateRange(1, 16)]
@@ -103,8 +110,10 @@ param(
     [switch] $SpeculativeAdaptive,
     [string] $SpeculativeAdaptiveConfig = '',
     [switch] $EnableFlashInferAutotune = $true,
-    [switch] $EnableFlashInferAutotuneExtend = $true,
+    [switch] $EnableFlashInferAutotuneExtend = $false,
     [switch] $EnableTopK1DeltaProposal = $true,
+    [switch] $EnableDSparkTruncatedDraftSampling,
+    [switch] $EnableDSparkStaticGraphKvCommit = $true,
     [string[]] $FlashInferAutotuneSkipOps = @('fp8_gemm'),
     [ValidateSet('default', 'max-autotune-no-cudagraphs')]
     [string] $TorchCompileMode = 'default',
@@ -112,7 +121,7 @@ param(
     [int] $FlashInferWorkspaceSizeMB = 128,
     [ValidateRange(0, 16)]
     [int] $SimulateAcceptedLength = 0,
-    [switch] $DisableTorchCompile,
+    [switch] $DisableTorchCompile = $true,
     [switch] $DisableIncrementalStreamingOutput
 )
 
@@ -194,76 +203,108 @@ if (-not $DisableTorchCompile) {
 }
 
 if ($SpeculativeNumSteps -gt 0) {
-    $ServeArgs += @(
-        '--speculative-algorithm', 'NEXTN'
-        '--speculative-num-steps', $SpeculativeNumSteps
-        '--speculative-eagle-topk', $SpeculativeEagleTopK
-        '--speculative-num-draft-tokens', $SpeculativeNumDraftTokens
-        '--speculative-draft-attention-backend', $SpeculativeDraftAttentionBackend
-        '--speculative-attention-mode', $SpeculativeAttentionMode
-        '--speculative-tree-sampling-mode', $SpeculativeTreeSamplingMode
-        '--enable-linear-replayssm-spec'
-    )
-    if ($SpeculativeUseRejectionSampling) {
-        $ServeArgs += '--speculative-use-rejection-sampling'
-    }
-    if ($SpeculativeDeviceResidentCycle) {
-        $ServeArgs += '--speculative-device-resident-cycle'
-    }
-    if ($SpeculativeDraftModelQuantization) {
+    if ($SpeculativeAlgorithm -eq 'DSPARK') {
+        if ([string]::IsNullOrWhiteSpace($SpeculativeDraftModelPath)) {
+            throw 'SpeculativeDraftModelPath is required for DSPARK'
+        }
+        $ResolvedSpeculativeDraftModelPath =
+            (Resolve-Path -LiteralPath $SpeculativeDraftModelPath).Path
+        $ResolvedSpeculativeDraftModelQuantization =
+            if ($SpeculativeDraftModelQuantization) {
+                $SpeculativeDraftModelQuantization
+            }
+            else {
+                'unquant'
+            }
         $ServeArgs += @(
-            '--speculative-draft-model-quantization', $SpeculativeDraftModelQuantization
+            '--speculative-algorithm', 'DSPARK'
+            '--speculative-draft-model-path', $ResolvedSpeculativeDraftModelPath
+            '--speculative-dspark-block-size', $SpeculativeDsparkBlockSize
+            '--speculative-num-steps', 1
+            '--speculative-eagle-topk', 1
+            '--speculative-draft-model-quantization',
+            $ResolvedSpeculativeDraftModelQuantization
+            '--speculative-draft-attention-backend',
+            $SpeculativeDraftAttentionBackend
+            '--speculative-attention-mode', $SpeculativeAttentionMode
+            '--enable-linear-replayssm-spec'
         )
     }
-    if (($SpeculativeUseRejectionSampling -or $SpeculativeAlignTreeScoring -or $SpeculativeTreeSamplingMode -eq 'swor') -and $SpeculativeDraftSamplingTopK -gt 0) {
+    else {
         $ServeArgs += @(
-            '--speculative-draft-sampling-top-k', $SpeculativeDraftSamplingTopK
+            '--speculative-algorithm', 'NEXTN'
+            '--speculative-num-steps', $SpeculativeNumSteps
+            '--speculative-eagle-topk', $SpeculativeEagleTopK
+            '--speculative-num-draft-tokens', $SpeculativeNumDraftTokens
+            '--speculative-draft-attention-backend',
+            $SpeculativeDraftAttentionBackend
+            '--speculative-attention-mode', $SpeculativeAttentionMode
+            '--speculative-tree-sampling-mode', $SpeculativeTreeSamplingMode
+            '--enable-linear-replayssm-spec'
         )
-    }
-    if ($SpeculativeTreeDepthDiscount -ne 1.0) {
-        $ServeArgs += @(
-            '--speculative-tree-depth-discount', $SpeculativeTreeDepthDiscount
-        )
-    }
-    if ($SpeculativeSworCollectPathStats) {
-        $ServeArgs += '--speculative-swor-collect-path-stats'
-    }
-    if ($SpeculativeSworCollectOverlapStats) {
-        $ServeArgs += '--speculative-swor-collect-overlap-stats'
-    }
-    if ($SpeculativePqCapturePath) {
-        $ServeArgs += @(
-            '--speculative-pq-capture-path',
-            ([System.IO.Path]::GetFullPath($SpeculativePqCapturePath)),
-            '--speculative-pq-capture-max-cycles',
-            $SpeculativePqCaptureMaxCycles
-        )
-    }
-    if ($SpeculativeGraphGapTimingPath) {
-        $ServeArgs += @(
-            '--speculative-graph-gap-timing-path',
-            ([System.IO.Path]::GetFullPath($SpeculativeGraphGapTimingPath)),
-            '--speculative-graph-gap-timing-max-samples',
-            $SpeculativeGraphGapTimingMaxSamples
-        )
-    }
-    if ($SpeculativeSworTopology) {
-        $ServeArgs += @('--speculative-swor-topology', $SpeculativeSworTopology)
+        if ($SpeculativeUseRejectionSampling) {
+            $ServeArgs += '--speculative-use-rejection-sampling'
+        }
+        if ($SpeculativeDeviceResidentCycle) {
+            $ServeArgs += '--speculative-device-resident-cycle'
+        }
+        if ($SpeculativeDraftModelQuantization) {
+            $ServeArgs += @(
+                '--speculative-draft-model-quantization',
+                $SpeculativeDraftModelQuantization
+            )
+        }
+        if (($SpeculativeUseRejectionSampling -or $SpeculativeAlignTreeScoring -or $SpeculativeTreeSamplingMode -eq 'swor') -and $SpeculativeDraftSamplingTopK -gt 0) {
+            $ServeArgs += @(
+                '--speculative-draft-sampling-top-k',
+                $SpeculativeDraftSamplingTopK
+            )
+        }
+        if ($SpeculativeTreeDepthDiscount -ne 1.0) {
+            $ServeArgs += @(
+                '--speculative-tree-depth-discount', $SpeculativeTreeDepthDiscount
+            )
+        }
+        if ($SpeculativeSworCollectPathStats) {
+            $ServeArgs += '--speculative-swor-collect-path-stats'
+        }
+        if ($SpeculativeSworCollectOverlapStats) {
+            $ServeArgs += '--speculative-swor-collect-overlap-stats'
+        }
+        if ($SpeculativePqCapturePath) {
+            $ServeArgs += @(
+                '--speculative-pq-capture-path',
+                ([System.IO.Path]::GetFullPath($SpeculativePqCapturePath)),
+                '--speculative-pq-capture-max-cycles',
+                $SpeculativePqCaptureMaxCycles
+            )
+        }
+        if ($SpeculativeGraphGapTimingPath) {
+            $ServeArgs += @(
+                '--speculative-graph-gap-timing-path',
+                ([System.IO.Path]::GetFullPath($SpeculativeGraphGapTimingPath)),
+                '--speculative-graph-gap-timing-max-samples',
+                $SpeculativeGraphGapTimingMaxSamples
+            )
+        }
+        if ($SpeculativeSworTopology) {
+            $ServeArgs += @('--speculative-swor-topology', $SpeculativeSworTopology)
+        }
+        if ($SpeculativeAdaptive) {
+            $ServeArgs += '--speculative-adaptive'
+            if ($SpeculativeAdaptiveConfig) {
+                $ResolvedAdaptiveConfig =
+                    (Resolve-Path -LiteralPath $SpeculativeAdaptiveConfig).Path
+                $ServeArgs += @(
+                    '--speculative-adaptive-config', $ResolvedAdaptiveConfig
+                )
+            }
+        }
     }
     if ($SpeculativeDraftKvCacheDtype) {
         $ServeArgs += @(
             '--speculative-draft-kv-cache-dtype', $SpeculativeDraftKvCacheDtype
         )
-    }
-    if ($SpeculativeAdaptive) {
-        $ServeArgs += '--speculative-adaptive'
-        if ($SpeculativeAdaptiveConfig) {
-            $ResolvedAdaptiveConfig =
-                (Resolve-Path -LiteralPath $SpeculativeAdaptiveConfig).Path
-            $ServeArgs += @(
-                '--speculative-adaptive-config', $ResolvedAdaptiveConfig
-            )
-        }
     }
 }
 
@@ -277,6 +318,16 @@ $HadFlashInferAutotuneExtend = Test-Path Env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND
 $PreviousFlashInferAutotuneExtend = $env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND
 $HadTopK1DeltaProposal = Test-Path Env:SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL
 $PreviousTopK1DeltaProposal = $env:SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL
+$HadSparseTopPRenorm = Test-Path Env:SGLANG_OPT_SPARSE_TOP_P_RENORM
+$PreviousSparseTopPRenorm = $env:SGLANG_OPT_SPARSE_TOP_P_RENORM
+$HadDSparkTruncatedDraftSampling =
+    Test-Path Env:SGLANG_DSPARK_TRUNCATED_DRAFT_SAMPLING
+$PreviousDSparkTruncatedDraftSampling =
+    $env:SGLANG_DSPARK_TRUNCATED_DRAFT_SAMPLING
+$HadDSparkStaticGraphKvCommit =
+    Test-Path Env:SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT
+$PreviousDSparkStaticGraphKvCommit =
+    $env:SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT
 
 try {
     if (-not $DisableTorchCompile) {
@@ -289,11 +340,17 @@ try {
     if ($SimulateAcceptedLength -gt 0) {
         $env:SGLANG_SIMULATE_ACC_LEN = $SimulateAcceptedLength
     }
-    if ($EnableFlashInferAutotuneExtend) {
-        $env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND = '1'
-    }
-    if ($EnableTopK1DeltaProposal) {
+    $env:SGLANG_FLASHINFER_AUTOTUNE_EXTEND =
+        if ($EnableFlashInferAutotuneExtend) { '1' } else { '0' }
+    if ($EnableTopK1DeltaProposal -and $SpeculativeAlgorithm -eq 'NEXTN') {
         $env:SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL = '1'
+    }
+    if ($SpeculativeAlgorithm -eq 'DSPARK') {
+        $env:SGLANG_OPT_SPARSE_TOP_P_RENORM = '1'
+        $env:SGLANG_DSPARK_TRUNCATED_DRAFT_SAMPLING =
+            if ($EnableDSparkTruncatedDraftSampling) { '1' } else { '0' }
+        $env:SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT =
+            if ($EnableDSparkStaticGraphKvCommit) { '1' } else { '0' }
     }
     & $SGLang @ServeArgs
     $ExitCode = $LASTEXITCODE
@@ -330,6 +387,28 @@ finally {
     }
     else {
         Remove-Item Env:SGLANG_OPT_SPEC_TOPK1_DELTA_PROPOSAL -ErrorAction SilentlyContinue
+    }
+    if ($HadSparseTopPRenorm) {
+        $env:SGLANG_OPT_SPARSE_TOP_P_RENORM = $PreviousSparseTopPRenorm
+    }
+    else {
+        Remove-Item Env:SGLANG_OPT_SPARSE_TOP_P_RENORM -ErrorAction SilentlyContinue
+    }
+    if ($HadDSparkTruncatedDraftSampling) {
+        $env:SGLANG_DSPARK_TRUNCATED_DRAFT_SAMPLING =
+            $PreviousDSparkTruncatedDraftSampling
+    }
+    else {
+        Remove-Item Env:SGLANG_DSPARK_TRUNCATED_DRAFT_SAMPLING `
+            -ErrorAction SilentlyContinue
+    }
+    if ($HadDSparkStaticGraphKvCommit) {
+        $env:SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT =
+            $PreviousDSparkStaticGraphKvCommit
+    }
+    else {
+        Remove-Item Env:SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT `
+            -ErrorAction SilentlyContinue
     }
 }
 

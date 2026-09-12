@@ -271,6 +271,19 @@ if sys.platform == "win32":
                 aux_hidden_states,
             )
 
+        def get_input_embeddings(self):
+            return self.model.get_input_embeddings()
+
+        def set_dflash_layers_to_capture(self, layers_to_capture: list[int]):
+            if not self.pp_group.is_last_rank:
+                return
+            if layers_to_capture is None:
+                raise ValueError(
+                    "DFLASH requires explicit layer ids for aux hidden capture."
+                )
+            self.capture_aux_hidden_states = True
+            self.model.set_dflash_layers_to_capture(layers_to_capture)
+
 else:
     from sglang.srt.models.qwen3_vl import Qwen3VLForConditionalGeneration
 from sglang.srt.models.utils import (

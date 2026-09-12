@@ -1235,6 +1235,24 @@ class HybridLinearAttnBackend(AttentionBackend):
         # only hit by the direct callers. Chain layout only (topk <= 1), so
         # accept_lens == last_correct_step_indices + 1.
         mamba_pool = req_pool.mamba_pool
+        if getattr(mamba_pool, "replayssm_spec_fold", False) and not getattr(
+            mamba_pool, "replayssm_is_kda", False
+        ):
+            from sglang.kernels.ops.attention.fla.gdn_replayssm_spec_fold import (
+                commit_gdn_replayssm_fold_after_verify,
+            )
+
+            commit_gdn_replayssm_fold_after_verify(
+                spec_state=mamba_caches,
+                state_batch_indices=state_indices_tensor,
+                accept_lens=last_correct_step_indices + 1,
+                last_correct_step_indices=last_correct_step_indices,
+                mamba_track_indices=mamba_track_indices,
+                mamba_steps_to_track=mamba_steps_to_track,
+                null_block_id=-1,
+            )
+            return
+
         if getattr(mamba_pool, "replayssm_is_kda", False):
             from sglang.kernels.ops.attention.fla.kda_replayssm_spec_decode import (
                 commit_kda_replayssm_after_verify,

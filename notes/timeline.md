@@ -838,6 +838,56 @@ code changes, or process state matter.
   continuation, and language-only gates pass. The named Codex profile last
   ran on PERF-A016 and remains PERF-A021's final promotion gate.
 
+## 2026-09-01
+
+### 03:07–06:18 — DSpark-v2 crosses 150 tok/s and becomes the Windows default
+
+- The trained Qwen3.8-27B DSpark-v2 draft was integrated with online-FP8
+  weights, gamma-seven linear proposals, eight-row target verification, Triton
+  draft attention, FP8 target/draft KV, five FP32 Mamba slots, one admitted
+  request, 4,096-token prefill chunks, and exact 200K target/draft pools.
+- Trace attribution isolated roughly 1.67 ms between the captured target and
+  draft graphs. Static verification had already reserved all eight physical
+  draft-cache rows, making it exact to project/write every target-hidden row in
+  the target graph and leave rejected rows unreachable. The target-to-draft gap
+  fell to about 1.10 ms and full cycle wall moved 18.248 -> 17.98 ms without
+  deleting device computation or changing deterministic acceptance.
+- Reduced 32K ordinary sampling first averaged **151.694 tok/s**. The first
+  exact-200K full-pool window averaged **155.961 tok/s**. After promoting the
+  process-scoped switch, a literal argument-free restart averaged
+  **162.500 tok/s** over `[151.139,165.951,151.000,191.357,153.054]`; every
+  default-process sample individually reached 150.
+- The argument-free launch repeated exact `199000+16`, coherent `703`, exactly
+  one parsed multiply call plus clean continuation, thinking-disabled `READY`,
+  image/audio false, native acceptance, standalone OpenCode2, and Codex 0.152.0
+  Code Mode with exactly one successful command and exact `CODEX TOOL READY`.
+  A first default Codex turn transported the output correctly but called the
+  nonempty status empty in private narration; the bounded retained retry read
+  it accurately. Both left Tombstead unchanged and no retained process.
+- `SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT` is now a reversible DSpark-only
+  launcher default. NEXTN, sparse/truncated DSpark experiments, tree/SWOR, and
+  the independent native-controller lane remain preserved but unselected.
+
+## 2026-09-08
+
+### 18:57-19:26 - install and benchmark NVIDIA's stock mixed-precision checkpoint
+
+- Downloaded and hash-verified immutable NVIDIA revision
+  `fed99d815f4e8c7c616dd3dd6780076e26d5fb61` into a separate local artifact.
+  The existing Windows launcher and dependencies support it without source
+  changes.
+- Real-200K target-only serving passes sampled reasoning, arithmetic, tools,
+  continuation, non-thinking output, and exact `199000+16`. Five sampled
+  `6213+512` requests average **64.064 tok/s**; the identical original
+  RadixArk target-only control averages **63.996 tok/s**, a practical tie.
+- The earlier DSpark control was measured under substantially higher desktop
+  residency and is excluded from this checkpoint-only comparison. No
+  production default or capacity gate changes; NVIDIA speculative/client
+  promotion and published accuracy remain unqualified. All task-owned
+  servers are stopped, with port 30000 free and ordinary display residency
+  restored. Full raw results are retained in
+  `benchmark/windows/nvidia_qwen38_20260908.json`.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
@@ -845,11 +895,12 @@ Use these results when older “final” checkpoints conflict:
 | Topic | Current value | Supersedes |
 |---|---|---|
 | Fixed `6213/512` | `171.263 tok/s` safe five-run mean | `167.776`, `162.726`, `159.973`, `156.968`, `135.167`, `86.016` |
-| Real sampled `6213/512` | `122.712 tok/s` ten-run mean | `121.075`, `117.794`, `110.750`, `98.126`, `96.110` |
-| Near-limit `199000/16` record | `3078.058` prompt, `114.617` generation tok/s on launcher-default selective target NVFP4 + chunk 7680 + native draft-k1 q + gate/up hybrid Marlin | `3048.086/112.499`, `3016.444/112.355`, `2838.980/107.253`, `2570.356`, `2429.153`, `2423.812`, `2200.563` |
+| Real sampled `6213/512` | **`162.500 tok/s`** argument-free DSpark-v2 five-run mean; independent full-pool mean **155.961** | `122.712`, `121.075`, `117.794`, `110.750`, `98.126`, `96.110` |
+| Near-limit linear record | `3190.815` prompt, `121.616` generation tok/s on the retained NEXTN/selective-checkpoint control | `3078.058/114.617`, `3048.086/112.499`, `3016.444/112.355`, `2838.980/107.253` |
+| Current DSpark-v2 exact-capacity proof | Exact `199000+16` at `3118.215` prompt tok/s, `63.818572 s` TTFT, and `64.236571 s` E2E | explicit-switch proof `3118.323`, `63.816352 s`, `64.233185 s` |
 | Production capacity | `200000` context and token pools | rejected `232000` operating-margin experiment |
-| Speculation geometry | 2 steps / 3 draft tokens | 3 steps / 4 draft tokens |
-| Target verification | TRT-LLM MHA/XQA | FlashInfer-prefill verify route |
-| Draft extension | CUDA graph captured | eager draft extension |
-| Draft-q alignment | top-k one with native direct one-hot q inside the single multi-step CUDA graph | top-k 20 aligned proposal path and eager/per-depth alignment |
+| Speculation geometry | Trained DSpark-v2, one proposal step, block size 7 / eight verify rows | NEXTN 2 steps / 3 draft tokens; 3 steps / 4 draft tokens |
+| Target verification | TRT-LLM MHA/XQA plus static graph-side draft-KV commit | eager accepted-row commit; FlashInfer-prefill verify route |
+| Draft proposal | Captured DSpark proposal/sampling graph with Triton attention | separate captured/eager NEXTN draft extension |
+| Draft-q source | Trained rank-256 DSpark-v2 Markov distribution with ordinary rejection | NEXTN top-k-one direct one-hot q and top-k-20 aligned proposals |
 | Tree mode | opt-in exact target-only/SWOR infrastructure; linear production default | current-q M8/M12/depth/topology-only candidates |
