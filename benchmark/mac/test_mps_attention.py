@@ -84,8 +84,62 @@ def test_prepare_full_attention() -> None:
         torch.testing.assert_close(actual.cpu(), expected, rtol=2e-5, atol=2e-5)
 
 
+def test_decode_gqa_online() -> None:
+    """Exercise the bounded-scratch path selected by a cache above 7,936."""
+    torch.manual_seed(29)
+    batch, q_heads, kv_heads, head_dim = 1, 6, 2, 64
+    cache_slots, req_stride, seq_len = 8000, 32, 17
+    scale = 1.0 / math.sqrt(head_dim)
+
+    query = torch.randn(batch, q_heads, head_dim)
+    key = torch.randn(batch, kv_heads, head_dim)
+    value = torch.randn_like(key)
+    key_cache = torch.randn(cache_slots, kv_heads, head_dim)
+    value_cache = torch.randn_like(key_cache)
+    cache_locations = torch.tensor([20], dtype=torch.int64)
+    req_pool_indices = torch.tensor([0], dtype=torch.int64)
+    seq_lens = torch.tensor([seq_len], dtype=torch.int64)
+    req_to_token = torch.zeros(1, req_stride, dtype=torch.int32)
+    req_to_token[0, : seq_len - 1] = torch.arange(seq_len - 1, dtype=torch.int32)
+    req_to_token[0, seq_len - 1] = cache_locations[0].to(torch.int32)
+
+    expected_key_cache = key_cache.clone()
+    expected_value_cache = value_cache.clone()
+    expected_key_cache[cache_locations] = key
+    expected_value_cache[cache_locations] = value
+    expected = torch.empty_like(query)
+    heads_per_kv = q_heads // kv_heads
+    slots = req_to_token[0, :seq_len].long()
+    for query_head in range(q_heads):
+        kv_head = query_head // heads_per_kv
+        scores = (expected_key_cache[slots, kv_head] @ query[0, query_head]) * scale
+        expected[0, query_head] = (
+            torch.softmax(scores, dim=0).unsqueeze(0)
+            @ expected_value_cache[slots, kv_head]
+        ).squeeze(0)
+
+    actual_key_cache = key_cache.to("mps")
+    actual_value_cache = value_cache.to("mps")
+    actual = decode_gqa(
+        query.to("mps"),
+        key.to("mps"),
+        value.to("mps"),
+        actual_key_cache,
+        actual_value_cache,
+        cache_locations.to("mps"),
+        req_to_token.to("mps"),
+        req_pool_indices.to("mps"),
+        seq_lens.to("mps"),
+        scale,
+    ).cpu()
+    torch.testing.assert_close(actual, expected.reshape(batch, -1), rtol=3e-5, atol=3e-5)
+    torch.testing.assert_close(actual_key_cache.cpu(), expected_key_cache)
+    torch.testing.assert_close(actual_value_cache.cpu(), expected_value_cache)
+
+
 def main() -> None:
     test_prepare_full_attention()
+    test_decode_gqa_online()
     torch.manual_seed(17)
     batch, q_heads, kv_heads, head_dim = 2, 24, 4, 256
     cache_slots, req_stride = 64, 64
