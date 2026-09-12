@@ -2,7 +2,21 @@
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), Windows
 2026-09-12 DeepSeek V4.1 admission and pinned TurboQuant35 layouts; Apple
-2026-09-02 03:35 PDT. The September 12 Git integration preserves both records.
+2026-09-02 03:35 PDT; Git integration 2026-09-12 15:50 PDT. The upstream
+rebase preserves both platforms' measurement records.
+
+**Source handoff:** `main` is rebased onto `upstream/main` at
+`b5a2aebc7eccd4ee0afa8c435585d7462d7d7a61`, with merge topology retained.
+The original tip `296e82e140a21a838c070e1be85e9417d0805560` remains at
+`backup/pre-upstream-rebase-20260912-296e82e140`. Repository-local rerere is
+enabled with automatic staging disabled. Nothing was pushed. Focused Python
+tests, Rust compilation, and PowerShell parsing pass; the Rust library suite
+has three failures in unchanged upstream Windows-path handling, detailed in
+the experiment log. The Windows launcher and retained native implementation
+trees match the backup. The rebased source has not received GPU, full-model,
+or Apple runtime qualification, so the performance records below remain
+historical measurements. The final read-only check found no port-30000
+listener or Python/SGLang/compiler process.
 
 **Windows runtime at its recorded reconciliation:** no SGLang server is running
 and port 30000 is free. All verified SGLang, benchmark, and CUDA compiler processes are

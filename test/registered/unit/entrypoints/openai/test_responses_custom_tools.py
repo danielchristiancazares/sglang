@@ -76,13 +76,6 @@ class CustomToolShimTestCase(CustomTestCase):
         self.assertEqual(list(tool.function.parameters["properties"]), ["input"])
         self.assertEqual(tool.function.parameters["required"], ["input"])
 
-        nameless = ResponsesRequest(
-            model="x", input="hi", tools=[{"type": "custom"}], store=False
-        )
-        self.assertEqual(
-            OpenAIServingResponses._response_tools_to_chat_tools(nameless), []
-        )
-
     def test_grammar_format_is_described_to_the_model(self):
         request = _custom_request(
             tools=[

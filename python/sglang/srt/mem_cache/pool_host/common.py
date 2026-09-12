@@ -8,7 +8,6 @@ from collections import defaultdict
 import torch
 
 from sglang.srt.environ import envs
-from sglang.srt.mem_cache.storage.mmap import alloc_mmap
 from sglang.srt.runtime_context import get_memory
 
 logger = logging.getLogger(__name__)
@@ -23,6 +22,8 @@ class HostTensorAllocator:
         self.dims = None
 
     def allocate(self, dims: tuple, dtype: torch.dtype, device: str) -> torch.Tensor:
+        from sglang.srt.mem_cache.storage.mmap import alloc_mmap
+
         assert device == "cpu", (
             f"HostTensorAllocator only supports CPU allocations; got device={device!r}"
         )

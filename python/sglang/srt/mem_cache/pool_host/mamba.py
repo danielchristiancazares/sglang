@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from typing import Optional
 
@@ -22,7 +23,7 @@ from sglang.srt.utils import is_cuda, is_hip
 
 _is_cuda = is_cuda()
 _is_hip = is_hip()
-if _is_cuda or _is_hip:
+if (_is_cuda or _is_hip) and sys.platform != "win32":
     from sgl_kernel.kvcacheio import (
         transfer_kv_all_layer_direct_lf_pf,
         transfer_kv_direct,

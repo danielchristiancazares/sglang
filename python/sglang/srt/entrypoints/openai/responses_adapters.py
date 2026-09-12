@@ -73,7 +73,9 @@ def custom_tool_names(tools: Any) -> Set[str]:
 
 
 def encode_custom_tool_input(payload: str) -> str:
-    return json.dumps({CUSTOM_TOOL_INPUT_KEY: payload}, ensure_ascii=False)
+    return json.dumps(
+        {CUSTOM_TOOL_INPUT_KEY: payload}, ensure_ascii=False, separators=(",", ":")
+    )
 
 
 def decode_custom_tool_input(arguments: str) -> str:

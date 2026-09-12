@@ -236,19 +236,19 @@ class TestDraftPerRunnerConfig(CustomTestCase):
         self.assertIn("torch_compile_mode=default", startup)
 
     def test_disabled_compile_mode_is_explicit(self):
-        server_args = SimpleNamespace(enable_torch_compile=False)
+        self._seed(enable_torch_compile=False)
         with patch.dict(
             os.environ,
             {"SGLANG_TORCH_COMPILE_MODE": "max-autotune-no-cudagraphs"},
         ):
-            self.assertEqual(_torch_compile_startup_mode(server_args), "disabled")
+            self.assertEqual(_torch_compile_startup_mode(), "disabled")
 
     def test_enabled_compile_mode_uses_the_wrapper_default(self):
-        server_args = SimpleNamespace(enable_torch_compile=True)
+        self._seed(enable_torch_compile=True)
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("SGLANG_TORCH_COMPILE_MODE", None)
             self.assertEqual(
-                _torch_compile_startup_mode(server_args),
+                _torch_compile_startup_mode(),
                 "max-autotune-no-cudagraphs",
             )
 

@@ -25036,3 +25036,144 @@ mean 13.929045  17.125658 446.051        39.730
   tree untouched; native builds, Metal execution, graph replay, and full-model
   gates were not rerun. The PR must distinguish the fresh CPU/static checks
   from historical native accuracy and performance evidence.
+
+### 2026-09-12 15:50 PDT - upstream rebase and repository-local rerere
+
+- The user requested fetching upstream, rebasing, and setting up rerere.
+  Started on clean `main` at
+  `296e82e140a21a838c070e1be85e9417d0805560`, also the `origin/main` tip.
+  Preserved that history at
+  `backup/pre-upstream-rebase-20260912-296e82e140`. Existing signed commit
+  IDs and measurements continue to refer to that original history.
+- Ran `git fetch upstream`, advancing `upstream/main` to
+  `b5a2aebc7eccd4ee0afa8c435585d7462d7d7a61`, and configured
+  `git config --local rerere.enabled true` plus
+  `git config --local rerere.autoupdate false`. Conflict resolutions are
+  retained in this checkout's rerere cache; reused resolutions remain
+  unstaged for review. No global Git configuration was changed.
+- `git -c core.editor=true rebase --rebase-merges upstream/main` completed
+  all 240 replay actions at `9359a09b06b8427383f638da361689746dd09fdf`.
+  Retained all three original merges. Git skipped 60 already-applied commits;
+  explicitly skipped `abf87f61e3` because upstream superseded its empty-batch
+  guards, and `a1e3ce1797` because its Rust-loader backport matches upstream
+  `67e12131df` (range-diff showed only contextual differences).
+  Before the follow-up integration commit, upstream was an ancestor and
+  `git rev-list --left-right --count upstream/main...HEAD` returned `0 227`.
+  `origin/main` stayed at the original tip; the rewritten branch was
+  1,732 ahead / 289 behind it. Nothing was pushed.
+- Conflict resolution preserved the native-Windows, MPS/MLX, hybrid-Marlin,
+  tree/SWOR, DSpark, and Codex paths across upstream's file and API refactors.
+  Existing local argument declarations now live in the upstream
+  `arg_groups/fields` modules and field order, with validation in the
+  corresponding hooks. Preserved upstream's resolved configuration
+  accessors, KV-index translation, graph selected-row interfaces, and
+  tensor-parallel synchronization. Intel-MPS compatibility follows the
+  consolidated `_platform_stubs.py`; the removed `_mps_stub.py` stays removed.
+- Rust shared-memory adaptations now live under `multi_modality`, with typed
+  configuration in `message/config.rs` and the existing Python config bridge.
+  Preserved local template kwargs, language-only configuration, and model
+  capability metadata. The PyO3 constructor accepts optional JSON text for
+  template kwargs. Responses integration retains qualified `functions.exec`
+  names, alternate payload keys/direct-shell conversion, custom-tool output
+  flattening, and upstream incremental streaming.
+- Verified the following paths are byte-identical to the backup:
+  `native/`, `benchmark/native/`,
+  `python/sglang/srt/hardware_backend/mlx/native/`, and
+  `scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1`. Preserved both
+  platforms' recovery ledgers and removed an old stray merge separator.
+  No checkpoint, protected compatibility header, launcher default, or
+  benchmark selection changed.
+- Focused validation exposed integration and host-platform issues. Restored
+  lazy imports for disabled DeepGEMM compilation (`fcntl` is unavailable on
+  Windows) and the unused POSIX mmap allocator (`mmap.PROT_READ` is absent).
+  Carried the existing Windows `sgl_kernel.kvcacheio` import guard into the
+  newly separated DSA and Mamba host-cache modules. Tokenizer configuration
+  reads now explicitly use UTF-8. Retained compact custom-tool JSON encoding;
+  removed the upstream test's nameless-tool permissive subcase because the
+  preserved protocol validator and its test require a name.
+- A configuration test caught startup provenance reading the operator's
+  original compile flag after upstream moved resolved capture state into
+  `RuntimeContext`. Both startup and server-info reporting now read the same
+  capture flag as the decode wrapper. Adapted existing FlashInfer fixtures to
+  the published schedule configuration and single-rank TP group; adapted the
+  existing compile-mode tests to the same configuration owner.
+- Environment: native Windows, PowerShell 7, the existing `.venv` Python
+  3.13.14, and pinned Rust 1.97.1/MSVC. Python dependencies were unchanged.
+  Ruff ran from uv's isolated tool cache. Cargo used the committed lockfile,
+  `PYO3_PYTHON=C:\Users\Daniel\sglang\.venv\Scripts\python.exe`, and two
+  compilation jobs.
+- Python validation, with paths relative to `test/registered/unit/`:
+  - `.\.venv\Scripts\python.exe -m pytest -q --tb=short` over
+    `entrypoints/openai/test_responses_protocol.py`,
+    `entrypoints/openai/test_responses_custom_tools.py`,
+    `entrypoints/openai/test_serving_responses.py`,
+    `entrypoints/openai/test_serving_responses_stream.py`,
+    `function_call/test_function_call_parser.py`,
+    `managers/test_process_lifecycle.py`, and
+    `managers/scheduler_components/test_invariant_checker.py`:
+    **358 passed, 20 subtests passed**, 12.99 s. The preceding run without
+    the separate protocol suite had 318 passes and 17 failures: two
+    custom-tool expectation differences and 15 UTF-8 decoding failures.
+  - The same pytest flags over `test_server_args_namespaces.py`,
+    `test_server_args_migration.py`, `test_server_args_cli_metadata.py`,
+    `configs/test_model_config.py`,
+    `managers/test_tokenizer_manager_rid_cleanup.py`,
+    `model_executor/runner/test_flashinfer_autotune.py`,
+    `spec/test_draft_per_runner_config.py`, and
+    `spec/test_spec_cpu_overlap_constraint.py` initially produced
+    **77 passed, 4 failed, 26 subtests passed**, 21.32 s. The four failures
+    were the resolved-configuration/fixture issues described above.
+  - After those corrections, the two affected files plus
+    `model_executor/runner/test_flashinfer_autotune_sync.py` passed
+    **26 tests**, 41.18 s, including real CPU Gloo synchronization. An
+    isolated collection attempt first exposed the DSA/Mamba import guards
+    that the larger suite's kernel mocks had masked; it passed after the
+    guards followed the file split.
+  - `test_runtime_context_config_bags.py`,
+    `server_args/test_model_config_cache.py`, and
+    `model_executor/model_runner_components/test_spec_aux_hidden_state.py`
+    passed **27 tests, 8 subtests** in the 10.09 s combined run with
+    `test_global_config_read_ratchet.py`. That last file's two source scans
+    initially failed on Windows CP1252 decoding. Running its unchanged
+    tests with `.\.venv\Scripts\python.exe -X utf8 -m pytest -q --tb=short`
+    passed **2 tests**, 17.32 s, including the zero-global-config-read gate.
+- From `rust/`, `cargo check --locked -p sglang-server --tests -j 2` passed
+  in 1m 40s. `cargo test --locked -p sglang-server --lib -j 2` compiled and
+  ran all 269 library tests: **266 passed, 3 failed**, 2.07 s test time.
+  Configuration, template, Windows inline shared-memory fallback, request
+  lifecycle, and tokenizer tests passed. The remaining failures are
+  `api_server::prefetch::tests::{resolves_io_sources,
+  mixed_modalities_preserve_image_video_audio_order,
+  local_files_share_the_request_budget}`. Their local temporary paths start
+  with a Windows drive letter, while upstream's media-source classifier only
+  recognizes slash-rooted/file-URL paths; one path is misread as base64.
+  `api_server/prefetch.rs`, `multi_modality/payload.rs`, and
+  `sglang-mm/src/common/fetch.rs` are identical to `upstream/main`.
+  These unchanged upstream multimodal Windows limitations remain recorded;
+  this Git integration does not extend the language-only lane.
+- Final static checks: `.\.venv\Scripts\sglang.exe --help` passed;
+  `.\.venv\Scripts\python.exe -m compileall -q python/sglang/srt
+  test/registered/unit` passed; `uv tool run ruff check --select
+  F821,F822,F823` passed on all follow-up Python edits. PowerShell AST
+  parsing passed for all **10** `scripts/windows/*.ps1` files. Earlier
+  targeted undefined-name checks passed across conflict resolutions.
+  Existing upstream F811 duplicate-definition reports in `http_server.py`,
+  `models/qwen3_5_text.py`, and `hybrid_linear_attn_backend.py` were not
+  treated as rebase regressions. `git diff --check upstream/main` passed
+  across the entire rebased branch and follow-up worktree changes.
+- Final read-only process snapshot: `Get-NetTCPConnection -LocalPort 30000
+  -State Listen` found no listener. `Win32_Process` contained no
+  Python/Pythonw, SGLang, Cargo, rustc, nvcc, cl, Ninja, or CMake process.
+  `nvidia-smi --query-gpu=name,driver_version,memory.used,memory.free,
+  utilization.gpu,temperature.gpu,power.draw --format=csv` reported
+  RTX 5090, driver 616.92, **2,057 MiB used / 30,131 MiB free**, 1%
+  utilization, 29 C, and 41.33 W. No server, CUDA test/JIT build, GPU
+  benchmark, process termination, or external configuration edit was
+  performed. Ordinary desktop processes and user-owned material were left
+  untouched.
+- Handoff: retain the backup and local rerere cache. The branch includes
+  upstream and the existing local features, with source/static/CPU
+  integration evidence only. GPU graph, full-model capacity/behavior,
+  performance, and Apple runtime gates have not been rerun on this source.
+  The prior production records remain historical, and no performance
+  promotion or new tuning branch is authorized by this Git task.

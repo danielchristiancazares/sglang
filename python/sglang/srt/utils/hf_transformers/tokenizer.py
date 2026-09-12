@@ -67,7 +67,7 @@ def _load_tokenizer_by_declared_class(tokenizer_name, *args, **kwargs):
         config_file = _resolve_local_or_cached_file(
             tokenizer_name, "tokenizer_config.json", revision
         )
-        with open(config_file) as f:
+        with open(config_file, encoding="utf-8") as f:
             tok_config = json.load(f)
         tok_class_name = tok_config.get("tokenizer_class")
     except FileNotFoundError:
@@ -349,7 +349,7 @@ def _fix_v5_add_bos_eos_token(tokenizer, model_name_or_path, revision=None):
         config_file = _resolve_local_or_cached_file(
             model_name_or_path, "tokenizer_config.json", revision
         )
-        with open(config_file) as f:
+        with open(config_file, encoding="utf-8") as f:
             config = json.load(f)
     except FileNotFoundError:
         return

@@ -11,6 +11,7 @@ from sglang.srt.model_executor.runner import flashinfer_autotune
 from sglang.srt.model_executor.runner.flashinfer_autotune import (
     _promote_flashinfer_file_cache_hits,
 )
+from sglang.srt.runtime_context import get_context
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
@@ -21,7 +22,7 @@ def _make_runner(*, is_draft_worker: bool):
     spec_algorithm = Mock()
     spec_algorithm.is_speculative.return_value = True
     model_runner = SimpleNamespace(
-        server_args=SimpleNamespace(max_prefill_tokens=16),
+        tp_group=SimpleNamespace(world_size=1),
         is_generation=True,
         is_draft_worker=is_draft_worker,
         spec_algorithm=spec_algorithm,
@@ -40,6 +41,7 @@ class TestFlashInferAutotuneExtend(CustomTestCase):
         runner = _make_runner(is_draft_worker=False)
 
         with (
+            get_context().override_server_args(chunked_prefill_size=16),
             envs.SGLANG_FLASHINFER_AUTOTUNE_EXTEND.override(True),
             patch.object(
                 flashinfer_autotune,
@@ -75,6 +77,7 @@ class TestFlashInferAutotuneExtend(CustomTestCase):
         runner = _make_runner(is_draft_worker=False)
 
         with (
+            get_context().override_server_args(chunked_prefill_size=16),
             envs.SGLANG_FLASHINFER_AUTOTUNE_EXTEND.override(False),
             patch.object(
                 flashinfer_autotune,
@@ -154,6 +157,7 @@ class TestFlashInferAutotuneExtend(CustomTestCase):
         )
 
         with (
+            get_context().override_server_args(chunked_prefill_size=16),
             envs.SGLANG_FLASHINFER_AUTOTUNE_EXTEND.override(True),
             patch.object(
                 flashinfer_autotune,
@@ -172,6 +176,7 @@ class TestFlashInferAutotuneExtend(CustomTestCase):
         runner = _make_runner(is_draft_worker=True)
 
         with (
+            get_context().override_server_args(chunked_prefill_size=16),
             envs.SGLANG_FLASHINFER_AUTOTUNE_EXTEND.override(True),
             patch.object(
                 flashinfer_autotune,

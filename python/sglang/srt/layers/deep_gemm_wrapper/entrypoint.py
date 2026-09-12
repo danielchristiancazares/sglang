@@ -5,7 +5,6 @@ from typing import Any, Optional, Tuple
 import torch
 
 from sglang.srt.environ import envs
-from sglang.srt.layers.deep_gemm_wrapper import compile_utils
 from sglang.srt.layers.deep_gemm_wrapper.configurer import (  # noqa: F401
     DEEPGEMM_BLACKWELL,
     DEEPGEMM_NEED_TMA_ALIGNED_SCALES,
@@ -20,6 +19,7 @@ if ENABLE_JIT_DEEPGEMM:
     from deep_gemm.utils.layout import (
         get_mn_major_tma_aligned_tensor as _get_mn_major_tma_aligned_tensor,
     )
+    from sglang.srt.layers.deep_gemm_wrapper import compile_utils
 
     def get_mn_major_tma_aligned_tensor(sf: torch.Tensor) -> torch.Tensor:
         """Transform ``sf`` into an MN-major, TMA-aligned layout for DeepGEMM.

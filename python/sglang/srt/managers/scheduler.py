@@ -396,10 +396,10 @@ if sys.platform == "win32":
         )
 
 
-def _torch_compile_startup_mode(server_args) -> str:
+def _torch_compile_startup_mode() -> str:
     """Return the mode actually handed to the decode torch.compile wrapper."""
     return resolve_torch_compile_mode(
-        bool(getattr(server_args, "enable_torch_compile", False))
+        get_context().flags.capture.enable_torch_compile
     )
 
 
@@ -1080,8 +1080,8 @@ class Scheduler(
             self.spec_algorithm,
             f"{DraftWorkerClass.__module__}.{DraftWorkerClass.__qualname__}",
             f"{active_worker_class.__module__}.{active_worker_class.__qualname__}",
-            bool(getattr(self.server_args, "enable_torch_compile", False)),
-            _torch_compile_startup_mode(self.server_args),
+            get_context().flags.capture.enable_torch_compile,
+            _torch_compile_startup_mode(),
         )
 
         if self.spec_algorithm.is_ngram():
@@ -5066,10 +5066,8 @@ class Scheduler(
             if active_worker_class is None
             else f"{active_worker_class.__module__}.{active_worker_class.__qualname__}"
         )
-        ret["torch_compile_enabled"] = bool(
-            getattr(self.server_args, "enable_torch_compile", False)
-        )
-        ret["torch_compile_mode"] = _torch_compile_startup_mode(self.server_args)
+        ret["torch_compile_enabled"] = get_context().flags.capture.enable_torch_compile
+        ret["torch_compile_mode"] = _torch_compile_startup_mode()
 
         if get_exec().moe.elastic_ep_backend is not None:
             from sglang.srt.elastic_ep.elastic_ep import ElasticEPStateManager
