@@ -121,6 +121,9 @@ int mlx_qwen38_has_mtp(MlxQwen38Engine* engine);
 
 int mlx_qwen38_last_spec_width(MlxQwen38Engine* engine);
 
+int mlx_qwen38_mtp_history_digest(
+    MlxQwen38Engine* engine, uint64_t* digest, char* err, int errlen);
+
 void mlx_qwen38_free(MlxQwen38Engine* engine);
 
 #ifdef __cplusplus

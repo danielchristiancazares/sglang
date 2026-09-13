@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -31,6 +32,10 @@ float MaximumAbsoluteError(const mx::array &expected, const mx::array &actual) {
   const float *actual_data = actual_float.data<float>();
   float maximum = 0.0f;
   for (std::size_t index = 0; index < expected.size(); ++index) {
+    if (!std::isfinite(expected_data[index]) ||
+        !std::isfinite(actual_data[index])) {
+      return std::numeric_limits<float>::infinity();
+    }
     maximum =
         std::max(maximum, std::abs(expected_data[index] - actual_data[index]));
   }
@@ -48,7 +53,7 @@ bool SameBfloat16(const mx::array &lhs, const mx::array &rhs) {
   return std::equal(lhs_data, lhs_data + lhs.size(), rhs_data);
 }
 
-bool CheckQ5BatchTwoParity(int input_features, int output_features) {
+bool CheckQ5BatchParity(int input_features, int output_features, int rows = 2) {
   const std::size_t packed_columns =
       static_cast<std::size_t>(input_features) * 5 / 32;
   const std::size_t packed_elements =
@@ -69,7 +74,7 @@ bool CheckQ5BatchTwoParity(int input_features, int output_features) {
     scales[index] = 0.0025f + static_cast<float>(index % 17) * 0.000125f;
     biases[index] = (static_cast<float>(index % 11) - 5.0f) * 0.00025f;
   }
-  std::vector<float> input_values(static_cast<std::size_t>(2) * input_features);
+  std::vector<float> input_values(static_cast<std::size_t>(rows) * input_features);
   for (std::size_t index = 0; index < input_values.size(); ++index) {
     input_values[index] = std::sin(static_cast<float>(index) * 0.017f) * 0.25f;
   }
@@ -88,7 +93,7 @@ bool CheckQ5BatchTwoParity(int input_features, int output_features) {
                 mx::float32),
       mx::bfloat16);
   const mx::array input = mx::astype(
-      mx::array(input_values.data(), {1, 2, input_features}, mx::float32),
+      mx::array(input_values.data(), {1, rows, input_features}, mx::float32),
       mx::bfloat16);
   const sglang::mlx_qwen38::QLinear linear{weights, scale_array, bias_array,
                                            64,      5,           true};
@@ -96,26 +101,122 @@ bool CheckQ5BatchTwoParity(int input_features, int output_features) {
   const mx::array expected =
       mx::quantized_matmul(input, linear.w, linear.scales, linear.biases, true,
                            linear.group_size, linear.bits, "affine");
-  const mx::array actual =
-      sglang::mlx_qwen38::affine_q5_qmv_batch_two(linear, input);
+  const mx::array actual = rows == 2
+      ? sglang::mlx_qwen38::affine_q5_qmv_batch_two(linear, input)
+      : sglang::mlx_qwen38::affine_q5_qmv_multirow(linear, input);
 
-  if (setenv("SGLANG_MLX_NATIVE_Q5_BATCH_TWO_QMV", "1", 1) != 0) {
-    throw std::runtime_error("failed to enable Q5 batch-two dispatch");
+  const char* dispatch_variable = rows == 2
+      ? "SGLANG_MLX_NATIVE_Q5_BATCH_TWO_QMV"
+      : "SGLANG_MLX_NATIVE_Q5_MULTIROW_QMV";
+  if (setenv(dispatch_variable, "1", 1) != 0) {
+    throw std::runtime_error("failed to enable Q5 batch dispatch");
   }
   const mx::array dispatched = linear(input);
-  if (unsetenv("SGLANG_MLX_NATIVE_Q5_BATCH_TWO_QMV") != 0) {
-    throw std::runtime_error("failed to disable Q5 batch-two dispatch");
+  if (unsetenv(dispatch_variable) != 0) {
+    throw std::runtime_error("failed to disable Q5 batch dispatch");
   }
+  const bool default_matches = SameBfloat16(expected, linear(input));
 
   const float maximum_absolute_error = MaximumAbsoluteError(expected, actual);
   const bool dispatch_matches = SameBfloat16(actual, dispatched);
-  std::cout << "Q5 batch-two K=" << input_features << " N=" << output_features
+  bool serial_matches = true;
+  if (rows > 2) {
+    std::vector<mx::array> serial_rows;
+    for (int row = 0; row < rows; ++row) {
+      const auto single =
+          mx::slice(input, {0, row, 0}, {1, row + 1, input_features});
+      serial_rows.push_back(
+          sglang::mlx_qwen38::affine_q5_qmv_batch_one(linear, single));
+    }
+    serial_matches = SameBfloat16(actual, mx::concatenate(serial_rows, 1));
+  }
+  std::cout << "Q5 rows=" << rows << " K=" << input_features
+            << " N=" << output_features
             << " max_abs=" << maximum_absolute_error
-            << " dispatch_matches=" << dispatch_matches << '\n';
-  return expected.shape() == mx::Shape{1, 2, output_features} &&
+            << " dispatch_matches=" << dispatch_matches
+            << " default_matches=" << default_matches
+            << " serial_matches=" << serial_matches << '\n';
+  return expected.shape() == mx::Shape{1, rows, output_features} &&
          actual.shape() == expected.shape() &&
          std::isfinite(maximum_absolute_error) &&
-         maximum_absolute_error <= 0.015625f && dispatch_matches;
+         maximum_absolute_error <= 0.015625f && dispatch_matches &&
+         serial_matches && default_matches;
+}
+
+bool CheckQ5MultirowBoundaries() {
+  using sglang::mlx_qwen38::QLinear;
+  const auto input = mx::full({1, 3, 512}, 0.25f, mx::bfloat16);
+  const QLinear linear{mx::zeros({16, 80}, mx::uint32),
+                       mx::full({16, 8}, 0.125f, mx::bfloat16),
+                       mx::full({16, 8}, 0.125f, mx::bfloat16),
+                       64, 5, true};
+  const auto rejects = [](const QLinear& candidate, const mx::array& x) {
+    try {
+      (void)sglang::mlx_qwen38::affine_q5_qmv_multirow(candidate, x);
+    } catch (const std::runtime_error& error) {
+      const std::string_view message(error.what());
+      return message == "invalid multirow affine Q5 QMV inputs" ||
+             message == "unsupported multirow affine Q5 QMV shape";
+    }
+    return false;
+  };
+  for (const auto& invalid : {
+           mx::full({1, 1, 512}, 0.25f, mx::bfloat16),
+           mx::full({1, 2, 512}, 0.25f, mx::bfloat16),
+           mx::full({1, 4, 512}, 0.25f, mx::bfloat16),
+           mx::full({1, 5, 512}, 0.25f, mx::bfloat16),
+           mx::full({2, 3, 512}, 0.25f, mx::bfloat16),
+           mx::full({3, 512}, 0.25f, mx::bfloat16),
+           mx::full({1, 3, 256}, 0.25f, mx::bfloat16),
+           mx::astype(input, mx::float32)}) {
+    if (!rejects(linear, invalid)) {
+      return false;
+    }
+  }
+  for (int field = 0; field < 9; ++field) {
+    auto invalid = linear;
+    switch (field) {
+      case 0: invalid.valid = false; break;
+      case 1: invalid.bits = 4; break;
+      case 2: invalid.group_size = 32; break;
+      case 3: invalid.w = mx::astype(linear.w, mx::int32); break;
+      case 4: invalid.w = mx::zeros({16, 79}, mx::uint32); break;
+      case 5: invalid.w = mx::zeros({8, 80}, mx::uint32); break;
+      case 6: invalid.scales = mx::astype(linear.scales, mx::float32); break;
+      case 7: invalid.scales = mx::zeros({16, 7}, mx::bfloat16); break;
+      case 8: invalid.biases = mx::zeros({128}, mx::bfloat16); break;
+    }
+    if (!rejects(invalid, input)) {
+      return false;
+    }
+  }
+
+  if (setenv("SGLANG_MLX_NATIVE_Q5_MULTIROW_QMV", "1", 1) != 0) {
+    throw std::runtime_error("failed to enable Q5 multirow dispatch");
+  }
+  bool fallback_matches = true;
+  for (int k : {256, 512}) {
+    for (int rows : {1, 2, 3, 4, 5}) {
+      if (k == 512 && rows == 3) {
+        continue;
+      }
+      const QLinear fallback{mx::zeros({16, k * 5 / 32}, mx::uint32),
+                             mx::full({16, k / 64}, 0.125f, mx::bfloat16),
+                             mx::full({16, k / 64}, 0.125f, mx::bfloat16),
+                             64, 5, true};
+      const auto x = mx::full({1, rows, k}, 0.25f, mx::bfloat16);
+      const auto expected = mx::quantized_matmul(
+          x, fallback.w, fallback.scales, fallback.biases, true, 64, 5,
+          "affine");
+      fallback_matches = SameBfloat16(expected, fallback(x)) && fallback_matches;
+    }
+  }
+  if (unsetenv("SGLANG_MLX_NATIVE_Q5_MULTIROW_QMV") != 0) {
+    throw std::runtime_error("failed to disable Q5 multirow dispatch");
+  }
+  std::cout << "Q5 multirow rejects invalid inputs; fallback_matches="
+            << fallback_matches << '\n';
+  return fallback_matches;
 }
 
 bool CheckQ4BatchTwoParity(int input_features, int output_features) {
@@ -440,7 +541,9 @@ bool RejectsInvalidBatchTwoInputs() {
 } // namespace
 
 int main() {
-  if (!CheckQ5BatchTwoParity(512, 64) || !CheckQ5BatchTwoParity(5120, 128) ||
+  if (!CheckQ5BatchParity(512, 64) || !CheckQ5BatchParity(5120, 128) ||
+      !CheckQ5BatchParity(512, 64, 3) || !CheckQ5BatchParity(5120, 128, 3) ||
+      !CheckQ5MultirowBoundaries() ||
       !CheckQ4BatchTwoParity(512, 64) || !CheckQ4BatchTwoParity(5120, 128) ||
       !CheckQ4BatchTwoFusedParity(512, 64) ||
       !CheckQ4BatchTwoFusedParity(5120, 128) ||
@@ -449,6 +552,6 @@ int main() {
       !CheckQ4BatchTwoSigmoidBoundary() || !RejectsInvalidBatchTwoInputs()) {
     return 1;
   }
-  std::cout << "qwen38 affine batch-two QMV parity passed\n";
+  std::cout << "qwen38 affine multirow QMV parity passed\n";
   return 0;
 }

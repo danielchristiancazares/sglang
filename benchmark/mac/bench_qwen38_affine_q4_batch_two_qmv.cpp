@@ -64,19 +64,24 @@ int main(int argc, char **argv) {
   try {
     if (argc != 6) {
       std::cerr << "usage: " << argv[0]
-                << " stock|shared K N WARMUP ITERATIONS\n";
+                << " stock|shared|separate|fused K N WARMUP ITERATIONS\n";
       return 2;
     }
     const std::string_view mode(argv[1]);
-    if (mode != "stock" && mode != "shared") {
-      throw std::runtime_error("mode must be stock or shared");
+    if (mode != "stock" && mode != "shared" &&
+        mode != "separate" && mode != "fused") {
+      throw std::runtime_error("mode must be stock, shared, separate, or fused");
     }
+    const bool mlp = mode == "separate" || mode == "fused";
     const int input_features = ParsePositive(argv[2], "K");
     const int output_features = ParsePositive(argv[3], "N");
     const int warmup = ParsePositive(argv[4], "WARMUP");
     const int iterations = ParsePositive(argv[5], "ITERATIONS");
     if (input_features % 512 != 0 || output_features % 16 != 0) {
       throw std::runtime_error("K must be divisible by 512 and N by 16");
+    }
+    if (mlp && output_features % 32 != 0) {
+      throw std::runtime_error("MLP output features must be divisible by 32");
     }
 
     const std::size_t packed_columns =
@@ -123,14 +128,45 @@ int main(int argc, char **argv) {
     const mx::array input = mx::astype(
         mx::array(input_values.data(), {1, 2, input_features}, mx::float32),
         mx::bfloat16);
-    const sglang::mlx_qwen38::QLinear linear{weights, scales, biases,
+    sglang::mlx_qwen38::QLinear linear{weights, scales, biases,
                                              64,      4,      true};
+    sglang::mlx_qwen38::QLinear up;
+    if (mlp) {
+      for (auto &value : packed) {
+        value = Next(state);
+      }
+      for (auto &value : scale_values) {
+        value *= 1.125f;
+      }
+      for (auto &value : bias_values) {
+        value *= 0.75f;
+      }
+      const mx::Shape parameter_shape{
+          output_features, static_cast<int>(parameter_columns)};
+      up = {
+          mx::array(packed.data(), weights.shape(), mx::uint32),
+          mx::astype(mx::array(scale_values.data(), parameter_shape, mx::float32),
+                     mx::bfloat16),
+          mx::astype(mx::array(bias_values.data(), parameter_shape, mx::float32),
+                     mx::bfloat16),
+          64, 4, true};
+      if (!sglang::mlx_qwen38::prepare_fused_q4_raw_decode_parameters(linear, up)) {
+        throw std::runtime_error("cannot prepare fused MLP parameters");
+      }
+      mx::eval(up.w, up.scales, up.biases, linear.fused_q4_decode_params);
+    }
     mx::eval(weights, scales, biases, input);
     mx::synchronize();
 
-    const mx::array expected = Stock(linear, input);
-    const mx::array actual =
-        sglang::mlx_qwen38::affine_q4_qmv_batch_two(linear, input);
+    const auto separate = [&]() {
+      return sglang::mlx_qwen38::silu(
+                 sglang::mlx_qwen38::affine_q4_qmv_batch_two(linear, input)) *
+             sglang::mlx_qwen38::affine_q4_qmv_batch_two(up, input);
+    };
+    const mx::array expected = mlp ? separate() : Stock(linear, input);
+    const mx::array actual = mlp
+        ? sglang::mlx_qwen38::affine_q4_fused_swiglu_batch_two(linear, up, input)
+        : sglang::mlx_qwen38::affine_q4_qmv_batch_two(linear, input);
     const mx::array expected_float = mx::astype(expected, mx::float32);
     const mx::array actual_float = mx::astype(actual, mx::float32);
     mx::eval(expected, actual, expected_float, actual_float);
@@ -147,6 +183,13 @@ int main(int argc, char **argv) {
     }
 
     const auto run = [&]() {
+      if (mode == "separate") {
+        return separate();
+      }
+      if (mode == "fused") {
+        return sglang::mlx_qwen38::affine_q4_fused_swiglu_batch_two(
+            linear, up, input);
+      }
       return mode == "stock"
                  ? Stock(linear, input)
                  : sglang::mlx_qwen38::affine_q4_qmv_batch_two(linear, input);

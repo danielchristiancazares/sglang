@@ -20,6 +20,7 @@
 #include "mlx/compile.h"
 #include "mlx/fast.h"
 #include "mlx/io.h"
+#include "mlx/memory.h"
 #include "mlx/random.h"
 #include "mlx/stream.h"
 #include "mlx/transforms.h"
@@ -54,6 +55,20 @@ MlxQwen38Config configure_mlx_runtime(MlxQwen38Config cfg) {
   if (std::getenv("MLX_MAX_MB_PER_BUFFER") == nullptr &&
       setenv("MLX_MAX_MB_PER_BUFFER", "128", 0) != 0) {
     throw std::runtime_error("failed to set MLX command-buffer byte budget");
+  }
+  if (const char* value = std::getenv("SGLANG_MLX_CACHE_LIMIT_GB")) {
+    const std::string_view text(value);
+    double gib = 0.0;
+    const auto [end, error] =
+        std::from_chars(text.data(), text.data() + text.size(), gib);
+    constexpr size_t kGiB = size_t{1024} * 1024 * 1024;
+    if (error != std::errc{} || end != text.data() + text.size() ||
+        !std::isfinite(gib) || gib < 0.0 ||
+        gib > static_cast<double>(std::numeric_limits<size_t>::max() / kGiB)) {
+      throw std::runtime_error(
+          "SGLANG_MLX_CACHE_LIMIT_GB must be a nonnegative finite size");
+    }
+    mx::set_cache_limit(static_cast<size_t>(gib * kGiB));
   }
   return cfg;
 }
@@ -105,6 +120,28 @@ bool native_q4_batch_two_qmv_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_q4_batch_three_qmv_enabled() {
+  const char* value = std::getenv("SGLANG_MLX_NATIVE_Q4_BATCH_THREE_QMV");
+  return value != nullptr && std::string_view(value) == "1";
+}
+
+bool supports_q4_batch_three(const QLinear& linear, const array& x) {
+  if (!linear.valid || linear.bits != 4 || linear.group_size != 64 ||
+      x.ndim() != 3 || x.shape()[0] != 1 || x.shape()[1] != 3 ||
+      x.dtype() != mx::bfloat16 || linear.w.ndim() != 2 ||
+      linear.w.dtype() != mx::uint32 ||
+      linear.scales.dtype() != mx::bfloat16 ||
+      linear.biases.dtype() != mx::bfloat16) {
+    return false;
+  }
+  const int k = x.shape()[2];
+  const int n = linear.w.shape()[0];
+  return k > 0 && k % 512 == 0 && n > 0 && n % 16 == 0 &&
+      linear.w.shape()[1] == k / 8 &&
+      linear.scales.shape() == mx::Shape{n, k / 64} &&
+      linear.biases.shape() == linear.scales.shape();
+}
+
 bool native_q4_fused_swiglu_enabled() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU");
@@ -117,6 +154,33 @@ bool native_q4_fused_raw_params_enabled() {
       std::getenv("SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS");
   return value != nullptr && std::string_view(value) != "0" &&
       std::string_view(value) != "false";
+}
+
+bool native_evict_q4_raw_params_at_mtp_growth_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_EVICT_Q4_RAW_PARAMS_AT_MTP_GROWTH");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
+int native_post_growth_mtp_prefill_chunk_size() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_POST_GROWTH_MTP_PREFILL_CHUNK_SIZE");
+  if (value == nullptr || *value == '\0' || std::string_view(value) == "0") {
+    return 0;
+  }
+  int chunk_size = 0;
+  const std::string_view text(value);
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), chunk_size);
+  constexpr int kMaximumChunkSize = 1024;
+  if (error != std::errc() || end != text.data() + text.size() ||
+      chunk_size < 1 || chunk_size > kMaximumChunkSize) {
+    throw std::runtime_error(
+        "SGLANG_MLX_NATIVE_POST_GROWTH_MTP_PREFILL_CHUNK_SIZE must be 0 or "
+        "an integer from 1 through 1024");
+  }
+  return chunk_size;
 }
 
 bool native_q4_fused_swiglu_batch_two_enabled() {
@@ -136,6 +200,13 @@ bool native_q4_fused_swiglu_batch_two_scalar_inputs_enabled() {
 bool native_qmm_trace_enabled() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_TRACE_QMM");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
+bool native_two_token_causal_conv_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_TWO_TOKEN_CAUSAL_CONV");
   return value != nullptr && std::string_view(value) != "0" &&
       std::string_view(value) != "false";
 }
@@ -161,6 +232,13 @@ bool native_q5_batch_two_qmv_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_q5_multirow_qmv_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_Q5_MULTIROW_QMV");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 bool native_quantized_embedding_enabled() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING");
@@ -173,6 +251,57 @@ bool native_fixed_prefill_attention_enabled() {
       std::getenv("SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION");
   return value != nullptr && std::string_view(value) != "0" &&
       std::string_view(value) != "false";
+}
+
+bool native_append_only_attention_snapshot_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_APPEND_ONLY_ATTN_SNAPSHOT");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
+bool native_serialize_attention_cache_growth_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_SERIALIZE_ATTN_CACHE_GROWTH");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
+int native_attention_cache_reserve_capacity() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE");
+  if (value == nullptr || *value == '\0') {
+    return 0;
+  }
+  int capacity = 0;
+  const std::string_view text(value);
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), capacity);
+  constexpr int kMinimumCapacity = 256;
+  constexpr int kMaximumCapacity = 262144;
+  constexpr int kCacheAlignment = 64;
+  if (error != std::errc() || end != text.data() + text.size() ||
+      (capacity != 0 &&
+       (capacity < kMinimumCapacity || capacity > kMaximumCapacity ||
+        capacity % kCacheAlignment != 0))) {
+    throw std::runtime_error(
+        "SGLANG_MLX_NATIVE_ATTN_CACHE_RESERVE must be 0 or a multiple of 64 "
+        "from 256 through 262144");
+  }
+  return capacity;
+}
+
+int native_attention_cache_bits() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_ATTN_CACHE_BITS");
+  if (value == nullptr || *value == '\0' || std::string_view(value) == "0") {
+    return 0;
+  }
+  if (std::string_view(value) == "8") {
+    return 8;
+  }
+  throw std::runtime_error(
+      "SGLANG_MLX_NATIVE_ATTN_CACHE_BITS must be 0 or 8");
 }
 
 int native_target_only_prefill_chunk_size() {
@@ -223,6 +352,13 @@ bool native_mtp_post_norm_seed_enabled() {
 bool native_mtp_committed_history_enabled() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_MTP_COMMITTED_HISTORY");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
+bool native_mtp_prompt_cache_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_MTP_PROMPT_CACHE");
   return value != nullptr && std::string_view(value) != "0" &&
       std::string_view(value) != "false";
 }
@@ -627,6 +763,54 @@ constexpr const char* kCausalConvDecodeSiluSource = R"(
         next_state_base[(K - 2) * D] = qkv_base[0];
 )";
 
+constexpr const char* kCausalConvTwoTokenSiluSource = R"(
+        auto channel = thread_position_in_grid.x;
+        auto batch = thread_position_in_grid.y;
+        auto state_base = state + batch * (K - 1) * D + channel;
+        auto qkv_base = qkv + batch * 2 * D + channel;
+        auto weight_base = weight + channel * K;
+
+        float first_acc = 0.0f;
+        float second_acc = 0.0f;
+        for (int tap = 0; tap < K - 1; ++tap) {
+          first_acc +=
+              static_cast<float>(state_base[tap * D]) * weight_base[tap];
+          const InT second_input = tap + 1 < K - 1
+              ? state_base[(tap + 1) * D]
+              : qkv_base[0];
+          second_acc +=
+              static_cast<float>(second_input) * weight_base[tap];
+        }
+        first_acc +=
+            static_cast<float>(qkv_base[0]) * weight_base[K - 1];
+        second_acc +=
+            static_cast<float>(qkv_base[D]) * weight_base[K - 1];
+
+        InT first_value = static_cast<InT>(first_acc);
+        auto first_sigmoid_low =
+            1 / (1 + metal::precise::exp(metal::abs(first_value)));
+        InT first_sigmoid =
+            first_value < 0 ? first_sigmoid_low : 1 - first_sigmoid_low;
+        conv_out[batch * 2 * D + channel] =
+            static_cast<InT>(first_value * first_sigmoid);
+
+        InT second_value = static_cast<InT>(second_acc);
+        auto second_sigmoid_low =
+            1 / (1 + metal::precise::exp(metal::abs(second_value)));
+        InT second_sigmoid =
+            second_value < 0 ? second_sigmoid_low : 1 - second_sigmoid_low;
+        conv_out[(batch * 2 + 1) * D + channel] =
+            static_cast<InT>(second_value * second_sigmoid);
+
+        auto next_state_base = next_state + batch * (K - 1) * D + channel;
+        for (int tap = 0; tap < K - 1; ++tap) {
+          const int source = tap + 2;
+          next_state_base[tap * D] = source < K - 1
+              ? state_base[source * D]
+              : qkv_base[(source - (K - 1)) * D];
+        }
+)";
+
 constexpr const char* kResidualRmsNormSource = R"(
         constexpr int N_READS = 4;
         constexpr int SIMD_SIZE = 32;
@@ -863,6 +1047,30 @@ inline float sglang_attention_simd_sum_16(float value) {
   value += simd_shuffle_xor(value, 4);
   value += simd_shuffle_xor(value, 2);
   return value + simd_shuffle_xor(value, 1);
+}
+
+inline bfloat sglang_attention_dequantize_q8(
+    device const uint* packed,
+    device const bfloat* scales,
+    device const bfloat* biases,
+    uint kv_head,
+    uint token,
+    uint dimension,
+    uint capacity) {
+  constexpr uint HeadDim = 256;
+  constexpr uint PackedValuesPerWord = 4;
+  constexpr uint GroupSize = 64;
+  const ulong row = ulong(kv_head) * ulong(capacity) + token;
+  const uint word = packed[
+      row * (HeadDim / PackedValuesPerWord) +
+      dimension / PackedValuesPerWord];
+  const uint shift = (dimension % PackedValuesPerWord) * 8;
+  const uint quantized = (word >> shift) & 0xffu;
+  const ulong parameter =
+      row * (HeadDim / GroupSize) + dimension / GroupSize;
+  return static_cast<bfloat>(
+      static_cast<float>(quantized) * static_cast<float>(scales[parameter]) +
+      static_cast<float>(biases[parameter]));
 }
 )";
 
@@ -1106,6 +1314,374 @@ constexpr const char* kFixedPrefillAttentionSource = R"(
         }
 )";
 
+// Affine-Q8/G64 cache variant of the fixed-memory attention kernel above.
+// Only K/V tile loading changes: each tile is dequantized into bounded
+// threadgroup storage before the same matrix multiply, online softmax, causal
+// masking, and BF16 output path execute.
+constexpr const char* kFixedQ8AttentionSource = R"(
+        constexpr ushort QueryTile = 8;
+        constexpr ushort KeyTile = 64;
+        constexpr ushort HeadsPerKv = 6;
+        constexpr ushort HeadDim = 256;
+
+        threadgroup float shared_query[QueryTile * HeadDim];
+        threadgroup float shared_output[QueryTile * HeadDim];
+        threadgroup float shared_scores[QueryTile * KeyTile];
+        threadgroup float shared_stats[QueryTile * 2];
+        threadgroup bfloat shared_dequant[4 * 8 * 16];
+
+        const ushort tid = thread_index_in_threadgroup;
+        const ushort lane = thread_index_in_simdgroup;
+        const ushort simd_id = simdgroup_index_in_threadgroup;
+        const uint kv_head = threadgroup_position_in_grid.y;
+        const uint query_count = uint(query_tokens);
+        const uint prefix = uint(prefix_length);
+        const uint capacity = uint(cache_capacity);
+        const uint active_length = uint(active_cache_length);
+        const uint requested_key_splits = uint(key_splits);
+        const bool split_decode =
+            query_count == 1 && requested_key_splits > 1;
+        const uint attention_row_start = split_decode
+            ? 0
+            : threadgroup_position_in_grid.x * QueryTile;
+        const uint attention_rows = query_count * HeadsPerKv;
+        const uint last_attention_row = min(
+            attention_rows - 1, attention_row_start + QueryTile - 1);
+        const uint group_kv_length = min(
+            active_length,
+            prefix + last_attention_row / HeadsPerKv + 1);
+        const uint active_key_splits = split_decode
+            ? min(
+                  requested_key_splits,
+                  max(1u, (group_kv_length + 1023) / 1024))
+            : 1;
+        if (split_decode &&
+            threadgroup_position_in_grid.x >= active_key_splits) {
+          return;
+        }
+        const uint key_tiles =
+            (group_kv_length + KeyTile - 1) / KeyTile;
+        const uint tiles_per_split =
+            (key_tiles + active_key_splits - 1) / active_key_splits;
+        const uint first_key_tile = split_decode
+            ? threadgroup_position_in_grid.x * tiles_per_split
+            : 0;
+        const uint last_key_tile = split_decode
+            ? min(key_tiles, first_key_tile + tiles_per_split)
+            : key_tiles;
+        const uint first_key = first_key_tile * KeyTile;
+        const uint last_key = min(
+            group_kv_length, last_key_tile * KeyTile);
+
+        for (uint index = tid; index < QueryTile * HeadDim; index += 128) {
+          const uint row = index / HeadDim;
+          const uint dimension = index - row * HeadDim;
+          const uint attention_row = attention_row_start + row;
+          float value = 0.0f;
+          if (attention_row < attention_rows) {
+            const uint query_token = attention_row / HeadsPerKv;
+            const uint query_head =
+                kv_head * HeadsPerKv + attention_row % HeadsPerKv;
+            value = static_cast<float>(query[
+                (query_head * query_count + query_token) * HeadDim +
+                dimension]);
+          }
+          shared_query[index] = value;
+          shared_output[index] = 0.0f;
+        }
+        if (tid < QueryTile) {
+          shared_stats[2 * tid] = -INFINITY;
+          shared_stats[2 * tid + 1] = 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint key_start = first_key; key_start < last_key;
+             key_start += KeyTile) {
+          simdgroup_float8x8 score_left =
+              make_filled_simdgroup_matrix<float, 8>(0.0f);
+          simdgroup_float8x8 score_right =
+              make_filled_simdgroup_matrix<float, 8>(0.0f);
+          threadgroup bfloat* key_stage =
+              shared_dequant + simd_id * 8 * 16;
+          for (ushort dimension_start = 0; dimension_start < HeadDim;
+               dimension_start += 16) {
+            simdgroup_float8x8 query_low;
+            simdgroup_float8x8 query_high;
+            simdgroup_load(
+                query_low,
+                shared_query + dimension_start,
+                HeadDim,
+                0,
+                false);
+            simdgroup_load(
+                query_high,
+                shared_query + dimension_start + 8,
+                HeadDim,
+                0,
+                false);
+
+#pragma unroll
+            for (ushort key_half = 0; key_half < 2; ++key_half) {
+              const ushort key_row = lane / 4;
+              const ushort dimension_quad = lane & 3;
+              const uint token = key_start + simd_id * 16 +
+                  key_half * 8 + key_row;
+#pragma unroll
+              for (ushort element = 0; element < 4; ++element) {
+                const uint dimension = dimension_start +
+                    dimension_quad * 4 + element;
+                key_stage[key_row * 16 + dimension_quad * 4 + element] =
+                    sglang_attention_dequantize_q8(
+                        key_cache,
+                        key_scales,
+                        key_biases,
+                        kv_head,
+                        token,
+                        dimension,
+                        capacity);
+              }
+              simdgroup_barrier(mem_flags::mem_threadgroup);
+              simdgroup_bfloat8x8 key_low;
+              simdgroup_bfloat8x8 key_high;
+              simdgroup_load(key_low, key_stage, 16, 0, true);
+              simdgroup_load(key_high, key_stage + 8, 16, 0, true);
+              simdgroup_barrier(mem_flags::mem_threadgroup);
+              if (key_half == 0) {
+                simdgroup_multiply_accumulate(
+                    score_left, query_low, key_low, score_left);
+                simdgroup_multiply_accumulate(
+                    score_left, query_high, key_high, score_left);
+              } else {
+                simdgroup_multiply_accumulate(
+                    score_right, query_low, key_low, score_right);
+                simdgroup_multiply_accumulate(
+                    score_right, query_high, key_high, score_right);
+              }
+            }
+          }
+
+          simdgroup_store(
+              score_left,
+              shared_scores + simd_id * 16,
+              KeyTile,
+              0,
+              false);
+          simdgroup_store(
+              score_right,
+              shared_scores + simd_id * 16 + 8,
+              KeyTile,
+              0,
+              false);
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+
+          const ushort softmax_row = tid / 16;
+          const ushort softmax_lane = tid & 15;
+          const uint attention_row = attention_row_start + softmax_row;
+          const bool row_valid = attention_row < attention_rows;
+          const uint query_token = row_valid
+              ? attention_row / HeadsPerKv
+              : 0;
+          const uint causal_limit = row_valid
+              ? min(active_length, prefix + query_token + 1)
+              : 0;
+
+          float row_max = -INFINITY;
+          float scaled_scores[4];
+#pragma unroll
+          for (ushort index = 0; index < 4; ++index) {
+            const ushort key_column = softmax_lane + 16 * index;
+            const uint logical_token = key_start + key_column;
+            const float score = row_valid && logical_token < causal_limit
+                ? shared_scores[softmax_row * KeyTile + key_column] * 0.0625f
+                : -INFINITY;
+            scaled_scores[index] = score;
+            row_max = max(row_max, score);
+          }
+          row_max = sglang_attention_simd_max_16(row_max);
+
+          const float old_max = shared_stats[2 * softmax_row];
+          const float old_sum = shared_stats[2 * softmax_row + 1];
+          const bool block_valid = row_max != -INFINITY;
+          const float next_max = block_valid ? max(old_max, row_max) : old_max;
+          const float old_scale = old_sum == 0.0f
+              ? 0.0f
+              : (block_valid ? exp(old_max - next_max) : 1.0f);
+          float block_sum = 0.0f;
+#pragma unroll
+          for (ushort index = 0; index < 4; ++index) {
+            const ushort key_column = softmax_lane + 16 * index;
+            const float probability = scaled_scores[index] == -INFINITY
+                ? 0.0f
+                : exp(scaled_scores[index] - next_max);
+            shared_scores[softmax_row * KeyTile + key_column] = probability;
+            block_sum += probability;
+          }
+          block_sum = sglang_attention_simd_sum_16(block_sum);
+          for (ushort dimension = softmax_lane; dimension < HeadDim;
+               dimension += 16) {
+            shared_output[softmax_row * HeadDim + dimension] *= old_scale;
+          }
+          if (softmax_lane == 0 && row_valid) {
+            shared_stats[2 * softmax_row] = next_max;
+            shared_stats[2 * softmax_row + 1] =
+                old_sum * old_scale + block_sum;
+          }
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+
+          simdgroup_float8x8 output_fragments[8];
+#pragma unroll
+          for (ushort output_block = 0; output_block < 8; ++output_block) {
+            simdgroup_load(
+                output_fragments[output_block],
+                shared_output + simd_id * 64 + output_block * 8,
+                HeadDim,
+                0,
+                false);
+          }
+          threadgroup bfloat* value_stage =
+              shared_dequant + simd_id * 8 * 16;
+          for (ushort key_block = 0; key_block < KeyTile; key_block += 8) {
+            simdgroup_float8x8 probability_fragment;
+            simdgroup_load(
+                probability_fragment,
+                shared_scores + key_block,
+                KeyTile,
+                0,
+                false);
+#pragma unroll
+            for (ushort output_block = 0; output_block < 8; ++output_block) {
+              for (ushort index = lane; index < 8 * 8; index += 32) {
+                const ushort key_row = index / 8;
+                const ushort output_column = index & 7;
+                const uint token = key_start + key_block + key_row;
+                const uint dimension = simd_id * 64 +
+                    output_block * 8 + output_column;
+                value_stage[index] = sglang_attention_dequantize_q8(
+                    value_cache,
+                    value_scales,
+                    value_biases,
+                    kv_head,
+                    token,
+                    dimension,
+                    capacity);
+              }
+              simdgroup_barrier(mem_flags::mem_threadgroup);
+              simdgroup_bfloat8x8 value_fragment;
+              simdgroup_load(
+                  value_fragment, value_stage, 8, 0, false);
+              simdgroup_barrier(mem_flags::mem_threadgroup);
+              simdgroup_multiply_accumulate(
+                  output_fragments[output_block],
+                  probability_fragment,
+                  value_fragment,
+                  output_fragments[output_block]);
+            }
+          }
+#pragma unroll
+          for (ushort output_block = 0; output_block < 8; ++output_block) {
+            simdgroup_store(
+                output_fragments[output_block],
+                shared_output + simd_id * 64 + output_block * 8,
+                HeadDim,
+                0,
+                false);
+          }
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+
+        if (split_decode) {
+          for (uint index = tid; index < QueryTile * HeadDim; index += 128) {
+            const uint row = index / HeadDim;
+            const uint dimension = index - row * HeadDim;
+            if (row < HeadsPerKv) {
+              const uint query_head = kv_head * HeadsPerKv + row;
+              const ulong partial_base =
+                  (ulong(threadgroup_position_in_grid.x) * 24 + query_head) *
+                  (HeadDim + 2);
+              output[partial_base + dimension] = shared_output[index];
+            }
+          }
+          if (tid < HeadsPerKv) {
+            const uint query_head = kv_head * HeadsPerKv + tid;
+            const ulong partial_base =
+                (ulong(threadgroup_position_in_grid.x) * 24 + query_head) *
+                (HeadDim + 2);
+            output[partial_base + HeadDim] = shared_stats[2 * tid];
+            output[partial_base + HeadDim + 1] =
+                shared_stats[2 * tid + 1];
+          }
+          return;
+        }
+
+        for (uint index = tid; index < QueryTile * HeadDim; index += 128) {
+          const uint row = index / HeadDim;
+          const uint dimension = index - row * HeadDim;
+          const uint attention_row = attention_row_start + row;
+          if (attention_row < attention_rows) {
+            const uint query_token = attention_row / HeadsPerKv;
+            const uint query_head =
+                kv_head * HeadsPerKv + attention_row % HeadsPerKv;
+            const float denominator = shared_stats[2 * row + 1];
+            output[(query_head * query_count + query_token) * HeadDim +
+                   dimension] = denominator == 0.0f
+                ? 0.0f
+                : shared_output[index] / denominator;
+          }
+        }
+)";
+
+constexpr const char* kReduceQ8DecodeSource = R"(
+        constexpr uint HeadDim = 256;
+        constexpr uint QueryHeads = 24;
+        constexpr uint PartialStride = HeadDim + 2;
+
+        const ushort tid = thread_index_in_threadgroup;
+        const ushort lane = thread_index_in_simdgroup;
+        const ushort simd_id = simdgroup_index_in_threadgroup;
+        const uint query_head = threadgroup_position_in_grid.x;
+        const uint active_length = uint(active_cache_length);
+        const uint requested_key_splits = uint(key_splits);
+        const uint active_key_splits = min(
+            requested_key_splits,
+            max(1u, (active_length + 1023) / 1024));
+        threadgroup float split_scales[32];
+        threadgroup float denominator;
+
+        if (simd_id == 0) {
+          const ulong partial_base =
+              (ulong(lane) * QueryHeads + query_head) * PartialStride;
+          const float partial_sum = lane < active_key_splits
+              ? partials[partial_base + HeadDim + 1]
+              : 0.0f;
+          const float partial_max = partial_sum == 0.0f
+              ? -INFINITY
+              : partials[partial_base + HeadDim];
+          const float merged_max = simd_max(partial_max);
+          const float partial_scale = partial_sum == 0.0f
+              ? 0.0f
+              : exp(partial_max - merged_max);
+          if (lane < active_key_splits) {
+            split_scales[lane] = partial_scale;
+          }
+          const float merged_sum = simd_sum(partial_sum * partial_scale);
+          if (lane == 0) {
+            denominator = merged_sum;
+          }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (tid < HeadDim && query_head < QueryHeads) {
+          float value = 0.0f;
+          for (uint split = 0; split < active_key_splits; ++split) {
+            const ulong partial_base =
+                (ulong(split) * QueryHeads + query_head) * PartialStride;
+            value += partials[partial_base + tid] * split_scales[split];
+          }
+          output[query_head * HeadDim + tid] = static_cast<bfloat>(
+              denominator == 0.0f ? 0.0f : value / denominator);
+        }
+)";
+
 constexpr const char* kGatedDeltaNormGateSource = R"(
         constexpr int N_READS = 4;
         constexpr int SIMD_SIZE = 32;
@@ -1292,6 +1868,77 @@ constexpr const char* kAffineQ4BatchOneQmvSource = R"(
           }
         }
 )";
+
+constexpr const char* kAffineQ4BatchThreeSource = R"(
+        constexpr int Values = 16;
+        constexpr int Outputs = 4;
+        constexpr int Groups = KConst / 64;
+        constexpr int WeightBytes = KConst / 2;
+        const int lane = thread_index_in_simdgroup;
+        const int start = threadgroup_position_in_grid.y * 16
+            + simdgroup_index_in_threadgroup * Outputs;
+        const device uchar* weights = reinterpret_cast<const device uchar*>(w)
+            + start * WeightBytes + lane * 8;
+        thread float2 result01[Outputs];
+        thread float result2[Outputs] = {0};
+#pragma unroll
+        for (int row = 0; row < Outputs; ++row) {
+          result01[row] = float2(0.0f);
+        }
+        for (int k = 0; k < KConst; k += 512) {
+          thread float input0[Values], input1[Values], input2[Values];
+          float2 sum01;
+          sum01.x = sglang_q4_load_vector<bfloat, float, Values>(
+              x + k + lane * Values, input0);
+          sum01.y = sglang_q4_load_vector<bfloat, float, Values>(
+              x + KConst + k + lane * Values, input1);
+          const float sum2 = sglang_q4_load_vector<bfloat, float, Values>(
+              x + 2 * KConst + k + lane * Values, input2);
+          thread float2 inputs01[Values];
+#pragma unroll
+          for (int index = 0; index < Values; ++index) {
+            inputs01[index] = float2(input0[index], input1[index]);
+          }
+          const int group = k / 64 + lane / 4;
+#pragma unroll
+          for (int row = 0; row < Outputs; ++row) {
+            const float scale = float(scales[(start + row) * Groups + group]);
+            const float bias = float(biases[(start + row) * Groups + group]);
+            const device ushort* packed = reinterpret_cast<const device ushort*>(
+                weights + row * WeightBytes + k / 2);
+            float2 dot01 = float2(0.0f);
+            float dot2 = 0.0f;
+#pragma unroll
+            for (int pack = 0; pack < Values / 4; ++pack) {
+              const ushort code = packed[pack];
+              dot01 +=
+                  inputs01[4 * pack] * float(code & 0x000f) +
+                  inputs01[4 * pack + 1] * float(code & 0x00f0) +
+                  inputs01[4 * pack + 2] * float(code & 0x0f00) +
+                  inputs01[4 * pack + 3] * float(code & 0xf000);
+              dot2 +=
+                  input2[4 * pack] * (code & 0x000f) +
+                  input2[4 * pack + 1] * (code & 0x00f0) +
+                  input2[4 * pack + 2] * (code & 0x0f00) +
+                  input2[4 * pack + 3] * (code & 0xf000);
+            }
+            result01[row] += scale * dot01 + sum01 * bias;
+            result2[row] += scale * dot2 + sum2 * bias;
+          }
+        }
+#pragma unroll
+        for (int row = 0; row < Outputs; ++row) {
+          const float r0 = simd_sum(result01[row].x);
+          const float r1 = simd_sum(result01[row].y);
+          const float r2 = simd_sum(result2[row]);
+          if (lane == 0) {
+            y[start + row] = bfloat(r0);
+            y[NConst + start + row] = bfloat(r1);
+            y[2 * NConst + start + row] = bfloat(r2);
+          }
+        }
+)";
+
 
 constexpr const char* kAffineQ4BatchTwoQmvSource = R"(
         constexpr int PacksPerThread = 2;
@@ -2322,6 +2969,15 @@ const mx::fast::CustomKernelFunction& causal_conv_decode_silu_metal() {
   return kernel;
 }
 
+const mx::fast::CustomKernelFunction& causal_conv_two_token_silu_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_causal_conv_two_token_silu",
+      {"state", "qkv", "weight"},
+      {"conv_out", "next_state"},
+      kCausalConvTwoTokenSiluSource);
+  return kernel;
+}
+
 const mx::fast::CustomKernelFunction& residual_rms_norm_metal() {
   static const auto kernel = mx::fast::metal_kernel(
       "sglang_residual_rms_norm",
@@ -2365,6 +3021,37 @@ const mx::fast::CustomKernelFunction& fixed_prefill_attention_metal() {
   return kernel;
 }
 
+const mx::fast::CustomKernelFunction& fixed_q8_attention_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_fixed_q8_attention",
+      {"query",
+       "key_cache",
+       "key_scales",
+       "key_biases",
+       "value_cache",
+       "value_scales",
+       "value_biases",
+       "query_tokens",
+       "prefix_length",
+       "cache_capacity",
+       "active_cache_length",
+       "key_splits"},
+      {"output"},
+      kFixedQ8AttentionSource,
+      kFixedPrefillAttentionHeader);
+  return kernel;
+}
+
+const mx::fast::CustomKernelFunction& reduce_q8_decode_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_reduce_q8_decode",
+      {"partials", "active_cache_length", "key_splits"},
+      {"output"},
+      kReduceQ8DecodeSource,
+      kFixedPrefillAttentionHeader);
+  return kernel;
+}
+
 const mx::fast::CustomKernelFunction& gated_delta_norm_gate_metal() {
   static const auto kernel = mx::fast::metal_kernel(
       "sglang_gated_delta_norm_gate",
@@ -2391,6 +3078,14 @@ const mx::fast::CustomKernelFunction& affine_q4_batch_two_qmv_metal() {
       {"y"},
       kAffineQ4BatchTwoQmvSource,
       kAffineQ4BatchOneQmvHeader);
+  return kernel;
+}
+
+const mx::fast::CustomKernelFunction& affine_q4_batch_three_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_affine_q4_batch_three",
+      {"w", "scales", "biases", "x"}, {"y"},
+      kAffineQ4BatchThreeSource, kAffineQ4BatchOneQmvHeader);
   return kernel;
 }
 
@@ -2598,6 +3293,23 @@ bool prepare_fused_q4_raw_decode_parameters(
   return true;
 }
 
+std::size_t release_fused_q4_raw_decode_parameters(QLinear& gate) {
+  if (!gate.fused_q4_decode_params_valid) {
+    if (gate.fused_q4_decode_params.ndim() != 0) {
+      throw std::runtime_error("inconsistent raw fused Q4 decode parameters");
+    }
+    return 0;
+  }
+  if (gate.fused_q4_decode_params.ndim() != 1 ||
+      gate.fused_q4_decode_params.dtype() != mx::uint32) {
+    throw std::runtime_error("invalid raw fused Q4 decode parameters");
+  }
+  const std::size_t released_bytes = gate.fused_q4_decode_params.nbytes();
+  gate.fused_q4_decode_params = array(0);
+  gate.fused_q4_decode_params_valid = false;
+  return released_bytes;
+}
+
 int dspark_select_verify_draft_tokens(
     const float* confidence,
     int count,
@@ -2638,6 +3350,41 @@ std::pair<array, array> causal_conv_decode_silu(
   auto outs = causal_conv_decode_silu_metal()(
       {state, qkv, weight},
       {{B, 1, D}, {B, K - 1, D}},
+      {qkv.dtype(), state.dtype()},
+      {D, B, 1},
+      {std::min(D, 256), 1, 1},
+      {
+          {"InT", mx::fast::TemplateArg{qkv.dtype()}},
+          {"K", mx::fast::TemplateArg{K}},
+          {"D", mx::fast::TemplateArg{D}},
+      },
+      std::nullopt,
+      false,
+      {});
+  return {outs[0], outs[1]};
+}
+
+std::pair<array, array> causal_conv_two_token_silu(
+    const array& state,
+    const array& qkv,
+    const array& weight) {
+  if (state.ndim() != 3 || qkv.ndim() != 3 || weight.ndim() != 3 ||
+      qkv.shape()[1] != 2 || state.shape()[0] != qkv.shape()[0] ||
+      state.shape()[2] != qkv.shape()[2] ||
+      weight.shape()[0] != qkv.shape()[2] ||
+      weight.shape()[1] != state.shape()[1] + 1 || weight.shape()[2] != 1 ||
+      state.dtype() != qkv.dtype() || weight.dtype() != qkv.dtype()) {
+    throw std::runtime_error("invalid two-token causal convolution inputs");
+  }
+  const int B = static_cast<int>(qkv.shape()[0]);
+  const int K = static_cast<int>(state.shape()[1]) + 1;
+  const int D = static_cast<int>(qkv.shape()[2]);
+  if (B <= 0 || K < 2 || D <= 0) {
+    throw std::runtime_error("invalid two-token causal convolution shape");
+  }
+  auto outs = causal_conv_two_token_silu_metal()(
+      {state, qkv, weight},
+      {{B, 2, D}, {B, K - 1, D}},
       {qkv.dtype(), state.dtype()},
       {D, B, 1},
       {std::min(D, 256), 1, 1},
@@ -2954,6 +3701,10 @@ array QLinear::operator()(const array& x) const {
       return affine_q4_qmv_batch_two(*this, x);
     }
   }
+  if (native_q4_batch_three_qmv_enabled() &&
+      supports_q4_batch_three(*this, x)) {
+    return affine_q4_qmv_batch_three(*this, x);
+  }
   if (native_small_batch_qmm_enabled() && x.ndim() == 3 &&
       x.shape()[0] == 1 && x.shape()[1] >= 6 && x.shape()[1] <= 8) {
     const int input_features = static_cast<int>(x.shape()[2]);
@@ -3047,6 +3798,27 @@ array QLinear::operator()(const array& x) const {
       return affine_q5_qmv_batch_two(*this, x);
     }
   }
+  if (native_q5_multirow_qmv_enabled() && x.ndim() == 3 &&
+      x.shape()[0] == 1 && x.shape()[1] == 3 &&
+      x.dtype() == mx::bfloat16 && w.ndim() == 2 && w.dtype() == mx::uint32 &&
+      scales.ndim() == 2 && biases.ndim() == 2 &&
+      scales.dtype() == mx::bfloat16 && biases.dtype() == mx::bfloat16 &&
+      group_size == 64 && bits == 5) {
+    const int input_features = static_cast<int>(x.shape()[2]);
+    const int output_features = static_cast<int>(w.shape()[0]);
+    if (input_features > 0 && output_features > 0 &&
+        input_features % 512 == 0 && output_features % 16 == 0 &&
+        w.shape()[1] * 32 == input_features * 5 &&
+        scales.shape() == mx::Shape{output_features, input_features / 64} &&
+        biases.shape() == scales.shape()) {
+      if (native_qmm_trace_enabled()) {
+        std::fprintf(stderr, "qwen38_qmv q5 rows=%d K=%d N=%d shared\n",
+                     static_cast<int>(x.shape()[1]), input_features,
+                     output_features);
+      }
+      return affine_q5_qmv_multirow(*this, x);
+    }
+  }
   return quantized_matmul(
       x, w, scales, biases, /*transpose=*/true, group_size, bits, "affine");
 }
@@ -3134,6 +3906,106 @@ array fixed_prefill_attention(
       false,
       {});
   return outputs[0];
+}
+
+array fixed_q8_attention(
+    const array& queries,
+    const array& key_cache,
+    const array& key_scales,
+    const array& key_biases,
+    const array& value_cache,
+    const array& value_scales,
+    const array& value_biases,
+    int prefix_length,
+    int active_cache_length) {
+  constexpr int kQueryHeads = 24;
+  constexpr int kKeyValueHeads = 4;
+  constexpr int kHeadDimension = 256;
+  constexpr int kPackedDimension = kHeadDimension / 4;
+  constexpr int kParameterDimension = kHeadDimension / 64;
+  constexpr int kHeadsPerKeyValue = kQueryHeads / kKeyValueHeads;
+  constexpr int kQueryTile = 8;
+  constexpr int kKeyTile = 64;
+  constexpr int kThreads = 128;
+  if (queries.ndim() != 4 || key_cache.ndim() != 4 ||
+      key_scales.ndim() != 4 || key_biases.ndim() != 4 ||
+      value_cache.ndim() != 4 || value_scales.ndim() != 4 ||
+      value_biases.ndim() != 4 || queries.dtype() != mx::bfloat16 ||
+      key_cache.dtype() != mx::uint32 ||
+      value_cache.dtype() != mx::uint32 ||
+      key_scales.dtype() != mx::bfloat16 ||
+      key_biases.dtype() != mx::bfloat16 ||
+      value_scales.dtype() != mx::bfloat16 ||
+      value_biases.dtype() != mx::bfloat16 || queries.shape()[0] != 1 ||
+      queries.shape()[1] != kQueryHeads ||
+      queries.shape()[3] != kHeadDimension || key_cache.shape()[0] != 1 ||
+      key_cache.shape()[1] != kKeyValueHeads ||
+      key_cache.shape()[3] != kPackedDimension ||
+      key_cache.shape() != value_cache.shape() ||
+      key_scales.shape()[0] != 1 ||
+      key_scales.shape()[1] != kKeyValueHeads ||
+      key_scales.shape()[3] != kParameterDimension ||
+      key_scales.shape() != key_biases.shape() ||
+      key_scales.shape() != value_scales.shape() ||
+      key_scales.shape() != value_biases.shape() ||
+      key_cache.shape()[2] != key_scales.shape()[2]) {
+    throw std::runtime_error("invalid fixed Q8 attention inputs");
+  }
+  const int query_tokens = queries.shape()[2];
+  const int cache_capacity = key_cache.shape()[2];
+  if (query_tokens < 1 || query_tokens > 1024 || prefix_length < 0 ||
+      active_cache_length != prefix_length + query_tokens ||
+      active_cache_length > cache_capacity ||
+      cache_capacity % kKeyTile != 0) {
+    throw std::runtime_error("unsupported fixed Q8 attention shape");
+  }
+  const int attention_rows = query_tokens * kHeadsPerKeyValue;
+  const int query_tiles =
+      (attention_rows + kQueryTile - 1) / kQueryTile;
+  const int requested_key_splits = std::min(
+      32, std::max(1, (cache_capacity + 4095) / 4096));
+  const bool split_decode = query_tokens == 1 && requested_key_splits > 1;
+  auto outputs = fixed_q8_attention_metal()(
+      {queries,
+       key_cache,
+       key_scales,
+       key_biases,
+       value_cache,
+       value_scales,
+       value_biases,
+       array(query_tokens, mx::int32),
+       array(prefix_length, mx::int32),
+       array(cache_capacity, mx::int32),
+       array(active_cache_length, mx::int32),
+       array(split_decode ? requested_key_splits : 1, mx::int32)},
+      {split_decode
+           ? mx::Shape{requested_key_splits, kQueryHeads, kHeadDimension + 2}
+           : queries.shape()},
+      {mx::float32},
+      {(split_decode ? requested_key_splits : query_tiles) * kThreads,
+       kKeyValueHeads,
+       1},
+      {kThreads, 1, 1},
+      {},
+      std::nullopt,
+      false,
+      {});
+  if (split_decode) {
+    auto reduced = reduce_q8_decode_metal()(
+        {outputs[0],
+         array(active_cache_length, mx::int32),
+         array(requested_key_splits, mx::int32)},
+        {queries.shape()},
+        {queries.dtype()},
+        {kQueryHeads * kHeadDimension, 1, 1},
+        {kHeadDimension, 1, 1},
+        {},
+        std::nullopt,
+        false,
+        {});
+    return reduced[0];
+  }
+  return astype(outputs[0], queries.dtype());
 }
 
 array affine_qmm_small_batch(const QLinear& linear, const array& x) {
@@ -3299,6 +4171,20 @@ array affine_q4_qmv_batch_two(const QLinear& linear, const array& x) {
       false,
       {});
   return outputs[0];
+}
+
+array affine_q4_qmv_batch_three(const QLinear& linear, const array& x) {
+  if (!supports_q4_batch_three(linear, x)) {
+    throw std::runtime_error("unsupported batch-three affine Q4 QMV inputs");
+  }
+  const int k = x.shape()[2];
+  const int n = linear.w.shape()[0];
+  return affine_q4_batch_three_metal()(
+      {linear.w, linear.scales, linear.biases, x},
+      {{1, 3, n}}, {x.dtype()}, {128, n / 16, 1}, {128, 1, 1},
+      {{"KConst", mx::fast::TemplateArg{k}},
+       {"NConst", mx::fast::TemplateArg{n}}},
+      std::nullopt, false, {})[0];
 }
 
 array affine_q4_fused_swiglu_batch_one(
@@ -3531,6 +4417,130 @@ array affine_q5_qmv_batch_two(const QLinear& linear, const array& x) {
   return outputs[0];
 }
 
+array affine_q5_qmv_multirow(const QLinear& linear, const array& x) {
+  if (!linear.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
+      x.shape()[1] != 3 || x.dtype() != mx::bfloat16 ||
+      linear.w.ndim() != 2 || linear.w.dtype() != mx::uint32 ||
+      linear.scales.ndim() != 2 || linear.biases.ndim() != 2 ||
+      linear.scales.dtype() != mx::bfloat16 ||
+      linear.biases.dtype() != mx::bfloat16 || linear.group_size != 64 ||
+      linear.bits != 5) {
+    throw std::runtime_error("invalid multirow affine Q5 QMV inputs");
+  }
+  const int input_features = static_cast<int>(x.shape()[2]);
+  const int output_features = static_cast<int>(linear.w.shape()[0]);
+  const int rows = static_cast<int>(x.shape()[1]);
+  if (input_features <= 0 || output_features <= 0 ||
+      input_features % 512 != 0 || output_features % 16 != 0 ||
+      linear.w.shape()[1] * 32 != input_features * linear.bits ||
+      linear.scales.shape() != mx::Shape{output_features, input_features / 64} ||
+      linear.biases.shape() != linear.scales.shape()) {
+    throw std::runtime_error("unsupported multirow affine Q5 QMV shape");
+  }
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_affine_q5_multirow_qmv",
+      {"w", "scales", "biases", "x"},
+      {"y"},
+      R"(
+        constexpr int ValuesPerThread = 16;
+        constexpr int BlockSize = ValuesPerThread * 32;
+        constexpr int Results = 4;
+        constexpr int WeightRowBytes = KConst * 5 / 8;
+        constexpr int GroupsPerRow = KConst / 64;
+        const int lane = thread_index_in_simdgroup;
+        const int output_start = threadgroup_position_in_grid.y * 16 +
+            simdgroup_index_in_threadgroup * Results;
+        using Batch = float3;
+        thread Batch inputs[ValuesPerThread];
+        thread Batch results[Results];
+#pragma unroll
+        for (int row = 0; row < Results; ++row) {
+          results[row] = Batch(0.0f);
+        }
+        for (int k = 0; k < KConst; k += BlockSize) {
+          Batch input_sum = Batch(0.0f);
+#pragma unroll
+          for (int index = 0; index < ValuesPerThread; ++index) {
+            Batch value;
+#pragma unroll
+            for (int batch = 0; batch < Rows; ++batch) {
+              value[batch] = static_cast<float>(
+                  x[batch * KConst + k + lane * ValuesPerThread + index]);
+            }
+            inputs[index] = value;
+            input_sum += value;
+          }
+#pragma unroll
+          for (int row = 0; row < Results; ++row) {
+            const int parameter = (output_start + row) * GroupsPerRow +
+                k / 64 + lane / 4;
+            const float scale = static_cast<float>(scales[parameter]);
+            const float bias = static_cast<float>(biases[parameter]);
+            const device uchar* packed =
+                reinterpret_cast<const device uchar*>(w) +
+                (output_start + row) * WeightRowBytes +
+                (k + lane * ValuesPerThread) * 5 / 8;
+            const packed_ushort4 words =
+                *reinterpret_cast<const device packed_ushort4*>(packed);
+            const uint trailing =
+                *reinterpret_cast<const device ushort*>(packed + 8);
+            const uint window0 =
+                static_cast<uint>(words[0]) |
+                (static_cast<uint>(words[1]) << 16);
+            const uint window1 =
+                static_cast<uint>(words[2]) |
+                (static_cast<uint>(words[3]) << 16);
+            const uint codes[ValuesPerThread] = {
+                window0 & 0x1fu, (window0 >> 5) & 0x1fu,
+                (window0 >> 10) & 0x1fu, (window0 >> 15) & 0x1fu,
+                (window0 >> 20) & 0x1fu, (window0 >> 25) & 0x1fu,
+                (window0 >> 30) | ((window1 & 0x07u) << 2),
+                (window1 >> 3) & 0x1fu, (window1 >> 8) & 0x1fu,
+                (window1 >> 13) & 0x1fu, (window1 >> 18) & 0x1fu,
+                (window1 >> 23) & 0x1fu,
+                (window1 >> 28) | ((trailing & 0x01u) << 4),
+                (trailing >> 1) & 0x1fu,
+                (trailing >> 6) & 0x1fu, trailing >> 11,
+            };
+            Batch accumulator = Batch(0.0f);
+#pragma unroll
+            for (int index = 0; index < ValuesPerThread; ++index) {
+              accumulator = fma(
+                  inputs[index], Batch(static_cast<float>(codes[index])),
+                  accumulator);
+            }
+            results[row] += scale * accumulator + bias * input_sum;
+          }
+        }
+#pragma unroll
+        for (int batch = 0; batch < Rows; ++batch) {
+#pragma unroll
+          for (int row = 0; row < Results; ++row) {
+            const float result = simd_sum(results[row][batch]);
+            if (lane == 0) {
+              y[batch * NConst + output_start + row] =
+                  static_cast<bfloat>(result);
+            }
+          }
+        }
+      )");
+  auto outputs = kernel(
+      {linear.w, linear.scales, linear.biases, x},
+      {{1, rows, output_features}},
+      {x.dtype()},
+      {128, output_features / 16, 1},
+      {128, 1, 1},
+      {
+          {"KConst", mx::fast::TemplateArg{input_features}},
+          {"NConst", mx::fast::TemplateArg{output_features}},
+          {"Rows", mx::fast::TemplateArg{rows}},
+      },
+      std::nullopt,
+      false,
+      {});
+  return outputs[0];
+}
+
 std::pair<array, array> gated_delta_step(
     const array& q,
     const array& k,
@@ -3661,13 +4671,117 @@ array gated_delta_commit(
   return outputs[0];
 }
 
+int attention_cache_growth_capacity(
+    int current_capacity, int needed_capacity, int reserve_capacity) {
+  if (current_capacity < 0 || needed_capacity <= current_capacity ||
+      needed_capacity <= 0 || reserve_capacity < 0) {
+    throw std::runtime_error("invalid attention cache growth request");
+  }
+  int capacity = std::max(256, current_capacity);
+  if (reserve_capacity >= needed_capacity) {
+    capacity = std::max(capacity, reserve_capacity);
+  }
+  while (capacity < needed_capacity) {
+    if (capacity > std::numeric_limits<int>::max() / 2) {
+      throw std::runtime_error("attention cache capacity overflow");
+    }
+    capacity *= 2;
+  }
+  return capacity;
+}
+
+bool attention_cache_append_requires_large_growth(
+    int cache_length, int cache_capacity, int appended_tokens) {
+  if (cache_length < 0 || cache_capacity < 0 ||
+      cache_length > cache_capacity || appended_tokens <= 0) {
+    throw std::runtime_error("invalid attention cache extent");
+  }
+  // Below 64K, replacement and a full prefill chunk coexist within the
+  // qualified Metal margin. Serialize only the measured 64K-to-128K boundary
+  // so ordinary and smaller-context prefill retains its established cadence.
+  constexpr int kMinimumSerializedCapacity = 65536;
+  return cache_capacity >= kMinimumSerializedCapacity &&
+      appended_tokens > cache_capacity - cache_length;
+}
+
+int post_growth_prefill_chunk_size(
+    int target_cache_length,
+    int target_cache_capacity,
+    int mtp_cache_length,
+    int mtp_cache_capacity,
+    int requested_tokens,
+    int configured_max_tokens) {
+  constexpr int kGrowthBoundaryCapacity = 65536;
+  constexpr int kMaximumConfiguredTokens = 1024;
+  if (target_cache_length < 0 || target_cache_capacity < 0 ||
+      target_cache_length > target_cache_capacity || mtp_cache_length < 0 ||
+      mtp_cache_capacity < 0 || mtp_cache_length > mtp_cache_capacity ||
+      requested_tokens <= 0 || configured_max_tokens < 0 ||
+      configured_max_tokens > kMaximumConfiguredTokens) {
+    throw std::runtime_error("invalid post-growth prefill chunk request");
+  }
+  if (configured_max_tokens == 0 ||
+      target_cache_length <= kGrowthBoundaryCapacity ||
+      target_cache_capacity <= kGrowthBoundaryCapacity ||
+      mtp_cache_length <= kGrowthBoundaryCapacity ||
+      mtp_cache_capacity <= kGrowthBoundaryCapacity) {
+    return requested_tokens;
+  }
+  return std::min(requested_tokens, configured_max_tokens);
+}
+
+int serialized_attention_cache_growth_chunk_size(
+    int cache_length, int cache_capacity, int requested_tokens) {
+  if (!attention_cache_append_requires_large_growth(
+          cache_length, cache_capacity, requested_tokens)) {
+    return requested_tokens;
+  }
+  const int available = cache_capacity - cache_length;
+  return std::max(1, available);
+}
+
 Engine::Engine(MlxQwen38Config cfg, const std::string& model_dir)
     : cfg_(configure_mlx_runtime(cfg)) {
   if (cfg_.hidden_size <= 0 || cfg_.num_hidden_layers <= 0) {
     throw std::runtime_error("invalid Qwen3.8 config");
   }
   target_only_prefill_chunk_size_ = native_target_only_prefill_chunk_size();
+  attention_cache_reserve_capacity_ =
+      native_attention_cache_reserve_capacity();
+  attention_cache_bits_ = native_attention_cache_bits();
+  serialize_attention_cache_growth_ =
+      native_serialize_attention_cache_growth_enabled();
+  evict_q4_raw_params_at_mtp_growth_ =
+      native_evict_q4_raw_params_at_mtp_growth_enabled();
+  post_growth_mtp_prefill_chunk_size_ =
+      native_post_growth_mtp_prefill_chunk_size();
+  if (evict_q4_raw_params_at_mtp_growth_ &&
+      (!serialize_attention_cache_growth_ ||
+       !native_q4_fused_swiglu_enabled() ||
+       !native_q4_fused_raw_params_enabled())) {
+    throw std::runtime_error(
+        "MTP-growth raw-parameter eviction requires serialized growth and "
+        "raw fused Q4 SwiGLU");
+  }
+  if (post_growth_mtp_prefill_chunk_size_ > 0 &&
+      (!serialize_attention_cache_growth_ ||
+       !evict_q4_raw_params_at_mtp_growth_)) {
+    throw std::runtime_error(
+        "post-growth MTP prefill cap requires serialized growth and "
+        "MTP-growth raw-parameter eviction");
+  }
   quantized_embedding_enabled_ = native_quantized_embedding_enabled();
+  append_only_attention_snapshot_enabled_ =
+      native_append_only_attention_snapshot_enabled();
+  mtp_prompt_cache_enabled_ = native_mtp_prompt_cache_enabled();
+  if (mtp_prompt_cache_enabled_ && !append_only_attention_snapshot_enabled_) {
+    throw std::runtime_error("MTP prompt caching requires append-only snapshots");
+  }
+  if (attention_cache_bits_ == 8 &&
+      !append_only_attention_snapshot_enabled_) {
+    throw std::runtime_error(
+        "affine-Q8 attention cache requires append-only snapshots");
+  }
   layers_.resize(static_cast<size_t>(cfg_.num_hidden_layers));
   load_weights(model_dir);
   sampling_enabled_ = native_sampling_enabled();
@@ -3690,6 +4804,16 @@ void Engine::reset() {
     } else {
       layer.attn.offset = 0;
       layer.attn.cache_length = 0;
+      if (layer.attn.cache_bits != 16) {
+        layer.attn.keys = array(0);
+        layer.attn.key_scales = array(0);
+        layer.attn.key_biases = array(0);
+        layer.attn.values = array(0);
+        layer.attn.value_scales = array(0);
+        layer.attn.value_biases = array(0);
+        layer.attn.cache_capacity = 0;
+        layer.attn.cache_bits = 16;
+      }
     }
   }
   if (sampling_enabled_) {
@@ -3703,6 +4827,9 @@ void Engine::reset() {
   reasoning_cap_selected_ = false;
   prompt_snapshot_valid_ = false;
   prompt_snapshot_history_.clear();
+  mtp_prompt_snapshot_.clear();
+  mtp_prompt_hidden_ = array(0);
+  mtp_prompt_cache_length_ = 0;
   snap_.clear();
   if (mtp_valid_) {
     mtp_reset();
@@ -3928,6 +5055,59 @@ void Engine::load_weights(const std::string& model_dir) {
   }
 }
 
+std::size_t Engine::release_target_fused_q4_raw_decode_parameters() {
+  std::size_t released_bytes = 0;
+  std::size_t released_layers = 0;
+  for (DecoderLayer& layer : layers_) {
+    if (layer.gate_proj.bits != 4 || layer.up_proj.bits != 4) {
+      continue;
+    }
+    const std::size_t layer_bytes =
+        release_fused_q4_raw_decode_parameters(layer.gate_proj);
+    if (layer_bytes == 0) {
+      throw std::runtime_error("missing target raw fused Q4 decode parameters");
+    }
+    if (released_bytes >
+        std::numeric_limits<std::size_t>::max() - layer_bytes) {
+      throw std::runtime_error("target raw fused Q4 parameter size overflow");
+    }
+    released_bytes += layer_bytes;
+    ++released_layers;
+  }
+  if (released_layers == 0) {
+    throw std::runtime_error("target has no raw fused Q4 decode parameters");
+  }
+  return released_bytes;
+}
+
+std::size_t Engine::restore_target_fused_q4_raw_decode_parameters() {
+  std::size_t restored_bytes = 0;
+  std::size_t restored_layers = 0;
+  for (DecoderLayer& layer : layers_) {
+    if (layer.gate_proj.bits != 4 || layer.up_proj.bits != 4) {
+      continue;
+    }
+    if (layer.gate_proj.fused_q4_decode_params_valid ||
+        !prepare_fused_q4_raw_decode_parameters(
+            layer.gate_proj, layer.up_proj)) {
+      throw std::runtime_error(
+          "cannot restore target raw fused Q4 decode parameters");
+    }
+    const std::size_t layer_bytes =
+        layer.gate_proj.fused_q4_decode_params.nbytes();
+    if (restored_bytes >
+        std::numeric_limits<std::size_t>::max() - layer_bytes) {
+      throw std::runtime_error("target raw fused Q4 parameter size overflow");
+    }
+    restored_bytes += layer_bytes;
+    ++restored_layers;
+  }
+  if (restored_layers == 0) {
+    throw std::runtime_error("target has no raw fused Q4 decode parameters");
+  }
+  return restored_bytes;
+}
+
 array Engine::embed(const array& tokens) const {
   if (quantized_embedding_enabled_) {
     return quantized_embedding_rows(embed_tokens_, tokens);
@@ -4029,50 +5209,298 @@ array Engine::full_attn(FullAttn& attn, const array& x) {
 
   const int prefix_length = attn.cache_length;
   const int needed = prefix_length + L;
-  if (attn.cache_capacity < needed) {
-    int capacity = std::max(256, attn.cache_capacity);
-    while (capacity < needed) {
-      capacity *= 2;
+  constexpr std::size_t kLongContextMinimumTokens = 8192;
+  const bool long_context =
+      token_history_.size() > kLongContextMinimumTokens;
+  const int reserve_capacity =
+      long_context ? attention_cache_reserve_capacity_ : 0;
+  const bool use_q8_cache =
+      attn.cache_bits == 8 ||
+      (attention_cache_bits_ == 8 && long_context &&
+       &attn != &mtp_layer_.attn);
+
+  if (use_q8_cache) {
+    constexpr int kQ8Bits = 8;
+    constexpr int kQ8GroupSize = 64;
+    constexpr int kPackedValuesPerWord = 4;
+    if (B != 1 || n_q != 24 || n_kv != 4 || hd != 256 || L > 1024) {
+      throw std::runtime_error("unsupported affine-Q8 attention geometry");
     }
-    array new_keys = zeros({B, n_kv, capacity, hd}, keys.dtype());
-    array new_values = zeros({B, n_kv, capacity, hd}, values.dtype());
-    if (attn.cache_length > 0) {
-      auto active_keys = slice(
-          attn.keys, {0, 0, 0, 0}, {B, n_kv, attn.cache_length, hd});
-      auto active_values = slice(
-          attn.values, {0, 0, 0, 0}, {B, n_kv, attn.cache_length, hd});
+
+    if (attn.cache_bits == 16) {
+      array dense_keys = keys;
+      array dense_values = values;
+      if (prefix_length > 0) {
+        dense_keys = concatenate(
+            {slice(
+                 attn.keys,
+                 {0, 0, 0, 0},
+                 {B, n_kv, prefix_length, hd}),
+             keys},
+            2);
+        dense_values = concatenate(
+            {slice(
+                 attn.values,
+                 {0, 0, 0, 0},
+                 {B, n_kv, prefix_length, hd}),
+             values},
+            2);
+      }
+      std::vector<array> quantized_keys =
+          mx::quantize(dense_keys, kQ8GroupSize, kQ8Bits, "affine");
+      std::vector<array> quantized_values =
+          mx::quantize(dense_values, kQ8GroupSize, kQ8Bits, "affine");
+      if (quantized_keys.size() != 3 || quantized_values.size() != 3) {
+        throw std::runtime_error("invalid affine-Q8 cache quantization");
+      }
+      const int capacity = attention_cache_growth_capacity(
+          0, needed, reserve_capacity);
+      array new_keys = zeros(
+          {B, n_kv, capacity, hd / kPackedValuesPerWord}, mx::uint32);
+      array new_key_scales = zeros(
+          {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+      array new_key_biases = zeros(
+          {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+      array new_values = zeros(
+          {B, n_kv, capacity, hd / kPackedValuesPerWord}, mx::uint32);
+      array new_value_scales = zeros(
+          {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+      array new_value_biases = zeros(
+          {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
       new_keys = slice_update(
           new_keys,
-          active_keys,
+          quantized_keys[0],
           {0, 0, 0, 0},
-          {B, n_kv, attn.cache_length, hd});
+          {B, n_kv, needed, hd / kPackedValuesPerWord});
+      new_key_scales = slice_update(
+          new_key_scales,
+          quantized_keys[1],
+          {0, 0, 0, 0},
+          {B, n_kv, needed, hd / kQ8GroupSize});
+      new_key_biases = slice_update(
+          new_key_biases,
+          quantized_keys[2],
+          {0, 0, 0, 0},
+          {B, n_kv, needed, hd / kQ8GroupSize});
       new_values = slice_update(
           new_values,
-          active_values,
+          quantized_values[0],
           {0, 0, 0, 0},
-          {B, n_kv, attn.cache_length, hd});
-      eval(new_keys, new_values);
+          {B, n_kv, needed, hd / kPackedValuesPerWord});
+      new_value_scales = slice_update(
+          new_value_scales,
+          quantized_values[1],
+          {0, 0, 0, 0},
+          {B, n_kv, needed, hd / kQ8GroupSize});
+      new_value_biases = slice_update(
+          new_value_biases,
+          quantized_values[2],
+          {0, 0, 0, 0},
+          {B, n_kv, needed, hd / kQ8GroupSize});
+      eval(
+          new_keys,
+          new_key_scales,
+          new_key_biases,
+          new_values,
+          new_value_scales,
+          new_value_biases);
+      attn.keys = std::move(new_keys);
+      attn.key_scales = std::move(new_key_scales);
+      attn.key_biases = std::move(new_key_biases);
+      attn.values = std::move(new_values);
+      attn.value_scales = std::move(new_value_scales);
+      attn.value_biases = std::move(new_value_biases);
+      attn.cache_capacity = capacity;
+      attn.cache_bits = kQ8Bits;
+    } else {
+      if (attn.cache_bits != kQ8Bits || attn.keys.ndim() != 4 ||
+          attn.key_scales.ndim() != 4 || attn.key_biases.ndim() != 4 ||
+          attn.values.ndim() != 4 || attn.value_scales.ndim() != 4 ||
+          attn.value_biases.ndim() != 4 ||
+          attn.keys.dtype() != mx::uint32 ||
+          attn.values.dtype() != mx::uint32 ||
+          attn.key_scales.dtype() != mx::bfloat16 ||
+          attn.key_biases.dtype() != mx::bfloat16 ||
+          attn.value_scales.dtype() != mx::bfloat16 ||
+          attn.value_biases.dtype() != mx::bfloat16) {
+        throw std::runtime_error("invalid affine-Q8 attention cache");
+      }
+      if (attn.cache_capacity < needed) {
+        const int capacity = attention_cache_growth_capacity(
+            attn.cache_capacity, needed, reserve_capacity);
+        array new_keys = zeros(
+            {B, n_kv, capacity, hd / kPackedValuesPerWord}, mx::uint32);
+        array new_key_scales = zeros(
+            {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+        array new_key_biases = zeros(
+            {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+        array new_values = zeros(
+            {B, n_kv, capacity, hd / kPackedValuesPerWord}, mx::uint32);
+        array new_value_scales = zeros(
+            {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+        array new_value_biases = zeros(
+            {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+        if (prefix_length > 0) {
+          new_keys = slice_update(
+              new_keys,
+              slice(
+                  attn.keys,
+                  {0, 0, 0, 0},
+                  {B, n_kv, prefix_length, hd / kPackedValuesPerWord}),
+              {0, 0, 0, 0},
+              {B, n_kv, prefix_length, hd / kPackedValuesPerWord});
+          new_key_scales = slice_update(
+              new_key_scales,
+              slice(
+                  attn.key_scales,
+                  {0, 0, 0, 0},
+                  {B, n_kv, prefix_length, hd / kQ8GroupSize}),
+              {0, 0, 0, 0},
+              {B, n_kv, prefix_length, hd / kQ8GroupSize});
+          new_key_biases = slice_update(
+              new_key_biases,
+              slice(
+                  attn.key_biases,
+                  {0, 0, 0, 0},
+                  {B, n_kv, prefix_length, hd / kQ8GroupSize}),
+              {0, 0, 0, 0},
+              {B, n_kv, prefix_length, hd / kQ8GroupSize});
+          new_values = slice_update(
+              new_values,
+              slice(
+                  attn.values,
+                  {0, 0, 0, 0},
+                  {B, n_kv, prefix_length, hd / kPackedValuesPerWord}),
+              {0, 0, 0, 0},
+              {B, n_kv, prefix_length, hd / kPackedValuesPerWord});
+          new_value_scales = slice_update(
+              new_value_scales,
+              slice(
+                  attn.value_scales,
+                  {0, 0, 0, 0},
+                  {B, n_kv, prefix_length, hd / kQ8GroupSize}),
+              {0, 0, 0, 0},
+              {B, n_kv, prefix_length, hd / kQ8GroupSize});
+          new_value_biases = slice_update(
+              new_value_biases,
+              slice(
+                  attn.value_biases,
+                  {0, 0, 0, 0},
+                  {B, n_kv, prefix_length, hd / kQ8GroupSize}),
+              {0, 0, 0, 0},
+              {B, n_kv, prefix_length, hd / kQ8GroupSize});
+          eval(
+              new_keys,
+              new_key_scales,
+              new_key_biases,
+              new_values,
+              new_value_scales,
+              new_value_biases);
+        }
+        attn.keys = std::move(new_keys);
+        attn.key_scales = std::move(new_key_scales);
+        attn.key_biases = std::move(new_key_biases);
+        attn.values = std::move(new_values);
+        attn.value_scales = std::move(new_value_scales);
+        attn.value_biases = std::move(new_value_biases);
+        attn.cache_capacity = capacity;
+      }
+      std::vector<array> quantized_keys =
+          mx::quantize(keys, kQ8GroupSize, kQ8Bits, "affine");
+      std::vector<array> quantized_values =
+          mx::quantize(values, kQ8GroupSize, kQ8Bits, "affine");
+      if (quantized_keys.size() != 3 || quantized_values.size() != 3) {
+        throw std::runtime_error("invalid affine-Q8 cache quantization");
+      }
+      attn.keys = slice_update(
+          attn.keys,
+          quantized_keys[0],
+          {0, 0, prefix_length, 0},
+          {B, n_kv, needed, hd / kPackedValuesPerWord});
+      attn.key_scales = slice_update(
+          attn.key_scales,
+          quantized_keys[1],
+          {0, 0, prefix_length, 0},
+          {B, n_kv, needed, hd / kQ8GroupSize});
+      attn.key_biases = slice_update(
+          attn.key_biases,
+          quantized_keys[2],
+          {0, 0, prefix_length, 0},
+          {B, n_kv, needed, hd / kQ8GroupSize});
+      attn.values = slice_update(
+          attn.values,
+          quantized_values[0],
+          {0, 0, prefix_length, 0},
+          {B, n_kv, needed, hd / kPackedValuesPerWord});
+      attn.value_scales = slice_update(
+          attn.value_scales,
+          quantized_values[1],
+          {0, 0, prefix_length, 0},
+          {B, n_kv, needed, hd / kQ8GroupSize});
+      attn.value_biases = slice_update(
+          attn.value_biases,
+          quantized_values[2],
+          {0, 0, prefix_length, 0},
+          {B, n_kv, needed, hd / kQ8GroupSize});
     }
-    attn.keys = new_keys;
-    attn.values = new_values;
-    attn.cache_capacity = capacity;
+  } else {
+    if (attn.cache_bits != 16) {
+      throw std::runtime_error("cannot restore BF16 attention cache mode");
+    }
+    if (attn.cache_capacity < needed) {
+      const int capacity = attention_cache_growth_capacity(
+          attn.cache_capacity, needed, reserve_capacity);
+      array new_keys = zeros({B, n_kv, capacity, hd}, keys.dtype());
+      array new_values = zeros({B, n_kv, capacity, hd}, values.dtype());
+      if (prefix_length > 0) {
+        auto active_keys = slice(
+            attn.keys, {0, 0, 0, 0}, {B, n_kv, prefix_length, hd});
+        auto active_values = slice(
+            attn.values, {0, 0, 0, 0}, {B, n_kv, prefix_length, hd});
+        new_keys = slice_update(
+            new_keys,
+            active_keys,
+            {0, 0, 0, 0},
+            {B, n_kv, prefix_length, hd});
+        new_values = slice_update(
+            new_values,
+            active_values,
+            {0, 0, 0, 0},
+            {B, n_kv, prefix_length, hd});
+        eval(new_keys, new_values);
+      }
+      attn.keys = std::move(new_keys);
+      attn.values = std::move(new_values);
+      attn.cache_capacity = capacity;
+    }
+    attn.keys = slice_update(
+        attn.keys,
+        keys,
+        {0, 0, prefix_length, 0},
+        {B, n_kv, needed, hd});
+    attn.values = slice_update(
+        attn.values,
+        values,
+        {0, 0, prefix_length, 0},
+        {B, n_kv, needed, hd});
   }
-  attn.keys = slice_update(
-      attn.keys,
-      keys,
-      {0, 0, attn.cache_length, 0},
-      {B, n_kv, needed, hd});
-  attn.values = slice_update(
-      attn.values,
-      values,
-      {0, 0, attn.cache_length, 0},
-      {B, n_kv, needed, hd});
   attn.cache_length = needed;
   attn.offset += L;
 
   array output(0);
   constexpr int kFixedAttentionMinimumActiveTokens = 8192;
-  if (native_fixed_prefill_attention_enabled() &&
+  if (attn.cache_bits == 8) {
+    output = fixed_q8_attention(
+        queries,
+        attn.keys,
+        attn.key_scales,
+        attn.key_biases,
+        attn.values,
+        attn.value_scales,
+        attn.value_biases,
+        prefix_length,
+        needed);
+  } else if (native_fixed_prefill_attention_enabled() &&
       needed > kFixedAttentionMinimumActiveTokens && L > 1 && B == 1 &&
       n_q == 24 && n_kv == 4 && hd == 256 && L <= 1024) {
     output = fixed_prefill_attention(
@@ -4123,6 +5551,10 @@ array Engine::gated_delta(
   array conv_out = qkv;
   if (S == 1 && ksz > 1) {
     auto conv = causal_conv_decode_silu(lin.conv_state, qkv, lin.conv1d);
+    conv_out = conv.first;
+    lin.conv_state = conv.second;
+  } else if (S == 2 && ksz > 1 && native_two_token_causal_conv_enabled()) {
+    auto conv = causal_conv_two_token_silu(lin.conv_state, qkv, lin.conv1d);
     conv_out = conv.first;
     lin.conv_state = conv.second;
   } else {
@@ -4347,10 +5779,14 @@ array Engine::sampling_probabilities(const array& token_logits) {
 }
 
 void Engine::snapshot() {
-  snap_.resize(layers_.size());
+  capture_snapshot(snap_);
+}
+
+void Engine::capture_snapshot(std::vector<LayerSnap>& destination) const {
+  destination.resize(layers_.size());
   for (size_t i = 0; i < layers_.size(); ++i) {
-    auto& layer = layers_[i];
-    auto& s = snap_[i];
+    const auto& layer = layers_[i];
+    auto& s = destination[i];
     s.is_linear = layer.is_linear;
     if (layer.is_linear) {
       s.has_state = layer.linear.has_state;
@@ -4359,27 +5795,102 @@ void Engine::snapshot() {
     } else {
       s.offset = layer.attn.offset;
       s.cache_length = layer.attn.cache_length;
-      s.cache_capacity = layer.attn.cache_capacity;
-      s.keys = layer.attn.keys;
-      s.values = layer.attn.values;
+      s.cache_bits = layer.attn.cache_bits;
+      if (append_only_attention_snapshot_enabled_) {
+        s.cache_capacity = 0;
+        s.keys = array(0);
+        s.key_scales = array(0);
+        s.key_biases = array(0);
+        s.values = array(0);
+        s.value_scales = array(0);
+        s.value_biases = array(0);
+      } else {
+        s.cache_capacity = layer.attn.cache_capacity;
+        s.keys = layer.attn.keys;
+        s.key_scales = layer.attn.key_scales;
+        s.key_biases = layer.attn.key_biases;
+        s.values = layer.attn.values;
+        s.value_scales = layer.attn.value_scales;
+        s.value_biases = layer.attn.value_biases;
+      }
     }
   }
 }
 
 void Engine::restore() {
+  restore_snapshot(snap_);
+}
+
+void Engine::restore_snapshot(const std::vector<LayerSnap>& source) {
+  if (source.size() != layers_.size()) {
+    throw std::runtime_error("invalid target snapshot layer count");
+  }
   for (size_t i = 0; i < layers_.size(); ++i) {
     auto& layer = layers_[i];
-    const auto& s = snap_[i];
+    const auto& s = source[i];
     if (layer.is_linear) {
       layer.linear.has_state = s.has_state;
       layer.linear.conv_state = s.conv;
       layer.linear.rec_state = s.rec;
     } else {
+      if (append_only_attention_snapshot_enabled_) {
+        const bool bf16_storage_valid =
+            layer.attn.cache_bits == 16 && layer.attn.keys.ndim() == 4 &&
+            layer.attn.values.ndim() == 4 &&
+            layer.attn.keys.dtype() == mx::bfloat16 &&
+            layer.attn.values.dtype() == mx::bfloat16 &&
+            layer.attn.keys.shape() == layer.attn.values.shape() &&
+            layer.attn.keys.shape()[0] == 1 &&
+            layer.attn.keys.shape()[1] == cfg_.num_key_value_heads &&
+            layer.attn.keys.shape()[2] == layer.attn.cache_capacity &&
+            layer.attn.keys.shape()[3] == cfg_.head_dim;
+        const mx::Shape q8_parameter_shape{
+            1,
+            cfg_.num_key_value_heads,
+            layer.attn.cache_capacity,
+            cfg_.head_dim / 64};
+        const bool q8_storage_valid =
+            layer.attn.cache_bits == 8 && layer.attn.keys.ndim() == 4 &&
+            layer.attn.values.ndim() == 4 &&
+            layer.attn.keys.dtype() == mx::uint32 &&
+            layer.attn.values.dtype() == mx::uint32 &&
+            layer.attn.keys.shape() == layer.attn.values.shape() &&
+            layer.attn.keys.shape()[0] == 1 &&
+            layer.attn.keys.shape()[1] == cfg_.num_key_value_heads &&
+            layer.attn.keys.shape()[2] == layer.attn.cache_capacity &&
+            layer.attn.keys.shape()[3] == cfg_.head_dim / 4 &&
+            layer.attn.key_scales.ndim() == 4 &&
+            layer.attn.key_biases.ndim() == 4 &&
+            layer.attn.value_scales.ndim() == 4 &&
+            layer.attn.value_biases.ndim() == 4 &&
+            layer.attn.key_scales.dtype() == mx::bfloat16 &&
+            layer.attn.key_biases.dtype() == mx::bfloat16 &&
+            layer.attn.value_scales.dtype() == mx::bfloat16 &&
+            layer.attn.value_biases.dtype() == mx::bfloat16 &&
+            layer.attn.key_scales.shape() == q8_parameter_shape &&
+            layer.attn.key_biases.shape() == q8_parameter_shape &&
+            layer.attn.value_scales.shape() == q8_parameter_shape &&
+            layer.attn.value_biases.shape() == q8_parameter_shape;
+        if (layer.attn.offset < s.offset ||
+            layer.attn.cache_length < s.cache_length ||
+            layer.attn.cache_capacity < s.cache_length ||
+            layer.attn.cache_bits != s.cache_bits ||
+            (!bf16_storage_valid && !q8_storage_valid)) {
+          throw std::runtime_error(
+              "attention cache storage cannot restore snapshot prefix");
+        }
+      } else {
+        layer.attn.cache_capacity = s.cache_capacity;
+        layer.attn.cache_bits = s.cache_bits;
+        layer.attn.keys = s.keys;
+        layer.attn.key_scales = s.key_scales;
+        layer.attn.key_biases = s.key_biases;
+        layer.attn.values = s.values;
+        layer.attn.value_scales = s.value_scales;
+        layer.attn.value_biases = s.value_biases;
+      }
       layer.attn.offset = s.offset;
       layer.attn.cache_length = s.cache_length;
-      layer.attn.cache_capacity = s.cache_capacity;
-      layer.attn.keys = s.keys;
-      layer.attn.values = s.values;
     }
   }
 }
@@ -4394,6 +5905,101 @@ void Engine::forward_argmax(const int32_t* tokens, int n, int32_t* out) {
   for (int i = 0; i < n; ++i) {
     out[i] = data[i];
   }
+}
+
+std::uint64_t attention_cache_digest(const FullAttn& cache) {
+  return attention_cache_digest(cache, true);
+}
+
+std::uint64_t attention_cache_digest(const FullAttn& cache, bool include_capacity) {
+  if (cache.cache_length < 0 || cache.offset < 0 ||
+      cache.cache_capacity < cache.cache_length) {
+    throw std::runtime_error("invalid attention cache digest metadata");
+  }
+  std::uint64_t digest = UINT64_C(14695981039346656037);
+  const auto mix = [&digest](unsigned char byte) {
+    digest = (digest ^ byte) * UINT64_C(1099511628211);
+  };
+  const auto mix_integer = [&mix](int value) {
+    const auto bits = static_cast<std::uint32_t>(value);
+    for (int shift = 0; shift < 32; shift += 8) {
+      mix(static_cast<unsigned char>(bits >> shift));
+    }
+  };
+  mix_integer(cache.offset);
+  mix_integer(cache.cache_length);
+  if (include_capacity) mix_integer(cache.cache_capacity);
+  if (cache.cache_length == 0) {
+    return digest;
+  }
+  if (cache.keys.ndim() != 4 || cache.keys.shape() != cache.values.shape() ||
+      cache.keys.shape()[2] != cache.cache_capacity ||
+      cache.keys.dtype() != mx::bfloat16 || cache.values.dtype() != mx::bfloat16) {
+    throw std::runtime_error("invalid attention cache digest arrays");
+  }
+  auto active_shape = cache.keys.shape();
+  active_shape[2] = cache.cache_length;
+  for (int dimension : include_capacity ? cache.keys.shape() : active_shape) {
+    mix_integer(dimension);
+  }
+  for (const auto& source : {cache.keys, cache.values}) {
+    const auto active = mx::contiguous(slice(source, {0, 0, 0, 0}, active_shape));
+    eval(active);
+    const auto* bytes = reinterpret_cast<const unsigned char*>(
+        active.data<mx::bfloat16_t>());
+    for (std::size_t i = 0; i < active.nbytes(); ++i) {
+      mix(bytes[i]);
+    }
+  }
+  return digest;
+}
+
+std::uint64_t Engine::mtp_history_digest() const {
+  return mtp_history_digest(true);
+}
+
+std::uint64_t Engine::mtp_history_digest(bool include_capacity) const {
+  if (!mtp_valid_ || !mtp_committed_history_enabled_ || mtp_cycle_pending_ ||
+      mtp_layer_.attn.cache_length != target_sequence_length() - 1 ||
+      mtp_layer_.attn.offset != mtp_layer_.attn.cache_length) {
+    throw std::runtime_error("MTP history digest requires committed state");
+  }
+  return attention_cache_digest(mtp_layer_.attn, include_capacity);
+}
+
+std::uint64_t Engine::target_state_digest() const {
+  std::uint64_t digest = UINT64_C(14695981039346656037);
+  const auto mix = [&digest](unsigned char byte) {
+    digest = (digest ^ byte) * UINT64_C(1099511628211);
+  };
+  const auto mix_integer = [&mix](std::uint64_t value) {
+    for (int shift = 0; shift < 64; shift += 8) {
+      mix(static_cast<unsigned char>(value >> shift));
+    }
+  };
+  const auto mix_array = [&](const array& value) {
+    const auto compact = mx::contiguous(value);
+    eval(compact);
+    mix_integer(compact.ndim());
+    for (int dimension : compact.shape()) mix_integer(dimension);
+    mix_integer(compact.nbytes());
+    const auto* bytes = compact.data<unsigned char>();
+    for (std::size_t i = 0; i < compact.nbytes(); ++i) mix(bytes[i]);
+  };
+  for (const auto& layer : layers_) {
+    mix(layer.is_linear);
+    if (layer.is_linear) {
+      mix(layer.linear.has_state);
+      if (layer.linear.has_state) {
+        mix_array(layer.linear.conv_state);
+        mix_array(layer.linear.rec_state);
+      }
+    } else {
+      mix_integer(attention_cache_digest(layer.attn, false));
+    }
+  }
+  mix_array(last_hidden_);
+  return digest;
 }
 
 int Engine::target_sequence_length() const {
@@ -4412,6 +6018,62 @@ int Engine::target_sequence_length() const {
     throw std::runtime_error("target has no full-attention layer");
   }
   return sequence_length;
+}
+
+int Engine::serialized_attention_cache_chunk_size(
+    int requested_tokens, bool include_mtp) const {
+  if (!serialize_attention_cache_growth_) {
+    return requested_tokens;
+  }
+  int chunk_size = requested_tokens;
+  for (const DecoderLayer& layer : layers_) {
+    if (!layer.is_linear) {
+      chunk_size = std::min(
+          chunk_size,
+          serialized_attention_cache_growth_chunk_size(
+              layer.attn.cache_length,
+              layer.attn.cache_capacity,
+              requested_tokens));
+    }
+  }
+  if (include_mtp && mtp_valid_) {
+    chunk_size = std::min(
+        chunk_size,
+        serialized_attention_cache_growth_chunk_size(
+            mtp_layer_.attn.cache_length,
+            mtp_layer_.attn.cache_capacity,
+            requested_tokens));
+  }
+  return chunk_size;
+}
+
+int Engine::bounded_post_growth_mtp_prefill_chunk_size(
+    int requested_tokens, bool include_mtp) const {
+  if (post_growth_mtp_prefill_chunk_size_ == 0 || !include_mtp ||
+      !mtp_valid_) {
+    return requested_tokens;
+  }
+  int target_capacity = -1;
+  for (const DecoderLayer& layer : layers_) {
+    if (layer.is_linear) {
+      continue;
+    }
+    if (target_capacity < 0) {
+      target_capacity = layer.attn.cache_capacity;
+    } else if (layer.attn.cache_capacity != target_capacity) {
+      throw std::runtime_error("inconsistent target attention capacities");
+    }
+  }
+  if (target_capacity < 0) {
+    throw std::runtime_error("target has no full-attention layer");
+  }
+  return post_growth_prefill_chunk_size(
+      target_sequence_length(),
+      target_capacity,
+      mtp_layer_.attn.cache_length,
+      mtp_layer_.attn.cache_capacity,
+      requested_tokens,
+      post_growth_mtp_prefill_chunk_size_);
 }
 
 array Engine::mtp_seed_hidden() const {
@@ -6226,7 +7888,33 @@ int32_t Engine::emit_scheduled() {
   return last_emitted_;
 }
 
+bool Engine::can_restore_mtp_prompt() const {
+  if (!mtp_prompt_cache_enabled_ || !mtp_valid_ ||
+      !mtp_committed_history_enabled_ || dflash_valid_ || dspark_valid_ ||
+      mtp_cycle_pending_ || mtp_prompt_snapshot_.size() != layers_.size() ||
+      mtp_prompt_hidden_.ndim() != 2 ||
+      mtp_prompt_cache_length_ !=
+          static_cast<int>(prompt_snapshot_history_.size()) - 1 ||
+      mtp_layer_.attn.cache_length < mtp_prompt_cache_length_ ||
+      mtp_layer_.attn.offset < mtp_prompt_cache_length_) {
+    return false;
+  }
+  for (size_t i = 0; i < layers_.size(); ++i) {
+    const auto& layer = layers_[i];
+    const auto& saved = mtp_prompt_snapshot_[i];
+    // A changed cache representation needs a fresh prefill. Recurrent
+    // snapshots alone cannot recover the original attention prefix bits.
+    if (!layer.is_linear &&
+        (layer.attn.cache_bits != saved.cache_bits ||
+         layer.attn.cache_length < saved.cache_length)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
+  last_prefill_cached_tokens_ = 0;
   if (n <= 0) {
     throw std::runtime_error("prefill requires at least one token");
   }
@@ -6261,8 +7949,10 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
         tokens + snapshot_compare_count);
     const std::size_t snapshot_common = static_cast<std::size_t>(
         snapshot_mismatch.first - prompt_snapshot_history_.begin());
+    const bool reuse_mtp_prompt = has_mtp() && can_restore_mtp_prompt();
     const bool can_reuse_snapshot =
-        !can_reuse_current && !has_mtp() && prompt_snapshot_valid_ &&
+        !can_reuse_current && (!has_mtp() || reuse_mtp_prompt) &&
+        prompt_snapshot_valid_ &&
         prompt_snapshot_history_.size() < size_t(n) &&
         std::equal(
             prompt_snapshot_history_.begin(), prompt_snapshot_history_.end(),
@@ -6279,16 +7969,36 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
           has_mtp() ? 1 : 0);
     }
     if (can_reuse_current) {
+      last_prefill_cached_tokens_ = static_cast<int>(token_history_.size());
       new_tokens += token_history_.size();
       new_token_count -= static_cast<int>(token_history_.size());
       reset_decode_pipeline();
       request_boundary_pending_ = false;
     } else if (can_reuse_snapshot) {
-      restore();
+      if (reuse_mtp_prompt) {
+        restore_snapshot(mtp_prompt_snapshot_);
+        // Committed MTP keys/values are append-only too. Keep their current
+        // allocation while returning to the saved one-token-behind prefix.
+        mtp_layer_.attn.cache_length = mtp_prompt_cache_length_;
+        mtp_layer_.attn.offset = mtp_prompt_cache_length_;
+      } else {
+        restore();
+      }
       token_history_ = prompt_snapshot_history_;
+      last_prefill_cached_tokens_ = static_cast<int>(token_history_.size());
       new_tokens += token_history_.size();
       new_token_count -= static_cast<int>(token_history_.size());
       reset_decode_pipeline();
+      if (reuse_mtp_prompt) {
+        last_hidden_ = mtp_prompt_hidden_;
+        // The restored layers now own these states. Do not retain another
+        // recurrent-state generation while extending a long prompt.
+        mtp_prompt_snapshot_.clear();
+        mtp_prompt_hidden_ = array(0);
+        prompt_snapshot_valid_ = false;
+        snap_.clear();
+        mx::random::seed(sampling_seed_);
+      }
       request_boundary_pending_ = false;
     } else {
       reset();
@@ -6331,12 +8041,53 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
              ? kMtpCommittedPrefillChunkSize
              : (!has_mtp() ? target_only_prefill_chunk_size_ : 0));
   if (internal_chunk_size > 0) {
-    for (int offset = 0; offset < new_token_count;
-         offset += internal_chunk_size) {
-      const int chunk_size = std::min(
+    for (int offset = 0; offset < new_token_count;) {
+      int chunk_size = std::min(
           internal_chunk_size, new_token_count - offset);
+      const int serialized_chunk_size = serialized_attention_cache_chunk_size(
+          chunk_size, capture_mtp_history);
+      if (serialized_chunk_size != chunk_size) {
+        chunk_size = serialized_chunk_size;
+        if (native_state_trace_enabled()) {
+          std::fprintf(
+              stderr,
+              "qwen38_native serialize_cache_growth offset=%d remaining=%d\n",
+              offset,
+              new_token_count - offset);
+        }
+      }
+      const int post_growth_chunk_size =
+          bounded_post_growth_mtp_prefill_chunk_size(
+              chunk_size, capture_mtp_history);
+      if (post_growth_chunk_size != chunk_size) {
+        if (native_state_trace_enabled()) {
+          std::fprintf(
+              stderr,
+              "qwen38_native cap_post_growth_prefill offset=%d remaining=%d "
+              "requested=%d selected=%d target_length=%d mtp_length=%d "
+              "mtp_capacity=%d\n",
+              offset,
+              new_token_count - offset,
+              chunk_size,
+              post_growth_chunk_size,
+              target_sequence_length(),
+              mtp_layer_.attn.cache_length,
+              mtp_layer_.attn.cache_capacity);
+        }
+        chunk_size = post_growth_chunk_size;
+      }
+      const int mtp_append_tokens = capture_mtp_history
+          ? (has_previous_mtp_hidden ? chunk_size : chunk_size - 1)
+          : 0;
+      const bool evict_raw_params_for_mtp_growth =
+          evict_q4_raw_params_at_mtp_growth_ && mtp_append_tokens > 0 &&
+          attention_cache_append_requires_large_growth(
+              mtp_layer_.attn.cache_length,
+              mtp_layer_.attn.cache_capacity,
+              mtp_append_tokens);
       array chunk_ids(
           new_tokens + offset, {1, chunk_size}, mx::int32);
+      std::size_t released_raw_parameter_bytes = 0;
       if (capture_draft_context) {
         TargetForward target = forward_hidden_captured(chunk_ids);
         hidden = target.hidden;
@@ -6344,6 +8095,33 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
       } else {
         hidden = forward_hidden(chunk_ids);
         if (capture_mtp_history) {
+          if (evict_raw_params_for_mtp_growth) {
+            // Materialize the target result while its selected decode
+            // parameters are still resident. MTP is the only later consumer,
+            // so those parameters can then leave the working set while the
+            // large MTP cache replacement is active.
+            eval(hidden, previous_mtp_hidden);
+            mx::synchronize();
+            hidden.detach();
+            previous_mtp_hidden.detach();
+            const std::size_t active_before = mx::get_active_memory();
+            released_raw_parameter_bytes =
+                release_target_fused_q4_raw_decode_parameters();
+            mx::clear_cache();
+            if (native_state_trace_enabled()) {
+              std::fprintf(
+                  stderr,
+                  "qwen38_native evict_raw_q4_params mtp_length=%d "
+                  "mtp_capacity=%d append=%d bytes=%zu active_before=%zu "
+                  "active_after=%zu\n",
+                  mtp_layer_.attn.cache_length,
+                  mtp_layer_.attn.cache_capacity,
+                  mtp_append_tokens,
+                  released_raw_parameter_bytes,
+                  active_before,
+                  mx::get_active_memory());
+            }
+          }
           mtp_append_prompt_history(
               hidden,
               new_tokens + offset,
@@ -6355,6 +8133,33 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
         }
       }
       mx::synchronize();
+      if (released_raw_parameter_bytes > 0) {
+        // MTP replacement and its source graph are complete, so its retired
+        // cache can be reclaimed before rebuilding the exact decode stream.
+        mx::clear_cache();
+        const std::size_t active_before = mx::get_active_memory();
+        const std::size_t restored_raw_parameter_bytes =
+            restore_target_fused_q4_raw_decode_parameters();
+        if (restored_raw_parameter_bytes != released_raw_parameter_bytes) {
+          throw std::runtime_error(
+              "restored target raw fused Q4 parameter size mismatch");
+        }
+        // Every rebuilt buffer must be complete before target prefill resumes.
+        // Otherwise the next chunk can overlap the final host-to-device copies
+        // and retain both their staging storage and its activation workspace.
+        mx::synchronize();
+        mx::clear_cache();
+        if (native_state_trace_enabled()) {
+          std::fprintf(
+              stderr,
+              "qwen38_native restore_raw_q4_params bytes=%zu "
+              "active_before=%zu active_after=%zu\n",
+              restored_raw_parameter_bytes,
+              active_before,
+              mx::get_active_memory());
+        }
+      }
+      offset += chunk_size;
     }
   } else {
     array ids(new_tokens, {1, new_token_count}, mx::int32);
@@ -6370,6 +8175,17 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
   }
   if (!has_mtp()) {
     snapshot();
+    prompt_snapshot_history_ = token_history_;
+    prompt_snapshot_valid_ = true;
+  } else if (mtp_prompt_cache_enabled_ && capture_mtp_history &&
+             !capture_draft_context) {
+    // Speculative verification overwrites snap_; request-prefix state needs
+    // its own recurrent snapshots, but never a duplicate target/MTP KV pool.
+    capture_snapshot(mtp_prompt_snapshot_);
+    mtp_prompt_hidden_ = mx::copy(last_token(hidden));
+    eval(mtp_prompt_hidden_);
+    mtp_prompt_hidden_.detach();
+    mtp_prompt_cache_length_ = mtp_layer_.attn.cache_length;
     prompt_snapshot_history_ = token_history_;
     prompt_snapshot_valid_ = true;
   }
