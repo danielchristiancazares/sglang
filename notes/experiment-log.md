@@ -26139,3 +26139,25 @@ mean 13.929045  17.125658 446.051        39.730
   verification currently falls back to stock matrix dispatch. The native
   benchmark uses synthetic token IDs; these results establish execution
   cost only and do not qualify a natural coding task or full 131K use.
+
+### 2026-09-13 - recover newer Mac work and BF16 correctness
+
+- Discovered newer committed Mac work on perf/qwen38-30tps at 130b58ba8a.
+  That separate worktree has user-owned FAILED_PATHS.md/PERFORMANCE_LOG.md
+  edits, which remain untouched. Its A199 real-prompt Q4 baseline is about
+  20 tok/s target-only; MTP is slower on the captured coding-length request.
+- Archived this session's uncommitted scalar-array M=3/4 exploration as
+  20260913/multi_row_exploration.patch, then restored only its four owned
+  paths. The newer branch already contains measured three-row acceleration.
+- Ported native code and focused tests from 6df71a71d8, preserving BF16
+  additions before FP32 conversion in fused two-token affine bias sums.
+  The cross-branch patch initially placed its template argument in Q5 QMV;
+  the Metal compile test caught the undeclared ScalarInputs. Moved the
+  argument to its intended Q4 fused dispatch and reran the complete test.
+- Focused suite passes Q4/Q5 QMV, fused 512/64, 5120/128, 5120/17408,
+  BF16 cancellation, and sigmoid boundary cases. Corrected scalar-input
+  path is bit-exact; the old vector path differs by up to 0.0234375 on
+  the production MLP shape. This commit retains the explicit selection
+  switch; the Q4 serving profile must enable its corrected path.
+- No performance claim follows from this correctness port. Current-code
+  real-prompt, served reasoning, and near-limit capacity remain pending.
