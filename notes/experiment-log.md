@@ -26186,3 +26186,24 @@ mean 13.929045  17.125658 446.051        39.730
   requests are required for this task's actual-work qualification.
 - Current native candidate is 20260913/libqwen38_integrated.dylib; replay
   benchmark and launcher are built there. No server has yet been started.
+
+### 2026-09-13 - complete source-file workload benchmark
+
+- Resumed the interrupted work at a29286b39f, preserving and completing its
+  uncommitted native/benchmark edits. No inference process or port-30000
+  listener was present. MLX remains 0.32.2 in the checkout .venv.
+- Reproduced the shared benchmark compiler failure: a new ignore_eos field
+  consumed the positional BenchmarkNow initializer. Replaced that aggregate
+  with named member assignments, retaining legacy default request behavior.
+- Completed benchmark/mac/bench_qwen38_workload.cpp. It tokenizes the actual
+  file, records prompt IDs for direct replay, requests xhigh with thinking,
+  official sampling and natural EOS, retains separate reasoning/final text,
+  validates usage, and refuses to overwrite existing receipts. A length stop
+  exits 3 and missing reasoning/final text exits 4 after retaining evidence.
+  The explicit output budget is a bounded test setting, not a reasoning cap.
+- Shared output retention is opt-in, preserving the legacy result schema.
+  Protocol coverage checks old defaults, xhigh/natural-EOS payloads, retained
+  text and unchanged timing. Strict C++23 -O2 -Wall -Wextra -Wpedantic -Werror
+  builds pass for the client and test; all 11 protocol tests pass.
+- Artifacts are ~/.cache/sglang-qwen38/20260913/bench_qwen38_workload and
+  test_openai_benchmark_resume. Full-model performance is not yet measured.

@@ -689,7 +689,7 @@ JsonValue stream_request(HttpTransport &transport,
       {"stream", JsonValue(true)},
       {"stream_options",
        JsonValue(JsonObject{{"include_usage", JsonValue(true)}})},
-      {"ignore_eos", JsonValue(true)},
+      {"ignore_eos", JsonValue(options.ignore_eos)},
       {"chat_template_kwargs", chat_template_kwargs(options.enable_thinking)},
   };
   if (options.top_p.has_value()) {
@@ -710,6 +710,10 @@ JsonValue stream_request(HttpTransport &transport,
   }
   if (options.seed.has_value()) {
     payload.emplace("seed", JsonValue(*options.seed));
+  }
+
+  if (options.reasoning_effort.has_value()) {
+    payload.emplace("reasoning_effort", JsonValue(*options.reasoning_effort));
   }
 
   const std::string url = base + "/v1/chat/completions";
@@ -768,8 +772,13 @@ JsonValue stream_request(HttpTransport &transport,
                                std::string(parser.error()));
     }
   }
-  return accumulator.finalize(response.request_started_at,
-                              response.completed_at);
+  JsonValue result = accumulator.finalize(response.request_started_at,
+                                          response.completed_at);
+  if (options.include_output_text) {
+    result.as_object().emplace("reasoning_text", accumulator.reasoning_text());
+    result.as_object().emplace("content_text", accumulator.content_text());
+  }
+  return result;
 }
 
 void validate_result_counts(const JsonValue &result,
@@ -868,22 +877,22 @@ JsonValue run_stream_benchmark(HttpTransport &transport,
 
   const auto request_options =
       [&](std::int64_t output_tokens) -> StreamRequestOptions {
-    return StreamRequestOptions{
-        base,
-        options.model,
-        calibrated.content,
-        output_tokens,
-        options.timeout_seconds,
-        options.seed,
-        options.temperature,
-        options.top_p,
-        options.top_k,
-        options.min_p,
-        options.presence_penalty,
-        options.repetition_penalty,
-        enable_thinking,
-        now,
-    };
+    StreamRequestOptions request;
+    request.base_url = base;
+    request.model = options.model;
+    request.content = calibrated.content;
+    request.output_tokens = output_tokens;
+    request.timeout_seconds = options.timeout_seconds;
+    request.seed = options.seed;
+    request.temperature = options.temperature;
+    request.top_p = options.top_p;
+    request.top_k = options.top_k;
+    request.min_p = options.min_p;
+    request.presence_penalty = options.presence_penalty;
+    request.repetition_penalty = options.repetition_penalty;
+    request.enable_thinking = enable_thinking;
+    request.now = now;
+    return request;
   };
 
   flush_cache(transport, base, options.timeout_seconds, options.backend,

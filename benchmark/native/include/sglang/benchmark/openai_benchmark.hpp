@@ -39,6 +39,9 @@ struct StreamRequestOptions final {
   std::optional<double> presence_penalty;
   std::optional<double> repetition_penalty;
   bool enable_thinking{true};
+  bool ignore_eos{true};
+  std::optional<std::string> reasoning_effort;
+  bool include_output_text{false};
   BenchmarkNow now{[] { return HttpClock::now(); }};
 };
 
@@ -62,6 +65,8 @@ public:
   [[nodiscard]] JsonValue finalize(HttpTimePoint started_at,
                                    HttpTimePoint ended_at) const;
   [[nodiscard]] bool done() const noexcept { return done_; }
+  [[nodiscard]] const std::string& reasoning_text() const { return reasoning_text_; }
+  [[nodiscard]] const std::string& content_text() const { return content_text_; }
 
 private:
   [[nodiscard]] bool consume_data_impl(std::string_view data,
