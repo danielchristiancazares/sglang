@@ -187,7 +187,8 @@ bool CheckQ4BatchTwoParity(int input_features, int output_features) {
          actual.shape() == expected.shape() && exact && dispatch_matches;
 }
 
-bool CheckQ4BatchTwoFusedParity(int input_features, int output_features) {
+bool CheckQ4BatchTwoFusedParity(
+    int input_features, int output_features, bool cancellation = false) {
   const std::size_t packed_columns =
       static_cast<std::size_t>(input_features) / 8;
   const std::size_t packed_elements =
@@ -218,6 +219,21 @@ bool CheckQ4BatchTwoFusedParity(int input_features, int output_features) {
   for (std::size_t index = 0; index < input_values.size(); ++index) {
     input_values[index] =
         std::sin(static_cast<float>(index) * 0.013f) * 0.3125f;
+  }
+  if (cancellation) {
+    std::fill(gate_scales.begin(), gate_scales.end(), 0.0f);
+    std::fill(up_scales.begin(), up_scales.end(), 0.0f);
+    std::fill(gate_biases.begin(), gate_biases.end(), 1.0f);
+    std::fill(up_biases.begin(), up_biases.end(), 1.0f);
+    std::fill(input_values.begin(), input_values.end(), 0.0f);
+    // BF16's 1 + half-ULP rounds before subtracting 1. Converting all
+    // operands to FP32 first leaves the half-ULP in the affine bias sum.
+    input_values[0] = 1.0f;
+    input_values[1] = 1.0f / 256.0f;
+    input_values[2] = -1.0f;
+    input_values[input_features] = -1.0f;
+    input_values[input_features + 1] = -1.0f / 256.0f;
+    input_values[input_features + 2] = 1.0f;
   }
 
   const mx::array gate_weights(
@@ -256,16 +272,38 @@ bool CheckQ4BatchTwoFusedParity(int input_features, int output_features) {
       sglang::mlx_qwen38::silu(gate_output) *
       mx::quantized_matmul(input, up.w, up.scales, up.biases, true,
                            up.group_size, up.bits, "affine");
+  if (setenv("SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO_SCALAR_INPUTS",
+             "0", 1) != 0) {
+    throw std::runtime_error("failed to select legacy fused Q4 inputs");
+  }
   const mx::array actual =
       sglang::mlx_qwen38::affine_q4_fused_swiglu_batch_two(gate, up, input);
   const float maximum_absolute_error = MaximumAbsoluteError(expected, actual);
+  if (setenv("SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO_SCALAR_INPUTS",
+             "1", 1) != 0) {
+    throw std::runtime_error("failed to enable scalar-input fused Q4");
+  }
+  const mx::array scalar =
+      sglang::mlx_qwen38::affine_q4_fused_swiglu_batch_two(gate, up, input);
+  if (unsetenv(
+          "SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO_SCALAR_INPUTS") != 0) {
+    throw std::runtime_error("failed to disable scalar-input fused Q4");
+  }
+  const float scalar_error = MaximumAbsoluteError(expected, scalar);
+  const bool scalar_exact = SameBfloat16(expected, scalar);
+  const bool cancellation_detected =
+      !cancellation || !SameBfloat16(expected, actual);
   std::cout << "Q4 fused batch-two K=" << input_features
             << " N=" << output_features << " max_abs=" << maximum_absolute_error
+            << " scalar_max_abs=" << scalar_error
+            << " scalar_exact=" << scalar_exact
+            << " cancellation=" << cancellation
             << '\n';
   return expected.shape() == mx::Shape{1, 2, output_features} &&
          actual.shape() == expected.shape() &&
          std::isfinite(maximum_absolute_error) &&
-         maximum_absolute_error <= 0.015625f;
+         scalar.shape() == expected.shape() && scalar_exact &&
+         cancellation_detected;
 }
 
 bool CheckQ4BatchTwoSigmoidBoundary() {
@@ -406,6 +444,8 @@ int main() {
       !CheckQ4BatchTwoParity(512, 64) || !CheckQ4BatchTwoParity(5120, 128) ||
       !CheckQ4BatchTwoFusedParity(512, 64) ||
       !CheckQ4BatchTwoFusedParity(5120, 128) ||
+      !CheckQ4BatchTwoFusedParity(5120, 17408) ||
+      !CheckQ4BatchTwoFusedParity(512, 64, true) ||
       !CheckQ4BatchTwoSigmoidBoundary() || !RejectsInvalidBatchTwoInputs()) {
     return 1;
   }

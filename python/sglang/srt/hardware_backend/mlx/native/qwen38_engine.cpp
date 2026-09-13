@@ -126,6 +126,13 @@ bool native_q4_fused_swiglu_batch_two_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_q4_fused_swiglu_batch_two_scalar_inputs_enabled() {
+  const char* const value =
+      std::getenv("SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO_SCALAR_INPUTS");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 bool native_qmm_trace_enabled() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_TRACE_QMM");
@@ -1627,25 +1634,41 @@ constexpr const char* kAffineQ4FusedSwiGluBatchTwoRawParamsSource = R"(
 
         for (int k = 0; k < InputFeatures; k += BlockSize) {
           float2 sum = float2(0.0f);
+          if constexpr (ScalarInputs) {
+            // Keep MLX's BF16 additions in the affine bias sum. Promoting
+            // each operand before addition changes cancellation/rounding.
+            thread float input0_values[ValuesPerThread];
+            thread float input1_values[ValuesPerThread];
+            sum.x = sglang_q4_load_vector<bfloat, float, ValuesPerThread>(
+                input0_cursor, input0_values);
+            sum.y = sglang_q4_load_vector<bfloat, float, ValuesPerThread>(
+                input1_cursor, input1_values);
 #pragma unroll
-          for (int index = 0; index < ValuesPerThread; index += 4) {
-            const float2 value0 = float2(
-                static_cast<float>(input0_cursor[index]),
-                static_cast<float>(input1_cursor[index]));
-            const float2 value1 = float2(
-                static_cast<float>(input0_cursor[index + 1]),
-                static_cast<float>(input1_cursor[index + 1]));
-            const float2 value2 = float2(
-                static_cast<float>(input0_cursor[index + 2]),
-                static_cast<float>(input1_cursor[index + 2]));
-            const float2 value3 = float2(
-                static_cast<float>(input0_cursor[index + 3]),
-                static_cast<float>(input1_cursor[index + 3]));
-            sum += value0 + value1 + value2 + value3;
-            input_values[index] = value0;
-            input_values[index + 1] = value1 / 16.0f;
-            input_values[index + 2] = value2 / 256.0f;
-            input_values[index + 3] = value3 / 4096.0f;
+            for (int index = 0; index < ValuesPerThread; ++index) {
+              input_values[index] = float2(
+                  input0_values[index], input1_values[index]);
+            }
+          } else {
+#pragma unroll
+            for (int index = 0; index < ValuesPerThread; index += 4) {
+              const float2 value0 = float2(
+                  static_cast<float>(input0_cursor[index]),
+                  static_cast<float>(input1_cursor[index]));
+              const float2 value1 = float2(
+                  static_cast<float>(input0_cursor[index + 1]),
+                  static_cast<float>(input1_cursor[index + 1]));
+              const float2 value2 = float2(
+                  static_cast<float>(input0_cursor[index + 2]),
+                  static_cast<float>(input1_cursor[index + 2]));
+              const float2 value3 = float2(
+                  static_cast<float>(input0_cursor[index + 3]),
+                  static_cast<float>(input1_cursor[index + 3]));
+              sum += value0 + value1 + value2 + value3;
+              input_values[index] = value0;
+              input_values[index + 1] = value1 / 16.0f;
+              input_values[index + 2] = value2 / 256.0f;
+              input_values[index + 3] = value3 / 4096.0f;
+            }
           }
           const uint4 gate_parameters =
               *reinterpret_cast<const device uint4*>(parameter_cursor);
@@ -3412,6 +3435,8 @@ array affine_q4_fused_swiglu_batch_two(
       {
           {"KConst", mx::fast::TemplateArg{input_features}},
           {"NConst", mx::fast::TemplateArg{output_features}},
+          {"ScalarInputs", mx::fast::TemplateArg{
+               native_q4_fused_swiglu_batch_two_scalar_inputs_enabled()}},
       },
       std::nullopt,
       false,
