@@ -25055,3 +25055,27 @@ mean 13.929045  17.125658 446.051        39.730
   Baseline and repaired binaries are under ~/.cache/sglang-qwen38/20260913.
   The existing macOS 26.0/MLX 26.2 linker warning remains. No inference
   performance is claimed by this build repair.
+
+### 2026-09-13 - evaluate only committed MTP cache dependencies
+
+- In Engine::mtp_append_history, evaluate the produced K/V arrays instead
+  of the unused decoder hidden output. MLX then skips the attention read,
+  output projection, MLP, and final norm on this history-only path. The K/V
+  dependency graph, target weights, sampling, and history alignment are
+  unchanged. No reasoning limit is configured.
+- Rebuilt native dylib and committed-history C++ alignment suite pass.
+  The first strict test compile exposed warnings in external MLX headers;
+  marking the dependency include directory `-isystem` preserves strict
+  `-Wall -Wextra -Werror` for project code and the test builds cleanly.
+- Uniform affine-Q4/G64 target revision `3e6447f082e89cc7f0bc6e5441afd38dfce760ff`
+  and optimized Q4 MTP `123db8bcc7101455b00d9aad36c0e760c6e7de02`, block two,
+  use the recorded session environment at
+  `~/.cache/sglang-qwen38/20260913/environment.zsh` (no reasoning cap).
+  Synthetic `128 32 256` baseline/candidate are 23.357119375 and
+  23.670092081 tok/s. Both have 136 refills, width 1.882352941, exact
+  digest `357cb41c2eda4a39`, last token 23. These are screening samples.
+- Unmodified block-three `128 32 128` screening is 17.148907300 tok/s,
+  width 2.645833333, 48 refills, digest `56613cbe9ca905df`. Three-row
+  verification currently falls back to stock matrix dispatch. The native
+  benchmark uses synthetic token IDs; these results establish execution
+  cost only and do not qualify a natural coding task or full 131K use.

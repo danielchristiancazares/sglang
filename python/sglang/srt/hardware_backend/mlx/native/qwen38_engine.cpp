@@ -4418,8 +4418,12 @@ void Engine::mtp_append_history(
   }
   const int previous_length = mtp_layer_.attn.cache_length;
   const int token_count = static_cast<int>(token_ids.shape()[1]);
-  array hidden = mtp_forward(embed(token_ids), target_hidden);
-  eval(hidden);
+  // Committed history consumes only K/V. Evaluating the decoder output also
+  // executes its attention read, output projection, MLP, and final norm even
+  // though no caller uses that result. Keep the identical cache dependency
+  // graph and let MLX discard those unused output-only branches.
+  (void)mtp_forward(embed(token_ids), target_hidden);
+  eval(mtp_layer_.attn.keys, mtp_layer_.attn.values);
   if (mtp_layer_.attn.cache_length != previous_length + token_count ||
       mtp_layer_.attn.offset != mtp_layer_.attn.cache_length) {
     throw std::runtime_error("invalid committed MTP history length");
