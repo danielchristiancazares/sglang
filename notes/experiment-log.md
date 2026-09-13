@@ -25037,3 +25037,21 @@ mean 13.929045  17.125658 446.051        39.730
   tree untouched; native builds, Metal execution, graph replay, and full-model
   gates were not rerun. The PR must distinguish the fresh CPU/static checks
   from historical native accuracy and performance evidence.
+
+### 2026-09-13 - Q4 30 tok/s task and relocatable native build
+
+- New user objective is Qwen3.8-27B Q4, at least 30 generation tok/s,
+  131,072 context, and uncapped xhigh reasoning through SGLang. Codex
+  harness files remain unchanged and no work is delegated to Codex.
+- Started on clean `perf/qwen38-mlx-native-20260912` at `cecae2a9fd`.
+  Live host is M1 Max, 32 GiB, MLX 0.32.2, mlx-lm 0.31.3, Torch 2.11.0,
+  Transformers 5.12.1. Port 30000 and inference processes were absent.
+  Memory free was 92%, swap used 104.75 MiB, with no thermal warning.
+- Native build.sh still selected a removed .venv-mps by absolute path.
+  Resolve MLX from explicit MLX_PREFIX, active VIRTUAL_ENV, or checkout
+  .venv, and validate the headers/library before compilation.
+- `zsh -n`, a default build with MLX_PREFIX/VIRTUAL_ENV unset, explicit
+  MLX_PREFIX build, invalid-prefix rejection, and `git diff --check` pass.
+  Baseline and repaired binaries are under ~/.cache/sglang-qwen38/20260913.
+  The existing macOS 26.0/MLX 26.2 linker warning remains. No inference
+  performance is claimed by this build repair.
