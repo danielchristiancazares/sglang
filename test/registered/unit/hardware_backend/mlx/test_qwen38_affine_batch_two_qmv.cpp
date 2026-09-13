@@ -375,7 +375,7 @@ bool CheckQ4BatchTwoFusedParity(
                            up.group_size, up.bits, "affine");
   if (setenv("SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO_SCALAR_INPUTS",
              "0", 1) != 0) {
-    throw std::runtime_error("failed to select legacy fused Q4 inputs");
+    throw std::runtime_error("failed to select vector fused Q4 inputs");
   }
   const mx::array actual =
       sglang::mlx_qwen38::affine_q4_fused_swiglu_batch_two(gate, up, input);
@@ -392,19 +392,18 @@ bool CheckQ4BatchTwoFusedParity(
   }
   const float scalar_error = MaximumAbsoluteError(expected, scalar);
   const bool scalar_exact = SameBfloat16(expected, scalar);
-  const bool cancellation_detected =
-      !cancellation || !SameBfloat16(expected, actual);
+  const bool vector_exact = SameBfloat16(expected, actual);
   std::cout << "Q4 fused batch-two K=" << input_features
             << " N=" << output_features << " max_abs=" << maximum_absolute_error
             << " scalar_max_abs=" << scalar_error
-            << " scalar_exact=" << scalar_exact
+            << " vector_exact=" << vector_exact << " scalar_exact=" << scalar_exact
             << " cancellation=" << cancellation
             << '\n';
   return expected.shape() == mx::Shape{1, 2, output_features} &&
          actual.shape() == expected.shape() &&
          std::isfinite(maximum_absolute_error) &&
          scalar.shape() == expected.shape() && scalar_exact &&
-         cancellation_detected;
+         vector_exact;
 }
 
 bool CheckQ4BatchTwoSigmoidBoundary() {

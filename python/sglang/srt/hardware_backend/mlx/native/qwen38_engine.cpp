@@ -2310,7 +2310,16 @@ constexpr const char* kAffineQ4FusedSwiGluBatchTwoRawParamsSource = R"(
               const float2 value3 = float2(
                   static_cast<float>(input0_cursor[index + 3]),
                   static_cast<float>(input1_cursor[index + 3]));
-              sum += value0 + value1 + value2 + value3;
+              // Preserve each row's BF16 addition chain while keeping the
+              // shared float2 projection inputs in their existing registers.
+              // This avoids staging two extra scalar activation arrays.
+              sum += float2(
+                  static_cast<float>(input0_cursor[index] +
+                      input0_cursor[index + 1] + input0_cursor[index + 2] +
+                      input0_cursor[index + 3]),
+                  static_cast<float>(input1_cursor[index] +
+                      input1_cursor[index + 1] + input1_cursor[index + 2] +
+                      input1_cursor[index + 3]));
               input_values[index] = value0;
               input_values[index + 1] = value1 / 16.0f;
               input_values[index + 2] = value2 / 256.0f;
