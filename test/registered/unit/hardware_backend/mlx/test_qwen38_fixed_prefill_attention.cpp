@@ -381,6 +381,17 @@ bool CheckAppendOnlyRollbackInvariant() {
 } // namespace
 
 int main() {
+  if (setenv("SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY", "0", 1) != 0 ||
+      !CheckQ8Parity(2, 8191, 16384) ||
+      setenv("SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY", "1", 1) != 0 ||
+      !CheckQ8Parity(2, 1023, 8192) ||
+      !CheckQ8Parity(3, 8191, 16384) ||
+      !CheckQ8Parity(8, 131064, 131072) ||
+      !CheckQ8Parity(9, 127, 8192) ||
+      !CheckQ8Parity(2, 0, 131072)) {
+    std::cerr << "Q8 split verification parity failed\n";
+    return 1;
+  }
   if (!CheckParity(7, 1, 256) || !CheckParity(17, 65, 256) ||
       !CheckParity(64, 65, 256) || !CheckParity(7, 8191, 16384) ||
       !CheckParity(1024, 0, 1024) || !CheckQ8Parity(17, 65, 256) ||

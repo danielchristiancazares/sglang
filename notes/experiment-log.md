@@ -25160,3 +25160,56 @@ mean 13.929045  17.125658 446.051        39.730
 - Receipt is 20260913/vector_resume_parity.log; artifact is
   20260913/libqwen38_resume.dylib. Earlier two-pair synthetic results are
   neutral, so this is a correctness repair and carries no speed promotion.
+
+### 2026-09-13 - current Q4 source review and speculative screens
+
+- Started the literal C++ launcher with --profile q4 at 5365b07075. Current
+  uniform-Q4 target, language-only metadata, health and 131072 configured
+  limits passed. Native reasoning cap remained unset. The actual tokenizer
+  template accepts xhigh and SGLang passes the requested effort through.
+- Source workload sse_review_prompt.txt contains the complete repository SSE
+  parser/header and asks for control-flow review and regression tests. Its
+  1804-token request produced 4096 reasoning tokens, zero final text and a
+  length stop. Client-observed decode was 20.349 tok/s, TTFT 16.781995 s and
+  E2E 218.015568 s. This bounded screen fails completed-work qualification.
+  Receipt sse_baseline_01.json retains the full text and exact prompt IDs.
+- The owned server tree 21856/21879/21880 was cache-flushed and stopped by
+  SIGINT to its launcher; foreground exit was zero. Swap stayed 104.75 MiB
+  and no thermal warning was reported. Codex was never invoked or modified.
+- Same exact source IDs with native Q4 MTP block two, 32 warm/256 timed,
+  yielded 19.319742800 tok/s. Enabling existing DFLASH_TAPE_COMMIT at the
+  shared verifier yielded 20.573174054. Both preserve 140 refills, width
+  1.835714286, digest f836ee70c4e09215 and last token 413. This single pair
+  supports further qualification of tape-based accepted-state recovery.
+- Block three with the existing three-row QMV and tape commit reached only
+  16.402767479 tok/s, width 2.571428571 on 128 timed tokens. Traced verify
+  cycles cost approximately 137 ms. These are direct source-replay screens,
+  not naturally completed serving tasks or a 30 tok/s qualification.
+
+### 2026-09-13 - parallel affine-Q8 verification and rejected FP16 probe
+
+- Added opt-in SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY for two through eight
+  verification queries. Query tiles and cache segments form independent GPU
+  workgroups; each partial carries its own softmax maximum and denominator.
+  Global segment boundaries remain identical across all query tiles, with
+  per-query causal masking and initialized empty segments. The reducer now
+  addresses both query-head and token dimensions. Longer prefill is unchanged.
+- Strict native build and the extended fixed-attention suite pass. Coverage
+  includes 1024-boundary crossing, three queries, eight queries at 131072,
+  nine-query fallback, oversized reserve with two active tokens, legacy
+  single-query decode, and append-only rollback. Comparison is against
+  dequantized Q8 MLX SDPA; it does not establish BF16-cache quality equivalence.
+- New bench_qwen38_q8_attention.cpp measures identical resident caches in
+  alternating arms. At two queries/8193 history, control ms are
+  7.393816700/7.372816600/7.359020800 and split ms are
+  2.112087500/2.091454100/2.086120800. At three queries/131064 history,
+  control is 113.820675000/113.865425000/113.855316600 and split is
+  19.793158400/19.733916800/19.762400000. Maximum arm differences are
+  0.000015259 and 0.000003815. This is a kernel win, not full-model capacity.
+- A separate FP16-staged Q4 SIMD-matrix probe was slower than stock at
+  gate/up and down shapes, with relative-L2 errors up to 0.00912. Tile widths
+  32/64/128 and K tiles 64/128/256 did not repair it. It was never integrated;
+  its source and executable remain only in the session artifact directory.
+- Receipts are 20260913/q8_split_parity.log and q8_split_bench_{8k,131k}.log.
+  Both benchmark and dylib compile with strict project warnings. The next
+  long-cache owner is tile dequantization/barrier overhead within each split.
