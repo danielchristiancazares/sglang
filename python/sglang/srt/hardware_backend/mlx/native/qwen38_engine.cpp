@@ -246,6 +246,12 @@ bool native_quantized_embedding_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_q8_split_verify_enabled() {
+  const char* value = std::getenv("SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 bool native_fixed_prefill_attention_enabled() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION");
@@ -1339,11 +1345,13 @@ constexpr const char* kFixedQ8AttentionSource = R"(
         const uint capacity = uint(cache_capacity);
         const uint active_length = uint(active_cache_length);
         const uint requested_key_splits = uint(key_splits);
-        const bool split_decode =
-            query_count == 1 && requested_key_splits > 1;
-        const uint attention_row_start = split_decode
-            ? 0
-            : threadgroup_position_in_grid.x * QueryTile;
+        const bool split_decode = requested_key_splits > 1;
+        const uint split_index = split_decode
+            ? threadgroup_position_in_grid.x % requested_key_splits : 0;
+        const uint query_tile = split_decode
+            ? threadgroup_position_in_grid.x / requested_key_splits
+            : threadgroup_position_in_grid.x;
+        const uint attention_row_start = query_tile * QueryTile;
         const uint attention_rows = query_count * HeadsPerKv;
         const uint last_attention_row = min(
             attention_rows - 1, attention_row_start + QueryTile - 1);
@@ -1353,18 +1361,18 @@ constexpr const char* kFixedQ8AttentionSource = R"(
         const uint active_key_splits = split_decode
             ? min(
                   requested_key_splits,
-                  max(1u, (group_kv_length + 1023) / 1024))
+                  max(1u, (active_length + 1023) / 1024))
             : 1;
         if (split_decode &&
-            threadgroup_position_in_grid.x >= active_key_splits) {
+            split_index >= active_key_splits) {
           return;
         }
         const uint key_tiles =
-            (group_kv_length + KeyTile - 1) / KeyTile;
+            (active_length + KeyTile - 1) / KeyTile;
         const uint tiles_per_split =
             (key_tiles + active_key_splits - 1) / active_key_splits;
         const uint first_key_tile = split_decode
-            ? threadgroup_position_in_grid.x * tiles_per_split
+            ? split_index * tiles_per_split
             : 0;
         const uint last_key_tile = split_decode
             ? min(key_tiles, first_key_tile + tiles_per_split)
@@ -1593,19 +1601,23 @@ constexpr const char* kFixedQ8AttentionSource = R"(
           for (uint index = tid; index < QueryTile * HeadDim; index += 128) {
             const uint row = index / HeadDim;
             const uint dimension = index - row * HeadDim;
-            if (row < HeadsPerKv) {
-              const uint query_head = kv_head * HeadsPerKv + row;
+            const uint attention_row = attention_row_start + row;
+            if (attention_row < attention_rows) {
+              const uint query_token = attention_row / HeadsPerKv;
+              const uint query_head = kv_head * HeadsPerKv + attention_row % HeadsPerKv;
+              const ulong query_row = ulong(query_head) * query_count + query_token;
               const ulong partial_base =
-                  (ulong(threadgroup_position_in_grid.x) * 24 + query_head) *
-                  (HeadDim + 2);
+                  (ulong(split_index) * 24 * query_count + query_row) * (HeadDim + 2);
               output[partial_base + dimension] = shared_output[index];
             }
           }
-          if (tid < HeadsPerKv) {
-            const uint query_head = kv_head * HeadsPerKv + tid;
+          if (tid < QueryTile && attention_row_start + tid < attention_rows) {
+            const uint attention_row = attention_row_start + tid;
+            const uint query_token = attention_row / HeadsPerKv;
+            const uint query_head = kv_head * HeadsPerKv + attention_row % HeadsPerKv;
+            const ulong query_row = ulong(query_head) * query_count + query_token;
             const ulong partial_base =
-                (ulong(threadgroup_position_in_grid.x) * 24 + query_head) *
-                (HeadDim + 2);
+                (ulong(split_index) * 24 * query_count + query_row) * (HeadDim + 2);
             output[partial_base + HeadDim] = shared_stats[2 * tid];
             output[partial_base + HeadDim + 1] =
                 shared_stats[2 * tid + 1];
@@ -1632,7 +1644,7 @@ constexpr const char* kFixedQ8AttentionSource = R"(
 
 constexpr const char* kReduceQ8DecodeSource = R"(
         constexpr uint HeadDim = 256;
-        constexpr uint QueryHeads = 24;
+        const uint QueryHeads = 24 * uint(query_tokens);
         constexpr uint PartialStride = HeadDim + 2;
 
         const ushort tid = thread_index_in_threadgroup;
@@ -3054,7 +3066,7 @@ const mx::fast::CustomKernelFunction& fixed_q8_attention_metal() {
 const mx::fast::CustomKernelFunction& reduce_q8_decode_metal() {
   static const auto kernel = mx::fast::metal_kernel(
       "sglang_reduce_q8_decode",
-      {"partials", "active_cache_length", "key_splits"},
+      {"partials", "active_cache_length", "key_splits", "query_tokens"},
       {"output"},
       kReduceQ8DecodeSource,
       kFixedPrefillAttentionHeader);
@@ -3973,7 +3985,9 @@ array fixed_q8_attention(
       (attention_rows + kQueryTile - 1) / kQueryTile;
   const int requested_key_splits = std::min(
       32, std::max(1, (cache_capacity + 4095) / 4096));
-  const bool split_decode = query_tokens == 1 && requested_key_splits > 1;
+  const bool split_decode = requested_key_splits > 1 &&
+      (query_tokens == 1 ||
+       (native_q8_split_verify_enabled() && query_tokens <= 8));
   auto outputs = fixed_q8_attention_metal()(
       {queries,
        key_cache,
@@ -3988,10 +4002,10 @@ array fixed_q8_attention(
        array(active_cache_length, mx::int32),
        array(split_decode ? requested_key_splits : 1, mx::int32)},
       {split_decode
-           ? mx::Shape{requested_key_splits, kQueryHeads, kHeadDimension + 2}
+           ? mx::Shape{requested_key_splits, kQueryHeads, query_tokens, kHeadDimension + 2}
            : queries.shape()},
       {mx::float32},
-      {(split_decode ? requested_key_splits : query_tiles) * kThreads,
+      {query_tiles * (split_decode ? requested_key_splits : 1) * kThreads,
        kKeyValueHeads,
        1},
       {kThreads, 1, 1},
@@ -4003,10 +4017,11 @@ array fixed_q8_attention(
     auto reduced = reduce_q8_decode_metal()(
         {outputs[0],
          array(active_cache_length, mx::int32),
-         array(requested_key_splits, mx::int32)},
+         array(requested_key_splits, mx::int32),
+         array(query_tokens, mx::int32)},
         {queries.shape()},
         {queries.dtype()},
-        {kQueryHeads * kHeadDimension, 1, 1},
+        {kQueryHeads * query_tokens * kHeadDimension, 1, 1},
         {kHeadDimension, 1, 1},
         {},
         std::nullopt,
