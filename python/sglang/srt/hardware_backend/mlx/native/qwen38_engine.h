@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <tuple>
@@ -29,6 +30,7 @@ struct QLinear {
 
 bool prepare_fused_q4_raw_decode_parameters(
     QLinear& gate, const QLinear& up);
+std::size_t release_fused_q4_raw_decode_parameters(QLinear& gate);
 
 mlx::core::array affine_qmm_small_batch(
     const QLinear& linear, const mlx::core::array& x);
@@ -37,6 +39,8 @@ mlx::core::array affine_qmm_m8_ksplit(
 mlx::core::array affine_q4_qmv_batch_one(
     const QLinear& linear, const mlx::core::array& x);
 mlx::core::array affine_q4_qmv_batch_two(
+    const QLinear& linear, const mlx::core::array& x);
+mlx::core::array affine_q4_qmv_batch_three(
     const QLinear& linear, const mlx::core::array& x);
 mlx::core::array affine_q4_fused_swiglu_batch_one(
     const QLinear& gate,
@@ -50,6 +54,12 @@ mlx::core::array affine_q5_qmv_batch_one(
     const QLinear& linear, const mlx::core::array& x);
 mlx::core::array affine_q5_qmv_batch_two(
     const QLinear& linear, const mlx::core::array& x);
+mlx::core::array affine_q5_qmv_multirow(
+    const QLinear& linear, const mlx::core::array& x);
+std::pair<mlx::core::array, mlx::core::array> causal_conv_two_token_silu(
+    const mlx::core::array& state,
+    const mlx::core::array& qkv,
+    const mlx::core::array& weight);
 std::pair<mlx::core::array, mlx::core::array> align_mtp_committed_history(
     const mlx::core::array& target_hidden,
     const mlx::core::array& token_ids,
@@ -66,6 +76,29 @@ mlx::core::array fixed_prefill_attention(
     const mlx::core::array& value_cache,
     int prefix_length,
     int active_cache_length);
+mlx::core::array fixed_q8_attention(
+    const mlx::core::array& queries,
+    const mlx::core::array& key_cache,
+    const mlx::core::array& key_scales,
+    const mlx::core::array& key_biases,
+    const mlx::core::array& value_cache,
+    const mlx::core::array& value_scales,
+    const mlx::core::array& value_biases,
+    int prefix_length,
+    int active_cache_length);
+int attention_cache_growth_capacity(
+    int current_capacity, int needed_capacity, int reserve_capacity);
+int serialized_attention_cache_growth_chunk_size(
+    int cache_length, int cache_capacity, int requested_tokens);
+bool attention_cache_append_requires_large_growth(
+    int cache_length, int cache_capacity, int appended_tokens);
+int post_growth_prefill_chunk_size(
+    int target_cache_length,
+    int target_cache_capacity,
+    int mtp_cache_length,
+    int mtp_cache_capacity,
+    int requested_tokens,
+    int configured_max_tokens);
 mlx::core::array dspark_yarn_rope(
     const mlx::core::array& x, int offset);
 mlx::core::array dspark_confidence(
@@ -86,11 +119,20 @@ struct FullAttn {
   mlx::core::array q_norm{0};
   mlx::core::array k_norm{0};
   mlx::core::array keys{0};
+  mlx::core::array key_scales{0};
+  mlx::core::array key_biases{0};
   mlx::core::array values{0};
+  mlx::core::array value_scales{0};
+  mlx::core::array value_biases{0};
   int offset = 0;
   int cache_length = 0;
   int cache_capacity = 0;
+  int cache_bits = 16;
 };
+
+// Diagnostic only: synchronizes and hashes metadata plus active BF16 K/V.
+std::uint64_t attention_cache_digest(const FullAttn& cache);
+std::uint64_t attention_cache_digest(const FullAttn& cache, bool include_capacity);
 
 struct LinearAttn {
   QLinear in_proj_qkv;
@@ -187,10 +229,15 @@ struct LayerSnap {
   mlx::core::array conv{0};
   mlx::core::array rec{0};
   mlx::core::array keys{0};
+  mlx::core::array key_scales{0};
+  mlx::core::array key_biases{0};
   mlx::core::array values{0};
+  mlx::core::array value_scales{0};
+  mlx::core::array value_biases{0};
   int offset = 0;
   int cache_length = 0;
   int cache_capacity = 0;
+  int cache_bits = 16;
   bool has_state = false;
   bool is_linear = true;
 };
@@ -208,6 +255,11 @@ class Engine {
     return mtp_valid_ || dflash_valid_ || dspark_valid_;
   }
   int last_spec_width() const { return spec_buf_n_; }
+  int last_prefill_cached_tokens() const { return last_prefill_cached_tokens_; }
+  std::uint64_t mtp_history_digest() const;
+  std::uint64_t mtp_history_digest(bool include_capacity) const;
+  // Logical BF16-cache state, excluding spare capacity; never used by serving.
+  std::uint64_t target_state_digest() const;
 
   const MlxQwen38Config& config() const { return cfg_; }
 
@@ -235,8 +287,17 @@ class Engine {
   void record_processed_token(int32_t token);
   void snapshot();
   void restore();
+  void capture_snapshot(std::vector<LayerSnap>& destination) const;
+  void restore_snapshot(const std::vector<LayerSnap>& source);
+  bool can_restore_mtp_prompt() const;
   void forward_argmax(const int32_t* tokens, int n, int32_t* out);
   int target_sequence_length() const;
+  int serialized_attention_cache_chunk_size(
+      int requested_tokens, bool include_mtp) const;
+  int bounded_post_growth_mtp_prefill_chunk_size(
+      int requested_tokens, bool include_mtp) const;
+  std::size_t release_target_fused_q4_raw_decode_parameters();
+  std::size_t restore_target_fused_q4_raw_decode_parameters();
   mlx::core::array mtp_seed_hidden() const;
   void mtp_reset();
   void mtp_append_history(
@@ -354,9 +415,20 @@ class Engine {
   bool reasoning_open_ = false;
   bool reasoning_cap_selected_ = false;
   int target_only_prefill_chunk_size_ = 0;
+  int attention_cache_reserve_capacity_ = 0;
+  int attention_cache_bits_ = 0;
+  bool serialize_attention_cache_growth_ = false;
+  bool evict_q4_raw_params_at_mtp_growth_ = false;
+  int post_growth_mtp_prefill_chunk_size_ = 0;
   bool quantized_embedding_enabled_ = false;
+  bool append_only_attention_snapshot_enabled_ = false;
   bool prompt_snapshot_valid_ = false;
   std::vector<int32_t> prompt_snapshot_history_;
+  bool mtp_prompt_cache_enabled_ = false;
+  std::vector<LayerSnap> mtp_prompt_snapshot_;
+  mlx::core::array mtp_prompt_hidden_{0};
+  int mtp_prompt_cache_length_ = 0;
+  int last_prefill_cached_tokens_ = 0;
 
   bool mtp_valid_ = false;
   int mtp_block_ = 3;

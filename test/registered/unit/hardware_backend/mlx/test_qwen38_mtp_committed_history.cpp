@@ -148,12 +148,67 @@ bool CheckSingleTokenAndInvalidInputs() {
       empty_tokens.shape() == mx::Shape{1, 0} && rejects_bad_length;
 }
 
+bool CheckActiveCacheDigest() {
+  using sglang::mlx_qwen38::attention_cache_digest;
+  sglang::mlx_qwen38::FullAttn cache;
+  cache.cache_length = 3;
+  cache.offset = 3;
+  cache.cache_capacity = 8;
+  cache.keys = mx::astype(
+      mx::transpose(mx::reshape(mx::arange(64), {1, 8, 2, 4}), {0, 2, 1, 3}),
+      mx::bfloat16);
+  cache.values = cache.keys + mx::array(1, mx::bfloat16);
+  const auto expected = attention_cache_digest(cache);
+  auto contiguous = cache;
+  contiguous.keys = mx::contiguous(cache.keys);
+  contiguous.values = mx::contiguous(cache.values);
+  auto inactive = cache;
+  inactive.keys = mx::slice_update(
+      cache.keys, mx::full({1, 2, 1, 4}, 99, mx::bfloat16),
+      {0, 0, 7, 0}, {1, 2, 8, 4});
+  auto changed = cache;
+  changed.values = mx::slice_update(
+      cache.values, mx::full({1, 1, 1, 1}, 99, mx::bfloat16),
+      {0, 1, 1, 0}, {1, 2, 2, 1});
+  auto offset = cache;
+  ++offset.offset;
+  auto reserved = cache;
+  reserved.keys = mx::concatenate(
+      {cache.keys, mx::zeros(cache.keys.shape(), cache.keys.dtype())}, 2);
+  reserved.values = mx::concatenate(
+      {cache.values, mx::zeros(cache.values.shape(), cache.values.dtype())}, 2);
+  reserved.cache_capacity *= 2;
+  auto invalid = cache;
+  invalid.keys = mx::astype(cache.keys, mx::float32);
+  bool rejects_invalid = false;
+  try {
+    (void)attention_cache_digest(invalid);
+  } catch (const std::runtime_error& error) {
+    rejects_invalid = std::string_view(error.what()) ==
+        "invalid attention cache digest arrays";
+  }
+  const bool matches = expected == attention_cache_digest(contiguous) &&
+      expected == attention_cache_digest(inactive) &&
+      expected != attention_cache_digest(changed) &&
+      expected != attention_cache_digest(offset) && rejects_invalid &&
+      expected != attention_cache_digest(reserved) &&
+      attention_cache_digest(cache, false) ==
+          attention_cache_digest(reserved, false) &&
+      attention_cache_digest(cache, false) !=
+          attention_cache_digest(changed, false) &&
+      attention_cache_digest(cache, false) !=
+          attention_cache_digest(offset, false);
+  std::cout << "active cache digest handles strides/tail/metadata=" << matches
+            << '\n';
+  return matches;
+}
+
 } // namespace
 
 int main() {
   if (!CheckInitialPromptAlignment() ||
       !CheckIncrementalAndPostNormAlignment() ||
-      !CheckSingleTokenAndInvalidInputs()) {
+      !CheckSingleTokenAndInvalidInputs() || !CheckActiveCacheDigest()) {
     return 1;
   }
   std::cout << "qwen38 committed MTP history alignment passed\n";

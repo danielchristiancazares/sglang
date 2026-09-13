@@ -26161,3 +26161,28 @@ mean 13.929045  17.125658 446.051        39.730
   switch; the Q4 serving profile must enable its corrected path.
 - No performance claim follows from this correctness port. Current-code
   real-prompt, served reasoning, and near-limit capacity remain pending.
+
+### 2026-09-13 - integrate existing Mac capacity and replay work
+
+- Selectively recovered native engine/C API, ten focused tests, two native
+  benchmarks and the Apple C++ launcher from committed 130b58ba8a into this
+  checkout. Preserved this session's unconditional cache-only MTP history
+  evaluation and portable build.sh. No Windows, generic Python, Codex, or
+  other-worktree files changed.
+- This integrates prior affine-Q8 cache/attention, append-only snapshots,
+  serialized cache growth, bounded MTP prefill, prompt-prefix reuse,
+  two-token convolution, optional three-row projections, zero recycled-buffer
+  cache selection, and recorded Q4 target-only/Q5 MTP launcher policies.
+- Nine strict C++ suites pass: one/two/three-row affine projections, causal
+  convolution, fixed/Q8 prefill attention and growth/snapshot policy, MTP
+  history/strided digests, prompt-file validation, runtime cache limits, and
+  launcher environment discovery. Logs are 20260913/integration_tests.log.
+  The Q8 attention fixtures compare to dequantized MLX SDPA, not original
+  BF16 KV. Full current-source Q4 131K execution is still pending.
+- Inspection found a193_served_prompt_request.json contains repeated generic
+  instructions, not source code. Keep its 6,237-token replay for historical
+  comparability and label it an instruction fixture. It does not establish
+  coding-task quality or actual-program throughput. New source-bearing
+  requests are required for this task's actual-work qualification.
+- Current native candidate is 20260913/libqwen38_integrated.dylib; replay
+  benchmark and launcher are built there. No server has yet been started.

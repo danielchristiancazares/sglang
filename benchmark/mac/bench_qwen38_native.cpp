@@ -1,6 +1,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <dlfcn.h>
 #include <filesystem>
 #include <fstream>
@@ -13,10 +14,25 @@
 #include <string_view>
 #include <vector>
 
+#include "mlx/memory.h"
 #include "mlx/stream.h"
 #include "qwen38_c_api.h"
 
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+void ReportStage(const char* stage, Clock::time_point started) {
+  std::cerr << std::fixed << std::setprecision(3)
+            << "stage=" << stage
+            << " elapsed_seconds="
+            << std::chrono::duration<double>(Clock::now() - started).count()
+            << " active_bytes=" << mlx::core::get_active_memory()
+            << " cache_bytes=" << mlx::core::get_cache_memory()
+            << " peak_bytes=" << mlx::core::get_peak_memory()
+            << " memory_limit_bytes=" << mlx::core::get_memory_limit()
+            << '\n';
+}
 
 template <typename Function>
 Function LoadSymbol(void* library, const char* name) {
@@ -28,12 +44,15 @@ Function LoadSymbol(void* library, const char* name) {
   return reinterpret_cast<Function>(symbol);
 }
 
-int ParsePositive(std::string_view text, const char* label) {
+int ParseTokenCount(std::string_view text, const char* label, int minimum = 1) {
   int value = 0;
   const auto [end, error] =
       std::from_chars(text.data(), text.data() + text.size(), value);
-  if (error != std::errc{} || end != text.data() + text.size() || value <= 0) {
-    throw std::runtime_error(std::string(label) + " must be a positive integer");
+  if (error != std::errc{} || end != text.data() + text.size() || value < minimum) {
+    throw std::runtime_error(
+        std::string(label) +
+        (minimum == 0 ? " must be a nonnegative integer"
+                      : " must be a positive integer"));
   }
   return value;
 }
@@ -58,20 +77,52 @@ std::uint64_t UpdateDigest(std::uint64_t digest, std::int32_t token) {
   return digest;
 }
 
+std::vector<std::int32_t> ReadPromptIds(
+    const std::filesystem::path& path, int count, int vocab_size) {
+  std::ifstream input(path);
+  if (!input) {
+    throw std::runtime_error("cannot read prompt IDs from " + path.string());
+  }
+  std::vector<std::int32_t> tokens;
+  tokens.reserve(static_cast<std::size_t>(count));
+  std::string field;
+  while (input >> field) {
+    std::int32_t token = 0;
+    const auto [end, error] =
+        std::from_chars(field.data(), field.data() + field.size(), token);
+    if (error != std::errc{} || end != field.data() + field.size() ||
+        token < 0 || token >= vocab_size) {
+      throw std::runtime_error("invalid token in prompt ID file");
+    }
+    if (tokens.size() == static_cast<std::size_t>(count)) {
+      throw std::runtime_error("prompt ID file exceeds PROMPT_TOKENS");
+    }
+    tokens.push_back(token);
+  }
+  if (!input.eof() || tokens.size() != static_cast<std::size_t>(count)) {
+    throw std::runtime_error("prompt ID file does not match PROMPT_TOKENS");
+  }
+  return tokens;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc != 6 && argc != 7) {
     std::cerr
         << "usage: bench_qwen38_native LIBRARY MODEL_DIR PROMPT_TOKENS "
-           "WARMUP_TOKENS OUTPUT_TOKENS [MTP_DIR]\n";
+           "WARMUP_TOKENS OUTPUT_TOKENS [MTP_DIR]\n"
+           "SGLANG_MLX_BENCH_PROMPT_IDS: optional whitespace-separated token file\n"
+           "SGLANG_MLX_BENCH_OUTPUT_IDS: optional file for prefill, warmup and "
+           "timed output token IDs\n";
     return 2;
   }
 
   try {
-    const int prompt_tokens = ParsePositive(argv[3], "PROMPT_TOKENS");
-    const int warmup_tokens = ParsePositive(argv[4], "WARMUP_TOKENS");
-    const int output_tokens = ParsePositive(argv[5], "OUTPUT_TOKENS");
+    const auto process_started = Clock::now();
+    const int prompt_tokens = ParseTokenCount(argv[3], "PROMPT_TOKENS");
+    const int warmup_tokens = ParseTokenCount(argv[4], "WARMUP_TOKENS", 0);
+    const int output_tokens = ParseTokenCount(argv[5], "OUTPUT_TOKENS");
     // MLX's process-lifetime compile cache retains primitives implemented by
     // the engine dylib. Keep that dylib loaded until process teardown so their
     // destructors never refer to unloaded code.
@@ -92,6 +143,8 @@ int main(int argc, char** argv) {
         MlxQwen38Engine*, const char*, char*, int);
     using HasMtp = int (*)(MlxQwen38Engine*);
     using LastSpecWidth = int (*)(MlxQwen38Engine*);
+    using HistoryDigest = int (*)(
+        MlxQwen38Engine*, std::uint64_t*, char*, int);
     using Free = void (*)(MlxQwen38Engine*);
 
     const auto config_from_json =
@@ -116,6 +169,41 @@ int main(int argc, char** argv) {
       throw std::runtime_error("model vocabulary is too small for benchmark tokens");
     }
 
+    const char* const prompt_path = std::getenv("SGLANG_MLX_BENCH_PROMPT_IDS");
+    std::vector<std::int32_t> prompt;
+    if (prompt_path != nullptr) {
+      prompt = ReadPromptIds(prompt_path, prompt_tokens, config.vocab_size);
+    } else {
+      prompt.resize(static_cast<std::size_t>(prompt_tokens));
+      const auto token_range =
+          static_cast<std::uint32_t>(config.vocab_size - 1024);
+      for (int i = 0; i < prompt_tokens; ++i) {
+        prompt[static_cast<std::size_t>(i)] = static_cast<std::int32_t>(
+            1024U + (static_cast<std::uint32_t>(i) * 7919U + 17U) % token_range);
+      }
+    }
+    std::uint64_t prompt_digest = UINT64_C(14695981039346656037);
+    for (const auto token : prompt) {
+      prompt_digest = UpdateDigest(prompt_digest, token);
+    }
+    const char* const output_path = std::getenv("SGLANG_MLX_BENCH_OUTPUT_IDS");
+    std::ofstream output_file;
+    std::vector<std::int32_t> output_ids;
+    if (output_path != nullptr) {
+      if (prompt_path != nullptr &&
+          std::filesystem::exists(output_path) &&
+          std::filesystem::equivalent(prompt_path, output_path)) {
+        throw std::runtime_error("output ID file must differ from prompt ID file");
+      }
+      output_file.open(output_path);
+      if (!output_file) {
+        throw std::runtime_error("cannot write output ID file");
+      }
+      output_ids.reserve(
+          1 + static_cast<std::size_t>(warmup_tokens) +
+          static_cast<std::size_t>(output_tokens));
+    }
+
     std::unique_ptr<MlxQwen38Engine, Free> engine(
         load(&config, model_dir.c_str(), error, sizeof(error)), free_engine);
     if (!engine) {
@@ -126,14 +214,24 @@ int main(int argc, char** argv) {
       throw std::runtime_error(error);
     }
     const bool mtp_enabled = has_mtp(engine.get()) != 0;
-
-    std::vector<std::int32_t> prompt(static_cast<std::size_t>(prompt_tokens));
-    const std::uint32_t token_range =
-        static_cast<std::uint32_t>(config.vocab_size - 1024);
-    for (int i = 0; i < prompt_tokens; ++i) {
-      prompt[static_cast<std::size_t>(i)] = static_cast<std::int32_t>(
-          1024U + (static_cast<std::uint32_t>(i) * 7919U + 17U) % token_range);
+    HistoryDigest history_digest = nullptr;
+    const char* check_history = std::getenv("SGLANG_MLX_NATIVE_CHECK_MTP_HISTORY");
+    if (check_history != nullptr && std::string_view(check_history) == "1") {
+      history_digest = LoadSymbol<HistoryDigest>(
+          library, "mlx_qwen38_mtp_history_digest");
     }
+    const auto report_history = [&](const char* stage) {
+      if (history_digest == nullptr) {
+        return;
+      }
+      std::uint64_t digest = 0;
+      if (history_digest(engine.get(), &digest, error, sizeof(error)) != 0) {
+        throw std::runtime_error(error);
+      }
+      std::cerr << "stage=" << stage << " mtp_history_digest=" << std::hex
+                << digest << std::dec << '\n';
+    };
+    ReportStage("loaded", process_started);
 
     std::int32_t token = 0;
     if (prefill(
@@ -146,6 +244,11 @@ int main(int argc, char** argv) {
             sizeof(error)) != 0) {
       throw std::runtime_error(error);
     }
+    if (output_path != nullptr) {
+      output_ids.push_back(token);
+    }
+    ReportStage("prefilled", process_started);
+    report_history("prefilled");
     int buffered_tokens = 0;
     for (int i = 0; i < warmup_tokens; ++i) {
       const bool refilling = mtp_enabled && buffered_tokens == 0;
@@ -161,8 +264,13 @@ int main(int argc, char** argv) {
       } else if (mtp_enabled) {
         --buffered_tokens;
       }
+      if (output_path != nullptr) {
+        output_ids.push_back(token);
+      }
     }
     mlx::core::synchronize();
+    ReportStage("warmed", process_started);
+    report_history("warmed");
 
     constexpr std::uint64_t kFnvOffset = 14695981039346656037ULL;
     std::uint64_t digest = kFnvOffset;
@@ -186,14 +294,32 @@ int main(int argc, char** argv) {
         --buffered_tokens;
       }
       digest = UpdateDigest(digest, token);
+      if (output_path != nullptr) {
+        output_ids.push_back(token);
+      }
     }
     mlx::core::synchronize();
     const double seconds = std::chrono::duration<double>(
                                std::chrono::steady_clock::now() - start)
                                .count();
+    ReportStage("decoded", process_started);
+    report_history("decoded");
+    if (output_path != nullptr) {
+      for (const auto id : output_ids) {
+        output_file << id << '\n';
+      }
+      output_file.close();
+      if (!output_file) {
+        throw std::runtime_error("cannot finish output ID file");
+      }
+    }
 
     std::cout << std::fixed << std::setprecision(9)
               << "prompt_tokens=" << prompt_tokens << '\n'
+              << "prompt_source=" << (prompt_path == nullptr ? "synthetic" : "file")
+              << '\n'
+              << "prompt_digest_fnv1a64=" << std::hex << prompt_digest << std::dec
+              << '\n'
               << "warmup_tokens=" << warmup_tokens << '\n'
               << "output_tokens=" << output_tokens << '\n'
               << "seconds=" << seconds << '\n'

@@ -45,10 +45,11 @@ bool ExactEqual(
   return true;
 }
 
-bool CheckCase(int batch, int kernel_size, int channels) {
+bool CheckCase(int batch, int kernel_size, int channels, int tokens = 1) {
   const std::size_t state_size = static_cast<std::size_t>(batch) *
       static_cast<std::size_t>(kernel_size - 1) * channels;
-  const std::size_t qkv_size = static_cast<std::size_t>(batch) * channels;
+  const std::size_t qkv_size =
+      static_cast<std::size_t>(batch) * tokens * channels;
   const std::size_t weight_size =
       static_cast<std::size_t>(channels) * kernel_size;
   const auto state_values = MakeValues(state_size, 29);
@@ -60,24 +61,30 @@ bool CheckCase(int batch, int kernel_size, int channels) {
           state_values.data(), {batch, kernel_size - 1, channels}, mx::float32),
       mx::bfloat16);
   mx::array qkv = mx::astype(
-      mx::array(qkv_values.data(), {batch, 1, channels}, mx::float32),
+      mx::array(qkv_values.data(), {batch, tokens, channels}, mx::float32),
       mx::bfloat16);
   mx::array weight = mx::astype(
       mx::array(weight_values.data(), {channels, kernel_size, 1}, mx::float32),
       mx::bfloat16);
 
-  auto actual =
-      sglang::mlx_qwen38::causal_conv_decode_silu(state, qkv, weight);
+  mx::array original_state = mx::astype(
+      mx::array(
+          state_values.data(), {batch, kernel_size - 1, channels}, mx::float32),
+      mx::bfloat16);
+  auto actual = tokens == 1
+      ? sglang::mlx_qwen38::causal_conv_decode_silu(state, qkv, weight)
+      : sglang::mlx_qwen38::causal_conv_two_token_silu(state, qkv, weight);
   mx::array conv_input = mx::concatenate({state, qkv}, 1);
   mx::array expected_conv = sglang::mlx_qwen38::silu(
       mx::conv1d(conv_input, weight, 1, 0, 1, channels));
   mx::array expected_state = mx::slice(
       conv_input,
-      {0, 1, 0},
-      {batch, kernel_size, channels});
+      {0, tokens, 0},
+      {batch, tokens + kernel_size - 1, channels});
 
   return ExactEqual("convolution", actual.first, expected_conv) &&
-      ExactEqual("state", actual.second, expected_state);
+      ExactEqual("state", actual.second, expected_state) &&
+      ExactEqual("input state", state, original_state);
 }
 
 bool CheckExtremeActivations() {
@@ -105,7 +112,8 @@ bool CheckExtremeActivations() {
 
 int main() {
   if (!CheckCase(1, 4, 10240) || !CheckCase(2, 3, 257) ||
-      !CheckExtremeActivations()) {
+      !CheckCase(1, 4, 10240, 2) || !CheckCase(2, 3, 257, 2) ||
+      !CheckCase(1, 2, 33, 2) || !CheckExtremeActivations()) {
     return 1;
   }
   std::cout << "qwen38 causal-convolution/SiLU decode parity passed\n";

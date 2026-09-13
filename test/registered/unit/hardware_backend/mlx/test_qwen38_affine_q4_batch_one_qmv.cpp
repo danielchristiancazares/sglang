@@ -173,26 +173,63 @@ bool CheckQ4FusedSwiGluParity(int input_features, int output_features) {
           sglang::mlx_qwen38::affine_q4_qmv_batch_one(gate, input)) *
           sglang::mlx_qwen38::affine_q4_qmv_batch_one(up, input),
       mx::float32);
-  mx::array actual = mx::astype(
+  mx::array actual_before = mx::astype(
       sglang::mlx_qwen38::affine_q4_fused_swiglu_batch_one(gate, up, input),
       mx::float32);
-  mx::eval(expected, actual);
+  mx::eval(expected, actual_before);
+
+  const std::size_t parameter_words = gate.fused_q4_decode_params.size();
+  const auto* parameter_data =
+      gate.fused_q4_decode_params.data<std::uint32_t>();
+  const std::vector<std::uint32_t> parameters_before(
+      parameter_data, parameter_data + parameter_words);
+  const std::size_t released_bytes =
+      sglang::mlx_qwen38::release_fused_q4_raw_decode_parameters(gate);
+  const bool released =
+      released_bytes == parameter_words * sizeof(std::uint32_t) &&
+      !gate.fused_q4_decode_params_valid &&
+      gate.fused_q4_decode_params.ndim() == 0;
+  if (!released ||
+      !sglang::mlx_qwen38::prepare_fused_q4_raw_decode_parameters(gate, up)) {
+    std::cerr << "failed to round-trip raw fused Q4 parameters\n";
+    return false;
+  }
+  const auto* restored_parameter_data =
+      gate.fused_q4_decode_params.data<std::uint32_t>();
+  const bool parameters_restored =
+      gate.fused_q4_decode_params_valid &&
+      gate.fused_q4_decode_params.size() == parameter_words &&
+      std::equal(
+          parameters_before.begin(),
+          parameters_before.end(),
+          restored_parameter_data);
+  mx::array actual_after = mx::astype(
+      sglang::mlx_qwen38::affine_q4_fused_swiglu_batch_one(gate, up, input),
+      mx::float32);
+  mx::eval(actual_after);
 
   float maximum_absolute_error = 0.0f;
   std::size_t mismatches = 0;
+  std::size_t round_trip_mismatches = 0;
   const float *expected_data = expected.data<float>();
-  const float *actual_data = actual.data<float>();
+  const float *actual_before_data = actual_before.data<float>();
+  const float *actual_after_data = actual_after.data<float>();
   for (std::size_t index = 0; index < expected.size(); ++index) {
     const float absolute_error =
-        std::abs(expected_data[index] - actual_data[index]);
+        std::abs(expected_data[index] - actual_after_data[index]);
     maximum_absolute_error = std::max(maximum_absolute_error, absolute_error);
     mismatches += absolute_error != 0.0f;
+    round_trip_mismatches +=
+        actual_before_data[index] != actual_after_data[index];
   }
   std::cout << "Q4 fused SwiGLU K=" << input_features
             << " N=" << output_features
             << " max_abs=" << maximum_absolute_error
-            << " mismatches=" << mismatches << '\n';
-  return maximum_absolute_error == 0.0f && mismatches == 0;
+            << " mismatches=" << mismatches
+            << " params_restored=" << (parameters_restored ? 1 : 0)
+            << " round_trip_mismatches=" << round_trip_mismatches << '\n';
+  return maximum_absolute_error == 0.0f && mismatches == 0 &&
+      parameters_restored && round_trip_mismatches == 0;
 }
 
 bool CheckQ4FusedSwiGluSigmoidBoundary() {

@@ -305,6 +305,20 @@ int mlx_qwen38_last_spec_width(MlxQwen38Engine* engine) {
   return engine != nullptr ? engine->impl.last_spec_width() : 0;
 }
 
+int mlx_qwen38_mtp_history_digest(
+    MlxQwen38Engine* engine, uint64_t* digest, char* err, int errlen) {
+  try {
+    if (engine == nullptr || digest == nullptr) {
+      throw std::runtime_error("null MTP history digest arguments");
+    }
+    *digest = engine->impl.mtp_history_digest();
+    return 0;
+  } catch (const std::exception& error) {
+    set_err(err, errlen, error.what());
+    return -1;
+  }
+}
+
 void mlx_qwen38_free(MlxQwen38Engine* engine) {
   delete engine;
 }
