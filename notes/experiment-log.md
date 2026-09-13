@@ -25147,3 +25147,16 @@ mean 13.929045  17.125658 446.051        39.730
   builds pass for the client and test; all 11 protocol tests pass.
 - Artifacts are ~/.cache/sglang-qwen38/20260913/bench_qwen38_workload and
   test_openai_benchmark_resume. Full-model performance is not yet measured.
+
+### 2026-09-13 - finish vectorized verifier BF16 correction
+
+- Completed the interrupted vector-input path correction. Affine bias sums
+  retain the BF16 four-add chain before conversion to float2, while packed
+  projection arithmetic continues to reuse both rows' vector registers.
+- Rebuilt current-source dylib with C++20/O3 and strict project warnings.
+  test_qwen38_affine_batch_two_qmv.cpp passes Q4/Q5 dispatch and fallback,
+  full 5120x17408 fused shape, cancellation and exceptional sigmoid cases.
+  Both scalar and corrected vector fused paths are now bit-exact.
+- Receipt is 20260913/vector_resume_parity.log; artifact is
+  20260913/libqwen38_resume.dylib. Earlier two-pair synthetic results are
+  neutral, so this is a correctness repair and carries no speed promotion.
