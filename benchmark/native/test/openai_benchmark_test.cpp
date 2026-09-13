@@ -321,6 +321,22 @@ private:
   CHECK(!body.contains("presence_penalty"));
   CHECK(!body.contains("repetition_penalty"));
   CHECK(!body.at("chat_template_kwargs").at("enable_thinking").as_bool());
+  CHECK(body.at("ignore_eos").as_bool());
+  CHECK(!body.contains("reasoning_effort"));
+  CHECK(!result.contains("reasoning_text"));
+  CHECK(!result.contains("content_text"));
+  options.ignore_eos = false;
+  options.reasoning_effort = "xhigh";
+  options.enable_thinking = true;
+  options.include_output_text = true;
+  const JsonValue retained = stream_request(transport, options);
+  const JsonValue natural_body = JsonValue::parse(transport.observed.body);
+  CHECK(!natural_body.at("ignore_eos").as_bool());
+  CHECK(natural_body.at("reasoning_effort").as_string() == "xhigh");
+  CHECK(natural_body.at("chat_template_kwargs").at("enable_thinking").as_bool());
+  CHECK(retained.at("reasoning_text").as_string() == "a");
+  CHECK(retained.at("content_text").as_string().empty());
+  CHECK(retained.at("decode_tps").as_double() == result.at("decode_tps").as_double());
   return true;
 }
 
