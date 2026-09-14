@@ -26580,3 +26580,31 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
 - Exact command: `/Users/dcazares/.cache/sglang-qwen38/20260913/bench_qwen38_workload http://127.0.0.1:30000 qwen3.8-27b-q4 /Users/dcazares/.cache/sglang-qwen38/20260914-next/lower_bound_module.txt /Users/dcazares/.cache/sglang-qwen38/20260914-next/lower_bound_module_served.json 65536`. Launch reused `/Users/dcazares/.cache/sglang-qwen38/20260914-work/run_segmented_server.sh`; resolved model/server info and logs are in `/Users/dcazares/.cache/sglang-qwen38/20260914-next`. Raw JSON includes reasoning/final output and SHA-256 receipts; generated module and external-oracle source/results are retained there.
 - Further arithmetic probes remain unpromoted. The eight-value M3 candidate fails the strict FP16 and BF16 parity suites at 16-bit rounding boundaries despite matching the earlier 256-token screen. Exact-order chunked-load M3 is slower than the committed low-register implementation. Scalar shared-value Q8 attention is 2–4x slower than segmented MLX.
 - A separate approximate query-aware page-selection prototype preserves full KV storage and measured 4.2 -> .75 ms per 131K two-row attention call including ranking with 1,024 selected tokens. It passes complete-page parity, poisoned unused-tail checks, and future-query isolation, but random dense-attention inputs have large approximation error. It is not integrated or selected. Capturing actual Qwen activations is the next quality gate; no quality or end-to-end speed claim is attached to the microbenchmark.
+
+### 2026-09-14 - Enable long-context Q8 state verification
+
+- Resumed at 9cfa63e84f on perf/qwen38-mlx-native-20260912, owned M1 Max
+  32 GiB. No inference process/listener at entry. Preserved the three inherited
+  modified paths in ~/.cache/sglang-qwen38/20260914-attention-continuation/inherited.patch
+  and the installed library as entry_library.dylib. Codex is not invoked or modified.
+- First 11,455-token source-review resident comparison failed after cold
+  prefill (113.444843292 s) and its first timed window because the recently
+  added target-state digest supported only dense attention. No throughput
+  number from that interrupted comparison is claimed.
+- Extended attention_cache_digest to include all six affine-Q8 payload and
+  coefficient buffers, format, shapes and active history. Capacity-independent
+  hashes exclude reserve shape and unused suffixes; legacy dense digests retain
+  their encoding. Invalid formats, metadata, shapes and dtypes fail explicitly.
+- Added native regression coverage for mutations of every active Q8 buffer,
+  ignored inactive suffixes including poisoned NaN coefficients, larger reserves,
+  offset/length changes, empty formats, malformed inputs and legacy dense suffixes.
+  Strict C++20 O3 library/O2 test builds (-Wall -Wextra -Werror, MLX headers as
+  system headers, macOS deployment target 26.2) pass in BF16 and FP16.
+  Receipts cache_digest_{bfloat16,float16}.log in the artifact directory.
+- The inherited small-query dense-SDPA probe passes the existing expanded
+  attention suite in both formats, but full-model performance remains pending.
+  Direct Q8 dequantization followed by ordinary multi-query MLX SDPA regressed
+  versus segmented attention: at 131064/131072, two queries approximately
+  10.2 vs 4.27 ms, three 13.2 vs 4.61 ms, eight 33.3 vs 8.95 ms.
+  It remains artifact-only and unselected. Low-register M2 passes exact native
+  projection suites in BF16/FP16; its full-model comparison remains pending.
