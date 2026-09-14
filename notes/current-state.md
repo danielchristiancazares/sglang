@@ -2175,3 +2175,14 @@ against the 122.712 tok/s linear baseline.
   dispatch, configuration, tests, and launch integration.
 - Run one server, CUDA test/JIT build, compiler tree, or GPU benchmark at a
   time, and target lifecycle actions by verified process ancestry.
+
+## Apple Q4 continuation, September 13 evening
+
+The current M1 Max branch has an opt-in small-verifier normalization fusion,
+`SGLANG_MLX_NATIVE_VERIFY_FUSED_NORMS=1`. Five paired 1,804-token source-prompt
+replays measured 23.12398 -> 23.60175 generation tok/s with identical output
+IDs and acceptance. Four C++ normalization suites passed, including strided
+multi-token inputs and outstanding outputs. This is a bounded decode gain;
+natural-stop xhigh work at a populated 131,072-token window still needs
+qualification and the 30 tok/s goal has not been achieved. The inherited
+Q4 input-preparation and Q8 attention experiments remain separate dirty work.
