@@ -25675,3 +25675,38 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
   two bits also fails to improve throughput and increases attention error.
   All remain artifact-only. Original Q4 weight codes and production KV format
   remain unchanged.
+
+### 2026-09-14 16:03 PDT - Archive unpromoted worktree experiments
+
+- User approved reversible cleanup, not a commit or a new performance run.
+  Entry branch perf/qwen38-mlx-native-20260912, HEAD
+  cf934a3faf8e77b5f98ab5f7bda7b30e7ded1cc2; five unstaged modified files,
+  no staged changes or untracked files. Existing committed improvements remain.
+- Archived the exact `git diff --no-ext-diff --binary --full-index` for the
+  five modified paths in
+  `/Users/dcazares/.cache/sglang-qwen38/20260914-worktree-cleanup-160300/uncommitted-experiments.patch`.
+  Patch SHA-256 is
+  `519dd7b785e69bedf84338cfe49694b3851cda4accfbad322be6818988773a78`.
+  The archive also contains original file SHA-256 values, verification receipts,
+  and README recovery instructions. It preserves 230 insertions/43 deletions.
+- Restored only benchmark/mac/bench_qwen38_q8_attention.cpp, native
+  qwen38_engine.cpp/.h, and the fixed-prefill-attention/committed-MTP-history
+  C++ tests to HEAD using apply_patch. This removes the unpromoted prepared-Q4,
+  vector/dequantized-Q8 and small-query dense-SDPA probes, reducer changes,
+  unfinished MTP snapshot declaration and related test/benchmark edits from
+  the worktree, without deleting their recovery record.
+- Verified patch SHA-256 against a fresh diff and all five original file
+  checksums before restoration; `git apply --check --reverse` passed then.
+  After restoration, all five raw file blob hashes equal HEAD;
+  `git apply --check` for the archived patch and `git diff --check` pass.
+  No build, GPU test or runtime qualification was run for this exact rollback.
+- Later continuation artifacts remain untouched, including append-only MTP
+  snapshot tests/model receipts through 15:48 PDT and the fused-three-row probe
+  in 20260914-attention-continuation. The append-only candidate preserved the
+  recorded IDs/states but did not establish a meaningful speed gain; its full
+  implementation was artifact-only, not present in the restored engine source.
+- No model, installed library, dependency, process, listener or other cached
+  artifact was changed. Nothing was staged or committed. Next handoff: code
+  matches cf934a3faf; this recovery entry is the only remaining tracked edit.
+  Recover experiments with the archive README rather than reconstructing them;
+  cleanup makes no claim about the current installed library or server health.
