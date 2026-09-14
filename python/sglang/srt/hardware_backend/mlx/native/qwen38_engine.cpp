@@ -204,6 +204,12 @@ bool native_qmm_trace_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_verify_fused_norms_enabled() {
+  const char* const value = std::getenv("SGLANG_MLX_NATIVE_VERIFY_FUSED_NORMS");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 bool native_two_token_causal_conv_enabled() {
   const char* const value =
       std::getenv("SGLANG_MLX_NATIVE_TWO_TOKEN_CAUSAL_CONV");
@@ -5756,7 +5762,9 @@ array Engine::gated_delta(
   array v = reshape(qkv_split[2], {B, S, hv, dv});
 
   float inv = 1.0f / std::sqrt(static_cast<float>(dk));
-  if (S == 1) {
+  const bool fuse_norms = S == 1 ||
+      (S <= 8 && native_verify_fused_norms_enabled());
+  if (fuse_norms) {
     auto normalized = normalize_gated_delta_qk(q, k, inv * inv, inv, 1e-6f);
     q = normalized.first;
     k = normalized.second;
@@ -5777,7 +5785,7 @@ array Engine::gated_delta(
     commit_tape->delta = updated[2];
     commit_tape->valid = true;
   }
-  array gated = S == 1
+  array gated = fuse_norms
       ? gated_delta_norm_gate(out, z, lin.norm, cfg_.rms_norm_eps)
       : astype(
             silu(astype(z, mx::float32)) *
@@ -5822,8 +5830,10 @@ array Engine::forward_hidden_impl(
       captured->push_back(h);
     }
   };
-  const bool single_token = tokens.shape()[1] == 1;
-  if (!single_token) {
+  const int token_count = tokens.shape()[1];
+  const bool fuse_norms = token_count == 1 ||
+      (token_count <= 8 && native_verify_fused_norms_enabled());
+  if (!fuse_norms) {
     for (size_t i = 0; i < layers_.size(); ++i) {
       auto& layer = layers_[i];
       array n = mx::fast::rms_norm(h, layer.input_norm, cfg_.rms_norm_eps);

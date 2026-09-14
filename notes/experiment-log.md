@@ -26300,3 +26300,39 @@ mean 13.929045  17.125658 446.051        39.730
 - Strict C++20 O3/O2 builds and numerical tests pass. Receipts and exact
   candidate source are in 20260913-evening/attention_guard_*_final.log,
   attention_unguarded_regression.log, and engine_attention_commit.cpp.
+
+### 2026-09-13 - Q4 verifier normalization fusion on M1 Max
+
+- Preserved the two inherited dirty files. Their initial diff and native source
+  are archived under `~/.cache/sglang-qwen38/20260913-night/inherited.patch`
+  and `inherited_engine.cpp`. Tile and FP16 experiments remain artifact-only.
+- Added opt-in `SGLANG_MLX_NATIVE_VERIFY_FUSED_NORMS=1` for two through eight
+  token target forwards. Reuses the existing residual/RMSNorm, gated-delta
+  Q/K normalization, and recurrent norm/gate kernels. Single-token behavior
+  and larger prefill chunks retain their existing dispatch.
+- Four strict C++ suites passed against the staged native source, including
+  new exact parity checks at token counts 1, 2, 3, 8 and 9, strided Q/K token
+  rows, and outstanding asynchronous outputs. Logs are `staged_norms_parity.log`
+  and `verify_norm_fusion_parity.log` in the night artifact directory.
+- Ten interleaved source-review replays used the uniform mlx-community Q4
+  checkpoint, the existing MTP sidecar, 1,804 recorded prompt IDs, 32 warmup
+  tokens, 256 measured tokens, seed 42, MTP block 2, committed-history tape,
+  append-only attention snapshots and fused two-token convolution. The build
+  contained HEAD plus this normalization change, excluding inherited probes.
+  No reasoning cap was set. These bounded replays measure decode and parity;
+  they do not qualify natural completion or a populated 131K context.
+- Control tok/s, 22.974701964, 23.085634556, 23.162616406, 23.177465171,
+  23.219471654. Candidate tok/s, 23.498363006, 23.653129624, 23.650377758,
+  23.621168406, 23.585733543. Means are 23.1239779502 and 23.6017544674,
+  a 2.06615% improvement. Every candidate exceeded its paired control.
+  Every run retained output FNV1a64 `f836ee70c4e09215`, 140 speculative
+  refills, mean width 1.835714286 and last token 413. Raw receipts are
+  `norms_qualified_0.log` through `norms_qualified_9.log`.
+- Screening only, varying Q4 outputs per SIMD group and group count gave no
+  durable improvement. An artifact FP16-compute build retained integer Q4
+  weights and converted BF16 coefficients, but source screens remained
+  18.65-23.79 tok/s depending on speculative width and stock/custom kernels.
+  No FP16 default or checkpoint change was promoted.
+- The 30 tok/s, natural-stop xhigh, populated-131K combined target remains
+  unmet. Next probes isolate CPU/GPU submission overlap and long-context
+  Q8 attention with segmented probability/value multiplication.
