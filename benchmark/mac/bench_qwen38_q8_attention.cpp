@@ -39,10 +39,20 @@ mx::array Values(const mx::Shape& shape, int seed) {
 }  // namespace
 int main(int argc, char** argv) {
   try {
-    if (argc != 5) {
-      std::cerr << "usage: bench_qwen38_q8_attention QUERIES ACTIVE_LENGTH CAPACITY ITERATIONS\n";
+    if (argc != 5 && argc != 6) {
+      std::cerr << "usage: bench_qwen38_q8_attention QUERIES ACTIVE_LENGTH CAPACITY ITERATIONS [split|tiled]\n";
       return 2;
     }
+    const std::string_view mode = argc == 6 ? argv[5] : "split";
+    if (mode != "split" && mode != "tiled")
+      throw std::runtime_error("expected split or tiled benchmark mode");
+    const auto select = [&](bool candidate) {
+      if (setenv("SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY",
+                 mode == "tiled" || candidate ? "1" : "0", 1) != 0 ||
+          setenv("SGLANG_MLX_NATIVE_Q8_TILED_ATTENTION",
+                 mode == "tiled" && candidate ? "1" : "0", 1) != 0)
+        throw std::runtime_error("cannot select attention benchmark arm");
+    };
     const int queries = Positive(argv[1]), length = Positive(argv[2]);
     const int capacity = Positive(argv[3]), iterations = Positive(argv[4]);
     if (queries > 1024 || length < queries || length > capacity ||
@@ -56,12 +66,10 @@ int main(int argc, char** argv) {
       return sglang::mlx_qwen38::fixed_q8_attention(q, k[0], k[1], k[2],
           v[0], v[1], v[2], length - queries, length);
     };
-    if (setenv("SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY", "0", 1) != 0)
-      throw std::runtime_error("cannot select control");
+    select(false);
     mx::array control = mx::astype(execute(), mx::float32);
     mx::eval(control);
-    if (setenv("SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY", "1", 1) != 0)
-      throw std::runtime_error("cannot select split verifier");
+    select(true);
     mx::array candidate = mx::astype(execute(), mx::float32);
     mx::eval(candidate);
     float maximum_error = 0;
@@ -72,14 +80,13 @@ int main(int argc, char** argv) {
           std::abs(control.data<float>()[i] - candidate.data<float>()[i]));
     }
     std::cout << std::fixed << std::setprecision(9)
-              << "queries=" << queries << " length=" << length
+              << "mode=" << mode << " queries=" << queries << " length=" << length
               << " capacity=" << capacity << " max_abs=" << maximum_error << '\n';
     if (maximum_error > 0.00390625f)
       throw std::runtime_error("split output exceeds numerical bound");
     for (int sample = 0; sample < 6; ++sample) {
       const int split = sample % 4 == 0 || sample % 4 == 3 ? 0 : 1;
-      if (setenv("SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY", split ? "1" : "0", 1) != 0)
-        throw std::runtime_error("cannot set benchmark arm");
+      select(split != 0);
       for (int warmup = 0; warmup < 3; ++warmup) {
         mx::eval(execute()); mx::synchronize();
       }
