@@ -1,4 +1,5 @@
 #include <fstream>
+#include <tuple>
 
 #define main qwen38_launcher_main
 #include "../../../../../scripts/serve_qwen38_27b_q5_mlx.cpp"
@@ -49,6 +50,11 @@ void CheckProfile(const Options& options, bool optimized) {
        "SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT", "SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY"}) {
     Require(get(name) == (optimized ? "1" : "0"), "incorrect optimized profile setting");
   }
+  Require(get("SGLANG_MLX_NATIVE_ACTIVATION_DTYPE") == options.activation_dtype,
+          "activation profile inherited an external dtype");
+  Require(get("SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO") ==
+              (options.activation_dtype == "float16" ? "0" : "1"),
+          "incorrect activation-specific verifier projection policy");
   Require(get("SGLANG_MLX_NATIVE_SAMPLING") == "1", "sampling disabled");
   Require(get("SGLANG_MLX_NATIVE_MTP_BLOCK_SIZE") == "2", "speculation width changed");
   const auto args = ServerArguments(options);
@@ -145,6 +151,22 @@ int main() {
     CheckProfile(q4_options, false);
     q4_options.mtp_prompt_cache = true;
     CheckProfile(q4_options, true);
+    q4_options.activation_dtype = "float16";
+    CheckProfile(q4_options, true);
+    for (const auto& [profile, mtp, dtype] :
+         std::vector<std::tuple<std::string, bool, std::string>>{
+           {"q5", true, "float16"}, {"q4", false, "float16"},
+           {"q4", true, "fp16"}, {"q4", true, ""}}) {
+      auto invalid = q4_options;
+      invalid.profile = profile;
+      invalid.mtp_prompt_cache = mtp;
+      invalid.activation_dtype = dtype;
+      bool rejected = false;
+      try { (void)ProductionEnvironment(invalid); }
+      catch (const std::runtime_error&) { rejected = true; }
+      Require(rejected, "unsupported activation profile accepted");
+    }
+    q4_options.activation_dtype = "bfloat16";
     bool q4_cached_mtp = false;
     bool q4_prompt_cache = false;
     for (const auto& [name, value] : ProductionEnvironment(q4_options)) {

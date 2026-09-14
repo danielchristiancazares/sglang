@@ -26479,3 +26479,27 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
 - Codex was neither invoked nor modified. The inherited Q4/Q8 probes remain
   uncommitted. The production library is backed up as production_library_before.dylib
   while a foreground owned SGLang test uses the corrected FP16 build.
+
+### 2026-09-14 - Resume served-work qualification and expose FP16 launcher
+
+- Resumed at dfe73ae2d1 on perf/qwen38-mlx-native-20260912, M1 Max 32 GiB.
+  Four inherited modified paths are preserved in
+  ~/.cache/sglang-qwen38/20260914-work/inherited.patch and inherited_engine.cpp.
+  No inference process or port-30000 listener was running at entry.
+- Completed the inherited --activation-dtype bfloat16|float16 launcher option.
+  FP16 is explicit and requires Q4 with MTP prompt caching; other profiles
+  retain BF16. The FP16 profile selects separate gate/up verifier projections,
+  preserving the measured original-Q4 path, sampling, 131072 context/pool and
+  uncapped reasoning. The launcher clears inherited activation format first.
+- Strict C++23 O2 -Wall -Wextra -Wpedantic -Werror builds passed for the
+  launcher and expanded contract test, including unsupported format/profile
+  combinations. Resolved launch is 20260914-work/launcher_fp16.txt;
+  test receipt is launcher_test.log. An initial --print-command invocation
+  was rejected; the supported --print-config invocation then passed.
+- Recovered a previous served result absent from the compact handoff.
+  20260914-continuation/served_sse_review_fp16.json records 1804 prompt tokens,
+  16657 reasoning-only completion tokens, finish_reason=abort, 20.213 decode
+  tok/s, 12.518621 s TTFT and 836.557451 s end to end. No final answer was
+  produced. This fails completed-work qualification despite earlier short
+  native replays exceeding 30 tok/s. Further attention and quality work follows.
+- Codex has neither been invoked nor modified in this continuation.
