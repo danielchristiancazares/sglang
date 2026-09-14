@@ -26362,3 +26362,38 @@ mean 13.929045  17.125658 446.051        39.730
   seed 42, `SGLANG_MLX_NATIVE_MTP_PROMPT_CACHE=1`, append-only attention
   snapshots, committed-history tape, fused two-token convolution and verifier
   norm fusion. No reasoning cap or Codex harness change was introduced.
+
+### 2026-09-13 - Overlap small-verifier construction with Metal execution
+
+- Resumed at 2572cfe377 on perf/qwen38-mlx-native-20260912. Preserved both
+  inherited dirty paths in /Users/dcazares/.cache/sglang-qwen38/20260913-late/inherited.patch and inherited_engine.cpp.
+  The M1 Max has 32 GiB. No inference server was running. Codex was neither
+  invoked nor modified. This commit excludes the inherited Q4/Q8 probes.
+- Added opt-in SGLANG_MLX_NATIVE_ASYNC_VERIFY=1. Two through eight token
+  target forwards submit each completed four-layer prefix asynchronously.
+  Single-token forwards, larger prefill, sampling, and commit boundaries are
+  unchanged. MLX keeps the submitted graph dependencies alive.
+- Expanded the MTP prompt-cache test to alternate synchronous/asynchronous
+  verification, comparing sampled IDs and both initial and final target/MTP
+  state. All seven continuation, mismatch, and repeated-restore scenarios pass.
+- Added bench_qwen38_resident.cpp for alternating arms with identical cached
+  source prompts. It checks all sampled IDs and final state outside the timing
+  interval and exits nonzero on mismatch. Output includes cold/cached prefill,
+  generation timing, acceptance, token digest and peak memory.
+- Strict C++20 O3/O2 -Wall -Wextra -Werror builds pass with third-party MLX
+  headers marked system headers. Initial ordinary -I failed on MLX header
+  warnings; project warnings remain errors. MLX 0.32.2 targets macOS 26.2.
+- Five paired source-review samples, uniform Q4, 1804 actual source-prompt IDs,
+  seed 42, block two, 32 warmup and 256 measured tokens, uncapped reasoning,
+  zero MLX allocation-cache budget. Control 20.762658962, 20.61073354, 20.585905151, 20.6124573, 20.554302571 tok/s.
+  Candidate 22.220196944, 22.233011602, 22.214966361, 22.22609169, 22.236392131 tok/s. Means 20.6252115048 -> 22.2261317456,
+  7.7619579339946565% gain. All runs preserve f836ee70c4e09215,
+  140 refills, width 1.835714286, and final target/MTP state.
+- Exact environment is async_environment.txt / repro_env.sh in the artifact
+  directory. Commands: test_async_prompt_cache "$MODEL" "$MTP";
+  bench_async_resident "$MODEL" "$MTP" "$PROMPT" 10 32 256
+  SGLANG_MLX_NATIVE_ASYNC_VERIFY 1. A 600-second gtimeout bounded each process.
+  Receipts: async_prompt_cache_test.log, async_resident.log. These are bounded
+  source replays, not natural-stop or populated-131K qualification. Absolute
+  speed differs from the earlier 23.60 result because these runs explicitly
+  use the launcher's zero allocation-cache budget. Cache policy is next.
