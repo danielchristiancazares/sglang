@@ -2191,3 +2191,10 @@ Identical MTP requests now reuse their complete prompt snapshot, including the
 saved final hidden row for logits. The expanded model-level test retains exact
 state digests and sampled IDs through repeated restores after speculation.
 Ten 1,804-token cache hits took approximately 3.4-6.3 ms for cached prefill.
+
+Small-verifier asynchronous submission is now available through
+`SGLANG_MLX_NATIVE_ASYNC_VERIFY=1`. Five paired source replays with the
+launcher's zero allocation-cache budget improve 20.62521 -> 22.22613 tok/s,
+with exact sampled IDs and final target/MTP states. The resident C++ benchmark
+now rejects parity mismatches. Thirty tok/s and combined full-context served
+qualification remain open. See the latest experiment-log entry.

@@ -1,5 +1,6 @@
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -18,6 +19,8 @@ struct Result {
   std::uint64_t history;
   std::uint64_t target;
   std::vector<std::int32_t> tokens;
+  std::uint64_t final_history = 0;
+  std::uint64_t final_target = 0;
 };
 
 Result Finish(Engine& engine, std::int32_t token) {
@@ -27,13 +30,17 @@ Result Finish(Engine& engine, std::int32_t token) {
     token = engine.decode(token);
     result.tokens.push_back(token);
   }
+  result.final_history = engine.mtp_history_digest(false);
+  result.final_target = engine.target_state_digest();
   return result;
 }
 
 void CheckEqual(const Result& expected, const Result& actual,
                 const char* scenario) {
   if (expected.history != actual.history || expected.target != actual.target ||
-      expected.tokens != actual.tokens) {
+      expected.tokens != actual.tokens ||
+      expected.final_history != actual.final_history ||
+      expected.final_target != actual.final_target) {
     std::cerr << scenario << " expected_mtp=" << std::hex << expected.history
               << " actual_mtp=" << actual.history
               << " expected_target=" << expected.target
@@ -73,6 +80,8 @@ int main(int argc, char** argv) {
                                              sizeof(error)) != 0) {
       throw std::runtime_error(std::string("model config: ") + error);
     }
+    if (setenv("SGLANG_MLX_NATIVE_ASYNC_VERIFY", "0", 1) != 0)
+      throw std::runtime_error("cannot select synchronous reference");
     Engine engine(config, argv[1]);
     engine.load_mtp(argv[2]);
     std::vector<std::int32_t> prefix(128), suffix(64);
@@ -87,6 +96,8 @@ int main(int argc, char** argv) {
     mlx::core::random::seed(42);
     const auto expected = Finish(engine, Prefill(engine, suffix));
 
+    if (setenv("SGLANG_MLX_NATIVE_ASYNC_VERIFY", "1", 1) != 0)
+      throw std::runtime_error("cannot select asynchronous verifier");
     engine.reset();
     Disturb(engine, Prefill(engine, prefix));
     engine.begin_request();
@@ -109,6 +120,8 @@ int main(int argc, char** argv) {
       throw std::runtime_error("replacement prompt was not reused");
     }
     const auto second = Finish(engine, next);
+    if (setenv("SGLANG_MLX_NATIVE_ASYNC_VERIFY", "0", 1) != 0)
+      throw std::runtime_error("cannot select synchronous reference");
     engine.reset();
     Prefill(engine, prefix);
     Prefill(engine, suffix);
@@ -138,6 +151,8 @@ int main(int argc, char** argv) {
     }
     CheckEqual(mismatch, Finish(engine, next), "empty_suffix");
     for (int repeat = 0; repeat < 3; ++repeat) {
+      if (setenv("SGLANG_MLX_NATIVE_ASYNC_VERIFY", repeat % 2 == 0 ? "1" : "0", 1) != 0)
+        throw std::runtime_error("cannot alternate verifier submissions");
       engine.begin_request();
       next = Prefill(engine, complete);
       if (engine.last_prefill_cached_tokens() != static_cast<int>(complete.size())) {

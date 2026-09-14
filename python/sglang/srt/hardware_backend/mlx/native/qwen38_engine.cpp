@@ -204,6 +204,12 @@ bool native_qmm_trace_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_async_verify_enabled() {
+  const char* const value = std::getenv("SGLANG_MLX_NATIVE_ASYNC_VERIFY");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 bool native_verify_fused_norms_enabled() {
   const char* const value = std::getenv("SGLANG_MLX_NATIVE_VERIFY_FUSED_NORMS");
   return value != nullptr && std::string_view(value) != "0" &&
@@ -5823,7 +5829,16 @@ array Engine::forward_hidden_impl(
     std::vector<array>* captured,
     std::vector<LinearCommitTape>* commit_tapes) {
   array h = embed(tokens);
-  const auto capture = [&captured, &h](size_t layer_index) {
+  const int verify_tokens = tokens.shape()[1];
+  const bool submit_verify = verify_tokens >= 2 && verify_tokens <= 8 &&
+      native_async_verify_enabled();
+  const auto capture = [&captured, &h, submit_verify](size_t layer_index) {
+    // Let Metal execute the completed prefix while the host constructs the
+    // remaining verifier graph. Async evaluation retains the array dependencies
+    // and never waits for completion or changes the speculative commit boundary.
+    if (submit_verify && (layer_index + 1) % 4 == 0) {
+      async_eval(h);
+    }
     if (captured != nullptr &&
         (layer_index == 5 || layer_index == 19 || layer_index == 33 ||
          layer_index == 47 || layer_index == 61)) {
