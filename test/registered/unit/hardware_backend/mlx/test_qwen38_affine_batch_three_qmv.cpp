@@ -36,9 +36,9 @@ qwen::QLinear MakeLinear(int k, int n, std::uint64_t state) {
   }
   return {mx::array(weights.data(), {n, k / 8}, mx::uint32),
           mx::astype(mx::array(scales.data(), {n, k / 64}, mx::float32),
-                     mx::bfloat16),
+                     qwen::activation_dtype()),
           mx::astype(mx::array(biases.data(), {n, k / 64}, mx::float32),
-                     mx::bfloat16), 64, 4, true};
+                     qwen::activation_dtype()), 64, 4, true};
 }
 
 mx::array Input(int k) {
@@ -47,7 +47,7 @@ mx::array Input(int k) {
     values[i] = std::sin(static_cast<float>(i) * 0.013f) * 0.3125f;
   }
   return mx::astype(mx::array(values.data(), {1, 3, k}, mx::float32),
-                    mx::bfloat16);
+                    qwen::activation_dtype());
 }
 
 mx::array Stock(const qwen::QLinear& linear, const mx::array& x) {
@@ -76,12 +76,15 @@ mx::array Evaluate(const qwen::QLinear& gate, const qwen::QLinear& up,
 
 void RequireExact(const mx::array& expected, const mx::array& actual) {
   mx::eval(expected, actual);
-  if (expected.shape() != actual.shape() || expected.dtype() != mx::bfloat16 ||
-      actual.dtype() != mx::bfloat16) {
+  if (expected.shape() != actual.shape() || expected.dtype() != qwen::activation_dtype() ||
+      actual.dtype() != qwen::activation_dtype()) {
     throw std::runtime_error("output shape or dtype mismatch");
   }
-  const auto* a = expected.data<mx::bfloat16_t>();
-  const auto* b = actual.data<mx::bfloat16_t>();
+  const auto expected_float = mx::astype(expected, mx::float32);
+  const auto actual_float = mx::astype(actual, mx::float32);
+  mx::eval(expected_float, actual_float);
+  const auto* a = expected_float.data<float>();
+  const auto* b = actual_float.data<float>();
   for (std::size_t i = 0; i < expected.size(); ++i) {
     if (a[i] != b[i]) {
       std::cerr << "mismatch index=" << i << " expected=" << float(a[i])
@@ -94,7 +97,7 @@ void RequireExact(const mx::array& expected, const mx::array& actual) {
 std::uint64_t Digest(const mx::array& output) {
   mx::eval(output);
   const auto* bytes = reinterpret_cast<const unsigned char*>(
-      output.data<mx::bfloat16_t>());
+      output.data<void>());
   std::uint64_t result = UINT64_C(14695981039346656037);
   for (std::size_t i = 0; i < output.nbytes(); ++i) {
     result = (result ^ bytes[i]) * UINT64_C(1099511628211);
@@ -107,10 +110,10 @@ void Check(int k, int n, bool mlp, bool boundary = false) {
   auto up = MakeLinear(k, n, UINT64_C(0x9e3779b97f4a7c15));
   auto x = Input(k);
   if (boundary) {
-    gate.scales = mx::zeros({n, k / 64}, mx::bfloat16);
+    gate.scales = mx::zeros({n, k / 64}, qwen::activation_dtype());
     up.scales = gate.scales;
-    gate.biases = mx::full({n, k / 64}, -6.84375f, mx::bfloat16);
-    up.biases = mx::ones({n, k / 64}, mx::bfloat16);
+    gate.biases = mx::full({n, k / 64}, -6.84375f, qwen::activation_dtype());
+    up.biases = mx::ones({n, k / 64}, qwen::activation_dtype());
     std::vector<float> values(3 * k, 0.0f);
     values[0] = 1.0f;
     values[k] = 1.0f;
@@ -120,7 +123,7 @@ void Check(int k, int n, bool mlp, bool boundary = false) {
     values[2 * k + 1] = -1.0f / 256.0f;
     values[2 * k + 2] = 1.0f;
     x = mx::astype(mx::array(values.data(), {1, 3, k}, mx::float32),
-                   mx::bfloat16);
+                   qwen::activation_dtype());
   }
   const auto expected = Evaluate(gate, up, x, mlp, 2);
   const auto actual = Evaluate(gate, up, x, mlp, 1);
@@ -136,7 +139,7 @@ void Check(int k, int n, bool mlp, bool boundary = false) {
     }
     RequireExact(actual, gate(x));
     for (int rows : {1, 2, 4}) {
-      const auto other = mx::full({1, rows, k}, 0.25f, mx::bfloat16);
+      const auto other = mx::full({1, rows, k}, 0.25f, qwen::activation_dtype());
       RequireExact(Stock(gate, other), gate(other));
     }
     if (unsetenv("SGLANG_MLX_NATIVE_Q4_BATCH_THREE_QMV") != 0) {
@@ -160,10 +163,10 @@ void CheckInvalid() {
     }
     throw std::runtime_error("invalid Q4 input accepted");
   };
-  for (const auto& invalid : {mx::zeros({3, 512}, mx::bfloat16),
-                              mx::zeros({2, 3, 512}, mx::bfloat16),
-                              mx::zeros({1, 2, 512}, mx::bfloat16),
-                              mx::zeros({1, 3, 256}, mx::bfloat16),
+  for (const auto& invalid : {mx::zeros({3, 512}, qwen::activation_dtype()),
+                              mx::zeros({2, 3, 512}, qwen::activation_dtype()),
+                              mx::zeros({1, 2, 512}, qwen::activation_dtype()),
+                              mx::zeros({1, 3, 256}, qwen::activation_dtype()),
                               mx::astype(x, mx::float32)}) {
     rejects(valid, invalid);
   }
@@ -175,8 +178,8 @@ void CheckInvalid() {
       case 2: invalid.group_size = 32; break;
       case 3: invalid.w = mx::astype(valid.w, mx::int32); break;
       case 4: invalid.w = mx::zeros({63, 64}, mx::uint32); break;
-      case 5: invalid.scales = mx::zeros({64, 7}, mx::bfloat16); break;
-      case 6: invalid.biases = mx::zeros({512}, mx::bfloat16); break;
+      case 5: invalid.scales = mx::zeros({64, 7}, qwen::activation_dtype()); break;
+      case 6: invalid.biases = mx::zeros({512}, qwen::activation_dtype()); break;
       case 7: invalid.biases = mx::astype(valid.biases, mx::float32); break;
     }
     rejects(invalid, x);
@@ -217,7 +220,7 @@ int main(int argc, char** argv) {
     }
     if (argc != 1) return 2;
     CheckInvalid();
-    for (const auto& [k, n] : {std::pair{512, 64}, std::pair{5120, 128},
+    for (const auto& [k, n] : {std::pair{512, 16}, std::pair{512, 80}, std::pair{512, 64}, std::pair{5120, 128},
                               std::pair{5120, 17408},
                               std::pair{17408, 5120}}) {
       Check(k, n, false);

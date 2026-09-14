@@ -2212,3 +2212,7 @@ with separate gate/up verifier projections average 30.12184 tok/s at 1804
 prompt tokens. Combined naturally completed served work and populated-131K
 acceptance are still open. Receipts and the inherited-work backup are in
 ~/.cache/sglang-qwen38/20260914-continuation. The Codex harness is untouched.
+
+## 2026-09-14 — Latest Q4 width-three improvement
+
+The opt-in three-row Q4 verifier now averages 28.925198 tok/s versus 23.006654 in five paired sampled replays, with identical output and final target/MTP states. Both activation-format suites pass. The selected FP16 width-two profile is unchanged. A separate eight-value-fragment candidate screens at 31.519469 tok/s but still needs numerical and completed-work validation. The combined completed-work and populated-131k target remains open. Receipts are in `/Users/dcazares/.cache/sglang-qwen38/20260914-next`.

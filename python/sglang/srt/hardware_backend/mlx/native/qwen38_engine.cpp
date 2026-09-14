@@ -2125,72 +2125,113 @@ constexpr const char* kAffineQ4BatchOneQmvSource = R"(
         }
 )";
 
+// Two output rows per SIMDgroup reduce register pressure. The sixteen-value
+// input fragments and their accumulation order remain unchanged.
 constexpr const char* kAffineQ4BatchThreeSource = R"(
-        constexpr int Values = 16;
-        constexpr int Outputs = 4;
-        constexpr int Groups = KConst / 64;
-        constexpr int WeightBytes = KConst / 2;
+        constexpr int PacksPerThread = 2;
+        constexpr int SimdGroups = 4;
+        constexpr int ResultsPerSimdgroup = 2;
+        constexpr int ValuesPerThread = 8 * PacksPerThread;
+        constexpr int BlockSize = ValuesPerThread * 32;
+        constexpr int ScaleStep = 64 / ValuesPerThread;
+        constexpr int InputFeatures = KConst;
+        constexpr int OutputFeatures = NConst;
+        constexpr int WeightRowBytes = InputFeatures / 2;
+        constexpr int GroupsPerRow = InputFeatures / 64;
+
+        thread float input0_values[ValuesPerThread];
+        thread float input1_values[ValuesPerThread];
+        thread float input2_values[ValuesPerThread];
+        thread float results0[ResultsPerSimdgroup] = {0};
+        thread float results1[ResultsPerSimdgroup] = {0};
+        thread float results2[ResultsPerSimdgroup] = {0};
+
         const int lane = thread_index_in_simdgroup;
-        const int start = threadgroup_position_in_grid.y * 16
-            + simdgroup_index_in_threadgroup * Outputs;
-        const device uchar* weights = reinterpret_cast<const device uchar*>(w)
-            + start * WeightBytes + lane * 8;
-        thread float2 result01[Outputs];
-        thread float result2[Outputs] = {0};
+        const int output_start =
+            threadgroup_position_in_grid.y *
+                (SimdGroups * ResultsPerSimdgroup) +
+            simdgroup_index_in_threadgroup * ResultsPerSimdgroup;
+        const device uchar* weight_cursor =
+            reinterpret_cast<const device uchar*>(w) +
+            output_start * WeightRowBytes + lane * PacksPerThread * 4;
+        const device Activation* scale_cursor =
+            scales + output_start * GroupsPerRow + lane / ScaleStep;
+        const device Activation* bias_cursor =
+            biases + output_start * GroupsPerRow + lane / ScaleStep;
+        const device Activation* input0_cursor =
+            x + lane * ValuesPerThread;
+        const device Activation* input1_cursor =
+            x + InputFeatures + lane * ValuesPerThread;
+        const device Activation* input2_cursor =
+            x + 2 * InputFeatures + lane * ValuesPerThread;
+
+        for (int k = 0; k < InputFeatures; k += BlockSize) {
+          const float sum0 =
+              sglang_q4_load_vector<Activation, float, ValuesPerThread>(
+                  input0_cursor, input0_values);
+          const float sum1 =
+              sglang_q4_load_vector<Activation, float, ValuesPerThread>(
+                  input1_cursor, input1_values);
+          const float sum2 =
+              sglang_q4_load_vector<Activation, float, ValuesPerThread>(
+                  input2_cursor, input2_values);
+
 #pragma unroll
-        for (int row = 0; row < Outputs; ++row) {
-          result01[row] = float2(0.0f);
-        }
-        for (int k = 0; k < KConst; k += 512) {
-          thread float input0[Values], input1[Values], input2[Values];
-          float2 sum01;
-          sum01.x = sglang_q4_load_vector<Activation, float, Values>(
-              x + k + lane * Values, input0);
-          sum01.y = sglang_q4_load_vector<Activation, float, Values>(
-              x + KConst + k + lane * Values, input1);
-          const float sum2 = sglang_q4_load_vector<Activation, float, Values>(
-              x + 2 * KConst + k + lane * Values, input2);
-          thread float2 inputs01[Values];
+          for (int row = 0; row < ResultsPerSimdgroup; ++row) {
+            const float scale = static_cast<float>(
+                scale_cursor[row * GroupsPerRow]);
+            const float bias = static_cast<float>(
+                bias_cursor[row * GroupsPerRow]);
+            const device ushort* packed =
+                reinterpret_cast<const device ushort*>(
+                    weight_cursor + row * WeightRowBytes);
+            float accumulator0 = 0.0f;
+            float accumulator1 = 0.0f;
+            float accumulator2 = 0.0f;
 #pragma unroll
-          for (int index = 0; index < Values; ++index) {
-            inputs01[index] = float2(input0[index], input1[index]);
-          }
-          const int group = k / 64 + lane / 4;
-#pragma unroll
-          for (int row = 0; row < Outputs; ++row) {
-            const float scale = float(scales[(start + row) * Groups + group]);
-            const float bias = float(biases[(start + row) * Groups + group]);
-            const device ushort* packed = reinterpret_cast<const device ushort*>(
-                weights + row * WeightBytes + k / 2);
-            float2 dot01 = float2(0.0f);
-            float dot2 = 0.0f;
-#pragma unroll
-            for (int pack = 0; pack < Values / 4; ++pack) {
-              const ushort code = packed[pack];
-              dot01 +=
-                  inputs01[4 * pack] * float(code & 0x000f) +
-                  inputs01[4 * pack + 1] * float(code & 0x00f0) +
-                  inputs01[4 * pack + 2] * float(code & 0x0f00) +
-                  inputs01[4 * pack + 3] * float(code & 0xf000);
-              dot2 +=
-                  input2[4 * pack] * (code & 0x000f) +
-                  input2[4 * pack + 1] * (code & 0x00f0) +
-                  input2[4 * pack + 2] * (code & 0x0f00) +
-                  input2[4 * pack + 3] * (code & 0xf000);
+            for (int index = 0; index < ValuesPerThread / 4; ++index) {
+              const ushort code = packed[index];
+              accumulator0 +=
+                  input0_values[4 * index] * (code & 0x000f) +
+                  input0_values[4 * index + 1] * (code & 0x00f0) +
+                  input0_values[4 * index + 2] * (code & 0x0f00) +
+                  input0_values[4 * index + 3] * (code & 0xf000);
+              accumulator1 +=
+                  input1_values[4 * index] * (code & 0x000f) +
+                  input1_values[4 * index + 1] * (code & 0x00f0) +
+                  input1_values[4 * index + 2] * (code & 0x0f00) +
+                  input1_values[4 * index + 3] * (code & 0xf000);
+              accumulator2 +=
+                  input2_values[4 * index] * (code & 0x000f) +
+                  input2_values[4 * index + 1] * (code & 0x00f0) +
+                  input2_values[4 * index + 2] * (code & 0x0f00) +
+                  input2_values[4 * index + 3] * (code & 0xf000);
             }
-            result01[row] += scale * dot01 + sum01 * bias;
-            result2[row] += scale * dot2 + sum2 * bias;
+            results0[row] += scale * accumulator0 + sum0 * bias;
+            results1[row] += scale * accumulator1 + sum1 * bias;
+            results2[row] += scale * accumulator2 + sum2 * bias;
           }
+
+          weight_cursor += BlockSize / 2;
+          scale_cursor += BlockSize / 64;
+          bias_cursor += BlockSize / 64;
+          input0_cursor += BlockSize;
+          input1_cursor += BlockSize;
+          input2_cursor += BlockSize;
         }
+
 #pragma unroll
-        for (int row = 0; row < Outputs; ++row) {
-          const float r0 = simd_sum(result01[row].x);
-          const float r1 = simd_sum(result01[row].y);
-          const float r2 = simd_sum(result2[row]);
+        for (int row = 0; row < ResultsPerSimdgroup; ++row) {
+          const float result0 = simd_sum(results0[row]);
+          const float result1 = simd_sum(results1[row]);
+          const float result2 = simd_sum(results2[row]);
           if (lane == 0) {
-            y[start + row] = Activation(r0);
-            y[NConst + start + row] = Activation(r1);
-            y[2 * NConst + start + row] = Activation(r2);
+            y[output_start + row] =
+                static_cast<Activation>(result0);
+            y[OutputFeatures + output_start + row] =
+                static_cast<Activation>(result1);
+            y[2 * OutputFeatures + output_start + row] =
+                static_cast<Activation>(result2);
           }
         }
 )";
@@ -4529,7 +4570,7 @@ array affine_q4_qmv_batch_three(const QLinear& linear, const array& x) {
   const int n = linear.w.shape()[0];
   return affine_q4_batch_three_metal()(
       {linear.w, linear.scales, linear.biases, x},
-      {{1, 3, n}}, {x.dtype()}, {128, n / 16, 1}, {128, 1, 1},
+      {{1, 3, n}}, {x.dtype()}, {128, n / 8, 1}, {128, 1, 1},
       {{"KConst", mx::fast::TemplateArg{k}},
        {"NConst", mx::fast::TemplateArg{n}}},
       std::nullopt, false, {})[0];

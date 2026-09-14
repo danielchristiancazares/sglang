@@ -127,6 +127,7 @@ if (reference != ids || target_state != reference_target || mtp_state != referen
                 << " seconds=" << seconds << " tokens_per_second=" << output / seconds
                 << " refills=" << refills << " mean_width=" << static_cast<double>(widths) / refills
                 << " digest=" << std::hex << Digest(ids, static_cast<std::size_t>(warmup + 1)) << std::dec
+                << " target_state=" << std::hex << target_state << " mtp_state=" << mtp_state << std::dec
                 << " exact_ids=" << (reference == ids)
                 << " peak_bytes=" << mlx::core::get_peak_memory() << std::endl;
     }
