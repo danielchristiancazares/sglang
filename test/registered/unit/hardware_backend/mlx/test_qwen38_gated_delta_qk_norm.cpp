@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <cmath>
 #include <cstddef>
 #include <iostream>
@@ -66,10 +67,10 @@ bool CheckCase(int rows, int width, float q_scale, float k_scale) {
   const auto k_values = MakeValues(size, 71);
   mx::array q = mx::astype(
       mx::array(q_values.data(), {rows, 1, width}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array k = mx::astype(
       mx::array(k_values.data(), {rows, 1, width}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
 
   auto actual = sglang::mlx_qwen38::normalize_gated_delta_qk(
       q, k, q_scale, k_scale, 1e-6f);
@@ -85,7 +86,7 @@ bool CheckOutstandingOutputs() {
   const auto q_values = MakeValues(kRows * kWidth, 43);
   mx::array q = mx::astype(
       mx::array(q_values.data(), {1, 1, kRows, kWidth}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
 
   std::vector<std::pair<ArrayPair, ArrayPair>> pending;
   pending.reserve(kOutstanding);
@@ -93,7 +94,7 @@ bool CheckOutstandingOutputs() {
     const auto k_values = MakeValues(kRows * kWidth, 47 + i * 2);
     mx::array k = mx::astype(
         mx::array(k_values.data(), {1, 1, kRows, kWidth}, mx::float32),
-        mx::bfloat16);
+        sglang::mlx_qwen38::activation_dtype());
     const float inv = 1.0f / std::sqrt(static_cast<float>(kWidth));
     auto actual = sglang::mlx_qwen38::normalize_gated_delta_qk(
         q, k, inv * inv, inv, 1e-6f);
@@ -130,17 +131,17 @@ bool CheckFullAttentionNormRope() {
           qg_values.data(),
           {kBatch, 1, kQueryHeads, 2 * kWidth},
           mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array k = mx::astype(
       mx::array(
           k_values.data(), {kBatch, 1, kKvHeads, kWidth}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array q_weight = mx::astype(
       mx::array(q_weight_values.data(), {kWidth}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array k_weight = mx::astype(
       mx::array(k_weight_values.data(), {kWidth}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
 
   auto actual = sglang::mlx_qwen38::full_attn_qk_norm_rope(
       qg,

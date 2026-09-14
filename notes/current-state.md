@@ -2301,3 +2301,15 @@ now rejects parity mismatches. Thirty tok/s and combined full-context served
 qualification remain open. See the latest experiment-log entry.
 
 The C++ launcher now selects the validated asynchronous/cache/fused-normalization/commit-tape configuration for `--profile q4 --mtp-prompt-cache`. Q5 and Q4 target-only behavior is unchanged. The selected Q4 MTP native source replay is approximately 24.28 tok/s, exact sampled IDs and final target/MTP state preserved. Thirty tok/s and natural-stop served full-context qualification remain open. Unqualified inherited kernel probes are cleared by the launcher.
+
+## Apple Q4 continuation, September 14
+
+An opt-in native FP16 activation format now has audited coefficient conversion,
+unchanged packed Q4 codes, and corrected MLX half-sigmoid rounding. Twenty
+format/suite combinations pass, including full-model prompt-cache state and
+sampled-token restoration. Exhaustive finite FP16 convolution and fused-MLP
+activation tests pass. BF16 remains the default. Five native source replays
+with separate gate/up verifier projections average 30.12184 tok/s at 1804
+prompt tokens. Combined naturally completed served work and populated-131K
+acceptance are still open. Receipts and the inherited-work backup are in
+~/.cache/sglang-qwen38/20260914-continuation. The Codex harness is untouched.

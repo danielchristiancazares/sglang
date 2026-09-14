@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
@@ -23,7 +24,7 @@ bool CheckSelectedRowParity() {
   mx::array dense = mx::astype(
       mx::array(
           values.data(), {kVocabularySize, kHiddenSize}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   std::vector<mx::array> quantized = mx::quantize(dense, 64, 4, "affine");
   sglang::mlx_qwen38::QLinear embedding{
       quantized[0], quantized[1], quantized[2], 64, 4, true};
@@ -41,7 +42,7 @@ bool CheckSelectedRowParity() {
       embedding.bits,
       "affine",
       std::nullopt,
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array expected = mx::take(full, signed_tokens, 0);
   mx::array signed_actual =
       sglang::mlx_qwen38::quantized_embedding_rows(embedding, signed_tokens);
@@ -70,8 +71,8 @@ bool CheckSelectedRowParity() {
 
 bool RejectsInvalidTokenType() {
   mx::array weight = mx::zeros({8, 64}, mx::uint32);
-  mx::array scales = mx::zeros({8, 8}, mx::bfloat16);
-  mx::array biases = mx::zeros({8, 8}, mx::bfloat16);
+  mx::array scales = mx::zeros({8, 8}, sglang::mlx_qwen38::activation_dtype());
+  mx::array biases = mx::zeros({8, 8}, sglang::mlx_qwen38::activation_dtype());
   sglang::mlx_qwen38::QLinear embedding{
       weight, scales, biases, 64, 4, true};
   mx::array tokens = mx::zeros({1, 1}, mx::float32);

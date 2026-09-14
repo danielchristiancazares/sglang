@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -53,19 +54,19 @@ bool CheckParity(int query_tokens, int prefix_length, int cache_capacity) {
           query_values.data(),
           {1, kQueryHeads, query_tokens, kHeadDimension},
           mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array key_cache = mx::astype(
       mx::array(
           key_values.data(),
           {1, kKeyValueHeads, cache_capacity, kHeadDimension},
           mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array value_cache = mx::astype(
       mx::array(
           value_values.data(),
           {1, kKeyValueHeads, cache_capacity, kHeadDimension},
           mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
 
   mx::array active_keys = mx::slice(
       key_cache,
@@ -135,19 +136,19 @@ bool CheckQ8Parity(int query_tokens, int prefix_length, int cache_capacity,
           query_values.data(),
           {1, kQueryHeads, query_tokens, kHeadDimension},
           mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array dense_keys = mx::astype(
       mx::array(
           key_values.data(),
           {1, kKeyValueHeads, cache_capacity, kHeadDimension},
           mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array dense_values = mx::astype(
       mx::array(
           value_values.data(),
           {1, kKeyValueHeads, cache_capacity, kHeadDimension},
           mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   std::vector<mx::array> quantized_keys =
       mx::quantize(dense_keys, 64, 8, "affine");
   std::vector<mx::array> quantized_values =
@@ -160,7 +161,7 @@ bool CheckQ8Parity(int query_tokens, int prefix_length, int cache_capacity,
   if (poison_unused && active_length < cache_capacity) {
     const mx::array poison = mx::full(
         {1, kKeyValueHeads, cache_capacity - active_length, 4},
-        std::numeric_limits<float>::quiet_NaN(), mx::bfloat16);
+        std::numeric_limits<float>::quiet_NaN(), sglang::mlx_qwen38::activation_dtype());
     for (int parameter = 1; parameter < 3; ++parameter) {
       quantized_keys[parameter] = mx::slice_update(
           quantized_keys[parameter], poison, {0, 0, active_length, 0},
@@ -178,7 +179,7 @@ bool CheckQ8Parity(int query_tokens, int prefix_length, int cache_capacity,
       8,
       "affine",
       std::nullopt,
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array dequantized_values = mx::dequantize(
       quantized_values[0],
       quantized_values[1],
@@ -187,7 +188,7 @@ bool CheckQ8Parity(int query_tokens, int prefix_length, int cache_capacity,
       8,
       "affine",
       std::nullopt,
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array active_keys = mx::slice(
       dequantized_keys,
       {0, 0, 0, 0},
@@ -232,8 +233,8 @@ bool CheckQ8Parity(int query_tokens, int prefix_length, int cache_capacity,
 
 bool RejectsInvalidQueryDtype() {
   mx::array queries = mx::zeros({1, 24, 7, 256}, mx::float32);
-  mx::array keys = mx::zeros({1, 4, 256, 256}, mx::bfloat16);
-  mx::array values = mx::zeros({1, 4, 256, 256}, mx::bfloat16);
+  mx::array keys = mx::zeros({1, 4, 256, 256}, sglang::mlx_qwen38::activation_dtype());
+  mx::array values = mx::zeros({1, 4, 256, 256}, sglang::mlx_qwen38::activation_dtype());
   try {
     (void)sglang::mlx_qwen38::fixed_prefill_attention(
         queries, keys, values, 1, 8);
@@ -333,16 +334,16 @@ bool CheckAppendOnlyRollbackInvariant() {
   const float first_append[kFirstAppendLength] = {31.0f, 32.0f, 33.0f};
   const float replacement[kReplacementLength] = {-41.0f, -42.0f};
 
-  mx::array cache = mx::zeros({1, 1, kInitialCapacity, 1}, mx::bfloat16);
+  mx::array cache = mx::zeros({1, 1, kInitialCapacity, 1}, sglang::mlx_qwen38::activation_dtype());
   mx::array prompt = mx::astype(
       mx::array(
           prompt_values.data(), {1, 1, kPromptLength, 1}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   cache = mx::slice_update(
       cache, prompt, {0, 0, 0, 0}, {1, 1, kPromptLength, 1});
   mx::eval(cache);
 
-  mx::array grown = mx::zeros({1, 1, kGrownCapacity, 1}, mx::bfloat16);
+  mx::array grown = mx::zeros({1, 1, kGrownCapacity, 1}, sglang::mlx_qwen38::activation_dtype());
   grown = mx::slice_update(
       grown,
       mx::slice(cache, {0, 0, 0, 0}, {1, 1, kPromptLength, 1}),
@@ -356,7 +357,7 @@ bool CheckAppendOnlyRollbackInvariant() {
       mx::astype(
           mx::array(
               first_append, {1, 1, kFirstAppendLength, 1}, mx::float32),
-          mx::bfloat16),
+          sglang::mlx_qwen38::activation_dtype()),
       {0, 0, kPromptLength, 0},
       {1, 1, kPromptLength + kFirstAppendLength, 1});
   mx::eval(cache);
@@ -369,7 +370,7 @@ bool CheckAppendOnlyRollbackInvariant() {
       mx::astype(
           mx::array(
               replacement, {1, 1, kReplacementLength, 1}, mx::float32),
-          mx::bfloat16),
+          sglang::mlx_qwen38::activation_dtype()),
       {0, 0, kPromptLength, 0},
       {1, 1, kPromptLength + kReplacementLength, 1});
   mx::array active = mx::astype(

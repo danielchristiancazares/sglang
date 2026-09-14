@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <cmath>
 #include <cstddef>
 #include <iostream>
@@ -33,9 +34,9 @@ struct Comparison {
 
 bool Check(int tokens) {
   std::vector<Comparison> pending;
-  auto x = Values({1, tokens, 5120}, 37, mx::bfloat16);
-  auto residual = Values(x.shape(), 71, mx::bfloat16);
-  auto weight = Values({5120}, 97, mx::bfloat16);
+  auto x = Values({1, tokens, 5120}, 37, sglang::mlx_qwen38::activation_dtype());
+  auto residual = Values(x.shape(), 71, sglang::mlx_qwen38::activation_dtype());
+  auto weight = Values({5120}, 97, sglang::mlx_qwen38::activation_dtype());
   auto fused = native::residual_rms_norm(x, residual, weight, 1e-6f);
   auto summed = x + residual;
   pending.push_back({"residual", fused.first, summed});
@@ -44,7 +45,7 @@ bool Check(int tokens) {
 
   // Splitting the packed convolution output leaves strided token rows.
   // These are the shapes passed by speculative gated-delta verification.
-  auto qkv = Values({1, tokens, 10240}, 43, mx::bfloat16);
+  auto qkv = Values({1, tokens, 10240}, 43, sglang::mlx_qwen38::activation_dtype());
   auto slices = mx::split(qkv, mx::Shape{2048, 4096}, -1);
   auto q = mx::reshape(slices[0], {1, tokens, 16, 128});
   auto k = mx::reshape(slices[1], {1, tokens, 16, 128});
@@ -56,8 +57,8 @@ bool Check(int tokens) {
                      inv * mx::fast::rms_norm(k, std::nullopt, 1e-6f)});
 
   auto recurrent = Values({1, tokens, 48, 128}, 59, mx::float32);
-  auto z = Values(recurrent.shape(), 61, mx::bfloat16);
-  auto gate_weight = Values({128}, 89, mx::bfloat16);
+  auto z = Values(recurrent.shape(), 61, sglang::mlx_qwen38::activation_dtype());
+  auto gate_weight = Values({128}, 89, sglang::mlx_qwen38::activation_dtype());
   auto gate = native::gated_delta_norm_gate(recurrent, z, gate_weight, 1e-6f);
   auto reference_gate = mx::astype(
       native::silu(mx::astype(z, mx::float32)) *
