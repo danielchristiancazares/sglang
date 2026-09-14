@@ -4245,6 +4245,63 @@ array fixed_q8_attention(
       cache_capacity % kKeyTile != 0) {
     throw std::runtime_error("unsupported fixed Q8 attention shape");
   }
+  const char* segmented = std::getenv("SGLANG_MLX_NATIVE_Q8_SEGMENTED_MATMUL");
+  constexpr int kSegmentTokens = 1024;
+  if (segmented != nullptr && std::string_view(segmented) == "1" &&
+      query_tokens <= 8 && active_cache_length >= 4096 &&
+      cache_capacity % kSegmentTokens == 0) {
+    const int extent = ((active_cache_length + kSegmentTokens - 1) /
+                        kSegmentTokens) * kSegmentTokens;
+    const int rows = query_tokens * kHeadsPerKeyValue;
+    const int segments = extent / kSegmentTokens;
+    const auto active = [extent](const array& cache) {
+      return mx::slice(cache, {0, 0, 0, 0},
+          {1, kKeyValueHeads, extent, cache.shape()[3]});
+    };
+    const array positions = mx::arange(extent, mx::int32);
+    const array valid = reshape(mx::less(positions, array(active_cache_length)),
+                                {1, 1, extent, 1});
+    // An abandoned speculative suffix may contain NaN coefficients. Remove
+    // those values before either product, including the zero-probability PV.
+    const auto coefficients = [&](const array& parameter) {
+      return mx::where(valid, astype(active(parameter), mx::float32), array(0.0f));
+    };
+    const array grouped_queries = reshape(transpose(
+        reshape(queries, {1, kKeyValueHeads, kHeadsPerKeyValue,
+                          query_tokens, kHeadDimension}), {0, 1, 3, 2, 4}),
+        {1, kKeyValueHeads, rows, kHeadDimension});
+    const array scores = quantized_matmul(astype(grouped_queries, mx::float32),
+        active(key_cache), coefficients(key_scales), coefficients(key_biases),
+        true, 64, 8, "affine");
+    std::vector<int> limits(static_cast<std::size_t>(rows));
+    for (int row = 0; row < rows; ++row)
+      limits[row] = prefix_length + row / kHeadsPerKeyValue;
+    const array causal = mx::less_equal(
+        reshape(positions, {1, 1, 1, extent}),
+        array(limits.data(), {1, 1, rows, 1}, mx::int32));
+    const array probabilities = mx::softmax(mx::where(causal, scores * 0.0625f,
+        array(-std::numeric_limits<float>::infinity())), -1, true);
+    const array partitioned = transpose(
+        reshape(probabilities, {1, kKeyValueHeads, rows, segments, kSegmentTokens}),
+        {0, 1, 3, 2, 4});
+    // Independent sequence segments expose enough PV workgroups for the GPU.
+    // Both softmax and the final segment reduction retain FP32 arithmetic.
+    const mx::Shape payload_shape{
+        1, kKeyValueHeads, segments, kSegmentTokens, kPackedDimension};
+    const mx::Shape parameter_shape{
+        1, kKeyValueHeads, segments, kSegmentTokens, kParameterDimension};
+    const array partial = quantized_matmul(partitioned,
+        reshape(active(value_cache), payload_shape),
+        reshape(coefficients(value_scales), parameter_shape),
+        reshape(coefficients(value_biases), parameter_shape),
+        false, 64, 8, "affine");
+    const array output = reshape(transpose(
+        reshape(sum(partial, 2), {1, kKeyValueHeads, query_tokens,
+                                 kHeadsPerKeyValue, kHeadDimension}),
+        {0, 1, 3, 2, 4}), queries.shape());
+    return astype(output, queries.dtype());
+  }
+
   const int attention_rows = query_tokens * kHeadsPerKeyValue;
   const int query_tiles =
       (attention_rows + kQueryTile - 1) / kQueryTile;

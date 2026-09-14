@@ -26527,3 +26527,34 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
   repair, not a new sustained-speed or completed-work qualification.
 - An initial sharper-query test edit scaled the wrong helper and failed
   compilation; the edit was narrowed to CheckQ8Parity and strict builds passed.
+
+### 2026-09-14 - Segment long-cache Q8 verification and screen served work
+
+- Added opt-in SGLANG_MLX_NATIVE_Q8_SEGMENTED_MATMUL=1. It trims the
+  allocation to the active 1024-token extent, computes causal QK and softmax
+  in FP32, partitions PV into independent sequence segments, and reduces
+  those segments in FP32. Unused affine coefficients are zeroed before both
+  products. Original Q4 weights and Q8 cache storage are unchanged.
+- Expanded attention parity covers poisoned reserves, 4096/8192 dispatch
+  boundaries, sharper queries, eight queries at 131072 and BF16/FP16.
+  Both extended suites pass. The path changes floating reduction order;
+  it is not advertised as bit-identical or completed-model qualification.
+- Five candidate/control measurements and an independent repeat used 2
+  queries, 131072 capacity, 20 iterations per sample. At 8193 active tokens,
+  split-control means were 3.323585/3.319513 ms, segmented means
+  0.731634/0.719660 ms. At 131064 active tokens, control means were
+  13.162354/13.168570 ms, segmented means 4.270034/4.256807 ms.
+  Every individual sample is in 20260914-work/segment_split_confirm_*.log.
+  The earlier segment_confirm_* receipts mistakenly disabled splitting in
+  the control arm and are excluded. The benchmark arm selection was fixed.
+- FP16 MTP width screens on the original 1804 source IDs, 32 warm/128 timed,
+  did not improve over width two. Receipts fp16_width_{2,3,4,8}.log.
+- An owned SGLang server using the clean candidate library retained xhigh,
+  131072 context and pool, temperature=1, top_p=.95, top_k=20, seed=42 and
+  uncapped reasoning. lower_bound_served.json records 286 input tokens,
+  8192 reasoning-only output tokens, finish_reason=length, 27.88 decode
+  tok/s and 2.299066 s TTFT. This task did not produce a final answer.
+- The server was stopped after this request. Existing MLX-LM reference CLI
+  then used the same prompt/sampling/thinking level. It also exhausted
+  16384 tokens in analysis at 18.014 tok/s, peak 16.575 GB. Receipt
+  lower_bound_mlx_reference.log. No concurrent GPU benchmark ran with it.
