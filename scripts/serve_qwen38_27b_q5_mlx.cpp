@@ -353,13 +353,14 @@ Options ParseOptions(int argc, char** argv) {
 
 std::vector<std::pair<std::string, std::string>> ProductionEnvironment(
     const Options& options) {
+  const bool q4_mtp = options.profile == "q4" && options.mtp_prompt_cache;
   std::vector<std::pair<std::string, std::string>> environment{
       {"PYTHONPATH", (options.repository / "python").string()},
       {"MLX_PREFIX", options.mlx_prefix.string()},
       {"SGLANG_USE_MLX", "1"},
       {"SGLANG_USE_MLX_NATIVE_GRAPH", "1"},
       {"SGLANG_MLX_CLEAR_CACHE_STEPS", "0"},
-      {"SGLANG_MLX_CACHE_LIMIT_GB", "0"},
+      {"SGLANG_MLX_CACHE_LIMIT_GB", q4_mtp ? "1" : "0"},
       {"MLX_SDPA_BLOCKS", "64"},
       {"MLX_MAX_MB_PER_BUFFER", "256"},
       {"MLX_MAX_OPS_PER_BUFFER", options.profile == "q5" ? "200" : "100"},
@@ -375,7 +376,7 @@ std::vector<std::pair<std::string, std::string>> ProductionEnvironment(
       {"SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS", "1"},
       {"SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO", "1"},
       {"SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO_SCALAR_INPUTS",
-       options.profile == "q4" ? "1" : "0"},
+       options.profile == "q4" && !q4_mtp ? "1" : "0"},
       {"SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING", "1"},
       {"SGLANG_MLX_NATIVE_FIXED_PREFILL_ATTENTION", "1"},
       {"SGLANG_MLX_NATIVE_ATTN_CACHE_BITS", "8"},
@@ -386,6 +387,10 @@ std::vector<std::pair<std::string, std::string>> ProductionEnvironment(
       {"SGLANG_MLX_NATIVE_POST_GROWTH_MTP_PREFILL_CHUNK_SIZE", "256"},
       {"SGLANG_MLX_NATIVE_MTP_POST_NORM_SEED", "1"},
       {"SGLANG_MLX_NATIVE_MTP_BLOCK_SIZE", "2"},
+      {"SGLANG_MLX_NATIVE_ASYNC_VERIFY", q4_mtp ? "1" : "0"},
+      {"SGLANG_MLX_NATIVE_VERIFY_FUSED_NORMS", q4_mtp ? "1" : "0"},
+      {"SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT", q4_mtp ? "1" : "0"},
+      {"SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY", q4_mtp ? "1" : "0"},
       {"SGLANG_MLX_NATIVE_TWO_TOKEN_CAUSAL_CONV", "1"},
       {"SGLANG_MLX_NATIVE_MTP_COMMITTED_HISTORY", "1"},
       {"SGLANG_MLX_NATIVE_MTP_PROMPT_CACHE", options.mtp_prompt_cache ? "1" : "0"},
@@ -405,6 +410,11 @@ const std::vector<std::string>& ClearedEnvironment() {
       "SGLANG_MLX_NATIVE_TRACE_SPEC",
       "SGLANG_MLX_NATIVE_TRACE_QMM",
       "SGLANG_MLX_NATIVE_TWO_TOKEN_CAUSAL_CONV",
+      "SGLANG_MLX_NATIVE_Q4_PREPARED_INPUTS",
+      "SGLANG_MLX_NATIVE_Q8_VECTOR_ATTENTION",
+      "SGLANG_MLX_NATIVE_Q8_TILED_ATTENTION",
+      "SGLANG_MLX_NATIVE_Q8_DEQUANT_SDPA",
+      "SGLANG_MLX_NATIVE_Q8_SEGMENTED_MATMUL",
       "SGLANG_MLX_NATIVE_SMALL_BATCH_QMM",
       "SGLANG_MLX_NATIVE_M8_KSPLIT_QMM",
       "SGLANG_MLX_NATIVE_Q5_MULTIROW_QMV",

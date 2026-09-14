@@ -2198,3 +2198,5 @@ launcher's zero allocation-cache budget improve 20.62521 -> 22.22613 tok/s,
 with exact sampled IDs and final target/MTP states. The resident C++ benchmark
 now rejects parity mismatches. Thirty tok/s and combined full-context served
 qualification remain open. See the latest experiment-log entry.
+
+The C++ launcher now selects the validated asynchronous/cache/fused-normalization/commit-tape configuration for `--profile q4 --mtp-prompt-cache`. Q5 and Q4 target-only behavior is unchanged. The selected Q4 MTP native source replay is approximately 24.28 tok/s, exact sampled IDs and final target/MTP state preserved. Thirty tok/s and natural-stop served full-context qualification remain open. Unqualified inherited kernel probes are cleared by the launcher.
