@@ -36,6 +36,37 @@ void Require(bool condition, std::string_view message) {
   if (!condition) throw std::runtime_error(std::string(message));
 }
 
+void CheckProfile(const Options& options, bool optimized) {
+  const auto values = ProductionEnvironment(options);
+  const auto get = [&](std::string_view name) -> std::string_view {
+    for (const auto& [key, value] : values) {
+      if (key == name) return value;
+    }
+    throw std::runtime_error("missing launcher environment entry " + std::string(name));
+  };
+  for (std::string_view name : {"SGLANG_MLX_CACHE_LIMIT_GB",
+       "SGLANG_MLX_NATIVE_ASYNC_VERIFY", "SGLANG_MLX_NATIVE_VERIFY_FUSED_NORMS",
+       "SGLANG_MLX_NATIVE_DFLASH_TAPE_COMMIT", "SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY"}) {
+    Require(get(name) == (optimized ? "1" : "0"), "incorrect optimized profile setting");
+  }
+  Require(get("SGLANG_MLX_NATIVE_SAMPLING") == "1", "sampling disabled");
+  Require(get("SGLANG_MLX_NATIVE_MTP_BLOCK_SIZE") == "2", "speculation width changed");
+  const auto args = ServerArguments(options);
+  for (std::string_view name : {"--context-length", "--max-total-tokens"}) {
+    const auto option = std::find(args.begin(), args.end(), name);
+    Require(option != args.end() && std::next(option) != args.end() &&
+                *std::next(option) == "131072", "context capacity changed");
+  }
+  const auto& cleared = ClearedEnvironment();
+  for (std::string_view name : {"SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS",
+       "SGLANG_MLX_NATIVE_Q4_PREPARED_INPUTS", "SGLANG_MLX_NATIVE_Q8_VECTOR_ATTENTION",
+       "SGLANG_MLX_NATIVE_Q8_TILED_ATTENTION", "SGLANG_MLX_NATIVE_Q8_DEQUANT_SDPA",
+       "SGLANG_MLX_NATIVE_Q8_SEGMENTED_MATMUL"}) {
+    Require(std::find(cleared.begin(), cleared.end(), name) != cleared.end(),
+            "unqualified inherited environment setting was retained");
+  }
+}
+
 void RequireFailure(const fs::path& python, std::string_view expected) {
   try {
     (void)ResolveMlxPrefix(python);
@@ -92,6 +123,7 @@ int main() {
     Require(two_token_convolution,
             "Q5 launcher did not select two-token convolution");
     Require(q5_mtp, "Q5 launcher did not select MTP");
+    CheckProfile(options, false);
     Options q4_options;
     q4_options.profile = "q4";
     bool q4_ops_per_buffer = false;
@@ -110,7 +142,9 @@ int main() {
     Require(q4_two_token_convolution,
             "Q4 launcher did not select two-token convolution");
     Require(!q4_mtp, "Q4 launcher did not select target-only mode");
+    CheckProfile(q4_options, false);
     q4_options.mtp_prompt_cache = true;
+    CheckProfile(q4_options, true);
     bool q4_cached_mtp = false;
     bool q4_prompt_cache = false;
     for (const auto& [name, value] : ProductionEnvironment(q4_options)) {
