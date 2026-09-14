@@ -1545,14 +1545,14 @@ constexpr const char* kFixedQ8AttentionSource = R"(
                 const uint dimension = dimension_start +
                     dimension_quad * 4 + element;
                 key_stage[key_row * 16 + dimension_quad * 4 + element] =
-                    sglang_attention_dequantize_q8(
+                    token < last_key ? sglang_attention_dequantize_q8(
                         key_cache,
                         key_scales,
                         key_biases,
                         kv_head,
                         token,
                         dimension,
-                        capacity);
+                        capacity) : static_cast<Activation>(0.0f);
               }
               simdgroup_barrier(mem_flags::mem_threadgroup);
               ActivationMatrix key_low;
@@ -1670,14 +1670,14 @@ constexpr const char* kFixedQ8AttentionSource = R"(
                 const uint token = key_start + key_block + key_row;
                 const uint dimension = simd_id * 64 +
                     output_block * 8 + output_column;
-                value_stage[index] = sglang_attention_dequantize_q8(
+                value_stage[index] = token < last_key ? sglang_attention_dequantize_q8(
                     value_cache,
                     value_scales,
                     value_biases,
                     kv_head,
                     token,
                     dimension,
-                    capacity);
+                    capacity) : static_cast<Activation>(0.0f);
               }
               simdgroup_barrier(mem_flags::mem_threadgroup);
               ActivationMatrix value_fragment;
