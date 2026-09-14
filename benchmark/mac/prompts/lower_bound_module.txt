@@ -1,0 +1,15 @@
+Repair this Rust function for use in a sorted event-time index. Return a complete Rust source file in one code block, containing the corrected public function and executable unit tests. The file must run with rustc --test. Preserve the signature and O(log n) comparisons. The result is the first index i for which xs[i] >= needle, or xs.len() when every value is smaller. Cover empty input, singleton input, duplicates, insertion before and after the slice, and i64::MIN and i64::MAX.
+
+pub fn lower_bound(xs: &[i64], needle: i64) -> usize {
+    let mut lo = 0usize;
+    let mut hi = xs.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if xs[mid] < needle {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}

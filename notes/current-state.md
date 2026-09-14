@@ -2216,3 +2216,7 @@ acceptance are still open. Receipts and the inherited-work backup are in
 ## 2026-09-14 — Latest Q4 width-three improvement
 
 The opt-in three-row Q4 verifier now averages 28.925198 tok/s versus 23.006654 in five paired sampled replays, with identical output and final target/MTP states. Both activation-format suites pass. The selected FP16 width-two profile is unchanged. A separate eight-value-fragment candidate screens at 31.519469 tok/s but still needs numerical and completed-work validation. The combined completed-work and populated-131k target remains open. Receipts are in `/Users/dcazares/.cache/sglang-qwen38/20260914-next`.
+
+## 2026-09-14 — Completed-work gate now has a passing task
+
+The clean `eb3023cc01` FP16 Q4 width-two runtime naturally completed an xhigh Rust repair with 12,277 output tokens and passed all model-authored tests plus 632,060 independent oracle cases. It averaged 24.665 decode tok/s, so useful-work correctness passes on this task while the requested throughput and populated-131K gates remain open. A query-aware page-selection experiment is under measurement and is not promoted. Details and reproducible prompt are recorded in the latest experiment-log entry.
