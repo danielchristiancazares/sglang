@@ -25607,3 +25607,71 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
   only ~1%; 131072 entries retains IDs/state in the width-three replay and
   improves ~28.92 -> 29.60 except one slower sample. Still artifact-only,
   without production selection or completed-work qualification.
+
+### 2026-09-14 - Bounded SDPA for full-context prefill
+
+- Added explicit SGLANG_MLX_NATIVE_PREFILL_SDPA=1, default off. Queries of
+  at least 16 use active-prefix dense SDPA. Q8 caches are decoded only through
+  their active extent. Query tiles cap a hypothetical FP32 score product at
+  192 MiB, synchronize their temporary work, and preserve each tile's causal
+  endpoint. Stored cache precision, weight codes and context capacity do not change.
+- A new independent FP32 grouped-matmul/causal-softmax/PV oracle checks both
+  dense and Q8 paths, BF16 and FP16, sharp queries, partial cache tails filled
+  with NaN coefficients, query/tile boundaries, 1024-token prefix-zero batches,
+  16k/65k/131k active history. Both suites pass. These are numerical tolerances,
+  not a claim of bit-identical attention reductions.
+- A separate 1024-query / 131072-active-token Q8 capacity invocation completes
+  with finite output and MLX peak 2573353028 bytes including fixture inputs.
+  Receipt bounded_prefill_capacity.log. It is a component memory gate, not
+  full-model 131k decode qualification.
+- Five paired 256-query component trials, 16384 active tokens, improve about
+  149.4 -> 15.34 ms. At 131064/131072 active/reserved tokens, the bounded
+  implementation improves about 1103 -> 485.7 ms. An earlier unbounded path
+  reached ~184 ms but its 1024-query stress timed out; only the bounded path
+  is integrated. Max component difference to the existing path is below 1e-5
+  for these timing fixtures. Independent sharp-query tests report their errors.
+- Two complete alternating cold full-model pairs on the real 11455-token
+  source-review prompt, original Q4 and MTP width two:
+  control 112.345828166 / 111.752497167 seconds;
+  candidate 84.633189083 / 84.729800417 seconds.
+  This reduces cold prompt latency by approximately 24.4%. All 81 sampled
+  tokens match in every trial, including first token and 16 warmup + 64 timed
+  decode tokens. Target and MTP states differ numerically across arms and
+  repeat identically within each arm. Decode rates over these short windows
+  are control 28.358662113 / 28.081778164 and candidate 27.617164119 /
+  27.556150500 tok/s; no decode speedup is claimed for prefill SDPA.
+  Full-model peak reaches 22487547280 bytes. Cold-cache treatment is reset(),
+  clear_cache(), and an assertion that zero prompt tokens were reused.
+- Added bench_qwen38_cold_prefill.cpp. Repeats must preserve each arm's sampled
+  sequence and final states independently; across-arm numerical differences
+  are reported. Full-model comparison currently has two pairs, so the flag
+  remains experimental/off pending a five-pair independent-window qualification
+  and completed-work quality tests. Production native library is unchanged.
+- Artifacts in ~/.cache/sglang-qwen38/20260914-attention-continuation:
+  bounded_prefill_oracle_{bfloat16,float16}.log, bounded_prefill_capacity.log,
+  bounded_prefill_256_{16384_16384,131064_131072}.log,
+  bounded_cold_11455.log, libqwen38_bounded_prefill.dylib.
+
+### 2026-09-14 - Wider verification and long-cache alternatives
+
+- Generic shared-weight Q4 kernels for 2..8 rows were tested as artifact-only
+  probes. Values-per-lane=16 matches serial MLX projections exactly; narrower
+  fragments change a small number of rounded outputs. Width-four exact runs
+  reach only ~21.50 tok/s, narrower ~26.88; width-six narrower ~22.23 and
+  width-eight narrower ~14.26. These fail to beat the width-two/three choices.
+  Width-six/eight change sampled trajectories. Nothing is selected or installed.
+- Prior M3 eight-value-fragment arithmetic was evaluated against a CPU
+  long-double oracle across K=512,5120,17408 and three input patterns in both
+  activation formats. The initial FP32-only error bound rejected both control
+  and candidate equally. Existing MLX-compatible four-value bias input sums
+  round in activation precision; adding the corresponding gamma_3 bound
+  accounts for that existing arithmetic. The activation-aware independent
+  envelope and candidate-vs-control RMS gate pass; it still is not bit exact.
+  Receipts numeric_diagnostic_*.log and numeric_activation_bound_*.log preserve
+  both the rejected initial bound and the corrected arithmetic analysis.
+- Q8 shared-head vector, staged matrix K/V, padded SDPA/grouped SDPA/forced
+  fused, padded quantized matmul, and dense grouped matmul variants all fail
+  to produce a substantial 131k decode gain. Lowering affine KV to four or
+  two bits also fails to improve throughput and increases attention error.
+  All remain artifact-only. Original Q4 weight codes and production KV format
+  remain unchanged.

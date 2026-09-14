@@ -4180,6 +4180,34 @@ array quantized_embedding_rows(
       activation_dtype());
 }
 
+// Keep each score product below 192 MiB if the backend materializes it.
+// Synchronizing each query tile bounds temporary lifetimes across a long prefill.
+// Keep each score product below 192 MiB if the backend materializes it.
+// Synchronizing each query tile bounds temporary lifetimes across a long prefill.
+array bounded_prefill_sdpa(const array& queries, const array& keys,
+                           const array& values, int prefix_length) {
+  constexpr std::int64_t kScoreBudget = 192LL * 1024 * 1024;
+  const auto tokens = queries.shape()[2];
+  const auto extent = keys.shape()[2];
+  const auto bytes_per_query = static_cast<std::int64_t>(24) * extent * sizeof(float);
+  const int query_tile = std::min(256, std::max(1, static_cast<int>(kScoreBudget / bytes_per_query)));
+  if (tokens <= query_tile)
+    return mx::fast::scaled_dot_product_attention(queries, keys, values, 0.0625f, "causal");
+  std::vector<array> outputs;
+  outputs.reserve((tokens + query_tile - 1) / query_tile);
+  for (int start = 0; start < tokens; start += query_tile) {
+    const int end = std::min(tokens, start + query_tile);
+    const auto query = slice(queries, {0, 0, start, 0}, {1, 24, end, 256});
+    const mx::Shape active_keys{1, 4, prefix_length + end, 256};
+    auto attended = mx::fast::scaled_dot_product_attention(query,
+        slice(keys, {0, 0, 0, 0}, active_keys), slice(values, {0, 0, 0, 0}, active_keys),
+        0.0625f, "causal");
+    eval(attended);
+    outputs.push_back(std::move(attended));
+  }
+  return concatenate(outputs, 2);
+}
+
 array fixed_prefill_attention(
     const array& queries,
     const array& key_cache,
@@ -4212,6 +4240,12 @@ array fixed_prefill_attention(
       active_cache_length > cache_capacity ||
       cache_capacity % kKeyTile != 0) {
     throw std::runtime_error("unsupported fixed prefill attention shape");
+  }
+  if (const char* option = std::getenv("SGLANG_MLX_NATIVE_PREFILL_SDPA");
+      option != nullptr && std::string_view(option) == "1" && query_tokens >= 16) {
+    const mx::Shape active{1, kKeyValueHeads, active_cache_length, kHeadDimension};
+    return bounded_prefill_sdpa(queries,
+        slice(key_cache, {0, 0, 0, 0}, active), slice(value_cache, {0, 0, 0, 0}, active), prefix_length);
   }
   const int attention_rows = query_tokens * kHeadsPerKeyValue;
   const int query_tiles =
@@ -4285,6 +4319,17 @@ array fixed_q8_attention(
       active_cache_length > cache_capacity ||
       cache_capacity % kKeyTile != 0) {
     throw std::runtime_error("unsupported fixed Q8 attention shape");
+  }
+  if (const char* option = std::getenv("SGLANG_MLX_NATIVE_PREFILL_SDPA");
+      option != nullptr && std::string_view(option) == "1" && query_tokens >= 16) {
+    const auto active = [active_cache_length](const array& cache) {
+      return mx::slice(cache, {0, 0, 0, 0}, {1, 4, active_cache_length, cache.shape()[3]});
+    };
+    const auto keys = mx::dequantize(active(key_cache), active(key_scales), active(key_biases),
+        64, 8, "affine", std::nullopt, activation_dtype());
+    const auto values = mx::dequantize(active(value_cache), active(value_scales), active(value_biases),
+        64, 8, "affine", std::nullopt, activation_dtype());
+    return bounded_prefill_sdpa(queries, keys, values, prefix_length);
   }
   const char* segmented = std::getenv("SGLANG_MLX_NATIVE_Q8_SEGMENTED_MATMUL");
   constexpr int kSegmentTokens = 1024;
