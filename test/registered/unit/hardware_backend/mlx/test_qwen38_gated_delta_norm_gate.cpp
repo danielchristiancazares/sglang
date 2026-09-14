@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <cstddef>
 #include <iostream>
 #include <string_view>
@@ -67,9 +68,9 @@ bool CheckCase(int rows, int width) {
       out_values.data(), {rows, 1, width}, mx::float32);
   mx::array z = mx::astype(
       mx::array(z_values.data(), {rows, 1, width}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array weight = mx::astype(
-      mx::array(weight_values.data(), {width}, mx::float32), mx::bfloat16);
+      mx::array(weight_values.data(), {width}, mx::float32), sglang::mlx_qwen38::activation_dtype());
 
   mx::array actual = sglang::mlx_qwen38::gated_delta_norm_gate(
       recurrent_out, z, weight, 1e-6f);
@@ -85,7 +86,7 @@ bool CheckOutstandingOutputs() {
   mx::array recurrent_out(
       out_values.data(), {1, 1, kRows, kWidth}, mx::float32);
   mx::array weight = mx::astype(
-      mx::array(weight_values.data(), {kWidth}, mx::float32), mx::bfloat16);
+      mx::array(weight_values.data(), {kWidth}, mx::float32), sglang::mlx_qwen38::activation_dtype());
 
   std::vector<std::pair<mx::array, mx::array>> pending;
   pending.reserve(kOutstanding);
@@ -93,7 +94,7 @@ bool CheckOutstandingOutputs() {
     const auto z_values = MakeValues(kRows * kWidth, 47 + i * 2);
     mx::array z = mx::astype(
         mx::array(z_values.data(), {1, 1, kRows, kWidth}, mx::float32),
-        mx::bfloat16);
+        sglang::mlx_qwen38::activation_dtype());
     mx::array actual = sglang::mlx_qwen38::gated_delta_norm_gate(
         recurrent_out, z, weight, 1e-6f);
     pending.emplace_back(std::move(actual), Reference(recurrent_out, z, weight));

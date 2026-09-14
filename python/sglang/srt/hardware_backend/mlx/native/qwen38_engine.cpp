@@ -27,6 +27,42 @@
 
 namespace sglang {
 namespace mlx_qwen38 {
+// Kernel factories and request state share one immutable process-wide format.
+// Keep BF16 as the default; FP16 is an explicit numerical execution variant.
+mlx::core::Dtype activation_dtype() {
+  static const auto dtype = [] {
+    const char* value = std::getenv("SGLANG_MLX_NATIVE_ACTIVATION_DTYPE");
+    if (value == nullptr || std::string_view(value) == "bfloat16")
+      return mlx::core::bfloat16;
+    if (std::string_view(value) == "float16") return mlx::core::float16;
+    throw std::runtime_error(
+        "SGLANG_MLX_NATIVE_ACTIVATION_DTYPE must be bfloat16 or float16");
+  }();
+  return dtype;
+}
+
+ActivationConversion convert_activation_parameter(
+    const mlx::core::array& value, const std::string& name) {
+  namespace mx = mlx::core;
+  if (activation_dtype() != mx::float16 || value.dtype() != mx::bfloat16)
+    return {value, 0, 0.0f};
+  auto converted = mx::astype(value, mx::float16);
+  if (value.size() == 0) return {converted, 0, 0.0f};
+  if (value.size() > std::numeric_limits<std::uint32_t>::max())
+    throw std::runtime_error("FP16 parameter audit exceeds counter capacity: " + name);
+  auto before = mx::astype(value, mx::float32);
+  auto after = mx::astype(converted, mx::float32);
+  auto changed = mx::sum(mx::astype(mx::not_equal(before, after), mx::uint32));
+  auto error = mx::max(mx::abs(before - after));
+  auto finite = mx::all(mx::isfinite(before) && mx::isfinite(after));
+  mx::eval(converted, changed, error, finite);
+  // BF16 normal values in FP16 range are representable exactly. Only the
+  // smaller exponent range may round a tiny value by at most half an FP16 ULP.
+  if (!finite.item<bool>() || error.item<float>() > 0x1p-25f)
+    throw std::runtime_error("FP16 parameter is outside the supported range: " + name);
+  return {std::move(converted), changed.item<std::uint32_t>(), error.item<float>()};
+}
+
 namespace {
 
 using mlx::core::array;
@@ -48,6 +84,45 @@ using mlx::core::take;
 using mlx::core::transpose;
 using mlx::core::zeros;
 namespace mx = mlx::core;
+auto load_activation_safetensors(const std::string& path) {
+  auto loaded = mx::load_safetensors(path);
+  if (activation_dtype() == mx::bfloat16) return loaded;
+  std::uint64_t values = 0, changed = 0, packed_words = 0;
+  float maximum_error = 0.0f;
+  for (auto& [name, value] : loaded.first) {
+    // The language-only engine never consumes the checkpoint's vision tower.
+    if (name.starts_with("vision_tower")) continue;
+    if (value.dtype() == mx::uint32) {
+      packed_words += value.size();
+      continue;
+    }
+    if (value.dtype() != mx::bfloat16) continue;
+    const auto converted = convert_activation_parameter(value, name);
+    values += value.size();
+    changed += converted.changed_values;
+    maximum_error = std::max(maximum_error, converted.maximum_absolute_error);
+    value = converted.value;
+  }
+  std::fprintf(stderr,
+      "qwen38_fp16_parameters path=%s values=%llu changed=%llu max_abs=%.9g unchanged_packed_words=%llu\n",
+      path.c_str(), static_cast<unsigned long long>(values),
+      static_cast<unsigned long long>(changed), maximum_error,
+      static_cast<unsigned long long>(packed_words));
+  return loaded;
+}
+
+mx::fast::CustomKernelFunction activation_metal_kernel(
+    const std::string& name, const std::vector<std::string>& inputs,
+    const std::vector<std::string>& outputs, const std::string& source,
+    const std::string& header = "") {
+  const bool half = activation_dtype() == mx::float16;
+  const std::string prefix = half
+      ? "#include <metal_simdgroup_matrix>\nusing Activation = half;\nusing ActivationMatrix = simdgroup_half8x8;\n#define SGLANG_NATIVE_FP16 1\n"
+      : "#include <metal_simdgroup_matrix>\nusing Activation = bfloat;\nusing ActivationMatrix = simdgroup_bfloat8x8;\n#define SGLANG_NATIVE_FP16 0\n";
+  return mx::fast::metal_kernel(name + (half ? "_fp16" : ""), inputs, outputs,
+      source, prefix + header);
+}
+
 
 // cfg_ is Engine's first member, so this initializer runs before the MLX array
 // members can create the Metal device and cache its command-buffer limits.
@@ -128,10 +203,10 @@ bool native_q4_batch_three_qmv_enabled() {
 bool supports_q4_batch_three(const QLinear& linear, const array& x) {
   if (!linear.valid || linear.bits != 4 || linear.group_size != 64 ||
       x.ndim() != 3 || x.shape()[0] != 1 || x.shape()[1] != 3 ||
-      x.dtype() != mx::bfloat16 || linear.w.ndim() != 2 ||
+      x.dtype() != activation_dtype() || linear.w.ndim() != 2 ||
       linear.w.dtype() != mx::uint32 ||
-      linear.scales.dtype() != mx::bfloat16 ||
-      linear.biases.dtype() != mx::bfloat16) {
+      linear.scales.dtype() != activation_dtype() ||
+      linear.biases.dtype() != activation_dtype()) {
     return false;
   }
   const int k = x.shape()[2];
@@ -575,7 +650,7 @@ size_t apply_linear_attn_override(
 
   size_t replaced = 0;
   for (const std::string& shard : shards) {
-    auto loaded = mx::load_safetensors(shard);
+    auto loaded = load_activation_safetensors(shard);
     for (auto& kv : loaded.first) {
       if (!is_linear_attn_override_tensor(kv.first, scope)) {
         continue;
@@ -775,7 +850,11 @@ constexpr const char* kCausalConvDecodeSiluSource = R"(
         acc += static_cast<float>(qkv_base[0]) * weight_base[K - 1];
         InT conv_value = static_cast<InT>(acc);
         auto sigmoid_low =
+            #if SGLANG_NATIVE_FP16
+            1 / (1 + metal::exp(metal::abs(conv_value)));
+#else
             1 / (1 + metal::precise::exp(metal::abs(conv_value)));
+#endif
         InT sigmoid_value =
             (conv_value < 0) ? sigmoid_low : 1 - sigmoid_low;
         conv_out[batch * D + channel] =
@@ -813,7 +892,11 @@ constexpr const char* kCausalConvTwoTokenSiluSource = R"(
 
         InT first_value = static_cast<InT>(first_acc);
         auto first_sigmoid_low =
+            #if SGLANG_NATIVE_FP16
+            1 / (1 + metal::exp(metal::abs(first_value)));
+#else
             1 / (1 + metal::precise::exp(metal::abs(first_value)));
+#endif
         InT first_sigmoid =
             first_value < 0 ? first_sigmoid_low : 1 - first_sigmoid_low;
         conv_out[batch * 2 * D + channel] =
@@ -821,7 +904,11 @@ constexpr const char* kCausalConvTwoTokenSiluSource = R"(
 
         InT second_value = static_cast<InT>(second_acc);
         auto second_sigmoid_low =
+            #if SGLANG_NATIVE_FP16
+            1 / (1 + metal::exp(metal::abs(second_value)));
+#else
             1 / (1 + metal::precise::exp(metal::abs(second_value)));
+#endif
         InT second_sigmoid =
             second_value < 0 ? second_sigmoid_low : 1 - second_sigmoid_low;
         conv_out[(batch * 2 + 1) * D + channel] =
@@ -1074,10 +1161,10 @@ inline float sglang_attention_simd_sum_16(float value) {
   return value + simd_shuffle_xor(value, 1);
 }
 
-inline bfloat sglang_attention_dequantize_q8(
+inline Activation sglang_attention_dequantize_q8(
     device const uint* packed,
-    device const bfloat* scales,
-    device const bfloat* biases,
+    device const Activation* scales,
+    device const Activation* biases,
     uint kv_head,
     uint token,
     uint dimension,
@@ -1093,7 +1180,7 @@ inline bfloat sglang_attention_dequantize_q8(
   const uint quantized = (word >> shift) & 0xffu;
   const ulong parameter =
       row * (HeadDim / GroupSize) + dimension / GroupSize;
-  return static_cast<bfloat>(
+  return static_cast<Activation>(
       static_cast<float>(quantized) * static_cast<float>(scales[parameter]) +
       static_cast<float>(biases[parameter]));
 }
@@ -1181,9 +1268,9 @@ constexpr const char* kFixedPrefillAttentionSource = R"(
               const uint key_base =
                   (kv_head * capacity + key_start + simd_id * 16 +
                    key_half * 8) * HeadDim + dimension_start;
-              const device bfloat* key_run = key_cache + key_base;
-              simdgroup_bfloat8x8 key_low;
-              simdgroup_bfloat8x8 key_high;
+              const device Activation* key_run = key_cache + key_base;
+              ActivationMatrix key_low;
+              ActivationMatrix key_high;
               simdgroup_barrier(mem_flags::mem_none);
               simdgroup_load(key_low, key_run, HeadDim, 0, true);
               simdgroup_load(key_high, key_run + 8, HeadDim, 0, true);
@@ -1293,7 +1380,7 @@ constexpr const char* kFixedPrefillAttentionSource = R"(
                 simd_id * 64;
 #pragma unroll
             for (ushort output_block = 0; output_block < 8; ++output_block) {
-              simdgroup_bfloat8x8 value_fragment;
+              ActivationMatrix value_fragment;
               simdgroup_barrier(mem_flags::mem_none);
               simdgroup_load(
                   value_fragment,
@@ -1331,7 +1418,7 @@ constexpr const char* kFixedPrefillAttentionSource = R"(
                 kv_head * HeadsPerKv + attention_row % HeadsPerKv;
             const float denominator = shared_stats[2 * row + 1];
             output[(query_head * query_count + query_token) * HeadDim +
-                   dimension] = static_cast<bfloat>(
+                   dimension] = static_cast<Activation>(
                 denominator == 0.0f
                     ? 0.0f
                     : shared_output[index] / denominator);
@@ -1353,7 +1440,7 @@ constexpr const char* kFixedQ8AttentionSource = R"(
         threadgroup float shared_output[QueryTile * HeadDim];
         threadgroup float shared_scores[QueryTile * KeyTile];
         threadgroup float shared_stats[QueryTile * 2];
-        threadgroup bfloat shared_dequant[4 * 8 * 16];
+        threadgroup Activation shared_dequant[4 * 8 * 16];
 
         const ushort tid = thread_index_in_threadgroup;
         const ushort lane = thread_index_in_simdgroup;
@@ -1428,7 +1515,7 @@ constexpr const char* kFixedQ8AttentionSource = R"(
               make_filled_simdgroup_matrix<float, 8>(0.0f);
           simdgroup_float8x8 score_right =
               make_filled_simdgroup_matrix<float, 8>(0.0f);
-          threadgroup bfloat* key_stage =
+          threadgroup Activation* key_stage =
               shared_dequant + simd_id * 8 * 16;
           for (ushort dimension_start = 0; dimension_start < HeadDim;
                dimension_start += 16) {
@@ -1468,8 +1555,8 @@ constexpr const char* kFixedQ8AttentionSource = R"(
                         capacity);
               }
               simdgroup_barrier(mem_flags::mem_threadgroup);
-              simdgroup_bfloat8x8 key_low;
-              simdgroup_bfloat8x8 key_high;
+              ActivationMatrix key_low;
+              ActivationMatrix key_high;
               simdgroup_load(key_low, key_stage, 16, 0, true);
               simdgroup_load(key_high, key_stage + 8, 16, 0, true);
               simdgroup_barrier(mem_flags::mem_threadgroup);
@@ -1565,7 +1652,7 @@ constexpr const char* kFixedQ8AttentionSource = R"(
                 0,
                 false);
           }
-          threadgroup bfloat* value_stage =
+          threadgroup Activation* value_stage =
               shared_dequant + simd_id * 8 * 16;
           for (ushort key_block = 0; key_block < KeyTile; key_block += 8) {
             simdgroup_float8x8 probability_fragment;
@@ -1593,7 +1680,7 @@ constexpr const char* kFixedQ8AttentionSource = R"(
                     capacity);
               }
               simdgroup_barrier(mem_flags::mem_threadgroup);
-              simdgroup_bfloat8x8 value_fragment;
+              ActivationMatrix value_fragment;
               simdgroup_load(
                   value_fragment, value_stage, 8, 0, false);
               simdgroup_barrier(mem_flags::mem_threadgroup);
@@ -1663,8 +1750,8 @@ constexpr const char* kFixedQ8AttentionSource = R"(
 
 constexpr const char* kTiledQ8AttentionSource = R"(
   constexpr uint QTile = 8, KTile = 32, D = 256, HeadsPerKv = 6;
-  threadgroup bfloat qtile[QTile * D];
-  threadgroup bfloat kvtile[KTile * D];
+  threadgroup Activation qtile[QTile * D];
+  threadgroup Activation kvtile[KTile * D];
   threadgroup float scores[QTile * KTile];
   threadgroup float accumulated[QTile * D];
   threadgroup float stats[QTile * 2];
@@ -1687,7 +1774,7 @@ constexpr const char* kTiledQ8AttentionSource = R"(
   const uint last_key = min(causal_end, (split + 1) * tiles_per_split * KTile);
   for (uint i = tid; i < QTile * D; i += 128) {
     const uint r = row_start + i / D;
-    qtile[i] = r < rows ? query[((kv_head * HeadsPerKv + r % HeadsPerKv) * nq + r / HeadsPerKv) * D + i % D] : bfloat(0);
+    qtile[i] = r < rows ? query[((kv_head * HeadsPerKv + r % HeadsPerKv) * nq + r / HeadsPerKv) * D + i % D] : Activation(0);
     accumulated[i] = 0.0f;
   }
   if (tid < QTile) { stats[2 * tid] = -INFINITY; stats[2 * tid + 1] = 0.0f; }
@@ -1701,13 +1788,13 @@ constexpr const char* kTiledQ8AttentionSource = R"(
       const float bias = float(key_biases[row * (D / 64) + dimension / 64]);
       for (uint e = 0; e < 4; ++e)
         kvtile[pack * 4 + e] = token < last_key
-            ? bfloat(float((code >> (8 * e)) & 255) * scale + bias)
-            : bfloat(0);
+            ? Activation(float((code >> (8 * e)) & 255) * scale + bias)
+            : Activation(0);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     simdgroup_float8x8 score = make_filled_simdgroup_matrix<float, 8>(0.0f);
     for (uint dimension = 0; dimension < D; dimension += 8) {
-      simdgroup_bfloat8x8 q, k;
+      ActivationMatrix q, k;
       simdgroup_load(q, qtile + dimension, D, 0, false);
       simdgroup_load(k, kvtile + sg * 8 * D + dimension, D, 0, true);
       simdgroup_multiply_accumulate(score, q, k, score);
@@ -1748,8 +1835,8 @@ constexpr const char* kTiledQ8AttentionSource = R"(
       const float bias = float(value_biases[row * (D / 64) + dimension / 64]);
       for (uint e = 0; e < 4; ++e)
         kvtile[pack * 4 + e] = token < last_key
-            ? bfloat(float((code >> (8 * e)) & 255) * scale + bias)
-            : bfloat(0);
+            ? Activation(float((code >> (8 * e)) & 255) * scale + bias)
+            : Activation(0);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     simdgroup_float8x8 outputs[8];
@@ -1759,7 +1846,7 @@ constexpr const char* kTiledQ8AttentionSource = R"(
       simdgroup_float8x8 probability;
       simdgroup_load(probability, scores + key, KTile, 0, false);
       for (uint block = 0; block < 8; ++block) {
-        simdgroup_bfloat8x8 value;
+        ActivationMatrix value;
         simdgroup_load(value, kvtile + key * D + sg * 64 + block * 8, D, 0, false);
         simdgroup_multiply_accumulate(outputs[block], probability, value, outputs[block]);
       }
@@ -1840,7 +1927,7 @@ constexpr const char* kReduceQ8DecodeSource = R"(
                 (ulong(split) * QueryHeads + query_head) * PartialStride;
             value += partials[partial_base + tid] * split_scales[split];
           }
-          output[query_head * HeadDim + tid] = static_cast<bfloat>(
+          output[query_head * HeadDim + tid] = static_cast<Activation>(
               denominator == 0.0f ? 0.0f : value / denominator);
         }
 )";
@@ -1957,6 +2044,11 @@ inline U sglang_q4_dot(
 
 template <typename T>
 inline T sglang_q4_sigmoid(T x) {
+#if SGLANG_NATIVE_FP16
+  // MLX's half sigmoid uses the half overload of exp. The precise overload
+  // promotes its result and changes the intermediate rounding boundaries.
+  auto y = 1 / (1 + metal::exp(metal::abs(x)));
+#else
   // Fast exp differs from precise exp at only BF16 -6.84375 (0xc0db).
   constexpr ushort FastMismatchInput = 0xc0db;
   constexpr ushort PreciseSigmoidResult = 0x3a8b;
@@ -1965,6 +2057,7 @@ inline T sglang_q4_sigmoid(T x) {
     return as_type<T>(PreciseSigmoidResult);
   }
   auto y = 1 / (1 + metal::exp(metal::abs(x)));
+#endif
   return (x < 0) ? y : 1 - y;
 }
 )";
@@ -1991,26 +2084,26 @@ constexpr const char* kAffineQ4BatchOneQmvSource = R"(
             reinterpret_cast<const device uchar*>(w) +
             output_start * WeightRowBytes +
             thread_index_in_simdgroup * PacksPerThread * 4;
-        const device bfloat* scale_cursor =
+        const device Activation* scale_cursor =
             scales + output_start * GroupsPerRow +
             thread_index_in_simdgroup / ScaleStep;
-        const device bfloat* bias_cursor =
+        const device Activation* bias_cursor =
             biases + output_start * GroupsPerRow +
             thread_index_in_simdgroup / ScaleStep;
-        const device bfloat* input_cursor =
+        const device Activation* input_cursor =
             x + thread_index_in_simdgroup * ValuesPerThread;
 
         for (int k = 0; k < InputFeatures; k += BlockSize) {
           const float sum =
-              sglang_q4_load_vector<bfloat, float, ValuesPerThread>(
+              sglang_q4_load_vector<Activation, float, ValuesPerThread>(
                   input_cursor, input_values);
 
           for (int row = 0; row < ResultsPerSimdgroup; ++row) {
             const device uchar* row_weights =
                 weight_cursor + row * WeightRowBytes;
-            const device bfloat* row_scale =
+            const device Activation* row_scale =
                 scale_cursor + row * GroupsPerRow;
-            const device bfloat* row_bias =
+            const device Activation* row_bias =
                 bias_cursor + row * GroupsPerRow;
             const float scale = row_scale[0];
             const float bias = row_bias[0];
@@ -2027,7 +2120,7 @@ constexpr const char* kAffineQ4BatchOneQmvSource = R"(
         for (int row = 0; row < ResultsPerSimdgroup; ++row) {
           results[row] = simd_sum(results[row]);
           if (thread_index_in_simdgroup == 0) {
-            y[output_start + row] = static_cast<bfloat>(results[row]);
+            y[output_start + row] = static_cast<Activation>(results[row]);
           }
         }
 )";
@@ -2051,11 +2144,11 @@ constexpr const char* kAffineQ4BatchThreeSource = R"(
         for (int k = 0; k < KConst; k += 512) {
           thread float input0[Values], input1[Values], input2[Values];
           float2 sum01;
-          sum01.x = sglang_q4_load_vector<bfloat, float, Values>(
+          sum01.x = sglang_q4_load_vector<Activation, float, Values>(
               x + k + lane * Values, input0);
-          sum01.y = sglang_q4_load_vector<bfloat, float, Values>(
+          sum01.y = sglang_q4_load_vector<Activation, float, Values>(
               x + KConst + k + lane * Values, input1);
-          const float sum2 = sglang_q4_load_vector<bfloat, float, Values>(
+          const float sum2 = sglang_q4_load_vector<Activation, float, Values>(
               x + 2 * KConst + k + lane * Values, input2);
           thread float2 inputs01[Values];
 #pragma unroll
@@ -2095,9 +2188,9 @@ constexpr const char* kAffineQ4BatchThreeSource = R"(
           const float r1 = simd_sum(result01[row].y);
           const float r2 = simd_sum(result2[row]);
           if (lane == 0) {
-            y[start + row] = bfloat(r0);
-            y[NConst + start + row] = bfloat(r1);
-            y[2 * NConst + start + row] = bfloat(r2);
+            y[start + row] = Activation(r0);
+            y[NConst + start + row] = Activation(r1);
+            y[2 * NConst + start + row] = Activation(r2);
           }
         }
 )";
@@ -2128,21 +2221,21 @@ constexpr const char* kAffineQ4BatchTwoQmvSource = R"(
         const device uchar* weight_cursor =
             reinterpret_cast<const device uchar*>(w) +
             output_start * WeightRowBytes + lane * PacksPerThread * 4;
-        const device bfloat* scale_cursor =
+        const device Activation* scale_cursor =
             scales + output_start * GroupsPerRow + lane / ScaleStep;
-        const device bfloat* bias_cursor =
+        const device Activation* bias_cursor =
             biases + output_start * GroupsPerRow + lane / ScaleStep;
-        const device bfloat* input0_cursor =
+        const device Activation* input0_cursor =
             x + lane * ValuesPerThread;
-        const device bfloat* input1_cursor =
+        const device Activation* input1_cursor =
             x + InputFeatures + lane * ValuesPerThread;
 
         for (int k = 0; k < InputFeatures; k += BlockSize) {
           const float sum0 =
-              sglang_q4_load_vector<bfloat, float, ValuesPerThread>(
+              sglang_q4_load_vector<Activation, float, ValuesPerThread>(
                   input0_cursor, input0_values);
           const float sum1 =
-              sglang_q4_load_vector<bfloat, float, ValuesPerThread>(
+              sglang_q4_load_vector<Activation, float, ValuesPerThread>(
                   input1_cursor, input1_values);
 
 #pragma unroll
@@ -2187,9 +2280,9 @@ constexpr const char* kAffineQ4BatchTwoQmvSource = R"(
           const float result1 = simd_sum(results1[row]);
           if (lane == 0) {
             y[output_start + row] =
-                static_cast<bfloat>(result0);
+                static_cast<Activation>(result0);
             y[OutputFeatures + output_start + row] =
-                static_cast<bfloat>(result1);
+                static_cast<Activation>(result1);
           }
         }
 )";
@@ -2221,32 +2314,32 @@ constexpr const char* kAffineQ4FusedSwiGluSource = R"(
             reinterpret_cast<const device uchar*>(up_w) +
             output_start * WeightRowBytes +
             thread_index_in_simdgroup * PacksPerThread * 4;
-        const device bfloat* gate_scale_cursor =
+        const device Activation* gate_scale_cursor =
             gate_scales + output_start * GroupsPerRow +
             thread_index_in_simdgroup / ScaleStep;
-        const device bfloat* gate_bias_cursor =
+        const device Activation* gate_bias_cursor =
             gate_biases + output_start * GroupsPerRow +
             thread_index_in_simdgroup / ScaleStep;
-        const device bfloat* up_scale_cursor =
+        const device Activation* up_scale_cursor =
             up_scales + output_start * GroupsPerRow +
             thread_index_in_simdgroup / ScaleStep;
-        const device bfloat* up_bias_cursor =
+        const device Activation* up_bias_cursor =
             up_biases + output_start * GroupsPerRow +
             thread_index_in_simdgroup / ScaleStep;
-        const device bfloat* input_cursor =
+        const device Activation* input_cursor =
             x + thread_index_in_simdgroup * ValuesPerThread;
 
         for (int k = 0; k < InputFeatures; k += BlockSize) {
           const float sum =
-              sglang_q4_load_vector<bfloat, float, ValuesPerThread>(
+              sglang_q4_load_vector<Activation, float, ValuesPerThread>(
                   input_cursor, input_values);
 
           for (int row = 0; row < ResultsPerSimdgroup; ++row) {
             const device uchar* row_weights =
                 gate_weight_cursor + row * WeightRowBytes;
-            const device bfloat* row_scale =
+            const device Activation* row_scale =
                 gate_scale_cursor + row * GroupsPerRow;
-            const device bfloat* row_bias =
+            const device Activation* row_bias =
                 gate_bias_cursor + row * GroupsPerRow;
             const float scale = row_scale[0];
             const float bias = row_bias[0];
@@ -2257,9 +2350,9 @@ constexpr const char* kAffineQ4FusedSwiGluSource = R"(
           for (int row = 0; row < ResultsPerSimdgroup; ++row) {
             const device uchar* row_weights =
                 up_weight_cursor + row * WeightRowBytes;
-            const device bfloat* row_scale =
+            const device Activation* row_scale =
                 up_scale_cursor + row * GroupsPerRow;
-            const device bfloat* row_bias =
+            const device Activation* row_bias =
                 up_bias_cursor + row * GroupsPerRow;
             const float scale = row_scale[0];
             const float bias = row_bias[0];
@@ -2290,13 +2383,13 @@ constexpr const char* kAffineQ4FusedSwiGluSource = R"(
               : row == 1               ? up_results[1]
               : row == 2               ? up_results[2]
                                        : up_results[3];
-          const bfloat gate_value = static_cast<bfloat>(gate_result);
-          const bfloat up_value = static_cast<bfloat>(up_result);
-          const bfloat sigmoid_value = sglang_q4_sigmoid(gate_value);
-          const bfloat silu_value =
-              static_cast<bfloat>(gate_value * sigmoid_value);
+          const Activation gate_value = static_cast<Activation>(gate_result);
+          const Activation up_value = static_cast<Activation>(up_result);
+          const Activation sigmoid_value = sglang_q4_sigmoid(gate_value);
+          const Activation silu_value =
+              static_cast<Activation>(gate_value * sigmoid_value);
           y[output_start + row] =
-              static_cast<bfloat>(silu_value * up_value);
+              static_cast<Activation>(silu_value * up_value);
         }
 )";
 
@@ -2330,12 +2423,12 @@ constexpr const char* kAffineQ4FusedSwiGluRawParamsSource = R"(
         const device uint* parameter_cursor = params +
             ((output_start / ResultsPerSimdgroup) * GroupsPerRow +
              lane / ScaleStep) * ParameterWordsPerBundle;
-        const device bfloat* input_cursor =
+        const device Activation* input_cursor =
             x + lane * ValuesPerThread;
 
         for (int k = 0; k < InputFeatures; k += BlockSize) {
           const float sum =
-              sglang_q4_load_vector<bfloat, float, ValuesPerThread>(
+              sglang_q4_load_vector<Activation, float, ValuesPerThread>(
                   input_cursor, input_values);
           const uint4 gate_parameters =
               *reinterpret_cast<const device uint4*>(parameter_cursor);
@@ -2345,9 +2438,9 @@ constexpr const char* kAffineQ4FusedSwiGluRawParamsSource = R"(
           for (int row = 0; row < ResultsPerSimdgroup; ++row) {
             const uint code = gate_parameters[row];
             const float scale = static_cast<float>(
-                as_type<bfloat>(static_cast<ushort>(code)));
+                as_type<Activation>(static_cast<ushort>(code)));
             const float bias = static_cast<float>(
-                as_type<bfloat>(static_cast<ushort>(code >> 16)));
+                as_type<Activation>(static_cast<ushort>(code >> 16)));
             gate_results[row] += sglang_q4_dot<float, ValuesPerThread>(
                 gate_weight_cursor + row * WeightRowBytes,
                 input_values,
@@ -2359,9 +2452,9 @@ constexpr const char* kAffineQ4FusedSwiGluRawParamsSource = R"(
           for (int row = 0; row < ResultsPerSimdgroup; ++row) {
             const uint code = up_parameters[row];
             const float scale = static_cast<float>(
-                as_type<bfloat>(static_cast<ushort>(code)));
+                as_type<Activation>(static_cast<ushort>(code)));
             const float bias = static_cast<float>(
-                as_type<bfloat>(static_cast<ushort>(code >> 16)));
+                as_type<Activation>(static_cast<ushort>(code >> 16)));
             up_results[row] += sglang_q4_dot<float, ValuesPerThread>(
                 up_weight_cursor + row * WeightRowBytes,
                 input_values,
@@ -2391,13 +2484,13 @@ constexpr const char* kAffineQ4FusedSwiGluRawParamsSource = R"(
               : row == 1               ? up_results[1]
               : row == 2               ? up_results[2]
                                        : up_results[3];
-          const bfloat gate_value = static_cast<bfloat>(gate_result);
-          const bfloat up_value = static_cast<bfloat>(up_result);
-          const bfloat sigmoid_value = sglang_q4_sigmoid(gate_value);
-          const bfloat silu_value =
-              static_cast<bfloat>(gate_value * sigmoid_value);
+          const Activation gate_value = static_cast<Activation>(gate_result);
+          const Activation up_value = static_cast<Activation>(up_result);
+          const Activation sigmoid_value = sglang_q4_sigmoid(gate_value);
+          const Activation silu_value =
+              static_cast<Activation>(gate_value * sigmoid_value);
           y[output_start + row] =
-              static_cast<bfloat>(silu_value * up_value);
+              static_cast<Activation>(silu_value * up_value);
         }
 )";
 
@@ -2437,9 +2530,9 @@ constexpr const char* kAffineQ4FusedSwiGluBatchTwoRawParamsSource = R"(
         const device uint* parameter_cursor = params +
             ((output_start / ResultsPerSimdgroup) * GroupsPerRow +
              lane / ScaleStep) * ParameterWordsPerBundle;
-        const device bfloat* input0_cursor =
+        const device Activation* input0_cursor =
             x + lane * ValuesPerThread;
-        const device bfloat* input1_cursor =
+        const device Activation* input1_cursor =
             x + InputFeatures + lane * ValuesPerThread;
 
         for (int k = 0; k < InputFeatures; k += BlockSize) {
@@ -2449,9 +2542,9 @@ constexpr const char* kAffineQ4FusedSwiGluBatchTwoRawParamsSource = R"(
             // each operand before addition changes cancellation/rounding.
             thread float input0_values[ValuesPerThread];
             thread float input1_values[ValuesPerThread];
-            sum.x = sglang_q4_load_vector<bfloat, float, ValuesPerThread>(
+            sum.x = sglang_q4_load_vector<Activation, float, ValuesPerThread>(
                 input0_cursor, input0_values);
-            sum.y = sglang_q4_load_vector<bfloat, float, ValuesPerThread>(
+            sum.y = sglang_q4_load_vector<Activation, float, ValuesPerThread>(
                 input1_cursor, input1_values);
 #pragma unroll
             for (int index = 0; index < ValuesPerThread; ++index) {
@@ -2498,9 +2591,9 @@ constexpr const char* kAffineQ4FusedSwiGluBatchTwoRawParamsSource = R"(
           for (int row = 0; row < ResultsPerSimdgroup; ++row) {
             const uint code = gate_parameters[row];
             const float scale = static_cast<float>(
-                as_type<bfloat>(static_cast<ushort>(code)));
+                as_type<Activation>(static_cast<ushort>(code)));
             const float bias = static_cast<float>(
-                as_type<bfloat>(static_cast<ushort>(code >> 16)));
+                as_type<Activation>(static_cast<ushort>(code >> 16)));
             gate_results[row] +=
                 sglang_q4_dot<float2, ValuesPerThread>(
                     gate_weight_cursor + row * WeightRowBytes,
@@ -2514,9 +2607,9 @@ constexpr const char* kAffineQ4FusedSwiGluBatchTwoRawParamsSource = R"(
           for (int row = 0; row < ResultsPerSimdgroup; ++row) {
             const uint code = up_parameters[row];
             const float scale = static_cast<float>(
-                as_type<bfloat>(static_cast<ushort>(code)));
+                as_type<Activation>(static_cast<ushort>(code)));
             const float bias = static_cast<float>(
-                as_type<bfloat>(static_cast<ushort>(code >> 16)));
+                as_type<Activation>(static_cast<ushort>(code >> 16)));
             up_results[row] +=
                 sglang_q4_dot<float2, ValuesPerThread>(
                     up_weight_cursor + row * WeightRowBytes,
@@ -2553,22 +2646,22 @@ constexpr const char* kAffineQ4FusedSwiGluBatchTwoRawParamsSource = R"(
               : row == 1                 ? up_results[1]
               : row == 2                 ? up_results[2]
                                          : up_results[3];
-          const bfloat gate_value0 =
-              static_cast<bfloat>(gate_result.x);
-          const bfloat gate_value1 =
-              static_cast<bfloat>(gate_result.y);
-          const bfloat up_value0 = static_cast<bfloat>(up_result.x);
-          const bfloat up_value1 = static_cast<bfloat>(up_result.y);
-          const bfloat sigmoid_value0 = sglang_q4_sigmoid(gate_value0);
-          const bfloat sigmoid_value1 = sglang_q4_sigmoid(gate_value1);
-          const bfloat silu_value0 =
-              static_cast<bfloat>(gate_value0 * sigmoid_value0);
-          const bfloat silu_value1 =
-              static_cast<bfloat>(gate_value1 * sigmoid_value1);
+          const Activation gate_value0 =
+              static_cast<Activation>(gate_result.x);
+          const Activation gate_value1 =
+              static_cast<Activation>(gate_result.y);
+          const Activation up_value0 = static_cast<Activation>(up_result.x);
+          const Activation up_value1 = static_cast<Activation>(up_result.y);
+          const Activation sigmoid_value0 = sglang_q4_sigmoid(gate_value0);
+          const Activation sigmoid_value1 = sglang_q4_sigmoid(gate_value1);
+          const Activation silu_value0 =
+              static_cast<Activation>(gate_value0 * sigmoid_value0);
+          const Activation silu_value1 =
+              static_cast<Activation>(gate_value1 * sigmoid_value1);
           y[output_start + row] =
-              static_cast<bfloat>(silu_value0 * up_value0);
+              static_cast<Activation>(silu_value0 * up_value0);
           y[OutputFeatures + output_start + row] =
-              static_cast<bfloat>(silu_value1 * up_value1);
+              static_cast<Activation>(silu_value1 * up_value1);
         }
 )";
 
@@ -2585,8 +2678,8 @@ constexpr const char* kAffineSmallBatchQmmSource = R"(
         constexpr ushort WordsPerRow = KTile / ValuesPerWord;
         constexpr ushort QuantGroupsPerTile = KTile / 64;
 
-        threadgroup bfloat staged_x[RowTile * KTile];
-        threadgroup bfloat staged_w[OutputTile * KTile];
+        threadgroup Activation staged_x[RowTile * KTile];
+        threadgroup Activation staged_w[OutputTile * KTile];
         threadgroup float staged_scales[
             OutputTile * QuantGroupsPerTile];
         threadgroup float staged_biases[
@@ -2616,7 +2709,7 @@ constexpr const char* kAffineSmallBatchQmmSource = R"(
             const ushort column = index % KTile;
             staged_x[index] = row < M
                 ? x[row * K + k_start + column]
-                : static_cast<bfloat>(0.0f);
+                : static_cast<Activation>(0.0f);
           }
 
           if (tid < OutputTile * QuantGroupsPerTile) {
@@ -2649,19 +2742,19 @@ constexpr const char* kAffineSmallBatchQmmSource = R"(
                   (packed >> (value * Bits)) & ((1u << Bits) - 1u);
               staged_w[
                   output * KTile + word_column * ValuesPerWord + value] =
-                  static_cast<bfloat>(scale * quantized + bias);
+                  static_cast<Activation>(scale * quantized + bias);
             }
           }
 
           threadgroup_barrier(mem_flags::mem_threadgroup);
 
-          threadgroup const bfloat* input_tile = staged_x;
-          threadgroup const bfloat* weight_tile =
+          threadgroup const Activation* input_tile = staged_x;
+          threadgroup const Activation* weight_tile =
               staged_w + simd_id * 16 * KTile;
 #pragma unroll
           for (ushort k_step = 0; k_step < KTile / 8; ++k_step) {
-            simdgroup_bfloat8x8 input_fragment;
-            simdgroup_bfloat8x8 weight_fragment;
+            ActivationMatrix input_fragment;
+            ActivationMatrix weight_fragment;
             simdgroup_barrier(mem_flags::mem_none);
             simdgroup_load(
                 input_fragment, input_tile + k_step * 8, KTile, 0, false);
@@ -2698,7 +2791,7 @@ constexpr const char* kAffineSmallBatchQmmSource = R"(
           const ushort row = index / OutputTile;
           const ushort column = index % OutputTile;
           y[row * N + output_start + column] =
-              static_cast<bfloat>(staged_y[row * OutputTile + column]);
+              static_cast<Activation>(staged_y[row * OutputTile + column]);
         }
 )";
 
@@ -2724,11 +2817,11 @@ constexpr const char* kAffineQ5BatchOneQmvSource = R"(
         const device uchar* weight_ptr =
             reinterpret_cast<const device uchar*>(w) +
             output_start * WeightRowBytes + lane * PacksPerThread * 5;
-        const device bfloat* scale_ptr =
+        const device Activation* scale_ptr =
             scales + output_start * GroupsPerRow + lane / ScaleStep;
-        const device bfloat* bias_ptr =
+        const device Activation* bias_ptr =
             biases + output_start * GroupsPerRow + lane / ScaleStep;
-        const device bfloat* input_ptr = x + lane * ValuesPerThread;
+        const device Activation* input_ptr = x + lane * ValuesPerThread;
 
         float input_values[ValuesPerThread];
         float results[ResultsPerSimdgroup] = {0.0f};
@@ -2841,7 +2934,7 @@ constexpr const char* kAffineQ5BatchOneQmvSource = R"(
         for (ushort row = 0; row < ResultsPerSimdgroup; ++row) {
           const float result = simd_sum(results[row]);
           if (lane == 0) {
-            y[output_start + row] = static_cast<bfloat>(result);
+            y[output_start + row] = static_cast<Activation>(result);
           }
         }
 )";
@@ -2869,12 +2962,12 @@ constexpr const char* kAffineQ5BatchTwoQmvSource = R"(
         const device uchar* weight_ptr =
             reinterpret_cast<const device uchar*>(w) +
             output_start * WeightRowBytes + lane * PacksPerThread * 5;
-        const device bfloat* scale_ptr =
+        const device Activation* scale_ptr =
             scales + output_start * GroupsPerRow + lane / ScaleStep;
-        const device bfloat* bias_ptr =
+        const device Activation* bias_ptr =
             biases + output_start * GroupsPerRow + lane / ScaleStep;
-        const device bfloat* input0_ptr = x + lane * ValuesPerThread;
-        const device bfloat* input1_ptr =
+        const device Activation* input0_ptr = x + lane * ValuesPerThread;
+        const device Activation* input1_ptr =
             x + K + lane * ValuesPerThread;
 
         float2 input_values[ValuesPerThread];
@@ -2954,8 +3047,8 @@ constexpr const char* kAffineQ5BatchTwoQmvSource = R"(
           const float result0 = simd_sum(results[row].x);
           const float result1 = simd_sum(results[row].y);
           if (lane == 0) {
-            y[output_start + row] = static_cast<bfloat>(result0);
-            y[N + output_start + row] = static_cast<bfloat>(result1);
+            y[output_start + row] = static_cast<Activation>(result0);
+            y[N + output_start + row] = static_cast<Activation>(result1);
           }
         }
 )";
@@ -2976,8 +3069,8 @@ constexpr const char* kAffineM8KsplitQmmSource = R"(
         // Weight staging and cross-SIMDgroup reduction have disjoint
         // lifetimes. Reuse the 32 KiB staging allocation for FP32 partials.
         threadgroup float storage[StagedElements / 2];
-        threadgroup bfloat* staged_w =
-            reinterpret_cast<threadgroup bfloat*>(storage);
+        threadgroup Activation* staged_w =
+            reinterpret_cast<threadgroup Activation*>(storage);
         threadgroup float* partial = storage;
 
         const ushort tid = thread_position_in_threadgroup.x;
@@ -2988,8 +3081,8 @@ constexpr const char* kAffineM8KsplitQmmSource = R"(
         const uint k_begin = simd_id * KChunk;
         const uint k_end = k_begin + KChunk;
 
-        simdgroup_bfloat8x8 input_fragment;
-        simdgroup_bfloat8x8 weight_fragment;
+        ActivationMatrix input_fragment;
+        ActivationMatrix weight_fragment;
         simdgroup_float8x8 accumulators[4];
 #pragma unroll
         for (ushort output_step = 0; output_step < 4; ++output_step) {
@@ -3009,7 +3102,7 @@ constexpr const char* kAffineM8KsplitQmmSource = R"(
             const uint parameter = output * QuantGroups + k_base / 64;
             const float scale = static_cast<float>(scales[parameter]);
             const float bias = static_cast<float>(biases[parameter]);
-            threadgroup bfloat* destination =
+            threadgroup Activation* destination =
                 staged_w + simd_id * KTile * OutputTile +
                 pack_in_tile * 8 * OutputTile + output_column;
             if constexpr (Bits == 4) {
@@ -3020,7 +3113,7 @@ constexpr const char* kAffineM8KsplitQmmSource = R"(
                 const uint quantized =
                     (packed_word >> (value * 4)) & 0xfu;
                 destination[value * OutputTile] =
-                    static_cast<bfloat>(scale * quantized + bias);
+                    static_cast<Activation>(scale * quantized + bias);
               }
             } else {
               const uint byte0 = packed[0];
@@ -3041,7 +3134,7 @@ constexpr const char* kAffineM8KsplitQmmSource = R"(
 #pragma unroll
               for (ushort value = 0; value < 8; ++value) {
                 destination[value * OutputTile] =
-                    static_cast<bfloat>(scale * quantized[value] + bias);
+                    static_cast<Activation>(scale * quantized[value] + bias);
               }
             }
           }
@@ -3089,7 +3182,7 @@ constexpr const char* kAffineM8KsplitQmmSource = R"(
           const ushort row = offset / OutputTile;
           const ushort column = offset % OutputTile;
           y[row * N_size + output_start + column] =
-              static_cast<bfloat>(value);
+              static_cast<Activation>(value);
         }
 )";
 
@@ -3104,7 +3197,7 @@ compiled_compute_g() {
 }
 
 const mx::fast::CustomKernelFunction& gated_delta_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_gated_delta_step",
       {"q", "k", "v", "g", "beta", "state_in", "T"},
       {"y", "state_out"},
@@ -3114,7 +3207,7 @@ const mx::fast::CustomKernelFunction& gated_delta_metal() {
 }
 
 const mx::fast::CustomKernelFunction& gated_delta_tape_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_gated_delta_step_tape",
       {"q", "k", "v", "g", "beta", "state_in", "T"},
       {"y", "state_out", "delta_out"},
@@ -3124,7 +3217,7 @@ const mx::fast::CustomKernelFunction& gated_delta_tape_metal() {
 }
 
 const mx::fast::CustomKernelFunction& gated_delta_commit_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_gated_delta_commit",
       {"keys", "decay", "delta", "state_in", "T", "token_count"},
       {"state_out"},
@@ -3133,7 +3226,7 @@ const mx::fast::CustomKernelFunction& gated_delta_commit_metal() {
 }
 
 const mx::fast::CustomKernelFunction& causal_conv_decode_silu_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_causal_conv_decode_silu",
       {"state", "qkv", "weight"},
       {"conv_out", "next_state"},
@@ -3142,7 +3235,7 @@ const mx::fast::CustomKernelFunction& causal_conv_decode_silu_metal() {
 }
 
 const mx::fast::CustomKernelFunction& causal_conv_two_token_silu_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_causal_conv_two_token_silu",
       {"state", "qkv", "weight"},
       {"conv_out", "next_state"},
@@ -3151,7 +3244,7 @@ const mx::fast::CustomKernelFunction& causal_conv_two_token_silu_metal() {
 }
 
 const mx::fast::CustomKernelFunction& residual_rms_norm_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_residual_rms_norm",
       {"x", "residual", "weight", "eps"},
       {"residual_out", "norm_out"},
@@ -3160,7 +3253,7 @@ const mx::fast::CustomKernelFunction& residual_rms_norm_metal() {
 }
 
 const mx::fast::CustomKernelFunction& gated_delta_qk_norm_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_gated_delta_qk_norm",
       {"q", "k", "q_scale", "k_scale", "eps"},
       {"q_out", "k_out"},
@@ -3169,7 +3262,7 @@ const mx::fast::CustomKernelFunction& gated_delta_qk_norm_metal() {
 }
 
 const mx::fast::CustomKernelFunction& full_attn_qk_norm_rope_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_full_attn_qk_norm_rope",
       {"qg", "k", "q_weight", "k_weight", "eps", "log2_base", "rope_offset"},
       {"q_out", "k_out"},
@@ -3178,7 +3271,7 @@ const mx::fast::CustomKernelFunction& full_attn_qk_norm_rope_metal() {
 }
 
 const mx::fast::CustomKernelFunction& fixed_prefill_attention_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_fixed_prefill_attention",
       {"query",
        "key_cache",
@@ -3194,7 +3287,7 @@ const mx::fast::CustomKernelFunction& fixed_prefill_attention_metal() {
 }
 
 const mx::fast::CustomKernelFunction& fixed_q8_attention_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_fixed_q8_attention",
       {"query",
        "key_cache",
@@ -3215,7 +3308,7 @@ const mx::fast::CustomKernelFunction& fixed_q8_attention_metal() {
 }
 
 const mx::fast::CustomKernelFunction& tiled_q8_attention_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_tiled_q8_attention",
       {"query",
        "key_cache",
@@ -3236,7 +3329,7 @@ const mx::fast::CustomKernelFunction& tiled_q8_attention_metal() {
 }
 
 const mx::fast::CustomKernelFunction& reduce_q8_decode_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_reduce_q8_decode",
       {"partials", "active_cache_length", "key_splits", "query_tokens"},
       {"output"},
@@ -3246,7 +3339,7 @@ const mx::fast::CustomKernelFunction& reduce_q8_decode_metal() {
 }
 
 const mx::fast::CustomKernelFunction& gated_delta_norm_gate_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_gated_delta_norm_gate",
       {"recurrent_out", "z", "weight", "eps"},
       {"gated_out"},
@@ -3255,7 +3348,7 @@ const mx::fast::CustomKernelFunction& gated_delta_norm_gate_metal() {
 }
 
 const mx::fast::CustomKernelFunction& affine_q4_batch_one_qmv_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_affine_q4_batch_one_qmv",
       {"w", "scales", "biases", "x"},
       {"y"},
@@ -3265,7 +3358,7 @@ const mx::fast::CustomKernelFunction& affine_q4_batch_one_qmv_metal() {
 }
 
 const mx::fast::CustomKernelFunction& affine_q4_batch_two_qmv_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_affine_q4_batch_two_qmv",
       {"w", "scales", "biases", "x"},
       {"y"},
@@ -3275,7 +3368,7 @@ const mx::fast::CustomKernelFunction& affine_q4_batch_two_qmv_metal() {
 }
 
 const mx::fast::CustomKernelFunction& affine_q4_batch_three_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_affine_q4_batch_three",
       {"w", "scales", "biases", "x"}, {"y"},
       kAffineQ4BatchThreeSource, kAffineQ4BatchOneQmvHeader);
@@ -3283,7 +3376,7 @@ const mx::fast::CustomKernelFunction& affine_q4_batch_three_metal() {
 }
 
 const mx::fast::CustomKernelFunction& affine_q4_fused_swiglu_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_affine_q4_fused_swiglu",
       {"gate_w",
        "gate_scales",
@@ -3300,7 +3393,7 @@ const mx::fast::CustomKernelFunction& affine_q4_fused_swiglu_metal() {
 
 const mx::fast::CustomKernelFunction&
 affine_q4_fused_swiglu_raw_params_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_affine_q4_fused_swiglu_raw_params",
       {"gate_w", "up_w", "params", "x"},
       {"y"},
@@ -3311,7 +3404,7 @@ affine_q4_fused_swiglu_raw_params_metal() {
 
 const mx::fast::CustomKernelFunction&
 affine_q4_fused_swiglu_batch_two_raw_params_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_affine_q4_fused_swiglu_batch_two_raw_params",
       {"gate_w", "up_w", "params", "x"},
       {"y"},
@@ -3321,7 +3414,7 @@ affine_q4_fused_swiglu_batch_two_raw_params_metal() {
 }
 
 const mx::fast::CustomKernelFunction& affine_small_batch_qmm_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_affine_small_batch_qmm",
       {"w", "scales", "biases", "x", "K", "N", "M"},
       {"y"},
@@ -3331,7 +3424,7 @@ const mx::fast::CustomKernelFunction& affine_small_batch_qmm_metal() {
 }
 
 const mx::fast::CustomKernelFunction& affine_m8_ksplit_qmm_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_affine_m8_ksplit_qmm",
       {"w", "scales", "biases", "x", "N_size"},
       {"y"},
@@ -3341,7 +3434,7 @@ const mx::fast::CustomKernelFunction& affine_m8_ksplit_qmm_metal() {
 }
 
 const mx::fast::CustomKernelFunction& affine_q5_batch_one_qmv_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_affine_q5_batch_one_qmv",
       {"w", "scales", "biases", "x"},
       {"y"},
@@ -3351,7 +3444,7 @@ const mx::fast::CustomKernelFunction& affine_q5_batch_one_qmv_metal() {
 }
 
 const mx::fast::CustomKernelFunction& affine_q5_batch_two_qmv_metal() {
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_affine_q5_batch_two_qmv",
       {"w", "scales", "biases", "x"},
       {"y"},
@@ -3419,10 +3512,10 @@ bool prepare_fused_q4_raw_decode_parameters(
       gate.group_size != 64 || up.group_size != 64 ||
       gate.scales.ndim() != 2 || gate.biases.ndim() != 2 ||
       up.scales.ndim() != 2 || up.biases.ndim() != 2 ||
-      gate.scales.dtype() != mx::bfloat16 ||
-      gate.biases.dtype() != mx::bfloat16 ||
-      up.scales.dtype() != mx::bfloat16 ||
-      up.biases.dtype() != mx::bfloat16 ||
+      gate.scales.dtype() != activation_dtype() ||
+      gate.biases.dtype() != activation_dtype() ||
+      up.scales.dtype() != activation_dtype() ||
+      up.biases.dtype() != activation_dtype() ||
       gate.scales.shape() != gate.biases.shape() ||
       gate.scales.shape() != up.scales.shape() ||
       gate.scales.shape() != up.biases.shape()) {
@@ -3436,10 +3529,10 @@ bool prepare_fused_q4_raw_decode_parameters(
   }
 
   mx::eval(gate.scales, gate.biases, up.scales, up.biases);
-  const auto* gate_scales = gate.scales.data<mx::bfloat16_t>();
-  const auto* gate_biases = gate.biases.data<mx::bfloat16_t>();
-  const auto* up_scales = up.scales.data<mx::bfloat16_t>();
-  const auto* up_biases = up.biases.data<mx::bfloat16_t>();
+  const auto* gate_scales = gate.scales.data<std::uint16_t>();
+  const auto* gate_biases = gate.biases.data<std::uint16_t>();
+  const auto* up_scales = up.scales.data<std::uint16_t>();
+  const auto* up_biases = up.biases.data<std::uint16_t>();
   const std::uint64_t pair_count = gate.scales.size();
   if (pair_count >
           static_cast<std::uint64_t>(
@@ -3461,16 +3554,16 @@ bool prepare_fused_q4_raw_decode_parameters(
             static_cast<std::size_t>(output_start + row) * groups_per_row +
             group;
         packed[destination++] =
-            static_cast<std::uint32_t>(gate_scales[source].bits_) |
-            (static_cast<std::uint32_t>(gate_biases[source].bits_) << 16);
+            static_cast<std::uint32_t>(gate_scales[source]) |
+            (static_cast<std::uint32_t>(gate_biases[source]) << 16);
       }
       for (int row = 0; row < 4; ++row) {
         const std::size_t source =
             static_cast<std::size_t>(output_start + row) * groups_per_row +
             group;
         packed[destination++] =
-            static_cast<std::uint32_t>(up_scales[source].bits_) |
-            (static_cast<std::uint32_t>(up_biases[source].bits_) << 16);
+            static_cast<std::uint32_t>(up_scales[source]) |
+            (static_cast<std::uint32_t>(up_biases[source]) << 16);
       }
     }
   }
@@ -3823,9 +3916,9 @@ array dspark_confidence(
   if (hidden.ndim() != 3 || markov_embeddings.ndim() != 3 ||
       hidden.shape()[0] != markov_embeddings.shape()[0] ||
       hidden.shape()[1] != markov_embeddings.shape()[1] ||
-      hidden.dtype() != mx::bfloat16 ||
-      markov_embeddings.dtype() != mx::bfloat16 ||
-      weight.dtype() != mx::bfloat16 || bias.dtype() != mx::bfloat16 ||
+      hidden.dtype() != activation_dtype() ||
+      markov_embeddings.dtype() != activation_dtype() ||
+      weight.dtype() != activation_dtype() || bias.dtype() != activation_dtype() ||
       weight.shape() != mx::Shape{
           1, hidden.shape()[2] + markov_embeddings.shape()[2]} ||
       bias.shape() != mx::Shape{1}) {
@@ -3840,8 +3933,8 @@ array QLinear::operator()(const array& x) const {
   if (!valid) {
     throw std::runtime_error("QLinear used before load");
   }
-  if (w.dtype() == mx::bfloat16) {
-    if (x.ndim() == 0 || x.dtype() != mx::bfloat16 || w.ndim() != 2 ||
+  if (w.dtype() == activation_dtype()) {
+    if (x.ndim() == 0 || x.dtype() != activation_dtype() || w.ndim() != 2 ||
         x.shape().back() != w.shape()[1]) {
       throw std::runtime_error("invalid dense QLinear inputs");
     }
@@ -3852,9 +3945,9 @@ array QLinear::operator()(const array& x) const {
   }
   if (native_q4_batch_one_qmv_enabled() && x.ndim() == 3 &&
       x.shape()[0] == 1 && x.shape()[1] == 1 &&
-      x.dtype() == mx::bfloat16 && w.ndim() == 2 && scales.ndim() == 2 &&
-      biases.ndim() == 2 && scales.dtype() == mx::bfloat16 &&
-      biases.dtype() == mx::bfloat16 && group_size == 64 && bits == 4) {
+      x.dtype() == activation_dtype() && w.ndim() == 2 && scales.ndim() == 2 &&
+      biases.ndim() == 2 && scales.dtype() == activation_dtype() &&
+      biases.dtype() == activation_dtype() && group_size == 64 && bits == 4) {
     const int input_features = static_cast<int>(x.shape()[2]);
     const int output_features = static_cast<int>(w.shape()[0]);
     if (input_features > 0 && output_features > 0 &&
@@ -3874,9 +3967,9 @@ array QLinear::operator()(const array& x) const {
   }
   if (native_q4_batch_two_qmv_enabled() && x.ndim() == 3 &&
       x.shape()[0] == 1 && x.shape()[1] == 2 &&
-      x.dtype() == mx::bfloat16 && w.ndim() == 2 && scales.ndim() == 2 &&
-      biases.ndim() == 2 && scales.dtype() == mx::bfloat16 &&
-      biases.dtype() == mx::bfloat16 && group_size == 64 && bits == 4) {
+      x.dtype() == activation_dtype() && w.ndim() == 2 && scales.ndim() == 2 &&
+      biases.ndim() == 2 && scales.dtype() == activation_dtype() &&
+      biases.dtype() == activation_dtype() && group_size == 64 && bits == 4) {
     const int input_features = static_cast<int>(x.shape()[2]);
     const int output_features = static_cast<int>(w.shape()[0]);
     if (input_features > 0 && output_features > 0 &&
@@ -3903,8 +3996,8 @@ array QLinear::operator()(const array& x) const {
     const int input_features = static_cast<int>(x.shape()[2]);
     const int output_features = static_cast<int>(w.shape()[0]);
     if (native_m8_ksplit_qmm_enabled() && x.shape()[1] == 8 &&
-        x.dtype() == mx::bfloat16 && w.dtype() == mx::uint32 &&
-        scales.dtype() == mx::bfloat16 && biases.dtype() == mx::bfloat16 &&
+        x.dtype() == activation_dtype() && w.dtype() == mx::uint32 &&
+        scales.dtype() == activation_dtype() && biases.dtype() == activation_dtype() &&
         group_size == 64 && (bits == 4 || bits == 5) &&
         input_features % 512 == 0 &&
         output_features % 32 == 0) {
@@ -3918,8 +4011,8 @@ array QLinear::operator()(const array& x) const {
       }
       return affine_qmm_m8_ksplit(*this, x);
     }
-    if (x.dtype() == mx::bfloat16 && w.dtype() == mx::uint32 &&
-        scales.dtype() == mx::bfloat16 && biases.dtype() == mx::bfloat16 &&
+    if (x.dtype() == activation_dtype() && w.dtype() == mx::uint32 &&
+        scales.dtype() == activation_dtype() && biases.dtype() == activation_dtype() &&
         group_size == 64 && (bits == 2 || bits == 4) &&
         input_features % 64 == 0 && output_features % 64 == 0 &&
         output_features >= 6144) {
@@ -3946,9 +4039,9 @@ array QLinear::operator()(const array& x) const {
   }
   if (native_q5_batch_one_qmv_enabled() && x.ndim() == 3 &&
       x.shape()[0] == 1 && x.shape()[1] == 1 &&
-      x.dtype() == mx::bfloat16 && w.ndim() == 2 &&
+      x.dtype() == activation_dtype() && w.ndim() == 2 &&
       scales.ndim() == 2 && biases.ndim() == 2 &&
-      scales.dtype() == mx::bfloat16 && biases.dtype() == mx::bfloat16 &&
+      scales.dtype() == activation_dtype() && biases.dtype() == activation_dtype() &&
       group_size == 64 && bits == 5) {
     const int input_features = static_cast<int>(x.shape()[2]);
     const int output_features = static_cast<int>(w.shape()[0]);
@@ -3969,9 +4062,9 @@ array QLinear::operator()(const array& x) const {
   }
   if (native_q5_batch_two_qmv_enabled() && x.ndim() == 3 &&
       x.shape()[0] == 1 && x.shape()[1] == 2 &&
-      x.dtype() == mx::bfloat16 && w.ndim() == 2 &&
+      x.dtype() == activation_dtype() && w.ndim() == 2 &&
       scales.ndim() == 2 && biases.ndim() == 2 &&
-      scales.dtype() == mx::bfloat16 && biases.dtype() == mx::bfloat16 &&
+      scales.dtype() == activation_dtype() && biases.dtype() == activation_dtype() &&
       group_size == 64 && bits == 5) {
     const int input_features = static_cast<int>(x.shape()[2]);
     const int output_features = static_cast<int>(w.shape()[0]);
@@ -3993,9 +4086,9 @@ array QLinear::operator()(const array& x) const {
   }
   if (native_q5_multirow_qmv_enabled() && x.ndim() == 3 &&
       x.shape()[0] == 1 && x.shape()[1] == 3 &&
-      x.dtype() == mx::bfloat16 && w.ndim() == 2 && w.dtype() == mx::uint32 &&
+      x.dtype() == activation_dtype() && w.ndim() == 2 && w.dtype() == mx::uint32 &&
       scales.ndim() == 2 && biases.ndim() == 2 &&
-      scales.dtype() == mx::bfloat16 && biases.dtype() == mx::bfloat16 &&
+      scales.dtype() == activation_dtype() && biases.dtype() == activation_dtype() &&
       group_size == 64 && bits == 5) {
     const int input_features = static_cast<int>(x.shape()[2]);
     const int output_features = static_cast<int>(w.shape()[0]);
@@ -4021,8 +4114,8 @@ array quantized_embedding_rows(
   if (!embedding.valid || embedding.w.ndim() != 2 ||
       embedding.scales.ndim() != 2 || embedding.biases.ndim() != 2 ||
       embedding.w.dtype() != mx::uint32 ||
-      embedding.scales.dtype() != mx::bfloat16 ||
-      embedding.biases.dtype() != mx::bfloat16 ||
+      embedding.scales.dtype() != activation_dtype() ||
+      embedding.biases.dtype() != activation_dtype() ||
       embedding.w.shape()[0] != embedding.scales.shape()[0] ||
       embedding.scales.shape() != embedding.biases.shape() ||
       embedding.group_size <= 0 || embedding.bits <= 0 ||
@@ -4043,7 +4136,7 @@ array quantized_embedding_rows(
       embedding.bits,
       "affine",
       std::nullopt,
-      mx::bfloat16);
+      activation_dtype());
 }
 
 array fixed_prefill_attention(
@@ -4060,9 +4153,9 @@ array fixed_prefill_attention(
   constexpr int kKeyTile = 64;
   constexpr int kThreads = 128;
   if (queries.ndim() != 4 || key_cache.ndim() != 4 ||
-      value_cache.ndim() != 4 || queries.dtype() != mx::bfloat16 ||
-      key_cache.dtype() != mx::bfloat16 ||
-      value_cache.dtype() != mx::bfloat16 ||
+      value_cache.ndim() != 4 || queries.dtype() != activation_dtype() ||
+      key_cache.dtype() != activation_dtype() ||
+      value_cache.dtype() != activation_dtype() ||
       queries.shape()[0] != 1 || queries.shape()[1] != kQueryHeads ||
       queries.shape()[3] != kHeadDimension ||
       key_cache.shape()[0] != 1 ||
@@ -4123,13 +4216,13 @@ array fixed_q8_attention(
   if (queries.ndim() != 4 || key_cache.ndim() != 4 ||
       key_scales.ndim() != 4 || key_biases.ndim() != 4 ||
       value_cache.ndim() != 4 || value_scales.ndim() != 4 ||
-      value_biases.ndim() != 4 || queries.dtype() != mx::bfloat16 ||
+      value_biases.ndim() != 4 || queries.dtype() != activation_dtype() ||
       key_cache.dtype() != mx::uint32 ||
       value_cache.dtype() != mx::uint32 ||
-      key_scales.dtype() != mx::bfloat16 ||
-      key_biases.dtype() != mx::bfloat16 ||
-      value_scales.dtype() != mx::bfloat16 ||
-      value_biases.dtype() != mx::bfloat16 || queries.shape()[0] != 1 ||
+      key_scales.dtype() != activation_dtype() ||
+      key_biases.dtype() != activation_dtype() ||
+      value_scales.dtype() != activation_dtype() ||
+      value_biases.dtype() != activation_dtype() || queries.shape()[0] != 1 ||
       queries.shape()[1] != kQueryHeads ||
       queries.shape()[3] != kHeadDimension || key_cache.shape()[0] != 1 ||
       key_cache.shape()[1] != kKeyValueHeads ||
@@ -4209,9 +4302,9 @@ array fixed_q8_attention(
 array affine_qmm_small_batch(const QLinear& linear, const array& x) {
   if (!linear.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
       x.shape()[1] < 2 || x.shape()[1] > 8 ||
-      x.dtype() != mx::bfloat16 || linear.w.dtype() != mx::uint32 ||
-      linear.scales.dtype() != mx::bfloat16 ||
-      linear.biases.dtype() != mx::bfloat16 || linear.group_size != 64 ||
+      x.dtype() != activation_dtype() || linear.w.dtype() != mx::uint32 ||
+      linear.scales.dtype() != activation_dtype() ||
+      linear.biases.dtype() != activation_dtype() || linear.group_size != 64 ||
       (linear.bits != 2 && linear.bits != 4)) {
     throw std::runtime_error("invalid small-batch affine QMM inputs");
   }
@@ -4247,10 +4340,10 @@ array affine_qmm_small_batch(const QLinear& linear, const array& x) {
 
 array affine_qmm_m8_ksplit(const QLinear& linear, const array& x) {
   if (!linear.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
-      x.shape()[1] != 8 || x.dtype() != mx::bfloat16 ||
+      x.shape()[1] != 8 || x.dtype() != activation_dtype() ||
       linear.w.dtype() != mx::uint32 ||
-      linear.scales.dtype() != mx::bfloat16 ||
-      linear.biases.dtype() != mx::bfloat16 || linear.group_size != 64 ||
+      linear.scales.dtype() != activation_dtype() ||
+      linear.biases.dtype() != activation_dtype() || linear.group_size != 64 ||
       (linear.bits != 4 && linear.bits != 5)) {
     throw std::runtime_error("invalid M8 K-split affine QMM inputs");
   }
@@ -4291,11 +4384,11 @@ array affine_q4_qmv_batch_one(const QLinear& linear, const array& x) {
   constexpr int kOutputTile = kSimdGroups * kResultsPerSimdgroup;
   constexpr int kBlockSize = kPacksPerThread * 8 * 32;
   if (!linear.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
-      x.shape()[1] != 1 || x.dtype() != mx::bfloat16 ||
+      x.shape()[1] != 1 || x.dtype() != activation_dtype() ||
       linear.w.ndim() != 2 || linear.w.dtype() != mx::uint32 ||
       linear.scales.ndim() != 2 || linear.biases.ndim() != 2 ||
-      linear.scales.dtype() != mx::bfloat16 ||
-      linear.biases.dtype() != mx::bfloat16 || linear.group_size != 64 ||
+      linear.scales.dtype() != activation_dtype() ||
+      linear.biases.dtype() != activation_dtype() || linear.group_size != 64 ||
       linear.bits != 4) {
     throw std::runtime_error("invalid batch-one affine Q4 QMV inputs");
   }
@@ -4333,11 +4426,11 @@ array affine_q4_qmv_batch_two(const QLinear& linear, const array& x) {
   constexpr int kOutputTile = kSimdGroups * kResultsPerSimdgroup;
   constexpr int kBlockSize = kPacksPerThread * 8 * 32;
   if (!linear.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
-      x.shape()[1] != 2 || x.dtype() != mx::bfloat16 ||
+      x.shape()[1] != 2 || x.dtype() != activation_dtype() ||
       linear.w.ndim() != 2 || linear.w.dtype() != mx::uint32 ||
       linear.scales.ndim() != 2 || linear.biases.ndim() != 2 ||
-      linear.scales.dtype() != mx::bfloat16 ||
-      linear.biases.dtype() != mx::bfloat16 || linear.group_size != 64 ||
+      linear.scales.dtype() != activation_dtype() ||
+      linear.biases.dtype() != activation_dtype() || linear.group_size != 64 ||
       linear.bits != 4) {
     throw std::runtime_error("invalid batch-two affine Q4 QMV inputs");
   }
@@ -4393,15 +4486,15 @@ array affine_q4_fused_swiglu_batch_one(
   constexpr int kOutputTile = kSimdGroups * kResultsPerSimdgroup;
   constexpr int kBlockSize = kPacksPerThread * 8 * 32;
   if (!gate.valid || !up.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
-      x.shape()[1] != 1 || x.dtype() != mx::bfloat16 ||
+      x.shape()[1] != 1 || x.dtype() != activation_dtype() ||
       gate.w.ndim() != 2 || up.w.ndim() != 2 ||
       gate.w.dtype() != mx::uint32 || up.w.dtype() != mx::uint32 ||
       gate.scales.ndim() != 2 || gate.biases.ndim() != 2 ||
       up.scales.ndim() != 2 || up.biases.ndim() != 2 ||
-      gate.scales.dtype() != mx::bfloat16 ||
-      gate.biases.dtype() != mx::bfloat16 ||
-      up.scales.dtype() != mx::bfloat16 ||
-      up.biases.dtype() != mx::bfloat16 || gate.group_size != 64 ||
+      gate.scales.dtype() != activation_dtype() ||
+      gate.biases.dtype() != activation_dtype() ||
+      up.scales.dtype() != activation_dtype() ||
+      up.biases.dtype() != activation_dtype() || gate.group_size != 64 ||
       up.group_size != 64 || gate.bits != 4 || up.bits != 4) {
     throw std::runtime_error("invalid batch-one affine Q4 fused SwiGLU inputs");
   }
@@ -4472,15 +4565,15 @@ array affine_q4_fused_swiglu_batch_two(
   constexpr int kOutputTile = kSimdGroups * kResultsPerSimdgroup;
   constexpr int kBlockSize = kPacksPerThread * 8 * 32;
   if (!gate.valid || !up.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
-      x.shape()[1] != 2 || x.dtype() != mx::bfloat16 ||
+      x.shape()[1] != 2 || x.dtype() != activation_dtype() ||
       gate.w.ndim() != 2 || up.w.ndim() != 2 ||
       gate.w.dtype() != mx::uint32 || up.w.dtype() != mx::uint32 ||
       gate.scales.ndim() != 2 || gate.biases.ndim() != 2 ||
       up.scales.ndim() != 2 || up.biases.ndim() != 2 ||
-      gate.scales.dtype() != mx::bfloat16 ||
-      gate.biases.dtype() != mx::bfloat16 ||
-      up.scales.dtype() != mx::bfloat16 ||
-      up.biases.dtype() != mx::bfloat16 || gate.group_size != 64 ||
+      gate.scales.dtype() != activation_dtype() ||
+      gate.biases.dtype() != activation_dtype() ||
+      up.scales.dtype() != activation_dtype() ||
+      up.biases.dtype() != activation_dtype() || gate.group_size != 64 ||
       up.group_size != 64 || gate.bits != 4 || up.bits != 4 ||
       !gate.fused_q4_decode_params_valid) {
     throw std::runtime_error("invalid batch-two affine Q4 fused SwiGLU inputs");
@@ -4535,11 +4628,11 @@ array affine_q5_qmv_batch_one(const QLinear& linear, const array& x) {
   constexpr int kOutputTile = kSimdGroups * kResultsPerSimdgroup;
   constexpr int kBlockSize = kPacksPerThread * 8 * 32;
   if (!linear.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
-      x.shape()[1] != 1 || x.dtype() != mx::bfloat16 ||
+      x.shape()[1] != 1 || x.dtype() != activation_dtype() ||
       linear.w.ndim() != 2 || linear.w.dtype() != mx::uint32 ||
       linear.scales.ndim() != 2 || linear.biases.ndim() != 2 ||
-      linear.scales.dtype() != mx::bfloat16 ||
-      linear.biases.dtype() != mx::bfloat16 || linear.group_size != 64 ||
+      linear.scales.dtype() != activation_dtype() ||
+      linear.biases.dtype() != activation_dtype() || linear.group_size != 64 ||
       linear.bits != 5) {
     throw std::runtime_error("invalid batch-one affine Q5 QMV inputs");
   }
@@ -4577,11 +4670,11 @@ array affine_q5_qmv_batch_two(const QLinear& linear, const array& x) {
   constexpr int kOutputTile = kSimdGroups * kResultsPerSimdgroup;
   constexpr int kBlockSize = kPacksPerThread * 8 * 32;
   if (!linear.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
-      x.shape()[1] != 2 || x.dtype() != mx::bfloat16 ||
+      x.shape()[1] != 2 || x.dtype() != activation_dtype() ||
       linear.w.ndim() != 2 || linear.w.dtype() != mx::uint32 ||
       linear.scales.ndim() != 2 || linear.biases.ndim() != 2 ||
-      linear.scales.dtype() != mx::bfloat16 ||
-      linear.biases.dtype() != mx::bfloat16 || linear.group_size != 64 ||
+      linear.scales.dtype() != activation_dtype() ||
+      linear.biases.dtype() != activation_dtype() || linear.group_size != 64 ||
       linear.bits != 5) {
     throw std::runtime_error("invalid batch-two affine Q5 QMV inputs");
   }
@@ -4617,11 +4710,11 @@ array affine_q5_qmv_batch_two(const QLinear& linear, const array& x) {
 
 array affine_q5_qmv_multirow(const QLinear& linear, const array& x) {
   if (!linear.valid || x.ndim() != 3 || x.shape()[0] != 1 ||
-      x.shape()[1] != 3 || x.dtype() != mx::bfloat16 ||
+      x.shape()[1] != 3 || x.dtype() != activation_dtype() ||
       linear.w.ndim() != 2 || linear.w.dtype() != mx::uint32 ||
       linear.scales.ndim() != 2 || linear.biases.ndim() != 2 ||
-      linear.scales.dtype() != mx::bfloat16 ||
-      linear.biases.dtype() != mx::bfloat16 || linear.group_size != 64 ||
+      linear.scales.dtype() != activation_dtype() ||
+      linear.biases.dtype() != activation_dtype() || linear.group_size != 64 ||
       linear.bits != 5) {
     throw std::runtime_error("invalid multirow affine Q5 QMV inputs");
   }
@@ -4635,7 +4728,7 @@ array affine_q5_qmv_multirow(const QLinear& linear, const array& x) {
       linear.biases.shape() != linear.scales.shape()) {
     throw std::runtime_error("unsupported multirow affine Q5 QMV shape");
   }
-  static const auto kernel = mx::fast::metal_kernel(
+  static const auto kernel = activation_metal_kernel(
       "sglang_affine_q5_multirow_qmv",
       {"w", "scales", "biases", "x"},
       {"y"},
@@ -4717,7 +4810,7 @@ array affine_q5_qmv_multirow(const QLinear& linear, const array& x) {
             const float result = simd_sum(results[row][batch]);
             if (lane == 0) {
               y[batch * NConst + output_start + row] =
-                  static_cast<bfloat>(result);
+                  static_cast<Activation>(result);
             }
           }
         }
@@ -5069,7 +5162,7 @@ QLinear Engine::load_qlinear(
     const std::string& prefix) {
   QLinear q;
   q.w = require(weights, prefix + ".weight");
-  if (q.w.dtype() == mx::bfloat16) {
+  if (q.w.dtype() == activation_dtype()) {
     if (q.w.ndim() != 2) {
       throw std::runtime_error("invalid dense tensor for " + prefix);
     }
@@ -5123,7 +5216,7 @@ void Engine::load_weights(const std::string& model_dir) {
     if (name.size() < 12 || name.substr(name.size() - 12) != ".safetensors") {
       continue;
     }
-    auto loaded = mx::load_safetensors(model_dir + "/" + name);
+    auto loaded = load_activation_safetensors(model_dir + "/" + name);
     for (auto& kv : loaded.first) {
       if (kv.first.rfind("vision_tower", 0) == 0) {
         continue;
@@ -5203,7 +5296,7 @@ void Engine::load_weights(const std::string& model_dir) {
         embed_tokens_.bits,
         "affine",
         std::nullopt,
-        mx::bfloat16);
+        activation_dtype());
     eval(embed_table_);
   }
   lm_head_ = load_qlinear(weights, "language_model.lm_head");
@@ -5322,7 +5415,7 @@ array Engine::mlp(const DecoderLayer& layer, const array& x) const {
   if (native_q4_fused_swiglu_enabled() &&
       native_q4_fused_swiglu_batch_two_enabled() && x.ndim() == 3 &&
       x.shape()[0] == 1 && x.shape()[1] == 2 &&
-      x.dtype() == mx::bfloat16 && layer.gate_proj.valid &&
+      x.dtype() == activation_dtype() && layer.gate_proj.valid &&
       layer.up_proj.valid && layer.gate_proj.w.dtype() == mx::uint32 &&
       layer.up_proj.w.dtype() == mx::uint32 && layer.gate_proj.bits == 4 &&
       layer.up_proj.bits == 4 && layer.gate_proj.group_size == 64 &&
@@ -5341,7 +5434,7 @@ array Engine::mlp(const DecoderLayer& layer, const array& x) const {
   }
   if (native_q4_fused_swiglu_enabled() && x.ndim() == 3 &&
       x.shape()[0] == 1 && x.shape()[1] == 1 &&
-      x.dtype() == mx::bfloat16 && layer.gate_proj.valid &&
+      x.dtype() == activation_dtype() && layer.gate_proj.valid &&
       layer.up_proj.valid && layer.gate_proj.w.dtype() == mx::uint32 &&
       layer.up_proj.w.dtype() == mx::uint32 && layer.gate_proj.bits == 4 &&
       layer.up_proj.bits == 4 && layer.gate_proj.group_size == 64 &&
@@ -5456,15 +5549,15 @@ array Engine::full_attn(FullAttn& attn, const array& x) {
       array new_keys = zeros(
           {B, n_kv, capacity, hd / kPackedValuesPerWord}, mx::uint32);
       array new_key_scales = zeros(
-          {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+          {B, n_kv, capacity, hd / kQ8GroupSize}, activation_dtype());
       array new_key_biases = zeros(
-          {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+          {B, n_kv, capacity, hd / kQ8GroupSize}, activation_dtype());
       array new_values = zeros(
           {B, n_kv, capacity, hd / kPackedValuesPerWord}, mx::uint32);
       array new_value_scales = zeros(
-          {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+          {B, n_kv, capacity, hd / kQ8GroupSize}, activation_dtype());
       array new_value_biases = zeros(
-          {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+          {B, n_kv, capacity, hd / kQ8GroupSize}, activation_dtype());
       new_keys = slice_update(
           new_keys,
           quantized_keys[0],
@@ -5517,10 +5610,10 @@ array Engine::full_attn(FullAttn& attn, const array& x) {
           attn.value_biases.ndim() != 4 ||
           attn.keys.dtype() != mx::uint32 ||
           attn.values.dtype() != mx::uint32 ||
-          attn.key_scales.dtype() != mx::bfloat16 ||
-          attn.key_biases.dtype() != mx::bfloat16 ||
-          attn.value_scales.dtype() != mx::bfloat16 ||
-          attn.value_biases.dtype() != mx::bfloat16) {
+          attn.key_scales.dtype() != activation_dtype() ||
+          attn.key_biases.dtype() != activation_dtype() ||
+          attn.value_scales.dtype() != activation_dtype() ||
+          attn.value_biases.dtype() != activation_dtype()) {
         throw std::runtime_error("invalid affine-Q8 attention cache");
       }
       if (attn.cache_capacity < needed) {
@@ -5529,15 +5622,15 @@ array Engine::full_attn(FullAttn& attn, const array& x) {
         array new_keys = zeros(
             {B, n_kv, capacity, hd / kPackedValuesPerWord}, mx::uint32);
         array new_key_scales = zeros(
-            {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+            {B, n_kv, capacity, hd / kQ8GroupSize}, activation_dtype());
         array new_key_biases = zeros(
-            {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+            {B, n_kv, capacity, hd / kQ8GroupSize}, activation_dtype());
         array new_values = zeros(
             {B, n_kv, capacity, hd / kPackedValuesPerWord}, mx::uint32);
         array new_value_scales = zeros(
-            {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+            {B, n_kv, capacity, hd / kQ8GroupSize}, activation_dtype());
         array new_value_biases = zeros(
-            {B, n_kv, capacity, hd / kQ8GroupSize}, mx::bfloat16);
+            {B, n_kv, capacity, hd / kQ8GroupSize}, activation_dtype());
         if (prefix_length > 0) {
           new_keys = slice_update(
               new_keys,
@@ -6048,8 +6141,8 @@ void Engine::restore_snapshot(const std::vector<LayerSnap>& source) {
         const bool bf16_storage_valid =
             layer.attn.cache_bits == 16 && layer.attn.keys.ndim() == 4 &&
             layer.attn.values.ndim() == 4 &&
-            layer.attn.keys.dtype() == mx::bfloat16 &&
-            layer.attn.values.dtype() == mx::bfloat16 &&
+            layer.attn.keys.dtype() == activation_dtype() &&
+            layer.attn.values.dtype() == activation_dtype() &&
             layer.attn.keys.shape() == layer.attn.values.shape() &&
             layer.attn.keys.shape()[0] == 1 &&
             layer.attn.keys.shape()[1] == cfg_.num_key_value_heads &&
@@ -6074,10 +6167,10 @@ void Engine::restore_snapshot(const std::vector<LayerSnap>& source) {
             layer.attn.key_biases.ndim() == 4 &&
             layer.attn.value_scales.ndim() == 4 &&
             layer.attn.value_biases.ndim() == 4 &&
-            layer.attn.key_scales.dtype() == mx::bfloat16 &&
-            layer.attn.key_biases.dtype() == mx::bfloat16 &&
-            layer.attn.value_scales.dtype() == mx::bfloat16 &&
-            layer.attn.value_biases.dtype() == mx::bfloat16 &&
+            layer.attn.key_scales.dtype() == activation_dtype() &&
+            layer.attn.key_biases.dtype() == activation_dtype() &&
+            layer.attn.value_scales.dtype() == activation_dtype() &&
+            layer.attn.value_biases.dtype() == activation_dtype() &&
             layer.attn.key_scales.shape() == q8_parameter_shape &&
             layer.attn.key_biases.shape() == q8_parameter_shape &&
             layer.attn.value_scales.shape() == q8_parameter_shape &&
@@ -6145,7 +6238,7 @@ std::uint64_t attention_cache_digest(const FullAttn& cache, bool include_capacit
   }
   if (cache.keys.ndim() != 4 || cache.keys.shape() != cache.values.shape() ||
       cache.keys.shape()[2] != cache.cache_capacity ||
-      cache.keys.dtype() != mx::bfloat16 || cache.values.dtype() != mx::bfloat16) {
+      cache.keys.dtype() != activation_dtype() || cache.values.dtype() != activation_dtype()) {
     throw std::runtime_error("invalid attention cache digest arrays");
   }
   auto active_shape = cache.keys.shape();
@@ -6157,7 +6250,7 @@ std::uint64_t attention_cache_digest(const FullAttn& cache, bool include_capacit
     const auto active = mx::contiguous(slice(source, {0, 0, 0, 0}, active_shape));
     eval(active);
     const auto* bytes = reinterpret_cast<const unsigned char*>(
-        active.data<mx::bfloat16_t>());
+        active.data<std::uint16_t>());
     for (std::size_t i = 0; i < active.nbytes(); ++i) {
       mix(bytes[i]);
     }
@@ -6522,7 +6615,7 @@ void Engine::load_dflash2(
                          const std::string& name,
                          const mx::Shape& shape) -> array {
     array value = require(weights, name);
-    if (value.shape() != shape || value.dtype() != mx::bfloat16) {
+    if (value.shape() != shape || value.dtype() != activation_dtype()) {
       throw std::runtime_error("invalid DFlash2 tensor " + name);
     }
     return value;
@@ -6541,8 +6634,8 @@ void Engine::load_dflash2(
     QLinear value = load_qlinear(weights, prefix);
     if (value.bits != 4 || value.group_size != 64 ||
         value.w.dtype() != mx::uint32 ||
-        value.scales.dtype() != mx::bfloat16 ||
-        value.biases.dtype() != mx::bfloat16 ||
+        value.scales.dtype() != activation_dtype() ||
+        value.biases.dtype() != activation_dtype() ||
         value.w.shape()[0] != output_features ||
         value.scales.shape()[0] != output_features ||
         value.scales.shape().back() * value.group_size != input_features) {
@@ -6639,7 +6732,7 @@ void Engine::load_dspark(
                          const std::string& name,
                          const mx::Shape& shape) -> array {
     array value = require(weights, name);
-    if (value.shape() != shape || value.dtype() != mx::bfloat16) {
+    if (value.shape() != shape || value.dtype() != activation_dtype()) {
       throw std::runtime_error("invalid DSpark tensor " + name);
     }
     return value;
@@ -6658,8 +6751,8 @@ void Engine::load_dspark(
     QLinear value = load_qlinear(weights, prefix);
     if (value.bits != 4 || value.group_size != 64 ||
         value.w.dtype() != mx::uint32 ||
-        value.scales.dtype() != mx::bfloat16 ||
-        value.biases.dtype() != mx::bfloat16 ||
+        value.scales.dtype() != activation_dtype() ||
+        value.biases.dtype() != activation_dtype() ||
         value.w.shape()[0] != output_features ||
         value.scales.shape()[0] != output_features ||
         value.scales.shape().back() * value.group_size != input_features) {
@@ -8027,7 +8120,7 @@ void Engine::load_mtp(const std::string& mtp_dir) {
     if (name.size() < 12 || name.substr(name.size() - 12) != ".safetensors") {
       continue;
     }
-    auto loaded = mx::load_safetensors(mtp_dir + "/" + name);
+    auto loaded = load_activation_safetensors(mtp_dir + "/" + name);
     for (auto& kv : loaded.first) {
       weights.emplace(kv.first, std::move(kv.second));
     }

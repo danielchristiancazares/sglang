@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -19,7 +20,7 @@ mx::array MakeBfloat16(std::vector<float> &values, const mx::Shape &shape,
     values[index] =
         offset + std::sin(static_cast<float>(index) * frequency) * 0.125f;
   }
-  return mx::astype(mx::array(values.data(), shape, mx::float32), mx::bfloat16);
+  return mx::astype(mx::array(values.data(), shape, mx::float32), sglang::mlx_qwen38::activation_dtype());
 }
 
 bool CheckProductionShapePrefixes() {

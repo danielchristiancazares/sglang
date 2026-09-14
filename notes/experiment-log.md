@@ -25375,3 +25375,47 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
 - The launcher clears inherited unqualified prepared-input, vector/tiled/dequant/segmented attention probes so shell state cannot silently alter the measured configuration. Expanded the C++ launcher contract test to cover optimized and unchanged profiles, context limits, sampling and reasoning-cap removal. Strict C++ build and test pass, receipt test_launcher_optimized.log.
 - Located disabled-path overhead in inherited prepare_q4_inputs: two unused zeros were allocated for every projection. Replacing them with aliases of the existing input restores 24.27778/24.27918/24.27274 tok/s with all IDs and final states unchanged. Enabled preparation remains slower at about 23.97. The alias repair remains with the inherited uncommitted probe code; that experiment stays disabled in the launcher. Receipt alias_inputs_resident.log, six paired samples.
 - FP16-fragment experiment preserves exact fixtures against the prior BF16-fragment kernels for tested bounded inputs. M8 down improves about 0.633 -> 0.553 ms, while the small-M kernel regresses about 5%. BF16 values outside FP16 range are not yet handled; this artifact-only experiment is not promoted. Initial shader compilation errors required explicit BF16-to-float-to-half conversions and corrected staging pointers. Receipts half_mma_micro.log and half_mma_small_micro.log.
+
+### 2026-09-14 - Qualified opt-in FP16 activation execution and arithmetic repair
+
+- Resumed at 3b045afa7f on the M1 Max, 32 GiB, preserving all three inherited
+  dirty paths under ~/.cache/sglang-qwen38/20260914-continuation/inherited.patch.
+  The interrupted continuation supplied a clean staged activation-format
+  implementation, separate from the inherited prepared-input/Q8 probes.
+- Added process-immutable SGLANG_MLX_NATIVE_ACTIVATION_DTYPE=bfloat16|float16.
+  BF16 remains the default. Parameter conversion audits all consumed BF16
+  tensors, rejects nonfinite/overflow values and errors above 2^-25, preserves
+  packed uint32 Q4 codes and leaves FP32 recurrence/state parameters unchanged.
+  This checkpoint changes 2060 tiny language coefficients by at most 2.98023224e-8;
+  the MTP sidecar changes zero values. The unused vision tower is excluded.
+- The initial FP16 variant failed two exact arithmetic tests. MLX's half
+  sigmoid uses metal::exp with half intermediate rounding; precise::exp changed
+  11131 finite input results in an exhaustive half-domain probe. Corrected the
+  fused SwiGLU and one/two-token convolution sigmoid paths, retaining the BF16
+  arithmetic. The original library fails these regressions; corrected kernels
+  match all finite FP16 codes through convolution and all four fused MLP paths.
+- Strict O3 native and O2 test builds pass with -Wall -Wextra -Werror and
+  MACOSX_DEPLOYMENT_TARGET=26.2. Ten focused suites pass in both formats,
+  including full-model MTP prompt continuation, mismatch, repeated restore,
+  exact sampled IDs and target/MTP state, Q4/Q5 projections, normalization,
+  causal convolution, recurrence commit, embedding and 131072 Q8 fixtures.
+  New conversion tests cover immutable dtype, packed-code preservation,
+  subnormal boundaries, empty tensors, FP32 preservation and invalid formats.
+- Five paired resident source replays use the original 1804-token source-review
+  prompt, 32 warmup and 256 timed tokens, seed 42, sampled MTP block two,
+  asynchronous verification, 1 GiB reclaimable allocation cache, and uncapped
+  reasoning. Separate gate/up projections measure 30.131518635, 30.178426260,
+  30.103988702, 30.102055080, 30.093229798 tok/s, mean 30.121843695.
+  Fused control measures 29.640031943, 29.610595795, 29.605443713,
+  29.645194214, 29.586638973 tok/s. Every pair preserves all sampled IDs,
+  final target/MTP state, 137 refills, width 1.875912409 and digest
+  b5c5ba570001f373. Peak MLX memory is 22138755572 bytes.
+- Receipts in the continuation artifact directory include qualified_suite.log,
+  qualified_*_{bfloat16,float16}.log, activation_precision_*.log,
+  probe_sigmoid.log and corrected_fusion_resident.log. Clean native source is
+  copied to engine_precision_commit.cpp there. This is short-context native
+  decode evidence. Naturally completed served work and populated 131K
+  throughput/quality are still being measured; no combined acceptance claim.
+- Codex was neither invoked nor modified. The inherited Q4/Q8 probes remain
+  uncommitted. The production library is backed up as production_library_before.dylib
+  while a foreground owned SGLang test uses the corrected FP16 build.

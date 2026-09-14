@@ -15,6 +15,16 @@
 namespace sglang {
 namespace mlx_qwen38 {
 
+// Fixed for the lifetime of the native library's compiled kernels.
+mlx::core::Dtype activation_dtype();
+struct ActivationConversion {
+  mlx::core::array value;
+  std::uint64_t changed_values;
+  float maximum_absolute_error;
+};
+ActivationConversion convert_activation_parameter(
+    const mlx::core::array& value, const std::string& name);
+
 struct QLinear {
   mlx::core::array w{0};
   mlx::core::array scales{0};
@@ -130,7 +140,7 @@ struct FullAttn {
   int cache_bits = 16;
 };
 
-// Diagnostic only: synchronizes and hashes metadata plus active BF16 K/V.
+// Diagnostic only: synchronizes and hashes metadata plus active 16-bit K/V.
 std::uint64_t attention_cache_digest(const FullAttn& cache);
 std::uint64_t attention_cache_digest(const FullAttn& cache, bool include_capacity);
 
@@ -258,7 +268,7 @@ class Engine {
   int last_prefill_cached_tokens() const { return last_prefill_cached_tokens_; }
   std::uint64_t mtp_history_digest() const;
   std::uint64_t mtp_history_digest(bool include_capacity) const;
-  // Logical BF16-cache state, excluding spare capacity; never used by serving.
+  // Logical 16-bit-cache state, excluding spare capacity; never used by serving.
   std::uint64_t target_state_digest() const;
 
   const MlxQwen38Config& config() const { return cfg_; }

@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <cstddef>
 #include <iostream>
 #include <string_view>
@@ -54,12 +55,12 @@ bool CheckCase(int rows, int width) {
   const auto weight_values = MakeValues(static_cast<std::size_t>(width), 97);
   mx::array x = mx::astype(
       mx::array(x_values.data(), {rows, 1, width}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array residual = mx::astype(
       mx::array(residual_values.data(), {rows, 1, width}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array weight = mx::astype(
-      mx::array(weight_values.data(), {width}, mx::float32), mx::bfloat16);
+      mx::array(weight_values.data(), {width}, mx::float32), sglang::mlx_qwen38::activation_dtype());
 
   auto actual =
       sglang::mlx_qwen38::residual_rms_norm(x, residual, weight, 1e-6f);
@@ -76,9 +77,9 @@ bool CheckOutstandingOutputs() {
   const auto x_values = MakeValues(kWidth, 31);
   const auto weight_values = MakeValues(kWidth, 89);
   mx::array x = mx::astype(
-      mx::array(x_values.data(), {1, 1, kWidth}, mx::float32), mx::bfloat16);
+      mx::array(x_values.data(), {1, 1, kWidth}, mx::float32), sglang::mlx_qwen38::activation_dtype());
   mx::array weight = mx::astype(
-      mx::array(weight_values.data(), {kWidth}, mx::float32), mx::bfloat16);
+      mx::array(weight_values.data(), {kWidth}, mx::float32), sglang::mlx_qwen38::activation_dtype());
 
   using ArrayPair = std::pair<mx::array, mx::array>;
   std::vector<std::pair<ArrayPair, ArrayPair>> pending;
@@ -88,7 +89,7 @@ bool CheckOutstandingOutputs() {
     mx::array residual = mx::astype(
         mx::array(
             residual_values.data(), {1, 1, kWidth}, mx::float32),
-        mx::bfloat16);
+        sglang::mlx_qwen38::activation_dtype());
     auto actual =
         sglang::mlx_qwen38::residual_rms_norm(x, residual, weight, 1e-6f);
     mx::array expected_residual = x + residual;

@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -42,14 +43,14 @@ float MaximumAbsoluteError(const mx::array &expected, const mx::array &actual) {
   return maximum;
 }
 
-bool SameBfloat16(const mx::array &lhs, const mx::array &rhs) {
+bool SameActivation(const mx::array &lhs, const mx::array &rhs) {
   mx::eval(lhs, rhs);
-  if (lhs.shape() != rhs.shape() || lhs.dtype() != mx::bfloat16 ||
-      rhs.dtype() != mx::bfloat16) {
+  if (lhs.shape() != rhs.shape() || lhs.dtype() != sglang::mlx_qwen38::activation_dtype() ||
+      rhs.dtype() != sglang::mlx_qwen38::activation_dtype()) {
     return false;
   }
-  const auto *lhs_data = lhs.data<mx::bfloat16_t>();
-  const auto *rhs_data = rhs.data<mx::bfloat16_t>();
+  const auto *lhs_data = lhs.data<std::uint16_t>();
+  const auto *rhs_data = rhs.data<std::uint16_t>();
   return std::equal(lhs_data, lhs_data + lhs.size(), rhs_data);
 }
 
@@ -86,15 +87,15 @@ bool CheckQ5BatchParity(int input_features, int output_features, int rows = 2) {
       mx::array(scales.data(),
                 {output_features, static_cast<int>(parameter_columns)},
                 mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   const mx::array bias_array = mx::astype(
       mx::array(biases.data(),
                 {output_features, static_cast<int>(parameter_columns)},
                 mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   const mx::array input = mx::astype(
       mx::array(input_values.data(), {1, rows, input_features}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   const sglang::mlx_qwen38::QLinear linear{weights, scale_array, bias_array,
                                            64,      5,           true};
 
@@ -115,10 +116,10 @@ bool CheckQ5BatchParity(int input_features, int output_features, int rows = 2) {
   if (unsetenv(dispatch_variable) != 0) {
     throw std::runtime_error("failed to disable Q5 batch dispatch");
   }
-  const bool default_matches = SameBfloat16(expected, linear(input));
+  const bool default_matches = SameActivation(expected, linear(input));
 
   const float maximum_absolute_error = MaximumAbsoluteError(expected, actual);
-  const bool dispatch_matches = SameBfloat16(actual, dispatched);
+  const bool dispatch_matches = SameActivation(actual, dispatched);
   bool serial_matches = true;
   if (rows > 2) {
     std::vector<mx::array> serial_rows;
@@ -128,7 +129,7 @@ bool CheckQ5BatchParity(int input_features, int output_features, int rows = 2) {
       serial_rows.push_back(
           sglang::mlx_qwen38::affine_q5_qmv_batch_one(linear, single));
     }
-    serial_matches = SameBfloat16(actual, mx::concatenate(serial_rows, 1));
+    serial_matches = SameActivation(actual, mx::concatenate(serial_rows, 1));
   }
   std::cout << "Q5 rows=" << rows << " K=" << input_features
             << " N=" << output_features
@@ -145,10 +146,10 @@ bool CheckQ5BatchParity(int input_features, int output_features, int rows = 2) {
 
 bool CheckQ5MultirowBoundaries() {
   using sglang::mlx_qwen38::QLinear;
-  const auto input = mx::full({1, 3, 512}, 0.25f, mx::bfloat16);
+  const auto input = mx::full({1, 3, 512}, 0.25f, sglang::mlx_qwen38::activation_dtype());
   const QLinear linear{mx::zeros({16, 80}, mx::uint32),
-                       mx::full({16, 8}, 0.125f, mx::bfloat16),
-                       mx::full({16, 8}, 0.125f, mx::bfloat16),
+                       mx::full({16, 8}, 0.125f, sglang::mlx_qwen38::activation_dtype()),
+                       mx::full({16, 8}, 0.125f, sglang::mlx_qwen38::activation_dtype()),
                        64, 5, true};
   const auto rejects = [](const QLinear& candidate, const mx::array& x) {
     try {
@@ -161,13 +162,13 @@ bool CheckQ5MultirowBoundaries() {
     return false;
   };
   for (const auto& invalid : {
-           mx::full({1, 1, 512}, 0.25f, mx::bfloat16),
-           mx::full({1, 2, 512}, 0.25f, mx::bfloat16),
-           mx::full({1, 4, 512}, 0.25f, mx::bfloat16),
-           mx::full({1, 5, 512}, 0.25f, mx::bfloat16),
-           mx::full({2, 3, 512}, 0.25f, mx::bfloat16),
-           mx::full({3, 512}, 0.25f, mx::bfloat16),
-           mx::full({1, 3, 256}, 0.25f, mx::bfloat16),
+           mx::full({1, 1, 512}, 0.25f, sglang::mlx_qwen38::activation_dtype()),
+           mx::full({1, 2, 512}, 0.25f, sglang::mlx_qwen38::activation_dtype()),
+           mx::full({1, 4, 512}, 0.25f, sglang::mlx_qwen38::activation_dtype()),
+           mx::full({1, 5, 512}, 0.25f, sglang::mlx_qwen38::activation_dtype()),
+           mx::full({2, 3, 512}, 0.25f, sglang::mlx_qwen38::activation_dtype()),
+           mx::full({3, 512}, 0.25f, sglang::mlx_qwen38::activation_dtype()),
+           mx::full({1, 3, 256}, 0.25f, sglang::mlx_qwen38::activation_dtype()),
            mx::astype(input, mx::float32)}) {
     if (!rejects(linear, invalid)) {
       return false;
@@ -183,8 +184,8 @@ bool CheckQ5MultirowBoundaries() {
       case 4: invalid.w = mx::zeros({16, 79}, mx::uint32); break;
       case 5: invalid.w = mx::zeros({8, 80}, mx::uint32); break;
       case 6: invalid.scales = mx::astype(linear.scales, mx::float32); break;
-      case 7: invalid.scales = mx::zeros({16, 7}, mx::bfloat16); break;
-      case 8: invalid.biases = mx::zeros({128}, mx::bfloat16); break;
+      case 7: invalid.scales = mx::zeros({16, 7}, sglang::mlx_qwen38::activation_dtype()); break;
+      case 8: invalid.biases = mx::zeros({128}, sglang::mlx_qwen38::activation_dtype()); break;
     }
     if (!rejects(invalid, input)) {
       return false;
@@ -201,14 +202,14 @@ bool CheckQ5MultirowBoundaries() {
         continue;
       }
       const QLinear fallback{mx::zeros({16, k * 5 / 32}, mx::uint32),
-                             mx::full({16, k / 64}, 0.125f, mx::bfloat16),
-                             mx::full({16, k / 64}, 0.125f, mx::bfloat16),
+                             mx::full({16, k / 64}, 0.125f, sglang::mlx_qwen38::activation_dtype()),
+                             mx::full({16, k / 64}, 0.125f, sglang::mlx_qwen38::activation_dtype()),
                              64, 5, true};
-      const auto x = mx::full({1, rows, k}, 0.25f, mx::bfloat16);
+      const auto x = mx::full({1, rows, k}, 0.25f, sglang::mlx_qwen38::activation_dtype());
       const auto expected = mx::quantized_matmul(
           x, fallback.w, fallback.scales, fallback.biases, true, 64, 5,
           "affine");
-      fallback_matches = SameBfloat16(expected, fallback(x)) && fallback_matches;
+      fallback_matches = SameActivation(expected, fallback(x)) && fallback_matches;
     }
   }
   if (unsetenv("SGLANG_MLX_NATIVE_Q5_MULTIROW_QMV") != 0) {
@@ -252,15 +253,15 @@ bool CheckQ4BatchTwoParity(int input_features, int output_features) {
       mx::array(scales.data(),
                 {output_features, static_cast<int>(parameter_columns)},
                 mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   const mx::array bias_array = mx::astype(
       mx::array(biases.data(),
                 {output_features, static_cast<int>(parameter_columns)},
                 mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   const mx::array input = mx::astype(
       mx::array(input_values.data(), {1, 2, input_features}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   const sglang::mlx_qwen38::QLinear linear{weights, scale_array, bias_array,
                                            64,      4,           true};
 
@@ -279,8 +280,8 @@ bool CheckQ4BatchTwoParity(int input_features, int output_features) {
   }
 
   const float maximum_absolute_error = MaximumAbsoluteError(expected, actual);
-  const bool exact = SameBfloat16(expected, actual);
-  const bool dispatch_matches = SameBfloat16(actual, dispatched);
+  const bool exact = SameActivation(expected, actual);
+  const bool dispatch_matches = SameActivation(actual, dispatched);
   std::cout << "Q4 batch-two K=" << input_features << " N=" << output_features
             << " max_abs=" << maximum_absolute_error << " exact=" << exact
             << " dispatch_matches=" << dispatch_matches << '\n';
@@ -330,10 +331,10 @@ bool CheckQ4BatchTwoFusedParity(
     // BF16's 1 + half-ULP rounds before subtracting 1. Converting all
     // operands to FP32 first leaves the half-ULP in the affine bias sum.
     input_values[0] = 1.0f;
-    input_values[1] = 1.0f / 256.0f;
+    input_values[1] = sglang::mlx_qwen38::activation_dtype() == mx::float16 ? 1.0f / 2048.0f : 1.0f / 256.0f;
     input_values[2] = -1.0f;
     input_values[input_features] = -1.0f;
-    input_values[input_features + 1] = -1.0f / 256.0f;
+    input_values[input_features + 1] = -input_values[1];
     input_values[input_features + 2] = 1.0f;
   }
 
@@ -347,17 +348,17 @@ bool CheckQ4BatchTwoFusedParity(
                                   static_cast<int>(parameter_columns)};
   const mx::array gate_scale_array =
       mx::astype(mx::array(gate_scales.data(), parameter_shape, mx::float32),
-                 mx::bfloat16);
+                 sglang::mlx_qwen38::activation_dtype());
   const mx::array gate_bias_array =
       mx::astype(mx::array(gate_biases.data(), parameter_shape, mx::float32),
-                 mx::bfloat16);
+                 sglang::mlx_qwen38::activation_dtype());
   const mx::array up_scale_array = mx::astype(
-      mx::array(up_scales.data(), parameter_shape, mx::float32), mx::bfloat16);
+      mx::array(up_scales.data(), parameter_shape, mx::float32), sglang::mlx_qwen38::activation_dtype());
   const mx::array up_bias_array = mx::astype(
-      mx::array(up_biases.data(), parameter_shape, mx::float32), mx::bfloat16);
+      mx::array(up_biases.data(), parameter_shape, mx::float32), sglang::mlx_qwen38::activation_dtype());
   const mx::array input = mx::astype(
       mx::array(input_values.data(), {1, 2, input_features}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   sglang::mlx_qwen38::QLinear gate{
       gate_weights, gate_scale_array, gate_bias_array, 64, 4, true};
   const sglang::mlx_qwen38::QLinear up{
@@ -391,8 +392,8 @@ bool CheckQ4BatchTwoFusedParity(
     throw std::runtime_error("failed to disable scalar-input fused Q4");
   }
   const float scalar_error = MaximumAbsoluteError(expected, scalar);
-  const bool scalar_exact = SameBfloat16(expected, scalar);
-  const bool vector_exact = SameBfloat16(expected, actual);
+  const bool scalar_exact = SameActivation(expected, scalar);
+  const bool vector_exact = SameActivation(expected, actual);
   std::cout << "Q4 fused batch-two K=" << input_features
             << " N=" << output_features << " max_abs=" << maximum_absolute_error
             << " scalar_max_abs=" << scalar_error
@@ -430,15 +431,15 @@ bool CheckQ4BatchTwoSigmoidBoundary() {
   const mx::Shape parameter_shape{kOutputFeatures, kParameterColumns};
   const mx::array scales =
       mx::astype(mx::array(zero_scales.data(), parameter_shape, mx::float32),
-                 mx::bfloat16);
+                 sglang::mlx_qwen38::activation_dtype());
   const mx::array gate_bias =
       mx::astype(mx::array(gate_biases.data(), parameter_shape, mx::float32),
-                 mx::bfloat16);
+                 sglang::mlx_qwen38::activation_dtype());
   const mx::array up_bias = mx::astype(
-      mx::array(up_biases.data(), parameter_shape, mx::float32), mx::bfloat16);
+      mx::array(up_biases.data(), parameter_shape, mx::float32), sglang::mlx_qwen38::activation_dtype());
   const mx::array input = mx::astype(
       mx::array(input_values.data(), {1, 2, kInputFeatures}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   sglang::mlx_qwen38::QLinear gate{weights, scales, gate_bias, 64, 4, true};
   const sglang::mlx_qwen38::QLinear up{weights, scales, up_bias, 64, 4, true};
   if (!sglang::mlx_qwen38::prepare_fused_q4_raw_decode_parameters(gate, up)) {
@@ -451,7 +452,7 @@ bool CheckQ4BatchTwoSigmoidBoundary() {
   const mx::array expected = sglang::mlx_qwen38::silu(gate_output);
   const mx::array actual =
       sglang::mlx_qwen38::affine_q4_fused_swiglu_batch_two(gate, up, input);
-  const bool matches = SameBfloat16(expected, actual);
+  const bool matches = SameActivation(expected, actual);
   std::cout << "Q4 fused batch-two sigmoid boundary gate=" << kGateValue
             << " matches=" << matches << '\n';
   return matches;
@@ -475,10 +476,10 @@ bool RejectsInvalidBatchTwoInputs() {
   const mx::array scales =
       mx::astype(mx::array(parameters.data(),
                            {kOutputFeatures, kInputFeatures / 64}, mx::float32),
-                 mx::bfloat16);
+                 sglang::mlx_qwen38::activation_dtype());
   const mx::array input = mx::astype(
       mx::array(input_values.data(), {1, 2, kInputFeatures}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   const sglang::mlx_qwen38::QLinear q5{q5_weights, scales, scales, 64, 5, true};
   sglang::mlx_qwen38::QLinear q4{q4_weights, scales, scales, 64, 4, true};
   const sglang::mlx_qwen38::QLinear q4_up{q4_weights, scales, scales,

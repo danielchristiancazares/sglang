@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <cstddef>
 #include <iostream>
 #include <string_view>
@@ -59,18 +60,18 @@ bool CheckCase(int batch, int kernel_size, int channels, int tokens = 1) {
   mx::array state = mx::astype(
       mx::array(
           state_values.data(), {batch, kernel_size - 1, channels}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array qkv = mx::astype(
       mx::array(qkv_values.data(), {batch, tokens, channels}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   mx::array weight = mx::astype(
       mx::array(weight_values.data(), {channels, kernel_size, 1}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
 
   mx::array original_state = mx::astype(
       mx::array(
           state_values.data(), {batch, kernel_size - 1, channels}, mx::float32),
-      mx::bfloat16);
+      sglang::mlx_qwen38::activation_dtype());
   auto actual = tokens == 1
       ? sglang::mlx_qwen38::causal_conv_decode_silu(state, qkv, weight)
       : sglang::mlx_qwen38::causal_conv_two_token_silu(state, qkv, weight);
@@ -94,11 +95,11 @@ bool CheckExtremeActivations() {
   const float weight_values[kChannels * 2] = {
       0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f};
   mx::array state = mx::astype(
-      mx::array(zeros, {1, 1, kChannels}, mx::float32), mx::bfloat16);
+      mx::array(zeros, {1, 1, kChannels}, mx::float32), sglang::mlx_qwen38::activation_dtype());
   mx::array qkv = mx::astype(
-      mx::array(qkv_values, {1, 1, kChannels}, mx::float32), mx::bfloat16);
+      mx::array(qkv_values, {1, 1, kChannels}, mx::float32), sglang::mlx_qwen38::activation_dtype());
   mx::array weight = mx::astype(
-      mx::array(weight_values, {kChannels, 2, 1}, mx::float32), mx::bfloat16);
+      mx::array(weight_values, {kChannels, 2, 1}, mx::float32), sglang::mlx_qwen38::activation_dtype());
 
   auto actual =
       sglang::mlx_qwen38::causal_conv_decode_silu(state, qkv, weight);
