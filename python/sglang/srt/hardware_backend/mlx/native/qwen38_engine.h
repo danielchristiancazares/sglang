@@ -17,6 +17,9 @@ namespace mlx_qwen38 {
 
 // Fixed for the lifetime of the native library's compiled kernels.
 mlx::core::Dtype activation_dtype();
+
+// Select top-k indices, optionally through an exact-score hierarchical partition.
+mlx::core::array sampling_topk_indices(const mlx::core::array& logits, int count);
 struct ActivationConversion {
   mlx::core::array value;
   std::uint64_t changed_values;

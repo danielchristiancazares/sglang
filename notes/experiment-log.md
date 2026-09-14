@@ -25548,3 +25548,62 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
   10.2 vs 4.27 ms, three 13.2 vs 4.61 ms, eight 33.3 vs 8.95 ms.
   It remains artifact-only and unselected. Low-register M2 passes exact native
   projection suites in BF16/FP16; its full-model comparison remains pending.
+
+### 2026-09-14 - Hierarchical sampling top-k, independently repeated
+
+- Added opt-in SGLANG_MLX_NATIVE_HIERARCHICAL_TOPK=512. Partition each
+  512-logit block, retain its top 20, then partition the smaller candidate
+  set. Both ordinary and speculative samplers retain full-vocabulary
+  logsumexp and their existing top-p filtering. Default remains zero/off.
+  All global top-k scores are retained; equal-score cutoff indices can differ
+  from MLX's other valid partition order, so this is not a universal
+  seed-for-seed equivalence claim for tied vocabulary boundaries.
+- Strict native unit and benchmark builds pass. New BF16 and FP16 tests
+  cover full vocabulary, multiple row ranks/counts, tied cutoff scores,
+  unique/in-range indices, k=1/20/300/full-vocabulary, small/nondivisible
+  fallback cases, malformed configuration and invalid selection counts.
+- Component measurements on 248320 logits preserve the selected score
+  multiset. Three rows improve approximately 0.80 -> 0.57 ms; two rows
+  0.68 -> 0.534 ms; one row 0.56 -> 0.48 ms with 512-logit blocks.
+- Five alternating model pairs, 1804-token source-review prompt, 32 warmup,
+  256 measured output tokens, original FP16 Q4, T=1/top-p=.95/top-k=20,
+  seed42, MTP width two. Initial control/candidate means 29.888000188 /
+  30.147217940 tok/s; medians 30.087180101 / 30.260614074.
+- Independent fresh-process five-pair repeat, with no compilation or other
+  inference competing: control/candidate means 30.020448048 / 30.114981106,
+  medians 30.019555512 / 30.167185126 tok/s. Four positive pairs and one
+  slower candidate sample (29.893444903); the model-level gain is small.
+  Every sample in both runs retained all emitted IDs and final state:
+  output b5c5ba570001f373, target 6ec1d67bd5f4a944, MTP 48fb4881e745a5f2,
+  137 refills, mean width 1.875912409. Repeat peak 22138769396 bytes.
+- These are bounded throughput replays, not natural-completion or populated
+  131072-context qualification. The requested compound goal remains open.
+- Artifact root ~/.cache/sglang-qwen38/20260914-attention-continuation:
+  topk_resident_1804.log, topk_resident_repeat.log, topk_qualified_*.log,
+  topk_{1,2,3}_{256,512,1024}.log, build_env.sh and repro_env.sh. The qualified
+  library is libqwen38_topk_qualified.dylib; production remains unchanged.
+
+### 2026-09-14 - Rejected continuation experiments
+
+- Full 11455-token review replay completed after the Q8 digest repair.
+  Dense small-query SDPA control/candidate means 26.831294641 / 27.053909588,
+  medians 26.995483372 / 27.011893793, all IDs/state identical. The first
+  microbenchmark's apparent gain does not carry into a substantial model gain.
+- Smaller M2 output tiles preserved all state but regressed ~30.14 -> 27.29.
+  Larger M2 output tiles also regressed projection microbenchmarks.
+- The inherited prepared-activation probe passes BF16/FP16 exact tests but
+  regresses five-pair model means 30.106499705 -> 23.129517422 tok/s. It is
+  preserved in the dirty worktree, with its flag unselected.
+- A new exact-order two-fragment Q4 activation kernel passes both precision
+  suites (including three-row boundary cases), but width-three means regress
+  28.909447319 -> 18.660897416 tok/s. Remains artifact-only and unselected.
+- Register-resident tiled Q8 attention avoids shared output accumulators,
+  but two-query 131k attention regresses ~4.20 -> 5.57 ms. Transposing packed
+  Q8 V and factoring its affine coefficients is numerically close but its
+  PV component regresses ~2.05 -> 5.96 ms (FP32) or 6.87 ms (FP16).
+- Restricting only the MTP proposal head to a vocabulary prefix leaves the
+  full target distribution and rejection correction in place. 65536 entries
+  changes the proposal trajectory and improves the short width-two replay
+  only ~1%; 131072 entries retains IDs/state in the width-three replay and
+  improves ~28.92 -> 29.60 except one slower sample. Still artifact-only,
+  without production selection or completed-work qualification.
