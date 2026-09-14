@@ -128,14 +128,23 @@ int main(int argc, char** argv) {
     CheckEqual(Finish(engine, Prefill(engine, complete)), mismatch,
                "mismatching_prefix");
 
-    // An identical request has no suffix to recompute last-token logits.
-    // Preserve the existing cold-prefill behavior at that boundary.
+    // An identical request recomputes logits from the saved last hidden
+    // row. Repeated restores must preserve target and MTP state as well
+    // as reseeding the same sampled output after speculative work.
     engine.begin_request();
     next = Prefill(engine, complete);
-    if (engine.last_prefill_cached_tokens() != 0) {
-      throw std::runtime_error("empty suffix unexpectedly reused state");
+    if (engine.last_prefill_cached_tokens() != static_cast<int>(complete.size())) {
+      throw std::runtime_error("identical prompt did not reuse its full prefix");
     }
     CheckEqual(mismatch, Finish(engine, next), "empty_suffix");
+    for (int repeat = 0; repeat < 3; ++repeat) {
+      engine.begin_request();
+      next = Prefill(engine, complete);
+      if (engine.last_prefill_cached_tokens() != static_cast<int>(complete.size())) {
+        throw std::runtime_error("repeated identical prompt lost its snapshot");
+      }
+      CheckEqual(mismatch, Finish(engine, next), "repeated_empty_suffix");
+    }
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

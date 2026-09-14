@@ -25276,3 +25276,29 @@ mean 13.929045  17.125658 446.051        39.730
 - The 30 tok/s, natural-stop xhigh, populated-131K combined target remains
   unmet. Next probes isolate CPU/GPU submission overlap and long-context
   Q8 attention with segmented probability/value multiplication.
+
+### 2026-09-13 - Exact repeated MTP prompt reuse
+
+- Identical MTP requests previously failed the strict-shorter-prefix test and
+  reran the entire prefill. The existing prompt snapshot already retained the
+  target recurrence, append-only target/MTP cache boundaries, and final hidden
+  row needed for logits. Equal-length matching requests now restore that row,
+  reseed request sampling, and execute zero new prompt tokens. Target-only
+  request handling and mismatching-prefix cold prefill remain unchanged.
+- The staged native source, excluding inherited probes and the later async/Q8
+  experiments, compiled with `-O3 -Wall -Wextra -Werror`. The expanded full-model
+  MTP prompt-cache test passed continuation after speculation, replacement
+  snapshots, mismatching prefixes, an empty suffix and three further identical
+  requests. Each scenario compares target-state digest, logical MTP-history
+  digest and 64 sampled token IDs. Receipt is
+  `~/.cache/sglang-qwen38/20260913-night/exact_reuse_staged_parity.log`.
+- A resident source-replay experiment reused all 1,804 prompt tokens in ten
+  requests. Cache-hit prefill took 0.003433291-0.006297209 seconds, retaining
+  the cold first token 1596 and full sampled output digest f836ee70c4e09215.
+  That experiment also contained the separately screened async-forward flag;
+  its decode-speed results are recorded separately. No natural-stop or full
+  131K serving claim is made from these bounded source replays.
+- Reproduction uses the existing uniform Q4 target and Youssofal MTP sidecar,
+  seed 42, `SGLANG_MLX_NATIVE_MTP_PROMPT_CACHE=1`, append-only attention
+  snapshots, committed-history tape, fused two-token convolution and verifier
+  norm fusion. No reasoning cap or Codex harness change was introduced.

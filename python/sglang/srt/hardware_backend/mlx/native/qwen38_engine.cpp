@@ -8119,6 +8119,7 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
         "speculative prefill requires schedule_decode=false");
   }
 
+  array reused_prompt_hidden(0);
   const int32_t* new_tokens = tokens;
   int new_token_count = n;
   const bool starts_request =
@@ -8149,7 +8150,8 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
     const bool can_reuse_snapshot =
         !can_reuse_current && (!has_mtp() || reuse_mtp_prompt) &&
         prompt_snapshot_valid_ &&
-        prompt_snapshot_history_.size() < size_t(n) &&
+        (prompt_snapshot_history_.size() < size_t(n) ||
+         (reuse_mtp_prompt && prompt_snapshot_history_.size() == size_t(n))) &&
         std::equal(
             prompt_snapshot_history_.begin(), prompt_snapshot_history_.end(),
             tokens);
@@ -8187,6 +8189,11 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
       reset_decode_pipeline();
       if (reuse_mtp_prompt) {
         last_hidden_ = mtp_prompt_hidden_;
+        if (new_token_count == 0) {
+          // The saved final hidden row is sufficient to recompute logits.
+          // Keep the target and MTP caches at their restored boundaries.
+          reused_prompt_hidden = expand_dims(mtp_prompt_hidden_, 1);
+        }
         // The restored layers now own these states. Do not retain another
         // recurrent-state generation while extending a long prompt.
         mtp_prompt_snapshot_.clear();
@@ -8222,7 +8229,7 @@ int32_t Engine::prefill(const int32_t* tokens, int n, bool schedule_decode) {
 
   token_history_.insert(
       token_history_.end(), new_tokens, new_tokens + new_token_count);
-  array hidden(0);
+  array hidden = std::move(reused_prompt_hidden);
   const bool capture_draft_context = dflash_valid_ || dspark_valid_;
   const bool capture_mtp_history =
       mtp_valid_ && mtp_committed_history_enabled_;
