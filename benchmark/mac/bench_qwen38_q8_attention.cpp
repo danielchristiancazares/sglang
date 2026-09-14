@@ -32,7 +32,7 @@ mx::array Values(const mx::Shape& shape, int seed) {
     state = state * 1664525U + 1013904223U;
     value = (static_cast<float>(state >> 16) / 32768.0f - 1.0f) * 0.5f;
   }
-  mx::array result = mx::astype(mx::array(values.data(), shape, mx::float32), mx::bfloat16);
+  mx::array result = mx::astype(mx::array(values.data(), shape, mx::float32), sglang::mlx_qwen38::activation_dtype());
   mx::eval(result);
   return result;
 }
@@ -40,15 +40,17 @@ mx::array Values(const mx::Shape& shape, int seed) {
 int main(int argc, char** argv) {
   try {
     if (argc != 5 && argc != 6) {
-      std::cerr << "usage: bench_qwen38_q8_attention QUERIES ACTIVE_LENGTH CAPACITY ITERATIONS [split|tiled]\n";
+      std::cerr << "usage: bench_qwen38_q8_attention QUERIES ACTIVE_LENGTH CAPACITY ITERATIONS [split|tiled|segmented]\n";
       return 2;
     }
     const std::string_view mode = argc == 6 ? argv[5] : "split";
-    if (mode != "split" && mode != "tiled")
-      throw std::runtime_error("expected split or tiled benchmark mode");
+    if (mode != "split" && mode != "tiled" && mode != "segmented")
+      throw std::runtime_error("expected split, tiled, or segmented benchmark mode");
     const auto select = [&](bool candidate) {
-      if (setenv("SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY",
-                 mode == "tiled" || candidate ? "1" : "0", 1) != 0 ||
+      if (setenv("SGLANG_MLX_NATIVE_Q8_SEGMENTED_MATMUL",
+                 mode == "segmented" && candidate ? "1" : "0", 1) != 0 ||
+          setenv("SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY",
+                 mode != "split" || candidate ? "1" : "0", 1) != 0 ||
           setenv("SGLANG_MLX_NATIVE_Q8_TILED_ATTENTION",
                  mode == "tiled" && candidate ? "1" : "0", 1) != 0)
         throw std::runtime_error("cannot select attention benchmark arm");
@@ -84,7 +86,7 @@ int main(int argc, char** argv) {
               << " capacity=" << capacity << " max_abs=" << maximum_error << '\n';
     if (maximum_error > 0.00390625f)
       throw std::runtime_error("split output exceeds numerical bound");
-    for (int sample = 0; sample < 6; ++sample) {
+    for (int sample = 0; sample < 10; ++sample) {
       const int split = sample % 4 == 0 || sample % 4 == 3 ? 0 : 1;
       select(split != 0);
       for (int warmup = 0; warmup < 3; ++warmup) {
@@ -96,7 +98,7 @@ int main(int argc, char** argv) {
       }
       const double milliseconds = std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - started).count() / iterations;
-      std::cout << "sample=" << sample << " split=" << split
+      std::cout << "sample=" << sample << " candidate=" << split
                 << " mean_ms=" << milliseconds << '\n';
     }
     return 0;

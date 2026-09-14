@@ -107,7 +107,7 @@ bool CheckParity(int query_tokens, int prefix_length, int cache_capacity) {
 }
 
 bool CheckQ8Parity(int query_tokens, int prefix_length, int cache_capacity,
-                   bool poison_unused = false) {
+                   bool poison_unused = false, float query_scale = 1.0f) {
   constexpr int kQueryHeads = 24;
   constexpr int kKeyValueHeads = 4;
   constexpr int kHeadDimension = 256;
@@ -119,7 +119,7 @@ bool CheckQ8Parity(int query_tokens, int prefix_length, int cache_capacity,
   std::vector<float> query_values = MakeValues(
       static_cast<std::size_t>(kQueryHeads) * query_tokens * kHeadDimension,
       113,
-      0.001953125f);
+      0.001953125f * query_scale);
   std::vector<float> key_values = MakeValues(
       static_cast<std::size_t>(kKeyValueHeads) * cache_capacity *
           kHeadDimension,
@@ -433,6 +433,19 @@ int main() {
     }
   }
   if (setenv("SGLANG_MLX_NATIVE_Q8_TILED_ATTENTION", "0", 1) != 0) return 1;
+
+  if (setenv("SGLANG_MLX_NATIVE_Q8_SEGMENTED_MATMUL", "1", 1) != 0 ||
+      RunAttentionCases() != 0 ||
+      !CheckQ8Parity(2, 4093, 8192, true) ||
+      !CheckQ8Parity(2, 4094, 8192, true) ||
+      !CheckQ8Parity(2, 4095, 8192, true, 32.0f) ||
+      !CheckQ8Parity(3, 8191, 16384, true, 16.0f) ||
+      !CheckQ8Parity(8, 131064, 131072, false, 8.0f) ||
+      !CheckQ8Parity(1, 65535, 131072, true, 16.0f) ||
+      setenv("SGLANG_MLX_NATIVE_Q8_SEGMENTED_MATMUL", "0", 1) != 0) {
+    std::cerr << "segmented Q8 attention failed numerical or causal parity\n";
+    return 1;
+  }
 
   for (const char* tiled : {"0", "1"}) {
     if (setenv("SGLANG_MLX_NATIVE_Q8_TILED_ATTENTION", tiled, 1) != 0)
