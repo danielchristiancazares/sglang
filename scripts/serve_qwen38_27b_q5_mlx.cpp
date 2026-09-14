@@ -29,6 +29,7 @@ constexpr std::string_view kMtpSnapshot =
 
 struct Options {
   std::string profile = "q5";
+  std::string activation_dtype = "bfloat16";
   fs::path repository;
   fs::path python;
   fs::path mlx_prefix;
@@ -60,6 +61,8 @@ void PrintUsage(std::ostream& output, std::string_view program) {
       << "Options:\n"
       << "  --profile q4|q5    Select checkpoint, API ID and kernel policy "
          "(default: q5)\n"
+      << "  --activation-dtype bfloat16|float16  Execution format (default: bfloat16)\n"
+      << "                     float16 requires --profile q4 --mtp-prompt-cache\n"
       << "  --mtp-prompt-cache  Reuse matching MTP prompt prefixes; for q4\n"
       << "                     this also enables MTP (default q4 is target-only)\n"
       << "  --repository PATH  SGLang checkout; defaults to the nearest "
@@ -217,6 +220,14 @@ void ValidatePort(std::string_view value) {
   }
 }
 
+void ValidateActivationProfile(const Options& options) {
+  if (options.activation_dtype != "bfloat16" && options.activation_dtype != "float16")
+    ThrowUsage("--activation-dtype must be bfloat16 or float16");
+  if (options.activation_dtype == "float16" &&
+      (options.profile != "q4" || !options.mtp_prompt_cache))
+    ThrowUsage("float16 requires --profile q4 --mtp-prompt-cache");
+}
+
 Options ParseOptions(int argc, char** argv) {
   std::optional<fs::path> repository;
   std::optional<fs::path> python;
@@ -237,6 +248,8 @@ Options ParseOptions(int argc, char** argv) {
       options.mtp_prompt_cache = true;
     } else if (argument == "--profile") {
       options.profile = RequireValue(argc, argv, index, argument);
+    } else if (argument == "--activation-dtype") {
+      options.activation_dtype = RequireValue(argc, argv, index, argument);
     } else if (argument == "--repository") {
       repository = RequireValue(argc, argv, index, argument);
     } else if (argument == "--python") {
@@ -263,6 +276,7 @@ Options ParseOptions(int argc, char** argv) {
   if (options.profile != "q4" && options.profile != "q5") {
     ThrowUsage("--profile must be q4 or q5");
   }
+  ValidateActivationProfile(options);
   options.served_model_name =
       served_model_name.value_or("qwen3.8-27b-" + options.profile);
   if (options.served_model_name.empty()) {
@@ -353,6 +367,8 @@ Options ParseOptions(int argc, char** argv) {
 
 std::vector<std::pair<std::string, std::string>> ProductionEnvironment(
     const Options& options) {
+  ValidateActivationProfile(options);
+  const bool half = options.activation_dtype == "float16";
   const bool q4_mtp = options.profile == "q4" && options.mtp_prompt_cache;
   std::vector<std::pair<std::string, std::string>> environment{
       {"PYTHONPATH", (options.repository / "python").string()},
@@ -366,6 +382,7 @@ std::vector<std::pair<std::string, std::string>> ProductionEnvironment(
       {"MLX_MAX_OPS_PER_BUFFER", options.profile == "q5" ? "200" : "100"},
       {"MLX_METAL_FAST_SYNCH", "1"},
       {"SGLANG_MLX_NATIVE_TARGET_ONLY_PREFILL_CHUNK_SIZE", "1024"},
+      {"SGLANG_MLX_NATIVE_ACTIVATION_DTYPE", options.activation_dtype},
       {"SGLANG_MLX_NATIVE_SAMPLING", "1"},
       {"SGLANG_MLX_NATIVE_SAMPLING_SEED", "42"},
       {"SGLANG_MLX_NATIVE_Q5_BATCH_ONE_QMV", "1"},
@@ -374,7 +391,7 @@ std::vector<std::pair<std::string, std::string>> ProductionEnvironment(
       {"SGLANG_MLX_NATIVE_Q4_BATCH_TWO_QMV", "1"},
       {"SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU", "1"},
       {"SGLANG_MLX_NATIVE_Q4_FUSED_RAW_PARAMS", "1"},
-      {"SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO", "1"},
+      {"SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO", half ? "0" : "1"},
       {"SGLANG_MLX_NATIVE_Q4_FUSED_SWIGLU_BATCH_TWO_SCALAR_INPUTS",
        options.profile == "q4" && !q4_mtp ? "1" : "0"},
       {"SGLANG_MLX_NATIVE_QUANTIZED_EMBEDDING", "1"},
@@ -406,6 +423,7 @@ const std::vector<std::string>& ClearedEnvironment() {
       "SGLANG_RUST_SERVER",
       "SGLANG_RUST_BUILD_MODE",
       "SGLANG_MLX_NATIVE_MAX_REASONING_TOKENS",
+      "SGLANG_MLX_NATIVE_ACTIVATION_DTYPE",
       "SGLANG_MLX_NATIVE_TRACE_STATE",
       "SGLANG_MLX_NATIVE_TRACE_SPEC",
       "SGLANG_MLX_NATIVE_TRACE_QMM",
