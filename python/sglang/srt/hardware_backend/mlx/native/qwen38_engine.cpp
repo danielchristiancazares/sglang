@@ -6086,6 +6086,43 @@ array Engine::forward_hidden_impl(
   return h;
 }
 
+array sampling_topk_indices(const array& token_logits, int k) {
+  if (token_logits.ndim() == 0 || k < 1 || k > token_logits.shape().back())
+    throw std::runtime_error("invalid top-k selection shape or count");
+  const auto shape = token_logits.shape();
+  const int vocab = shape.back();
+  int block = 0;
+  if (const char* value = std::getenv("SGLANG_MLX_NATIVE_HIERARCHICAL_TOPK")) {
+    const std::string_view text(value);
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), block);
+    if (error != std::errc() || end != text.data() + text.size())
+      throw std::runtime_error("invalid hierarchical top-k block");
+  }
+  if (block != 0 && block != 256 && block != 512 && block != 1024 && block != 2048)
+    throw std::runtime_error("invalid hierarchical top-k block");
+  if (block == 0 || vocab <= block || vocab % block != 0 || k > block) {
+    const array partitioned = mx::argpartition(token_logits, vocab - k, -1);
+    mx::Shape start(shape.size(), 0), end(shape);
+    start.back() = vocab - k;
+    return slice(partitioned, start, end);
+  }
+  // Every global top-k value appears in its block's top-k. Partition the
+  // smaller candidate set without changing full-vocabulary normalization.
+  // Equal-score boundary tokens can have different valid partition indices.
+  const int blocks = vocab / block;
+  const int rows = static_cast<int>(token_logits.size()) / vocab;
+  const auto grouped = reshape(token_logits, {rows, blocks, block});
+  const auto partitioned = mx::argpartition(grouped, block - k, -1);
+  const auto local_ids = slice(partitioned, {0, 0, block - k}, {rows, blocks, block});
+  const auto local_logits = reshape(mx::take_along_axis(grouped, local_ids, -1), {rows, blocks * k});
+  const auto global_ids = reshape(local_ids + reshape(mx::arange(blocks, mx::int32) * block, {1, blocks, 1}), {rows, blocks * k});
+  const auto selected = slice(mx::argpartition(local_logits, blocks * k - k, -1),
+      {0, blocks * k - k}, {rows, blocks * k});
+  auto output_shape = shape;
+  output_shape.back() = k;
+  return reshape(mx::take_along_axis(global_ids, selected, -1), output_shape);
+}
+
 array Engine::select_token(const array& hidden) {
   last_hidden_ = last_token(hidden);
   if (reasoning_open_) {
@@ -6110,15 +6147,12 @@ array Engine::select_token(const array& hidden) {
   constexpr int kTopK = 20;
   constexpr float kTopP = 0.95f;
   const auto shape = token_logits.shape();
-  const int batch = static_cast<int>(shape[0]);
   const int vocab = static_cast<int>(shape[1]);
   if (vocab < kTopK) {
     throw std::runtime_error("native sampling vocabulary is smaller than top-k");
   }
 
-  array partitioned = mx::argpartition(token_logits, vocab - kTopK, -1);
-  array candidate_ids =
-      slice(partitioned, {0, vocab - kTopK}, {batch, vocab});
+  array candidate_ids = sampling_topk_indices(token_logits, kTopK);
   array candidate_logits = astype(
       mx::take_along_axis(token_logits, candidate_ids, -1), mx::float32);
   array order = mx::argsort(-candidate_logits, -1);
@@ -6151,11 +6185,7 @@ array Engine::sampling_probabilities(const array& token_logits) {
     throw std::runtime_error("native sampling vocabulary is smaller than top-k");
   }
 
-  array partitioned = mx::argpartition(token_logits, vocab - kTopK, -1);
-  mx::Shape start(shape.size(), 0);
-  mx::Shape end(shape);
-  start.back() = vocab - kTopK;
-  array candidate_ids = slice(partitioned, start, end);
+  array candidate_ids = sampling_topk_indices(token_logits, kTopK);
   array candidate_logits = astype(
       mx::take_along_axis(token_logits, candidate_ids, -1), mx::float32);
   array order = mx::argsort(-candidate_logits, -1);
