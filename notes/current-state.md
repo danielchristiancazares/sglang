@@ -2287,3 +2287,8 @@ multi-token inputs and outstanding outputs. This is a bounded decode gain;
 natural-stop xhigh work at a populated 131,072-token window still needs
 qualification and the 30 tok/s goal has not been achieved. The inherited
 Q4 input-preparation and Q8 attention experiments remain separate dirty work.
+
+Identical MTP requests now reuse their complete prompt snapshot, including the
+saved final hidden row for logits. The expanded model-level test retains exact
+state digests and sampled IDs through repeated restores after speculation.
+Ten 1,804-token cache hits took approximately 3.4-6.3 ms for cached prefill.
