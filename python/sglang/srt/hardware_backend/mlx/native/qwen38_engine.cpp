@@ -6331,6 +6331,44 @@ std::uint64_t attention_cache_digest(const FullAttn& cache, bool include_capacit
   mix_integer(cache.offset);
   mix_integer(cache.cache_length);
   if (include_capacity) mix_integer(cache.cache_capacity);
+  if (cache.cache_bits != 8 && cache.cache_bits != 16) {
+    throw std::runtime_error("unsupported attention cache digest format");
+  }
+  if (cache.cache_bits == 8) {
+    // Separate packed payloads from the legacy dense digest domain.
+    mix_integer(cache.cache_bits);
+    if (cache.cache_length == 0) return digest;
+    if (cache.keys.ndim() != 4 || cache.keys.shape()[0] <= 0 ||
+        cache.keys.shape()[1] <= 0 || cache.keys.shape()[3] <= 0 ||
+        cache.keys.shape()[3] % 16 != 0 ||
+        cache.keys.shape()[2] != cache.cache_capacity ||
+        cache.keys.shape() != cache.values.shape() ||
+        cache.keys.dtype() != mx::uint32 || cache.values.dtype() != mx::uint32) {
+      throw std::runtime_error("invalid Q8 attention cache digest payloads");
+    }
+    auto parameter_shape = cache.keys.shape();
+    parameter_shape[3] /= 16;  // Four packed Q8 values per word, group size 64.
+    for (const auto& parameter : {cache.key_scales, cache.key_biases,
+                                 cache.value_scales, cache.value_biases}) {
+      if (parameter.shape() != parameter_shape ||
+          parameter.dtype() != activation_dtype()) {
+        throw std::runtime_error("invalid Q8 attention cache digest coefficients");
+      }
+    }
+    for (const auto& source : {cache.keys, cache.key_scales, cache.key_biases,
+                              cache.values, cache.value_scales, cache.value_biases}) {
+      auto active_shape = source.shape();
+      active_shape[2] = cache.cache_length;
+      for (int dimension : include_capacity ? source.shape() : active_shape)
+        mix_integer(dimension);
+      const auto active = mx::contiguous(slice(source, {0, 0, 0, 0}, active_shape));
+      eval(active);
+      const auto* bytes = active.data<unsigned char>();
+      for (std::size_t i = 0; i < active.nbytes(); ++i) mix(bytes[i]);
+    }
+    return digest;
+  }
+
   if (cache.cache_length == 0) {
     return digest;
   }

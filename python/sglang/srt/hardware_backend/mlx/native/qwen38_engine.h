@@ -140,7 +140,8 @@ struct FullAttn {
   int cache_bits = 16;
 };
 
-// Diagnostic only: synchronizes and hashes metadata plus active 16-bit K/V.
+// Diagnostic only: synchronizes and hashes metadata plus active dense K/V
+// or all six affine-Q8 buffers. Unused cache capacity is never read.
 std::uint64_t attention_cache_digest(const FullAttn& cache);
 std::uint64_t attention_cache_digest(const FullAttn& cache, bool include_capacity);
 
