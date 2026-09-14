@@ -423,6 +423,18 @@ int RunAttentionCases() {
 
 int main() {
   for (const char* tiled : {"0", "1"}) {
+    if (setenv("SGLANG_MLX_NATIVE_Q8_TILED_ATTENTION", tiled, 1) != 0 ||
+        setenv("SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY", "1", 1) != 0 ||
+        !CheckQ8Parity(2, 4093, 8192, true) ||
+        !CheckQ8Parity(3, 8191, 16384, true) ||
+        !CheckQ8Parity(17, 65, 256, true)) {
+      std::cerr << "inactive cache tail affected Q8 attention\n";
+      return 1;
+    }
+  }
+  if (setenv("SGLANG_MLX_NATIVE_Q8_TILED_ATTENTION", "0", 1) != 0) return 1;
+
+  for (const char* tiled : {"0", "1"}) {
     if (setenv("SGLANG_MLX_NATIVE_Q8_TILED_ATTENTION", tiled, 1) != 0)
       return 1;
     std::cout << "tiled_attention=" << tiled << '\n';

@@ -26503,3 +26503,27 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
   produced. This fails completed-work qualification despite earlier short
   native replays exceeding 30 tok/s. Further attention and quality work follows.
 - Codex has neither been invoked nor modified in this continuation.
+
+### 2026-09-14 - Guard inactive tails in the default Q8 attention kernel
+
+- New boundary coverage found that the default fixed Q8 kernel dequantized
+  inactive entries in the last 64-token tile. Zero attention probabilities
+  still multiplied their NaN values. The prior tail correction covered only
+  the experimental tiled kernel, leaving this default path exposed.
+- Both key/value staging now guard the active split boundary before reading
+  affine coefficients. Tests cover 4095 active tokens in an 8192 reserve,
+  speculative verification across an 8192 boundary, and 17-query prefill.
+  Both ordinary and tiled paths are exercised with poisoned inactive suffixes.
+- The previous FP16 library fails the new regression with 12288 nonfinite
+  outputs. The corrected library passes. Extended attention suites pass in
+  both BF16 and FP16, including growth, append-only rollback and 131072 cases.
+  Receipts are 20260914-work/tail_regression_{old,fixed}.log and
+  segmented_parity_{bfloat16,float16}.log. The latter also screens the still
+  separate opt-in segmented attention candidate and sharper query fixtures.
+- Clean-source full-model replay, original Q4 weights, FP16, 1804 source IDs,
+  32 warm/256 timed, sampled MTP block two, preserved b5c5ba570001f373,
+  137 refills, mean width 1.875912409 and last token 460. It measured
+  30.254264343 tok/s. Receipt tail_fix_full_model.log. This is a correctness
+  repair, not a new sustained-speed or completed-work qualification.
+- An initial sharper-query test edit scaled the wrong helper and failed
+  compilation; the edit was narrowed to CheckQ8Parity and strict builds passed.
