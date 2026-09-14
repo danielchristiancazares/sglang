@@ -246,6 +246,13 @@ bool native_quantized_embedding_enabled() {
       std::string_view(value) != "false";
 }
 
+bool native_q8_tiled_attention_enabled() {
+
+  const char* value = std::getenv("SGLANG_MLX_NATIVE_Q8_TILED_ATTENTION");
+  return value != nullptr && std::string_view(value) != "0" &&
+      std::string_view(value) != "false";
+}
+
 bool native_q8_split_verify_enabled() {
   const char* value = std::getenv("SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY");
   return value != nullptr && std::string_view(value) != "0" &&
@@ -1640,6 +1647,138 @@ constexpr const char* kFixedQ8AttentionSource = R"(
                 : shared_output[index] / denominator;
           }
         }
+)";
+
+constexpr const char* kTiledQ8AttentionSource = R"(
+  constexpr uint QTile = 8, KTile = 32, D = 256, HeadsPerKv = 6;
+  threadgroup bfloat qtile[QTile * D];
+  threadgroup bfloat kvtile[KTile * D];
+  threadgroup float scores[QTile * KTile];
+  threadgroup float accumulated[QTile * D];
+  threadgroup float stats[QTile * 2];
+  const uint tid = thread_index_in_threadgroup;
+  const uint sg = simdgroup_index_in_threadgroup;
+  const uint kv_head = threadgroup_position_in_grid.y;
+  const uint nq = uint(query_tokens), active = uint(active_cache_length);
+  const uint capacity = uint(cache_capacity), prefix = uint(prefix_length);
+  const uint splits = uint(key_splits);
+  const uint rows = nq * HeadsPerKv;
+  const uint query_tiles = (rows + QTile - 1) / QTile;
+  const uint query_tile = threadgroup_position_in_grid.x % query_tiles;
+  const uint split = threadgroup_position_in_grid.x / query_tiles;
+  const uint active_splits = min(splits, max(1u, (active + 1023) / 1024));
+  if (split >= active_splits) return;
+  const uint row_start = query_tile * QTile;
+  const uint tiles_per_split = ((active + KTile - 1) / KTile + active_splits - 1) / active_splits;
+  const uint first_key = split * tiles_per_split * KTile;
+  const uint causal_end = min(active, prefix + min(rows - 1, row_start + QTile - 1) / HeadsPerKv + 1);
+  const uint last_key = min(causal_end, (split + 1) * tiles_per_split * KTile);
+  for (uint i = tid; i < QTile * D; i += 128) {
+    const uint r = row_start + i / D;
+    qtile[i] = r < rows ? query[((kv_head * HeadsPerKv + r % HeadsPerKv) * nq + r / HeadsPerKv) * D + i % D] : bfloat(0);
+    accumulated[i] = 0.0f;
+  }
+  if (tid < QTile) { stats[2 * tid] = -INFINITY; stats[2 * tid + 1] = 0.0f; }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint key_start = first_key; key_start < last_key; key_start += KTile) {
+    for (uint pack = tid; pack < KTile * D / 4; pack += 128) {
+      const uint token = key_start + pack / (D / 4), dimension = (pack % (D / 4)) * 4;
+      const ulong row = ulong(kv_head) * capacity + token;
+      const uint code = key_cache[row * (D / 4) + dimension / 4];
+      const float scale = float(key_scales[row * (D / 64) + dimension / 64]);
+      const float bias = float(key_biases[row * (D / 64) + dimension / 64]);
+      for (uint e = 0; e < 4; ++e)
+        kvtile[pack * 4 + e] = token < last_key
+            ? bfloat(float((code >> (8 * e)) & 255) * scale + bias)
+            : bfloat(0);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_float8x8 score = make_filled_simdgroup_matrix<float, 8>(0.0f);
+    for (uint dimension = 0; dimension < D; dimension += 8) {
+      simdgroup_bfloat8x8 q, k;
+      simdgroup_load(q, qtile + dimension, D, 0, false);
+      simdgroup_load(k, kvtile + sg * 8 * D + dimension, D, 0, true);
+      simdgroup_multiply_accumulate(score, q, k, score);
+    }
+    simdgroup_store(score, scores + sg * 8, KTile, 0, false);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint softmax_row = tid / 16, softmax_lane = tid % 16;
+    const uint logical_row = row_start + softmax_row;
+    const uint limit = logical_row < rows ? min(active, prefix + logical_row / HeadsPerKv + 1) : 0;
+    float values[2], maximum = -INFINITY;
+    for (uint e = 0; e < 2; ++e) {
+      const uint col = softmax_lane + 16 * e;
+      values[e] = key_start + col < limit ? scores[softmax_row * KTile + col] * 0.0625f : -INFINITY;
+      maximum = max(maximum, values[e]);
+    }
+    maximum = sglang_attention_simd_max_16(maximum);
+    const float old_max = stats[2 * softmax_row], old_sum = stats[2 * softmax_row + 1];
+    const float next_max = maximum == -INFINITY ? old_max : max(old_max, maximum);
+    const float rescale = old_sum == 0.0f ? 0.0f : (maximum == -INFINITY ? 1.0f : exp(old_max - next_max));
+    float sum = 0.0f;
+    for (uint e = 0; e < 2; ++e) {
+      const float probability = values[e] == -INFINITY ? 0.0f : exp(values[e] - next_max);
+      scores[softmax_row * KTile + softmax_lane + 16 * e] = probability;
+      sum += probability;
+    }
+    sum = sglang_attention_simd_sum_16(sum);
+    for (uint dimension = softmax_lane; dimension < D; dimension += 16)
+      accumulated[softmax_row * D + dimension] *= rescale;
+    if (softmax_lane == 0) {
+      stats[2 * softmax_row] = next_max;
+      stats[2 * softmax_row + 1] = old_sum * rescale + sum;
+    }
+    for (uint pack = tid; pack < KTile * D / 4; pack += 128) {
+      const uint token = key_start + pack / (D / 4), dimension = (pack % (D / 4)) * 4;
+      const ulong row = ulong(kv_head) * capacity + token;
+      const uint code = value_cache[row * (D / 4) + dimension / 4];
+      const float scale = float(value_scales[row * (D / 64) + dimension / 64]);
+      const float bias = float(value_biases[row * (D / 64) + dimension / 64]);
+      for (uint e = 0; e < 4; ++e)
+        kvtile[pack * 4 + e] = token < last_key
+            ? bfloat(float((code >> (8 * e)) & 255) * scale + bias)
+            : bfloat(0);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_float8x8 outputs[8];
+    for (uint block = 0; block < 8; ++block)
+      simdgroup_load(outputs[block], accumulated + sg * 64 + block * 8, D, 0, false);
+    for (uint key = 0; key < KTile; key += 8) {
+      simdgroup_float8x8 probability;
+      simdgroup_load(probability, scores + key, KTile, 0, false);
+      for (uint block = 0; block < 8; ++block) {
+        simdgroup_bfloat8x8 value;
+        simdgroup_load(value, kvtile + key * D + sg * 64 + block * 8, D, 0, false);
+        simdgroup_multiply_accumulate(outputs[block], probability, value, outputs[block]);
+      }
+    }
+    for (uint block = 0; block < 8; ++block)
+      simdgroup_store(outputs[block], accumulated + sg * 64 + block * 8, D, 0, false);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  for (uint i = tid; i < QTile * D; i += 128) {
+    const uint row = row_start + i / D;
+    if (row < rows) {
+      const uint head = kv_head * HeadsPerKv + row % HeadsPerKv;
+      const uint token = row / HeadsPerKv;
+      const ulong output_row = ulong(head) * nq + token;
+      if (splits > 1) {
+        const ulong base = (ulong(split) * 24 * nq + output_row) * (D + 2);
+        output[base + i % D] = accumulated[i];
+      } else {
+        const float denominator = stats[2 * (i / D) + 1];
+        output[output_row * D + i % D] = denominator == 0.0f ? 0.0f : accumulated[i] / denominator;
+      }
+    }
+  }
+  if (splits > 1 && tid < QTile && row_start + tid < rows) {
+    const uint row = row_start + tid;
+    const uint head = kv_head * HeadsPerKv + row % HeadsPerKv;
+    const ulong output_row = ulong(head) * nq + row / HeadsPerKv;
+    const ulong base = (ulong(split) * 24 * nq + output_row) * (D + 2);
+    output[base + D] = stats[2 * tid];
+    output[base + D + 1] = stats[2 * tid + 1];
+  }
 )";
 
 constexpr const char* kReduceQ8DecodeSource = R"(
@@ -3063,6 +3202,27 @@ const mx::fast::CustomKernelFunction& fixed_q8_attention_metal() {
   return kernel;
 }
 
+const mx::fast::CustomKernelFunction& tiled_q8_attention_metal() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "sglang_tiled_q8_attention",
+      {"query",
+       "key_cache",
+       "key_scales",
+       "key_biases",
+       "value_cache",
+       "value_scales",
+       "value_biases",
+       "query_tokens",
+       "prefix_length",
+       "cache_capacity",
+       "active_cache_length",
+       "key_splits"},
+      {"output"},
+      kTiledQ8AttentionSource,
+      kFixedPrefillAttentionHeader);
+  return kernel;
+}
+
 const mx::fast::CustomKernelFunction& reduce_q8_decode_metal() {
   static const auto kernel = mx::fast::metal_kernel(
       "sglang_reduce_q8_decode",
@@ -3987,8 +4147,10 @@ array fixed_q8_attention(
       32, std::max(1, (cache_capacity + 4095) / 4096));
   const bool split_decode = requested_key_splits > 1 &&
       (query_tokens == 1 ||
-       (native_q8_split_verify_enabled() && query_tokens <= 8));
-  auto outputs = fixed_q8_attention_metal()(
+       ((native_q8_split_verify_enabled() || native_q8_tiled_attention_enabled()) && query_tokens <= 8));
+  const auto& kernel = native_q8_tiled_attention_enabled()
+      ? tiled_q8_attention_metal() : fixed_q8_attention_metal();
+  auto outputs = kernel(
       {queries,
        key_cache,
        key_scales,

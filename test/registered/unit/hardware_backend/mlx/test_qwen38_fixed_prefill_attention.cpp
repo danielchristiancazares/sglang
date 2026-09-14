@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -104,7 +105,8 @@ bool CheckParity(int query_tokens, int prefix_length, int cache_capacity) {
       maximum_absolute_error <= 0.00390625f;
 }
 
-bool CheckQ8Parity(int query_tokens, int prefix_length, int cache_capacity) {
+bool CheckQ8Parity(int query_tokens, int prefix_length, int cache_capacity,
+                   bool poison_unused = false) {
   constexpr int kQueryHeads = 24;
   constexpr int kKeyValueHeads = 4;
   constexpr int kHeadDimension = 256;
@@ -152,6 +154,21 @@ bool CheckQ8Parity(int query_tokens, int prefix_length, int cache_capacity) {
       mx::quantize(dense_values, 64, 8, "affine");
   if (quantized_keys.size() != 3 || quantized_values.size() != 3) {
     return false;
+  }
+  // Abandoned speculative suffixes are outside the causal history. Poison
+  // their parameters so masked zero probabilities cannot hide a 0 * NaN.
+  if (poison_unused && active_length < cache_capacity) {
+    const mx::array poison = mx::full(
+        {1, kKeyValueHeads, cache_capacity - active_length, 4},
+        std::numeric_limits<float>::quiet_NaN(), mx::bfloat16);
+    for (int parameter = 1; parameter < 3; ++parameter) {
+      quantized_keys[parameter] = mx::slice_update(
+          quantized_keys[parameter], poison, {0, 0, active_length, 0},
+          {1, kKeyValueHeads, cache_capacity, 4});
+      quantized_values[parameter] = mx::slice_update(
+          quantized_values[parameter], poison, {0, 0, active_length, 0},
+          {1, kKeyValueHeads, cache_capacity, 4});
+    }
   }
   mx::array dequantized_keys = mx::dequantize(
       quantized_keys[0],
@@ -380,7 +397,7 @@ bool CheckAppendOnlyRollbackInvariant() {
 
 } // namespace
 
-int main() {
+int RunAttentionCases() {
   if (setenv("SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY", "0", 1) != 0 ||
       !CheckQ8Parity(2, 8191, 16384) ||
       setenv("SGLANG_MLX_NATIVE_Q8_SPLIT_VERIFY", "1", 1) != 0 ||
@@ -398,6 +415,22 @@ int main() {
       !CheckQ8Parity(1024, 0, 1024) ||
       !CheckQ8Parity(1, 8191, 16384) || !RejectsInvalidQueryDtype() ||
       !CheckCacheGrowthPolicy() || !CheckAppendOnlyRollbackInvariant()) {
+    return 1;
+  }
+  return 0;
+}
+
+int main() {
+  for (const char* tiled : {"0", "1"}) {
+    if (setenv("SGLANG_MLX_NATIVE_Q8_TILED_ATTENTION", tiled, 1) != 0)
+      return 1;
+    std::cout << "tiled_attention=" << tiled << '\n';
+    if (RunAttentionCases() != 0) return 1;
+  }
+  if (!CheckQ8Parity(2, 0, 131072, true) ||
+      !CheckQ8Parity(3, 8191, 16384, true) ||
+      !CheckQ8Parity(17, 65, 256, true)) {
+    std::cerr << "inactive Q8 cache suffix contaminated attention\n";
     return 1;
   }
   return 0;

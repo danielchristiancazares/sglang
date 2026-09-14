@@ -26273,3 +26273,30 @@ mean 13.929045  17.125658 446.051        39.730
 - Receipts are 20260913/q8_split_parity.log and q8_split_bench_{8k,131k}.log.
   Both benchmark and dylib compile with strict project warnings. The next
   long-cache owner is tile dequantization/barrier overhead within each split.
+
+### 2026-09-13 - recover and bound the experimental tiled Q8 path
+
+- Resumed at 0c60598bc7 on perf/qwen38-mlx-native-20260912. The sole
+  inherited dirty file was qwen38_engine.cpp, containing the uncommitted
+  tiled Q8 kernel. Its original patch is preserved in
+  ~/.cache/sglang-qwen38/20260913-evening/inherited-tiled-attention.patch.
+  Host is M1 Max, 32 GPU cores, 32 GiB. No inference listener or process
+  was running. Codex was neither invoked nor modified.
+- Completed a resident-cache split/tiled comparison mode in the existing
+  C++ Q8 benchmark. Ordinary legacy and tiled attention parity pass, including
+  eight queries at 131072 capacity, causal boundaries, growth, and rollback.
+- New unused-suffix NaN fixtures expose contamination in the inherited path:
+  two active tokens in a 131072 reserve produce 12288 nonfinite outputs.
+  Zeroing dequantized shared-tile entries outside the active split fixes all
+  three poisoned suffix cases. The old library exits 1 on this regression;
+  the corrected library passes both complete attention arms and the fixtures.
+- The correct tiled candidate stays opt-in. Final alternating 30-iteration
+  2/8193/16384 control ms are 2.082570833/2.089531933/2.086327767;
+  tiled ms are 2.274088900/2.269025000/2.274129167. At 3/131064/131072,
+  control is 19.800338867/19.762038900/19.767748633 and tiled is
+  26.964525000/26.301305567/26.636748600. This is a correctness repair,
+  not a performance promotion. An artifact-only half-tile probe reduced an
+  unguarded 131K screen to about 17.03 ms, but has no range/quality standing.
+- Strict C++20 O3/O2 builds and numerical tests pass. Receipts and exact
+  candidate source are in 20260913-evening/attention_guard_*_final.log,
+  attention_unguarded_regression.log, and engine_attention_commit.cpp.
