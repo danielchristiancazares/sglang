@@ -1208,6 +1208,19 @@ code changes, or process state matter.
   defaults stay unchanged; the MTP-bearing AttnNVFP4 target and explicit
   DSpark-v2 draft remain selected.
 
+## 2026-09-16 — screen DavidAU TURBO Fable Cold Fusion NVFP4
+
+- Downloaded and verified the author's BF16 checkpoint and MTP GGUF. Standard
+  local ModelOpt calibration exceeded the machine's memory-commit margin;
+  no locally converted checkpoint was exported and no BF16 benchmark ran.
+- At the user's direction, downloaded hyssra's existing NVFP4 W4A4 conversion.
+  Target-only SGLang passes basic behavior and exact 200K capacity; five
+  `6213+512` official-thinking samples average 61.9904 generation TPS.
+- Two public Babouin coding responses fail: a non-Rust answer and a Rust
+  answer with compiler-confirmed missing traits. The user closed the evaluation.
+  Production defaults remain selected, all task processes are stopped, and
+  downloaded artifacts and evidence are retained.
+
 ## 2026-09-19 — native-Windows DiffusionGemma compatibility trial
 
 - Downloaded NVIDIA's pinned NVFP4 checkpoint and verified both weight shards

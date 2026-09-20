@@ -36,6 +36,47 @@ The existing `.venv` executable still names a missing base interpreter; the
 native launcher uses standalone CPython 3.13.14 without changing that metadata.
 Full commands and qualification limits are in the September 19 experiment log.
 
+**DavidAU NVFP4 evaluation closed at user request, 2026-09-16:** the verified
+hyssra W4A4 conversion is retained at
+`C:\Users\Daniel\models\qwen38-turbo-nvfp4-hyssra`. Five target-only, Cutlass,
+exact `6213+512` official-thinking samples average **61.9904 generation TPS**
+and **0.463714 s TTFT**. Exact `199000+16` passes at 3085.220 prompt TPS and
+64.501073 s TTFT. Arithmetic, reasoning, parsed tools and non-thinking checks
+pass; both sampled Babouin coding answers fail the task requirements. One
+returns Hemlock-labelled non-Rust code; the other has compiler-confirmed
+missing Rust trait implementations. This is a two-example quality screen,
+with no isolated BF16-to-NVFP4 accuracy measurement or production promotion.
+The reference NVFP4 throughput window completed; its coding comparison was
+cancelled when the user stopped the evaluation. No BF16 benchmark ran.
+
+All task servers, benchmark clients and quantizers are stopped; port 30000
+is free and the GPU has returned to display-only residency. Production
+settings, dependencies, client profiles and source checkpoints are unchanged.
+Verified BF16, GGUF and NVFP4 downloads, calibration data and captured results
+are retained. Temporary quantizer dependencies, offload copies and build
+outputs are removed; policy blocked deletion of three read-only temporary
+Git-pack files totaling about 18 MB. The September 16 experiment-log entry
+contains exact commands, revisions, samples, failure evidence and cleanup.
+
+**Windows runtime handoff, 2026-09-15:** the user-requested 131072-context/pool
+trial is running on `main` at `c7f2f89f5d` with the pre-existing worktree
+repairs. The existing shared DSpark Mamba commit repair now passes startup,
+both graph captures, reasoning/arithmetic, parsed tools, non-thinking output,
+and near-limit exact `129999+16`. An A/B/A trial (128K / 200K / 128K restart),
+five official-thinking samples per shape per launch, shows no demonstrated
+speed improvement from reducing the reservation. Short `6213+512` means are
+138.257 / 174.626 / 168.734 TPS with 0.546400 / 0.506086 / 0.514617 s TTFT;
+long `32768+512` means are 121.159 / 121.300 / 118.346 TPS. Sampling and desktop
+residency varied; the first short-window gap did not repeat. The smaller pool
+does provide useful headroom: final 128K flush left 3831 MiB free, versus
+1395 MiB for the control, whose active samples reached 226 MiB free.
+The final server uses explicit `-ContextLength 131072 -MaxTotalTokens 131072`
+overrides at `http://127.0.0.1:30000/v1`; launcher defaults remain 200K.
+Health and model metadata pass. This is a trial, not a new qualified production
+winner. Logs, resolved settings, samples and process ownership are recorded in
+the September 15 experiment-log entry; no Codex/OpenCode client gate was run.
+Recheck live ownership before acting on any older stopped-server snapshot below.
+
 **Windows startup handoff, 2026-09-13:** on `main` at `c7f2f89f5d`, the
 existing import repairs and one-line scheduler configuration-reference repair
 allow the argument-free launcher to load the target/draft weights, allocate

@@ -8,6 +8,19 @@ remain in [`experiment-log.md`](experiment-log.md).
 Apple 2026-09-02 committed-MTP history selection. September 12 Git integration
 preserves the distinct measured Windows and official coding sampling profiles.
 
+## DavidAU NVFP4 candidate closed, 2026-09-16
+
+The user ended the TURBO Fable Cold Fusion evaluation after two failed Babouin
+coding responses from hyssra's W4A4 conversion, pinned at
+`77208614a25799ee3985517c265ae8a90066ec46`. Keep the existing production
+checkpoint and launcher defaults. The candidate's target-only five-run mean
+is 61.9904 generation TPS at exact `6213+512`; exact `199000+16`, arithmetic,
+reasoning and parsed tools pass. The two coding failures establish grounds
+for withholding promotion, without estimating corpus-wide accuracy or
+isolating quantization loss from the BF16 source. No BF16 benchmark was run.
+Downloaded checkpoints and raw results remain available. Resume only on a new
+user request; commands and individual samples are in the September 16 ledger.
+
 ## Selected production choices
 
 | Decision | Selected choice | Durable evidence |

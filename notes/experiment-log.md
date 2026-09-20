@@ -25297,6 +25297,412 @@ mean 13.929045  17.125658 446.051        39.730
   default temperature, then record problem 1's retry separately from the
   original baseline answers and retain its server sampling provenance.
 
+## 2026-09-15 - User-requested 131072 context/pool trial
+
+- User requested `try 131072` after discussing TPS and TTFT versus 200000.
+  Started on `main` at `c7f2f89f5def59890d143c553f47de52699499fe` with
+  16 existing modified paths; all are preserved. The current launcher has
+  the user's sampling-model-view edits and temperature 1.0. The existing
+  DSpark worktree repair routes Mamba commit through the shared helper.
+- Preflight found port 30000 free and no Python/SGLang/CUDA compiler process.
+  RTX 5090 WDDM, driver 616.92, reported 2770 MiB used, 6% utilization,
+  30 C, and approximately 70 W. Chrome, Epic, Docker Desktop, OpenCode,
+  terminals, and other desktop clients remain present. No prior server
+  was stopped. `sglang.exe --help` passes and `uv pip list --python
+  .venv/Scripts/python.exe` resolves editable SGLang to this checkout;
+  torch 2.13.0+cu130, FlashInfer 0.6.17, Transformers 5.12.1, and
+  triton-windows 3.7.1.post27 remain installed.
+- Submitted the detached command through PowerShell 7:
+  `.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1 -ContextLength 131072 -MaxTotalTokens 131072`.
+  The launcher supplies its normal two-job MSVC/CUDA initialization.
+  Startup and the single bounded readiness check after 180 seconds are
+  running in the background at the user's request; readiness and measurements
+  are pending. No launcher default was edited for this trial.
+- Recovery artifacts are under
+  `C:\Users\Daniel\AppData\Local\Temp\opencode\qwen-131072-20260915`:
+  `launcher.pid`, stdout/stderr logs, start timestamp, complete worktree
+  inventory, dependencies, pre-launch process inventory, and GPU snapshot.
+  Next: inspect resolved arguments/graph completion and endpoint results,
+  then sequential behavior and five-sample official-thinking `6213+512`
+  checks if startup succeeds. No live matched 200K baseline was available
+  before launch, so historical TPS is not a paired comparison.
+- First 128K launch reached readiness at 12:35:46 PDT. Verified ancestry:
+  launcher 27936 -> sglang 30248 -> Python 31368 -> listener 31084 ->
+  workers 2972/26716. Both target/draft pools contain 131072 FP8 tokens;
+  target K/V are 2.00/2.00 GiB and draft K/V 0.63/0.63 GiB. Five FP32
+  Mamba slots and circular GDN ReplaySSM are active. Target verify capture
+  completed in 1.07 s and draft verify in 0.96 s; logged graph-end available
+  memory was 3.78 GiB. `/v1/models` advertises 131072, `/model_info` preserves
+  reasoning/tool parsers and image/audio false. The bounded health check passed.
+- Existing `probe_openai_chat.py` passed thinking arithmetic (`703`, 54
+  reasoning tokens), one `multiply({"a":37,"b":19})` with `tool_calls`, and
+  non-thinking exact `READY` with zero reasoning. Raw reports are
+  `arithmetic.json`, `tool.json`, and `no-thinking.json` in the recovery folder.
+- Ran the Python authority `scripts/windows/bench_openai_stream.py` five
+  times per shape with `--input-tokens {6213|32768} --output-tokens 512
+  --warmup-output-tokens 16 --warmup-runs 1 --temperature 1.0 --top-p 0.95
+  --top-k 20 --min-p 0.0 --presence-penalty 0.0 --repetition-penalty 1.0`.
+  Timeout was 120 s for short, 180 s for long. Every sample is warmed,
+  cache-flushed/uncached, unsimulated, exact-count, and length-finished.
+  Short TPS: `[140.934,128.694,129.536,138.263,153.856]`; TTFT seconds:
+  `[0.552157,0.557758,0.536005,0.536011,0.550070]`.
+  Long TPS: `[108.667,109.035,116.338,140.137,131.616]`; TTFT seconds:
+  `[3.807397,3.821264,3.771036,3.801971,3.687987]`.
+  Complete metrics/counts/digests are in `short-{1..5}.json` and
+  `long-{1..5}.json`; per-sample clock/power/VRAM brackets are saved alongside.
+- Near-limit `--input-tokens 130000 --output-tokens 16` failed at CPU-side
+  calibration (129999 tokens, no generation sent). Retried with exact 129999.
+  The first retry was interrupted by the user during prefill; its client exited
+  and scheduler discarded the request. After explicit continuation, cache flush
+  and the same 129999 request with one 16-token warmup, 300 s timeout and
+  temperature 0 passed: 130015 total tokens, length finish, 3930.985 prompt
+  TPS, 69.399 short decode TPS, 33.070336 s TTFT, 33.286478 s E2E,
+  digest `02136e88ef5ef3f4706c203431ead97cee68ddc0c68ef91951aa071470881d6b`.
+  This is near-limit coverage, not an exact 131072-total request.
+- Existing `bench_spec_acceptance.py --input-tokens 6213 --output-tokens 512
+  --warmup-output-tokens 16 --timeout 120 --temperature 1.0 --top-p 0.95
+  --top-k 20 --presence-penalty 0.0` passed: accepted length 2.666667,
+  acceptance rate 0.237351, 319/1344 correct/proposed, 192 verifies,
+  histogram `[75,40,25,14,20,8,3,7]`. Final flush and health both returned 200;
+  3355 MiB free at 12:43:38 PDT. Next: fresh same-source 200K control,
+  then restore the user's requested 128K trial server.
+- Stopped only the verified first-trial tree leaf-first. The first immediate
+  port check still observed the closing listener and prevented launching;
+  a fresh ownership check found it gone, no Python/compiler processes, and
+  2398 MiB display residency. The launcher removed its sampling view.
+  Launched the same script with `-ContextLength 200000 -MaxTotalTokens 200000`.
+  Control ancestry: 36472 -> 35880 -> 21052 -> listener 32884 ->
+  workers 33140/23012. Readiness passed at 12:45:12 PDT; target/draft
+  captures took 0.76/0.61 s, graph-end available memory 1.79 GiB. Model list
+  and resolved configuration confirm real 200000 context and pools.
+- Control used identical official-thinking benchmark commands, five warmed
+  uncached samples per shape, timeout 180 s. Short TPS:
+  `[175.965,168.268,177.615,176.628,174.654]`; TTFT:
+  `[0.516899,0.514059,0.485717,0.515414,0.498342]`.
+  Long TPS: `[128.793,126.457,124.883,114.750,111.618]`; TTFT:
+  `[3.438481,3.427846,3.430558,3.757369,3.709052]`.
+  Exact 129999+16 with the same greedy/warmup command passed at 4120.689
+  prompt TPS, 72.722 short decode TPS, 31.547879 s TTFT, 31.754144 s E2E,
+  and the same output digest as 128K. Acceptance probe: length 2.509804,
+  rate 0.215686, 308/1428 correct/proposed, 204 verifies, histogram
+  `[69,67,29,13,6,7,6,7]`. All metrics and GPU brackets are in
+  `control-200000/`. Free VRAM reached 226 MiB during the long window
+  (short samples 261 MiB); after flush it was 1395 MiB. Health passed.
+- Stopped only the verified control tree leaf-first; all six known PIDs,
+  listener, and compiler processes were absent before restore. Its sampling
+  view was removed by launcher cleanup. GPU returned to 1350 MiB ordinary
+  display residency at 12:50:05 PDT. Relaunched the literal 128K override
+  command into `restored-131072/`; ancestry 35732 -> 11504 -> 5944 ->
+  listener 20588 -> workers 24776/24216. Readiness passed at 12:50:48;
+  target/draft capture 0.86/0.72 s, graph-end available memory 3.89 GiB.
+- Repeated both five-sample windows on the restored 128K process to check
+  the large first-run variation. Short TPS:
+  `[169.807,176.651,153.492,173.286,170.432]`; TTFT:
+  `[0.515639,0.517725,0.519439,0.520286,0.499995]`.
+  Long TPS: `[107.688,113.575,118.370,125.196,126.903]`; TTFT:
+  `[3.522682,3.557573,3.456897,3.543455,3.499730]`.
+  Every measured request again preserved exact input/output counts and length
+  finish. Final thinking arithmetic returned 703 with 54 reasoning tokens;
+  flush and health returned 200. At 12:53:20, 3831 MiB was free, GPU 45 C,
+  172.04 W, 0% sampled utilization, SM/memory clocks 3052/13801 MHz.
+
+| Arm | Shape | Mean decode TPS | Mean TTFT (s) | Mean prompt TPS | Mean E2E (s) |
+|---|---|---:|---:|---:|---:|
+| First 128K | 6213+512 | 138.2566 | 0.5464002 | 11373.7790 | 4.2580956 |
+| First 128K | 32768+512 | 121.1586 | 3.7779310 | 8674.9434 | 8.0399942 |
+| Fresh 200K | 6213+512 | 174.6260 | 0.5060862 | 12283.8122 | 3.4334240 |
+| Fresh 200K | 32768+512 | 121.3002 | 3.5526612 | 9239.3092 | 7.7789790 |
+| Restored 128K | 6213+512 | 168.7336 | 0.5146168 | 12075.6638 | 3.5502830 |
+| Restored 128K | 32768+512 | 118.3464 | 3.5160674 | 9320.4554 | 7.8500090 |
+
+- Interpretation: no demonstrated TPS/TTFT win from reducing the reservation.
+  The first 128K short result did not repeat on restart, so do not attribute
+  its gap causally to pool size. Resolved settings differ only in the intended
+  capacity fields/derived limits, temporary hard-linked model-view paths,
+  generated seeds (359013376 / 150618140 / 28546390), and runtime telemetry.
+  Request seeds were unset; sampling/acceptance and ordinary WDDM residency
+  varied. Desktop clients were never stopped. During active samples SM clocks
+  were 3030-3045 MHz, memory 13801 MHz, approximately 398-458 W and 44-55 C.
+  This A/B/A trial establishes useful memory headroom, not a production
+  performance promotion or a deterministic same-output speed regression.
+- Handoff: leave the final 131072 override server running at
+  `http://127.0.0.1:30000/v1` for the requested trial. `restored-131072/`
+  holds its PID, full process inventory, logs, resolved arguments and model
+  metadata. Root `summary.json` retains all thirty individual samples and
+  aggregate metrics. Launcher defaults and external client configurations
+  were not edited. Re-resolve ownership before any shutdown/restart; the
+  PID values here are snapshots. Only recovery Markdown was changed by this
+  task, and `git diff --check` passes.
+
+## 2026-09-16 - DavidAU TURBO Fable Cold Fusion download and NVFP4 preparation
+
+- User requested a download and benchmark of DavidAU's
+  `Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF`,
+  then explicitly selected BF16-to-NVFP4 conversion and SGLang benchmarking.
+  Started on `main`, HEAD `c7f2f89f5def59890d143c553f47de52699499fe`,
+  preserving all 16 pre-existing modified paths. Production settings,
+  source checkpoints, client profiles, and dependencies remain unchanged.
+- Fresh ownership checks found ports 30000/30001/8080 free and no serving or
+  CUDA/compiler tree. Ordinary Codex, OpenCode, and desktop processes remain
+  present. RTX 5090 driver 616.92 reported 1,774 MiB used / 30,414 MiB free,
+  1% utilization and 42 C; Ryzen 9 9900X, approximately 61.7 GiB system RAM,
+  44 GiB initially available, and 545 GiB disk space available.
+- Completed `hf download DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q4_K_M.gguf README.md --revision c02caef111a8acf987947f35e1e288aa5450e184 --local-dir C:\Users\Daniel\models\Qwen3.8-27B-TURBO-Fable-Cold-Fusion-GGUF`.
+  The 18,498,573,856-byte GGUF matches upstream SHA-256
+  `bc7a6cf2bcc78d1190aaf04d1ab1c5cb845b6ff23aa0e7d24fe0d2ea6d3a7c7c`.
+  It is retained separately; no GGUF benchmark was launched before the switch.
+- The author-source revision `fd6a26869dc5775b3c81ce65468af634dd300b02`
+  reports 27,781,427,952 BF16 parameters and 55,563,007,208 safetensors bytes.
+  Its index includes all 15 MTP tensors, including `mtp.fc.weight` in
+  `model-mtp-restored.safetensors`. Download command:
+  `hf download DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NM-DAU --revision fd6a26869dc5775b3c81ce65468af634dd300b02 --local-dir C:\Users\Daniel\models\Qwen3.8-27B-TURBO-Fable-Cold-Fusion-BF16 --max-workers 3`.
+  A preceding include-pattern command downloaded metadata only because the
+  CLI interpreted trailing patterns as positional filenames; the full pinned
+  command supersedes it. Download and conversion-method validation are active.
+- BF16 download completed; all 13 safetensors files pass their exact pinned
+  upstream sizes and SHA-256 hashes. The source directory remains immutable.
+  The user identified `C:\Users\Daniel\babouin` as the calibration/evaluation
+  corpus. Its production corpus hash is
+  `e76608151b342920dc508103ee29f84e628743494fe6143da7dac7e40c18433c`.
+  A temporary C++23 exporter selects the first 16 complete training groups
+  from each category of the existing frozen 256-example calibration cohort:
+  128 repairs, 64 groups, 32 repairs per category. Validation and locked-test
+  records stay excluded. Strict MSVC `/W4 /WX /permissive-` compilation passes.
+  Exported calibration JSONL hash:
+  `0d795431394aa7ac567325c8b5e40a53ca65c7444bb6ba0f5998c977361e8908`.
+- Temporary tools and recovery output are under
+  `C:\Users\Daniel\AppData\Local\Temp\codex-fable-nvfp4-20260916`.
+  NVIDIA Model Optimizer source is pinned at
+  `b9cfdce8dc7f0a358391eee363516fdd9dde55ac`. Its existing `hf_ptq.py`
+  entry point runs unchanged, using an isolated dependency overlay and the
+  existing serving Torch/Transformers installation. No Python code was authored
+  or added to this checkout. The standalone upstream help/import gate passes.
+  The overlay adds ModelOpt metadata 0.46.1, accelerate 1.15.0, diffusers
+  0.40.0, PEFT 0.21.0, OmegaConf 2.3.1, PuLP 3.3.2, NLTK 3.10.3,
+  wonderwords 3.0.1, setuptools 84.0.0, and antlr4 runtime 4.9.3.
+- Launched the unchanged upstream quantizer through
+  `scripts/windows/invoke_cuda_python.ps1`, hidden PowerShell, with
+  `--pyt_ckpt_path C:\Users\Daniel\models\Qwen3.8-27B-TURBO-Fable-Cold-Fusion-BF16
+  --recipe general/ptq/nvfp4_default-kv_fp8_cast
+  --dataset C:\Users\Daniel\AppData\Local\Temp\codex-fable-nvfp4-20260916\calibration.jsonl
+  --calib_size 128 --calib_seq 6144 --batch_size 1
+  --offload_folder C:\Users\Daniel\AppData\Local\Temp\codex-fable-nvfp4-20260916\offload
+  --max_cpu_memory_gb 28 --max_gpu_memory_gb 20 --attn_implementation sdpa
+  --skip_generate --no-verbose
+  --export_path C:\Users\Daniel\models\qwen38-turbo-nvfp4`.
+  Process-scoped UTF-8/unbuffered output, offline Hugging Face access, and
+  eight OMP/MKL threads are set; the wrapper enforces the MSVC/CUDA 13.3
+  environment and two-job compiler limit. The recipe calibrates NVFP4 W4A4
+  with max observers, preserves its stock sensitive-module exclusions and MTP,
+  and casts the KV cache to FP8. Calibration and export are pending.
+  Prelaunch ownership was clear; GPU had 30,426 MiB free, 1% utilization,
+  29 C, and 48.92 W; 46.7 GiB system RAM was available.
+- The first quantizer tree was `pwsh 6468 -> Python shim 25916 -> Python
+  worker 8776`; it loaded 1,184 serving tensors, inserted 2,256 quantizers,
+  admitted the local chat-format dataset, and reached calibration `0/128`.
+  At 20:13 PDT, system commit reached 99%, free physical memory fell to
+  1,064 MiB, and paging reached 66,283 input / 121,132 output pages per second.
+  The quantizer also warned that disk-offload writeback retains updated weights
+  in CPU memory. Stopped only the freshly verified leaf worker 8776; its shim
+  and launcher exited automatically. No checkpoint was exported. GPU ownership
+  returned to display-only residency and all three quantizer PIDs were absent.
+- Follow-up identifies a separate continuing memory consumer: user-owned
+  Windows Terminal PID 33860, started 19:41:41 PDT, grew from 75.50 GB to
+  86.69 GB private committed memory, with 30.81 GB resident. System commit was
+  106.70 / 107.30 GB even after the quantizer exited. Its four PowerShell tabs
+  and unrelated processes are preserved. Asked the user to close/restart that
+  Terminal instance after preserving active work; further GPU work is held
+  pending memory recovery. The full source and calibration artifacts are intact.
+  Do not assume the first failure proves the standard calibrated route cannot
+  fit once this separate memory pressure is cleared.
+- Reviewed ModelOpt's compressed-load alternative before retry: upstream issue
+  2160 remains open and the current `init_quantized_weights` path still performs
+  quantization/compression on meta weights before loading the source. A newer
+  compressed-export scale test covers one downstream issue, without qualifying
+  this source-loading route. It has not been run on the DavidAU checkpoint.
+  Prefer a controlled retry of the standard calibrated route after system-memory
+  ownership is resolved. The stock SGLang launcher and serving dependencies are
+  unchanged; throughput, behavior, exact capacity, and coding checks are pending.
+- User confirmed closing the affected Terminal. Fresh preflight found 52,729
+  MiB available RAM, 23% system commit, no serving/Python/compiler tree, and
+  ports 30000/30001/8080 free. GPU returned to 1,471 MiB display residency,
+  0% utilization, 30 C and 50.17 W. At 20:22:22 PDT, relaunched the same
+  standard calibration arguments above, changing only disk-offload storage to
+  `offload-retry` and redirected output to `quantize-retry.stdout.log` and
+  `quantize-retry.stderr.log` under the task temporary directory. Hidden
+  launcher PID is 23924; source, corpus, recipe, thread limits and output path
+  are unchanged. This retry isolates quantizer memory use after recovery of
+  the unrelated Terminal allocation.
+- Clean retry tree was `pwsh 23924 -> Python shim 26264 -> worker 20592`,
+  with conhost 33088. It loaded all 1,184 serving tensors and inserted 2,256
+  quantizers, then reached 95,130,660,864 / 96,501,981,184 committed bytes
+  (98%). Worker private memory was 75,296,989,184 bytes and working set
+  37,136,310,272 bytes, with 16,807 MiB physical memory still available at
+  that sample. Stopped the freshly verified worker before calibration forward
+  progress. Its entire tree subsequently exited; system returned to 53,558
+  MiB available and 21% commit, GPU to 1,427 MiB display residency. Terminal
+  private memory was now only 1.17 GB. No export was produced. Upstream
+  layerwise calibration/offload was inspected but no custom recipe or modified
+  Python source was created or executed.
+- User clarified that only NVFP4 should be benchmarked, then authorized finding
+  an already-converted NVFP4 on Hugging Face. No BF16 benchmark has run.
+  Found exact-base conversions from hyssra, Solstice-AI and esatapedico. The
+  esatapedico W4A16 build leaves GDN dense and is approximately 27.6 GB; the
+  Solstice W4A4 build changes the chat template and has limited conversion
+  provenance. Selected hyssra's documented GPTQ/MSE W4A4 candidate for local
+  qualification. Its card reports GSM8K strict 0.600 versus source 0.899 under
+  greedy raw-prompt non-thinking evaluation; this is publisher evidence, not
+  a local measurement. A pinned original BF16 source revision is not supplied
+  by the conversion card, so exact source-revision identity remains unproven.
+- Download command: `hf download hyssra/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NM-DAU-NVFP4-W4A4 --revision 77208614a25799ee3985517c265ae8a90066ec46 --local-dir C:\Users\Daniel\models\qwen38-turbo-nvfp4-hyssra --max-workers 3`.
+  Expected safetensors payload is 20,559,288,072 bytes across main and towers
+  files. Existing source/GGUF/calibration material remains intact. Only this
+  NVFP4 checkpoint and NVFP4 comparison controls are eligible for benchmarking.
+- Hyssra download completed. Both safetensors files pass their pinned LFS
+  hashes: main `35ee5010236b5c3356ad1c7cbf0b052bc065ad56105b3356527b684b81d0fd62`,
+  towers `4eea6f7a252f83433b8af65cbac0b653d781b58d73d17c7fc32e4765fa50762e`.
+  Chat-template SHA-256 matches the original source exactly:
+  `514d5304fcac63bda60e6faf860d5657010cf43cbc4c633c8bf678ee184e7a37`.
+  The index contains all 15 MTP tensors. The actual GDN in_proj_a/b linears
+  are quantized W4A4 as well as the larger projections; parent-module ignore
+  entries in config do not mean that all GDN linears remain BF16.
+- At 20:31:09 PDT launched
+  `scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1 -ModelPath C:\Users\Daniel\models\qwen38-turbo-nvfp4-hyssra -ServedModelName qwen38-turbo-nvfp4 -SpeculativeNumSteps 0 -Fp4GemmBackend flashinfer_cutlass -RandomSeed 42`.
+  Hidden launcher PID 34396; output in task-directory
+  `hyssra-target.stdout.log` / `hyssra-target.stderr.log`. This isolates the
+  target model with the existing 200K context/pool, language-only surface,
+  FP8 KV and one-request scheduler. The compressed-tensors NVFP4 loader uses
+  Cutlass; the selected ModelOpt-only hybrid-Marlin relayout is not applied.
+  Preflight: no serving/compiler tree or target-port listener; driver 616.92,
+  GPU 1,661 MiB used / 30,527 MiB free, 0%, 28 C, 47.26 W; 52,226 MiB RAM
+  available and 22% system commit. Desktop WDDM clients were preserved.
+- Target-only launch reached readiness at 20:32:18. Process tree:
+  `pwsh 34396 -> sglang shim 15672 -> Python shim 31248 -> API 5968`,
+  workers 19532 and 32456; conhost 33308 belongs to the launcher. Port 30000
+  is owned by 5968. Loaded checkpoint consumes 17.92 GiB, five FP32 Mamba
+  slots use 0.84 GiB state plus 0.02 GiB conv state, and the exact 200K FP8 KV
+  pool uses 3.05 GiB each for K/V. Target decode graph captured in 15.38 s.
+  Weight-loader notices concern skipped visual tensors only; no language tensor
+  was reported missing. There is an FP8 KV default-scale warning to investigate.
+  Health/model list pass; `/model_info` confirms target alias, reasoning/tool
+  parsers, and image/audio understanding disabled.
+- Existing `probe_openai_chat.py`, model `qwen38-turbo-nvfp4`, ordinary
+  sampling: arithmetic returned `703` with coherent reasoning (68 prompt,
+  142 output tokens, stop); tool probe returned exactly one
+  `multiply({"a":37,"b":19})` (346/78, tool_calls); no-thinking prompt returned
+  exactly `NVFP4 READY` (23/5, stop, zero reasoning tokens). Full responses are
+  `hyssra-arithmetic.json`, `hyssra-tools.json`, `hyssra-nonthinking.json`.
+- Five consecutive Python-client target-only samples use
+  `scripts/windows/bench_openai_stream.py --base-url http://127.0.0.1:30000
+  --model qwen38-turbo-nvfp4 --input-tokens 6213 --output-tokens 512
+  --warmup-output-tokens 16 --warmup-runs 1 --timeout 600 --temperature 1.0
+  --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 0.0
+  --repetition-penalty 1.0`. Each is warmed, cache-flushed, unsimulated, with
+  exact 6213/512/6725 and finish reason `length`; request seeds are unset.
+  All output/reasoning digests and lengths are retained in the five
+  `hyssra-target-sample-N.json` files. Individual samples (decode TPS / TTFT s /
+  prompt TPS / E2E s):
+  1. `62.322 / 0.460412 / 13494.430 / 8.659705`
+  2. `62.120 / 0.470703 / 13199.414 / 8.696740`
+  3. `62.643 / 0.469597 / 13230.493 / 8.626981`
+  4. `60.933 / 0.466099 / 13329.795 / 8.852330`
+  5. `61.934 / 0.451759 / 13752.920 / 8.702459`
+  Mean: `61.9904 / 0.463714 / 13401.4104 / 8.707643`.
+  Active telemetry: SM 3022 MHz, memory 14001 MHz, GPU 99%, 45-51 C,
+  455.32-469.97 W, 2371-2763 MiB free. No competing compiler/GPU benchmark
+  tree was present. An automatic policy rejection of a combined loop and
+  background telemetry command was resolved by individual sequential benchmark
+  invocations and bounded read-only telemetry calls; no approval override was
+  needed and the rejected command did not execute.
+- Target capacity gate passed exact `199000+16=199016`, with the existing
+  Python client and `--warmup-runs 1 --warmup-output-tokens 16 --timeout 600
+  --temperature 0`: 3085.220 prompt TPS, 51.881 short decode TPS,
+  64.501073 s TTFT, 64.790197 s E2E, finish `length`. Full result/digest is
+  `hyssra-target-capacity.json`. This includes a separate full-shape warmup;
+  both long requests completed. Cache was explicitly flushed afterward.
+- Traced the FP8 warning: `model_runner_components/load_model_utils.py`
+  emits it whenever the separate `quantization_param_path` is omitted. That
+  branch does not reset checkpoint scales. `Qwen3_5ForConditionalGeneration`
+  applies `QWEN3_5_KV_SCALE_MAPPER` to the embedded `.self_attn.k_scale` /
+  `.v_scale` tensors before the ordinary parameter loader; all 32 are indexed
+  and none appeared in missing-language-parameter notices. The scalar runtime
+  introspection endpoint does not support this Qwen model, so no claim of a
+  separate live scalar-value dump is made.
+- Two complete Babouin direct-chat quality probes used the existing
+  `probe_openai_chat.py --model qwen38-turbo-nvfp4 --max-tokens 4096
+  --show-reasoning`, ordinary thinking sampling, and the verbatim public prompt
+  files `qwen38-baseline/prompts/01-coalesce-half-open-spans.md` and
+  `11-validated-username.md`. Task 01: 554 prompt / 1192 output tokens,
+  910 reasoning tokens, finish `stop`; final answer is a fenced `hemlock`
+  JavaScript-like implementation, violating the required Rust API and format.
+  Task 11: 596 / 4021 tokens, 3098 reasoning tokens, finish `stop`; final
+  answer contains fenced Rust, explicit Boolean state and unwrap calls, and
+  missing trait implementations on `NonEmptyString`. Raw JSON responses are
+  `hyssra-babouin-01.json` and `hyssra-babouin-11.json`. These are two
+  first-answer samples, not a full corpus accuracy estimate.
+- Stopped the verified candidate tree leaf-first (workers 19532/32456, then
+  API 5968); all launcher/shim/conhost PIDs exited and port 30000 cleared.
+  GPU returned to 1734 MiB display residency, 0%, 34 C. After shutdown,
+  piped task 11's unmodified Rust payload, removing only outer Markdown fences,
+  into `rustc --edition=2024 --crate-type=lib --crate-name hyssra_username
+  --emit=metadata --out-dir <task-temp> -`. Rust 1.98.1 confirmed E0277
+  for missing `NonEmptyString: Hash` and `NonEmptyString: Ord`; exit 1.
+  Compiler output is `hyssra-babouin-11-rustc.log`. No generated answer was
+  repaired and no new Python or Rust implementation was authored. Docker
+  status confirmed Desktop is stopped; Docker was not started or changed.
+- At 20:42:12 launched the same target-only/Cutlass/seed-42/200K arguments
+  against `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4`,
+  served alias `qwen38-reference-nvfp4`. Launcher PID 1876; logs
+  `reference-target.stdout.log` and `reference-target.stderr.log`. This is a
+  matched NVFP4 control, not the DSpark/hybrid-Marlin production profile.
+- Reference reached readiness at 20:43:02. Tree: launcher 1876 / conhost
+  33828, sglang shim 30540, Python shim 21968, API 22988, workers 9828/6340.
+  It captured target decode and allocated exact 200K pools; health and
+  language-only metadata passed. Its packaged chat-template hash differs
+  from the DavidAU/hyssra template, so this is a serving-checkpoint comparison,
+  not an isolated quantization-quality experiment.
+- The user requested stopping the evaluation during the reference benchmark.
+  The already-dispatched reference loop completed five samples by shutdown;
+  reference coding probes and additional experiments were cancelled. Exact command
+  matches the candidate window with `--model qwen38-reference-nvfp4`.
+  Individual reference samples (decode TPS / TTFT s / prompt TPS / E2E s):
+  1. `70.563 / 0.536670 / 11576.936 / 7.778473`
+  2. `72.604 / 0.539298 / 11520.528 / 7.577516`
+  3. `72.360 / 0.456367 / 13614.031 / 7.518293`
+  4. `88.854 / 0.442730 / 14033.384 / 6.193720`
+  5. `88.129 / 0.445554 / 13944.428 / 6.243901`
+  Mean `78.502 / 0.4841238 / 12937.8614 / 7.0623806`.
+  All have exact 6213/512/6725, finish `length`, and retained digests in
+  `reference-target-sample-N.json`. Active telemetry: SM 3022-3037 MHz,
+  memory 14001 MHz, GPU 98-99%, 41-47 C, 366.93-431.73 W,
+  4682-4710 MiB free. The early/late throughput variation was not investigated
+  after the user's stop; no independent comparison window or promotion is claimed.
+- Shutdown resolved the active reference client (shim 14564 / worker 26324)
+  and server tree freshly. Stopped the verified benchmark worker, server
+  workers 9828/6340, then API 22988. All remaining known shims, launcher and
+  conhost exited; no Python/SGLang/compiler process or port-30000 listener
+  remained. GPU returned to 1619 MiB used / 30569 MiB free, 0%, 34 C,
+  54.12 W; host had 51,880 MiB available and 23% commit. Both launcher-created
+  sampling model views were removed by their normal cleanup.
+- Removed task-owned disk-offload folders, isolated quantizer environment,
+  downloaded vendor ZIP, compiler objects/executable and vendor source tree.
+  These are reproducible from the pinned revisions and retained C++ exporter.
+  Normal deletion left three read-only Git pack files under
+  `<task-temp>\Model-Optimizer\.git\objects\pack`, totaling 17,840,721 bytes.
+  Automatic approval rejected forced cleanup as `blocked by policy`, including
+  the narrower exact-file attempt. Those three cache files remain; no security
+  or approval settings were changed. BF16/GGUF/NVFP4 checkpoints, calibration
+  JSONL/manifest/exporter source, logs, responses and samples are preserved.
+  The task is closed at the user's request. Production source, settings,
+  dependencies, source checkpoints and client profiles are unchanged.
+- Final review passes `git diff --check`; this task touched only the four
+  recovery Markdown files in the repository, preserving the 16 initially
+  dirty paths and their pre-existing product edits. Port 30000 remains free,
+  with no Python/SGLang/compiler tree. PID 1876 has since been reused by an
+  unrelated `opencode.exe` (parent 26172); that process is preserved. GPU
+  display residency is 1619 MiB, 29 C at the final sample. No additional
+  benchmark, launch, or quality probe is authorized by this stopped task.
+
 ## 2026-09-19: DiffusionGemma native-Windows compatibility integration
 
 - User requested downloading `nvidia/diffusiongemma-26B-A4B-it-NVFP4` and
@@ -25610,7 +26016,7 @@ mean 13.929045  17.125658 446.051        39.730
   the published runtime context, and routes DSpark linear acceptance through
   the shared Mamba/ReplaySSM commit helper. The existing pool-order fixture
   uses the published configuration override and preloaded-weight accounting.
-- The checked-in `.venv/pyvenv.cfg` names an unavailable base interpreter.
+- The existing `.venv/pyvenv.cfg` names an unavailable base interpreter.
   CPU validation uses the existing standalone
   `C:\Users\Daniel\AppData\Roaming\uv\python\cpython-3.13-windows-x86_64-none\python.exe`
   with process-local
@@ -25672,3 +26078,22 @@ mean 13.929045  17.125658 446.051        39.730
   found. Validation here consists of parsing and manual staged-diff review,
   with the original CPU launcher probe retained as historical evidence.
   No launcher execution or checkpoint view was created during this sweep.
+
+### Experiment-record commit and validation handoff
+
+- Retain the complete September 15 131072/200000/131072 A/B/A record and
+  September 16 DavidAU/hyssra NVFP4 evaluation, including individual samples,
+  capacity and behavior gates, coding failures, cleanup and the user's stop.
+  The compact current-state, decisions and timeline additions preserve those
+  conclusions. The existing production selection remains unchanged.
+- Preceding commits are `d4ea1dc1e8` for runtime repairs, `5469f6dff5` for
+  Responses handling, and `3da303d330` for launcher sampling defaults.
+  Across the two focused CPU suites, **175 tests and 63 subtests passed**.
+  All 13 changed Python files compiled, the launcher parsed without errors,
+  and staged whitespace checks passed. Existing product edits are committed
+  as supplied. New repository text from this sweep is limited to this recovery
+  entry. No new Python, C++, CUDA or PowerShell implementation was authored.
+- The final documentation group uses manual staged-diff review and Git
+  whitespace checks. Its samples remain historical and were not rerun.
+  This task creates local commits only. The virtual-environment interpreter
+  metadata and all serving/model artifacts remain unchanged.
