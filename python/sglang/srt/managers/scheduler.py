@@ -1114,7 +1114,7 @@ class Scheduler(
         """Allocate KV cache pools for target and draft workers."""
         if (
             self.draft_worker is not None
-            and not self.server_args.is_startup_weight_load_overlap
+            and not get_model().is_startup_weight_load_overlap
         ):
             # EAGLE/MTP checkpoints can load duplicate embedding and lm-head
             # storage. Release it before target-pool sizing so that storage is

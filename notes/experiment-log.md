@@ -25178,6 +25178,99 @@ mean 13.929045  17.125658 446.051        39.730
   The prior production records remain historical, and no performance
   promotion or new tuning branch is authorized by this Git task.
 
+### 2026-09-13 17:38 PDT - Qwen startup import repair after the upstream rebase
+
+- The user reported a scheduler startup failure ending in
+  `Qwen3_5ForConditionalGeneration has no SGlang implementation` and a child
+  `EOFError`. Started on `main` at
+  `c7f2f89f5def59890d143c553f47de52699499fe`. The sole existing worktree edit
+  was the native-Windows FlashInfer minimum-version adjustment in
+  `python/sglang/srt/entrypoints/engine.py`; preserved it unchanged.
+- `.\.venv\Scripts\python.exe -X utf8 -m sglang.srt.models.qwen3_5`
+  reproduced the underlying failure: the existing Windows NVFP4 activation
+  binding imported the removed `sglang.kernel_api_logging` path. The module
+  now lives at `sglang.kernels.kernel_api_logging`. Corrected the four
+  remaining import references in the activation, FlashInfer page-table,
+  sparse top-p, and DeepSeek AWQ bindings. No new Python implementation,
+  kernel logic, dependency, checkpoint, or launcher setting was added.
+- The same direct Qwen import now exits successfully. A repository search
+  of Python source and tests finds zero remaining imports from the old path;
+  `git diff --check` passes. Focused tests and a controlled launcher gate
+  follow before the final handoff.
+- Initial process/GPU snapshot at 17:37 PDT: port 30000 free; no Python,
+  SGLang, nvcc, cl, Ninja, or CMake process. The active Codex processes use
+  the ordinary cloud/app-server invocations. RTX 5090 driver 616.92,
+  2,901 MiB used, 3% utilization, 48 C, 44 W, with ordinary desktop clients
+  retained. `uv pip list --python .venv/Scripts/python.exe` confirms the
+  editable SGLang location is this checkout's `python/`, torch
+  `2.13.0+cu130`, FlashInfer `0.6.17`, Transformers `5.12.1`, and
+  triton-windows `3.7.1.post27`. Dependencies remain fixed.
+
+### 2026-09-13 17:44 PDT - scheduler startup-load configuration reference repair
+
+- The next user launch completed target and DSpark-v2 weight loading, then
+  failed in `Scheduler.init_memory_pools()` because
+  `ServerArgs.is_startup_weight_load_overlap` was removed by the upstream
+  configuration migration. Started on `main` at
+  `c7f2f89f5def59890d143c553f47de52699499fe`, preserving the existing
+  experiment-log, engine minimum-version, and four kernel-import edits.
+- Corrected that existing reference to
+  `get_model().is_startup_weight_load_overlap`, matching startup/finalization
+  in the same scheduler. The existing serial/deferred pool-preparation
+  decision is preserved; no new runtime implementation, launcher setting,
+  dependency, or checkpoint change was introduced. The earlier `visual.*`
+  messages come from the unused vision weights in language-model-only mode;
+  target loading completed before the reported scheduler exception.
+- Ran `.\.venv\Scripts\python.exe -X utf8 -m pytest -q --tb=short
+  test/registered/unit/spec/test_eagle_memory_pool_preparation.py
+  test/registered/unit/test_server_args_migration.py
+  test/registered/unit/model_executor/model_runner_components/test_startup_weight_load.py`:
+  **37 passed, 27 subtests passed, 2 failed**, 10.92 s. Both failures are in
+  the existing pool-order test fixture, which still puts the removed field
+  on an unpublished `SimpleNamespace`. Requested authorization to migrate
+  its existing Python setup under the repository's no-new-Python constraint.
+- Fresh pre-launch checks found port 30000 free and no Python/SGLang or
+  CUDA/compiler tree. Existing Codex invocations were cloud/app-server
+  processes. RTX 5090 driver 616.92 reported 3,097 MiB used / 29,091 MiB
+  free, 3% utilization, 48 C, and 46.54 W. `uv pip list --python
+  .venv/Scripts/python.exe` confirms editable SGLang still resolves to this
+  checkout, torch `2.13.0+cu130`, FlashInfer `0.6.17`, Transformers `5.12.1`,
+  and triton-windows `3.7.1.post27`; dependencies remain unchanged.
+- At 17:44, ran the argument-free command
+  `.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1`, recording combined
+  output temporarily at
+  `C:\Users\Daniel\AppData\Local\Temp\codex-qwen-startup-20260913-1744\launcher.log`.
+  The launcher and dependencies were unchanged. Resolved settings included
+  AttnNVFP4 target, DSpark-v2 draft, online-FP8 draft weights, FP8 target/draft
+  KV, gamma seven/eight-token verify, five FP32 Mamba slots, exact 200000
+  context and pools, 4096-token prefill, batch one, serial loading, full decode
+  graphs, disabled prefill graphs/torch compile, and random seed 520677685.
+  The run was unsimulated and used the existing MSVC/CUDA 13.3 two-job setup.
+- Verified launch ancestry was PowerShell 26732 -> sglang 27628 -> Python
+  35760 -> server Python 4376 -> workers 34660 and 14780. The only observed
+  compiler tree belonged to worker 34660: Ninja 19564, nvcc 33740 and its
+  compiler descendants. Ordinary desktop clients remained untouched.
+- The corrected scheduler passed its former exception site and allocated
+  both 200000-token KV pools plus the five-slot Mamba cache. Cold-cache Marlin
+  compilation/autotuning finished at 17:47:51. Target verify capture passed
+  in 12.63 s and draft verify capture passed in 8.57 s; tokenizer startup was
+  223.39 s, with 1.35 GB reported available after capture. This is startup
+  evidence, not a performance measurement or promotion.
+- Automatic warmup then failed at 17:48:26 in
+  `DSparkWorkerV2._commit_target_mamba_states_after_verify` ->
+  `HybridLinearAttnBackend.update_mamba_state_after_mtp_verify` ->
+  `fused_mamba_state_scatter_with_mask`: its SSM source was `None`. The
+  rebased pool now selects circular GDN ReplaySSM (`fold=False`), while the
+  direct DSpark hook only handles GDN fold-per-commit and KDA replay before
+  falling through to ordinary intermediate-state scatter. The existing
+  `spec_utils.commit_mamba_states_after_verify` supports circular GDN replay.
+  Requested authorization to adapt the existing Python dispatch/test glue;
+  no additional runtime change has been made at this point.
+- The failed launch exited with code 1 and cleaned up its complete process
+  tree. A fresh snapshot found port 30000 free and no Python/SGLang/compiler
+  process. GPU residency returned to 2,495 MiB used / 29,693 MiB free, 4%
+  utilization, 47 C and 50.22 W. No process was terminated by this task.
+
 ## 2026-09-19: DiffusionGemma native-Windows compatibility integration
 
 - User requested downloading `nvidia/diffusiongemma-26B-A4B-it-NVFP4` and
@@ -25477,3 +25570,41 @@ mean 13.929045  17.125658 446.051        39.730
   current-state, timeline and experiment-log; the original 18 dirty paths
   retain their user-owned changes outside the commit. Runtime qualification
   used those existing Windows source repairs, as documented in the README.
+
+## 2026-09-20: Commit sweep of the retained Windows and Responses work
+
+- User requested committing all remaining work. Baseline is `main` at
+  `d62fcf3f308d207243909b65c995ad0ab2206f45`, initially synchronized with the
+  local `origin/main` tracking ref, with 18 modified tracked paths, an empty
+  index, and no untracked paths. Commit boundaries are Windows runtime repairs,
+  Responses tools/turn handling, launcher sampling defaults, and experiment
+  records. Existing product code is preserved without additional implementation.
+- The runtime group repairs four moved kernel-logging imports, retains the
+  native-Windows FlashInfer 0.6.17 minimum, reads startup-load state through
+  the published runtime context, and routes DSpark linear acceptance through
+  the shared Mamba/ReplaySSM commit helper. The existing pool-order fixture
+  uses the published configuration override and preloaded-weight accounting.
+- The checked-in `.venv/pyvenv.cfg` names an unavailable base interpreter.
+  CPU validation uses the existing standalone
+  `C:\Users\Daniel\AppData\Roaming\uv\python\cpython-3.13-windows-x86_64-none\python.exe`
+  with process-local
+  `PYTHONPATH=C:\Users\Daniel\sglang\python;C:\Users\Daniel\sglang\.venv\Lib\site-packages`
+  and `CUDA_VISIBLE_DEVICES=9`. Installed dependencies and interpreter metadata
+  remain unchanged. The first attempt with `CUDA_VISIBLE_DEVICES=-1` stopped
+  during collection because the shared test helper parses its first character
+  as a decimal GPU index. An unavailable numeric index preserves CPU-only
+  execution and passes that existing helper.
+- Runtime command: the interpreter above with `-X utf8 -m pytest -q --tb=short
+  test/registered/unit/spec/test_eagle_memory_pool_preparation.py
+  test/registered/unit/test_server_args_migration.py
+  test/registered/unit/model_executor/model_runner_components/test_startup_weight_load.py
+  test/registered/unit/spec/test_ngram_mamba_verify_update.py`.
+  Result: **53 passed, 27 subtests passed**, 27.27 s. The warnings concern
+  unavailable CUDA, existing Torch deprecations, CPU GGUF support and an
+  existing source escape sequence. `-X utf8 -m py_compile` passes for all
+  eight runtime-group Python files. `git diff --cached --check` passes.
+  The selected CPU cases do not exercise the separately retained Responses
+  behavior or launcher, so their relevant code/test inputs match this commit.
+- No GPU gate, model request, server launch, process termination, dependency
+  update, or performance promotion was performed. GPU/server ownership was
+  not remeasured for this Git task. Historical runtime records remain snapshots.

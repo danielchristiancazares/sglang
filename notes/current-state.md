@@ -36,6 +36,21 @@ The existing `.venv` executable still names a missing base interpreter; the
 native launcher uses standalone CPython 3.13.14 without changing that metadata.
 Full commands and qualification limits are in the September 19 experiment log.
 
+**Windows startup handoff, 2026-09-13:** on `main` at `c7f2f89f5d`, the
+existing import repairs and one-line scheduler configuration-reference repair
+allow the argument-free launcher to load the target/draft weights, allocate
+both 200000-token KV pools and five Mamba slots, and capture both DSpark
+graphs. Automatic warmup then fails in the DSpark Mamba commit: the rebased
+GDN pool uses circular ReplaySSM, while the direct commit hook falls through
+to intermediate-state scatter. The shared speculative commit helper already
+supports circular replay. The original scheduler exception is fixed; full
+readiness awaits that dispatch adaptation. The startup/configuration check
+passed 37 tests and 27 subtests, with two existing pool-order fixtures needing
+the published configuration API. Authorization for the Python glue/test
+exception has been requested. The failed launch exited and its process tree
+is gone; port 30000 is free, with 2,495 MiB of display GPU residency in the
+last check. Exact launch details and failures are in the September 13 ledger.
+
 **Source handoff:** `main` is rebased onto `upstream/main` at
 `b5a2aebc7eccd4ee0afa8c435585d7462d7d7a61`, with merge topology retained.
 The original tip `296e82e140a21a838c070e1be85e9417d0805560` remains at

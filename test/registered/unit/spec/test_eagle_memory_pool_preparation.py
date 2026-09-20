@@ -1,7 +1,10 @@
 import unittest
 from types import SimpleNamespace
+from typing import Literal
+from unittest.mock import Mock
 
 from sglang.srt.managers.scheduler import Scheduler
+from sglang.srt.runtime_context import get_context
 from sglang.srt.speculative.eagle_worker_v2 import EAGLEWorkerV2, EagleDraftWorker
 
 
@@ -30,22 +33,27 @@ class TestEagleMemoryPoolPreparation(unittest.TestCase):
         self.assertEqual(trace, ["token_map", "lm_head"])
         self.assertTrue(worker._memory_pool_preparation_done)
 
-    @staticmethod
-    def _scheduler(trace, *, overlap):
+    def _scheduler(self, trace, *, startup_mode: Literal["serial", "overlap"]):
         scheduler = Scheduler.__new__(Scheduler)
-        scheduler.server_args = SimpleNamespace(
-            is_startup_weight_load_overlap=overlap
+        scheduler.server_args = self.enterContext(
+            get_context().override_server_args(
+                startup_weight_load_mode=startup_mode,
+                disaggregation_decode_retraction_backup="cpu_tensor",
+            )
         )
         scheduler.tp_worker = SimpleNamespace(
+            preloaded_weights_bytes=0,
             model_runner=SimpleNamespace(
                 memory_pool_config=None,
                 req_to_token_pool=None,
                 token_to_kv_pool_allocator=None,
+                account_preloaded_weights=Mock(),
             ),
             alloc_memory_pool=lambda: trace.append("target_pool"),
             get_memory_pool=lambda: ("request_pool", "token_pool"),
         )
         scheduler.draft_worker = SimpleNamespace(
+            preloaded_weights_bytes=0,
             prepare_memory_pool_allocation=lambda: trace.append("prepare"),
             alloc_memory_pool=lambda **kwargs: trace.append("draft_pool"),
             init_hicache_draft_plan=lambda: trace.append("hicache"),
@@ -54,7 +62,7 @@ class TestEagleMemoryPoolPreparation(unittest.TestCase):
 
     def test_serial_startup_prepares_draft_before_target_pool(self):
         trace = []
-        scheduler = self._scheduler(trace, overlap=False)
+        scheduler = self._scheduler(trace, startup_mode="serial")
 
         scheduler.init_memory_pools()
 
@@ -64,7 +72,7 @@ class TestEagleMemoryPoolPreparation(unittest.TestCase):
 
     def test_deferred_weight_loading_preserves_late_preparation(self):
         trace = []
-        scheduler = self._scheduler(trace, overlap=True)
+        scheduler = self._scheduler(trace, startup_mode="overlap")
 
         scheduler.init_memory_pools()
 

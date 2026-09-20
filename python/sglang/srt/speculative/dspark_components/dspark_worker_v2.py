@@ -28,7 +28,6 @@ from sglang.srt.runtime_context import (
     get_parallel,
     get_schedule,
     get_spec,
-    mamba_track_grid,
 )
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
@@ -74,6 +73,7 @@ from sglang.srt.speculative.spec_tp_sync import SpecTpSync, SpecTpSyncSite
 from sglang.srt.speculative.spec_utils import (
     GrammarTree,
     build_grammar_vocab_mask,
+    commit_mamba_states_after_verify,
     draft_tp_context,
     prepare_mamba_track_for_verify,
 )
@@ -839,8 +839,6 @@ class DSparkWorkerV2(BaseSpecWorker):
 
         self._commit_target_mamba_states_after_verify(
             batch=batch,
-            seq_lens_pre_verify=prefix_lens,
-            seq_lens_post_verify=accept.new_seq_lens,
             commit_lens=accept.commit_lens,
         )
 
@@ -908,48 +906,24 @@ class DSparkWorkerV2(BaseSpecWorker):
         self,
         *,
         batch: ScheduleBatch,
-        seq_lens_pre_verify: torch.Tensor,
-        seq_lens_post_verify: torch.Tensor,
         commit_lens: torch.Tensor,
     ) -> None:
-        """Commit the last accepted verify step's KDA/mamba state (chain
-        layout: step index = commit_lens - 1) into the persistent caches."""
+        """Commit the accepted chain through the shared Mamba/ReplaySSM path."""
         if not self._need_mamba_verify_commit:
             return
-        # Chain layout only: step index = commit_lens - 1. A tree (topk > 1)
-        # layout would need the accept-index mapping the shared spec_utils
-        # commit helper does.
+        # DSpark verifies a linear chain. Its row-major indices let the shared
+        # helper commit the accepted prefix and exact radix-tracking boundary.
         assert get_spec().speculative_eagle_topk in (None, 1)
-        attn_backend = self.target_worker.model_runner.attn_backend
-
-        last_correct_step_indices = commit_lens.to(torch.int64) - 1
-        mamba_steps_to_track = None
-
-        if batch.mamba_track_indices is not None:
-            mamba_track_interval = mamba_track_grid(batch.tree_cache.page_size)
-            to_track_mask = (
-                seq_lens_pre_verify // mamba_track_interval
-                != seq_lens_post_verify // mamba_track_interval
-            )
-            tracking_point = (
-                seq_lens_post_verify // mamba_track_interval * mamba_track_interval
-            )
-            to_track_ith = torch.clamp(tracking_point - seq_lens_pre_verify - 1, min=0)
-            can_track_mask = to_track_mask & (
-                to_track_ith < commit_lens.to(to_track_ith.dtype)
-            )
-            mamba_steps_to_track = torch.where(
-                can_track_mask,
-                to_track_ith.to(torch.int64),
-                torch.full_like(to_track_ith, -1, dtype=torch.int64),
-            )
-
-        attn_backend.update_mamba_state_after_mtp_verify(
-            last_correct_step_indices=last_correct_step_indices,
-            mamba_track_indices=batch.mamba_track_indices,
-            mamba_steps_to_track=mamba_steps_to_track,
-            model=self.target_worker.model_runner.model,
-            req_pool_indices=batch.req_pool_indices,
+        commit_mamba_states_after_verify(
+            target_worker=self.target_worker,
+            batch=batch,
+            accept_lens=commit_lens,
+            accept_index=torch.arange(
+                commit_lens.shape[0] * self.verify_num_draft_tokens,
+                dtype=torch.int32,
+                device=commit_lens.device,
+            ).reshape(commit_lens.shape[0], self.verify_num_draft_tokens),
+            draft_token_num=self.verify_num_draft_tokens,
         )
 
     def get_confidence_budget_prepare(self):
