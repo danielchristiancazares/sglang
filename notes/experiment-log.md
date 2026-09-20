@@ -27012,3 +27012,16 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
   Rechecked `/health`, listener ownership, process command and unchanged swap.
   Publication includes only this task's implementation, documentation and
   recovery record; the earlier local notes and Cold Fusion JSON remain separate.
+
+- Publication succeeded: `e2935fa2b7ea727f343b048762b2ce1bd18f2940`
+  (`feat(mlx): qualify DiffusionGemma on Apple silicon`) is on `origin/main`.
+  Strict C++ checks, dependency compatibility for all 54 packages, existing
+  result-file protection, and staged whitespace checks pass. Pre-existing
+  note content and the Cold Fusion JSON remain unchanged and uncommitted.
+- The post-push health check found port 30001 closed and PID 89234 absent.
+  The exec session was also gone; the retained log ends after a successful
+  health check and contains no subsequent exception or shutdown message.
+  The termination cause is unconfirmed. Persistent model and environment
+  directories remain intact, with no inference process running. Leave the
+  server stopped following the user's accepted stopping point. Restart via
+  the foreground command in `native/diffusion_gemma/mac/README.md`.

@@ -1247,7 +1247,8 @@ code changes, or process state matter.
 - The user's `.cache` cron job removed the initial setup. Restored only this
   task's pinned files and recovered receipts under persistent `.local/share`.
   The user accepted the result, closed further benchmarking, and authorized
-  publication. The separate MLX server remains available on port 30001.
+  publication. The checkpoint, isolated environment, and restart commands
+  remain available; the task server is stopped at the publication handoff.
 
 ## Supersession map
 

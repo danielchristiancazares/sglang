@@ -22,9 +22,11 @@ Model, isolated environment, and raw receipts are under
 `~/.local/share/sglang-diffusiongemma`. The user's cron cleanup removed all
 of `~/.cache` during the task; only this task's artifacts were restored.
 The repository environment and Qwen/Windows implementations remain unchanged.
-The current Mac server is MLX-VLM on `http://127.0.0.1:30001/v1`; its model ID
-is the absolute persistent model directory. Its default request controls differ
-from the tuned profile, so use the README's explicit request settings.
+The tested Mac endpoint is MLX-VLM on `http://127.0.0.1:30001/v1`; its model ID
+is the absolute persistent model directory. The server is stopped at the
+publication handoff; use the README's foreground command to restart it.
+Its default request controls differ from the tuned profile, so use the
+README's explicit request settings.
 The Mac integration is on `main`. Pre-existing Cold Fusion notes and its
 benchmark receipt remain separate, uncommitted user work.
 
