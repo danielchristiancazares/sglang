@@ -26770,3 +26770,245 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
   matches cf934a3faf; this recovery entry is the only remaining tracked edit.
   Recover experiments with the archive README rather than reconstructing them;
   cleanup makes no claim about the current installed library or server health.
+
+### 2026-09-20 - Start the user-requested Mac DiffusionGemma lane
+
+- User requested functional DiffusionGemma on this MacBook, aiming for
+  20 output tok/s and short TTFT. Entry is main at `040b3fc844`, with the
+  three existing modified notes and untracked Cold Fusion benchmark retained.
+  New authored implementation is restricted to C++/CUDA. The Windows trial
+  remains unchanged; its native adapter calls CUDA and buffers generation.
+- Live host: Apple M1 Max, 32 GPU cores, 32 GiB unified memory. No inference
+  or compiler workload was running; three idle Apple Metal compiler services
+  and unrelated Apple listeners were preserved. Ports 30000/30001 were free.
+  Memory-pressure free percentage was 92%, swap used 230.75 MiB, zero
+  throttled pages, no reported thermal/performance warning. Disk had 20 GiB free.
+- Selected download: `mlx-community/diffusiongemma-26B-A4B-it-4bit`, pinned
+  to `a7a81407613811e8ba63af92ac0d852b809e191f`; published files total
+  16,575,472,949 bytes. Command: `HF_XET_CHUNK_CACHE_SIZE_BYTES=0
+  .venv/bin/hf download mlx-community/diffusiongemma-26B-A4B-it-4bit
+  --revision a7a81407613811e8ba63af92ac0d852b809e191f --max-workers 1`.
+  All existing Qwen artifacts and the repository virtual environment remain
+  intact. Dedicated dependencies/artifacts use `~/.cache/sglang-diffusiongemma`.
+- MLX-VLM 0.7.1 provides the current DiffusionGemma implementation. The
+  first baseline will retain the checkpoint's entropy-bound sampler and
+  measure actual first-visible-output latency separately from output throughput.
+  Download verification, first inference, and performance qualification remain
+  pending; this entry makes no serving or speed claim.
+
+- Download finished; `.venv/bin/hf cache verify` with the pinned revision,
+  `--fail-on-missing-files --fail-on-extra-files --json` verified all 13 files.
+  Created `~/.cache/sglang-diffusiongemma/venv` with `uv venv --python
+  /Users/dcazares/sglang/.venv/bin/python`, then installed via `uv pip install
+  --python .../venv/bin/python mlx-vlm==0.7.1 mlx==0.32.2 mlx-metal==0.32.2
+  transformers==5.14.0`. The separate environment uses CPython 3.11.15.
+- Added the C++23 HTTP/SSE client `benchmark/mac/bench_diffusiongemma.cpp`.
+  It validates model-finish/usage/SSE completion, records real first-content
+  latency and total request wall time, and retains the server's decode rate
+  and complete output. It does not infer per-token speed from block arrival
+  intervals. Strict Clang compilation passed with `-std=c++23 -O2 -Wall
+  -Wextra -Wpedantic -Werror -I benchmark/native/include`, linking the existing
+  HTTP, JSON, and SSE sources. The executable and two prompt fixtures live in
+  `~/.cache/sglang-diffusiongemma/20260920`; `git diff --check` passed.
+- First server command: `HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1
+  ~/.cache/sglang-diffusiongemma/venv/bin/python -m mlx_vlm.server --model
+  ~/.cache/huggingface/hub/models--mlx-community--diffusiongemma-26B-A4B-it-4bit/snapshots/a7a81407613811e8ba63af92ac0d852b809e191f
+  --host 127.0.0.1 --port 30001 --model-discovery served --max-num-seqs 1
+  --max-tokens 1024 --prefill-step-size 512 --vision-cache-size 0
+  --log-progress-interval 32`. Output goes to artifact `server-baseline.log`.
+  Prelaunch port was free, download/hash/build processes had completed, memory
+  free percentage was 93%, and no thermal/performance warning was reported.
+  Startup, real endpoint checks, and first generation remain pending.
+
+- Server PID 88870, parent Codex 87973, loaded the model in 4.60 s and
+  owned only port 30001. `/health` returned the pinned path, Gemma4 parser,
+  and APC disabled. The reported 262144 context is metadata, not a capacity
+  qualification. No separate inference worker or competing GPU workload was
+  observed; unrelated Apple Metal compiler services remained untouched.
+- The native client command uses `MODEL PROMPT_FILE MAX_TOKENS CANVAS
+  SAMPLER SAMPLES RESULT_JSONL`, temperature zero, seed 42, thinking disabled,
+  streaming with usage, and natural EOS. Its first `arithmetic.txt 32 32
+  entropy-bound 1` request returned `703`, 25 prompt / 8 output tokens,
+  stop; TTFT 5.484245 s, E2E 5.484449 s, server decode 2.877920 tok/s, peak
+  16.774811 GB. The next five identical requests all returned `703`, stop,
+  with TTFT `[2.768633791,2.483007625,2.482907875,2.480991250,2.480526292]`
+  seconds and E2E `[2.768927833,2.483219708,2.483149125,2.481166209,2.480704458]`.
+  Their server decode rates were `[3.394108380,3.397482461,3.397999385,
+  3.398097232,3.399181018]` tok/s; peak allocation stayed below 16.793 GB.
+- First `explanation.txt 512 256 entropy-bound 1`: 62 prompt / 512 output
+  tokens, length finish, TTFT 6.761357833 s, E2E 14.586894708 s,
+  **35.099999709 output tok/s end to end**, server decode 32.694461871 tok/s,
+  peak 18.036437318 GB. This is one first-shape observation, not a qualified
+  speed window. Output covers chaining, probing, load factor and amortization,
+  then reaches its budget in the worked example. Its claim that collision
+  probability rises exponentially with load factor is inaccurate. Preserve
+  that quality limit when comparing settings. Swap remained 222.75 MiB and
+  no thermal/performance warning was reported.
+- During the next observation the entire `~/.cache` directory had disappeared,
+  including the task environment, checkpoint, log, binary and result files.
+  Disk free space rose from 12 GiB to 461 GiB. The deletion source is unconfirmed;
+  the user has been asked whether a cleanup is running. PID 88870 still owns
+  its listener and open log handle. The tool event stream retains all returned
+  samples; reconstruct only this task's receipts and use persistent
+  `~/.local/share/sglang-diffusiongemma` for recovery. Other deleted cache
+  contents are outside this task's restoration scope. Stop the verified task
+  server before reinstalling/relaunching; preserve Codex and Apple services.
+
+- The user confirmed that their `.cache` cron cleanup caused the deletion.
+  Left that job unchanged. Sent `SIGINT` only to verified server PID 88870;
+  it exited successfully, port 30001 became free, and GPU activity returned
+  to idle. Recovered the exact seven benchmark JSON records and both prompt
+  fixtures from tool output under
+  `~/.local/share/sglang-diffusiongemma/runs/20260920`, alongside the exact
+  54-package `requirements.lock` at the persistent task root. The model and
+  isolated environment will also live there. No unrelated deleted cache is
+  being restored, and the repository environment remains unchanged.
+
+- Persistent recovery used `uv venv --python .venv/bin/python
+  ~/.local/share/sglang-diffusiongemma/venv`, then `UV_CACHE_DIR=.../install-cache
+  uv pip install --python .../venv/bin/python -r .../requirements.lock`.
+  Restored all 54 exact package versions. Repeated the pinned `hf download`
+  with `HF_HOME=.../huggingface`, `HF_XET_CHUNK_CACHE_SIZE_BYTES=0`,
+  `--local-dir .../model --max-workers 1`. Checksum verification passed all
+  13 checkpoint files; the strict extra-file gate initially rejected the
+  downloader's 29 metadata/lock files under `model/.cache`. Moved only that
+  metadata to `.../model-download-metadata` and repeated the strict gate.
+- Retained the dependency lock and prompt fixtures in the repository, added
+  the Mac workload to the benchmark contract, and documented the isolated
+  setup in `native/diffusion_gemma/mac/README.md`. The C++ client now records
+  output SHA-256 and keeps accumulated visible text in its nonempty type.
+  Strict Clang compilation, invalid-budget rejection, and unknown-sampler
+  rejection pass. This does not change the Qwen or Windows implementations.
+
+- Strict verification passed all 13 files after metadata relocation. Recovery
+  server PID 89135, parent Codex 87973, uses the same baseline arguments with
+  model `~/.local/share/sglang-diffusiongemma/model` and interpreter
+  `.../venv/bin/python`; `HF_HOME=.../huggingface HF_HUB_OFFLINE=1
+  PYTHONUNBUFFERED=1`. Log: `runs/20260920/server-recovery.log`. Model loading
+  took 3.914 s; health and `/v1/models` passed. Port 30001 has one owner.
+  Prelaunch GPU utilization was zero; swap 222.75 MiB, memory free metric
+  92%, no thermal/performance warning. No competing GPU workload was observed.
+- Client executable is `.../runs/20260920/bench_diffusiongemma`; commands use
+  the persistent model path, checked-in prompt files, and arguments listed
+  below. All comparisons retain entropy-bound, temperature zero, seed 42,
+  natural EOS, thinking disabled, and no prefix cache. Results are JSONL in
+  that run directory, including full text and SHA-256. These are single
+  first-shape samples; five-request/restart qualification remains pending.
+
+  | Result stem | Budget / canvas / samples | Prompt / output | TTFT s | E2E s | E2E tok/s |
+  |---|---|---|---|---|---|
+  | recovered-arithmetic-entropy32, cold | 32 / 32 / 2 | 25 / 8 | 4.760588500 | 4.760812458 | 1.680385453 |
+  | recovered-arithmetic-entropy32, warm | same invocation | 25 / 8 | 2.481159458 | 2.481446375 | 3.223926207 |
+  | recovered-explanation-entropy256 | 512 / 256 / 1 | 62 / 512 | 6.665305833 | 14.561056166 | 35.162284532 |
+  | explanation-first-entropy128 | 512 / 128 / 1 | 62 / 512 | 3.478910500 | 16.336611209 | 31.340649138 |
+  | explanation-first-entropy64 | 512 / 64 / 1 | 62 / 512 | 2.651135792 | 18.503438667 | 27.670532446 |
+
+  Arithmetic stops naturally at `703`; each explanation reaches its token
+  budget. The 128/64 outputs describe collision behavior coherently and omit
+  the 256-canvas output's inaccurate exponential claim. Canvas changes alter
+  the text, so this comparison includes quality inspection. Server memory is
+  a process high-water reading (18.036437318 GB after the 256-token block),
+  not an isolated allocation measurement for every subsequent request.
+
+- `explanation-first-entropy32.jsonl` (`512 32 entropy-bound 1`) fell to
+  14.251335507 E2E tok/s with TTFT 3.258681125 s and E2E 35.926457542 s.
+  It emits malformed `<channel|>` text, `Separate Ch Chaining`, and a broken
+  load-factor symbol. Excluded this smaller-canvas setting from selection.
+- Changed only the sampler at canvas 64: `512 64 confidence-threshold 1`
+  produced 38.859240692 E2E tok/s, TTFT 1.738909875 s, E2E 13.175759250 s.
+  Threshold is the installed library's 0.9 default; checkpoint denoising limit
+  remains 48. Output is coherent across collisions, resizing, and amortized
+  cost, and reaches its budget in the worked example. Both trials are
+  62 prompt / 512 output tokens with length finish. Retained full text/digests
+  in `explanation-first-confidence64.jsonl` and the entropy32 receipt.
+  The next gate is five consecutive confidence64 samples, complete-answer
+  behavior, then an independent restart and second window.
+
+- First selected five-request window, command tail `diffusiongemma_explanation.txt
+  512 64 confidence-threshold 5 .../explanation-warm-confidence64.jsonl`:
+  E2E TPS `[39.072733320,40.080513949,40.064734937,40.061676723,40.096177313]`,
+  mean **39.875167248**, aggregate **39.871064660**; TTFT
+  `[1.664838833,1.327061167,1.329642333,1.328347417,1.329187833]` s,
+  mean **1.395815517** s. E2E
+  `[13.103767167,12.774287292,12.779318291,12.780293834,12.769297083]` s.
+  Every sample is 62/512, length finish, no cached tokens, with text SHA-256
+  `a1e969677fcfb75a1498d7676ab47332b934b0db27d99efbbd8383f10206b739`.
+- The selected short gate (`diffusiongemma_arithmetic.txt 32 64
+  confidence-threshold 5 .../arithmetic-warm-confidence64.jsonl`) returns `703`
+  in every sample, 25/8 tokens, stop, with TTFT
+  `[0.620330375,0.299122583,0.299481458,0.300824333,0.298711167]` s,
+  mean **0.363693983** s. E2E
+  `[0.620496625,0.299329458,0.299715292,0.301006416,0.298874584]` s.
+  The first sample includes a first-shape cost; retained all five observations.
+- `completed-explanation.txt 1024 64 confidence-threshold 1` stops naturally
+  at 71/356 tokens: TTFT 2.571580250 s, E2E 9.264512167 s, **38.426200277
+  E2E tok/s**. The answer correctly inserts 10/17/24 into bucket 3 by chaining,
+  or slots 3/4/5 by linear probing, then explains resizing. Its text digest is
+  `3bc1827b3c50c702486c137015b228a7bbdb9f06973af784e409d1afcd0dc600`.
+- Real nonstreaming curl gates used the retained `tool-call-request.json`,
+  `tool-continuation-request.json`, and `thinking-request.json`, sequentially,
+  at `/v1/chat/completions`, with HTTP 200 throughout. Exactly one parsed
+  `multiply({"a":37,"b":19})` call finishes as `tool_calls` in 0.750741 s;
+  feeding result `703` produces `37 times 19 is 703.` in 0.972152 s.
+  Thinking enabled preserves reasoning and a correct final answer in 8.317567 s,
+  37/404 API usage tokens. The reasoning lists an erroneous unused decomposition
+  before correctly applying three arithmetic methods; this is functional
+  parser evidence, not an accuracy evaluation. Complete responses are retained.
+- Longer-prompt retrieval (`long-context.txt 32 64 confidence-threshold 1`)
+  passes at 3935/11 tokens with exact `MAPLE-703`, stop, TTFT 6.682774917 s,
+  E2E 6.682983125 s. The uncached prefill took 6.171 s (637.6 prompt tok/s).
+  This demonstrates the prompt-length latency limit; it does not qualify the
+  advertised 262K context. Memory high-water stayed 18.036437318 GB, swap
+  remained 222.75 MiB, and no thermal/performance warning was recorded.
+
+- Sent `SIGINT` only to PID 89135 after all requests completed. It exited
+  successfully; PID and listener were absent, no model/compiler workload
+  remained, and driver allocation returned below 1 GB. Restarted with the
+  identical command into `server-qualified.log`, now PID 89234 with parent
+  Codex 87973. The pinned model loaded in 4.714 s; health and model ownership
+  passed with APC still disabled. Checkpoint/installed packages are unchanged.
+- First request after restart (`512 64 confidence-threshold 1`, greedy)
+  produced 62/512, length, the same text digest, **37.267566075 E2E tok/s**,
+  TTFT **2.357629708 s**, E2E **13.738487750 s**, and process memory high-water
+  **16.967659553 GB**. Record: `explanation-restart-cold-confidence64.jsonl`.
+- Extended the C++ client with a required `greedy|sampled` argument after
+  `SAMPLER`. Earlier commands above used the initial greedy-only interface.
+  Greedy retains temperature zero/seed 42 exactly; sampled uses temperature
+  one and seeds 42 onward per invocation. Source inspection confirms the
+  latter preserves the checkpoint's 0.4–0.8 logit-temperature schedule and
+  exercises categorical canvas draws. Strict host compilation passed while
+  the inference worker was idle. The independent warmed greedy window is
+  running; sampled throughput remains unqualified.
+
+- Independent greedy window (`512 64 confidence-threshold greedy 5
+  .../explanation-restart-warm-confidence64.jsonl`) passed at TPS
+  `[39.214249830,40.087556861,40.077951616,40.064081011,40.059900765]`,
+  mean **39.900748017**, aggregate **39.897754186**; TTFT
+  `[1.614155584,1.328008500,1.327215458,1.329242625,1.328943208]` s,
+  mean **1.385513075**. E2E
+  `[13.056478250,12.772043000,12.775104000,12.779526875,12.780860417]` s.
+  All samples retain 62/512, length finish, zero prefix reuse, the original
+  greedy text digest, and 16.967659553 GB process high-water.
+- Sampled window (`512 64 confidence-threshold sampled 5
+  .../explanation-sampled-confidence64.jsonl`), temperature one, seeds 42–46:
+  TPS `[34.717365539,38.749138213,40.121808607,35.462118722,43.145696406]`,
+  mean **38.439225497**, aggregate **38.193729156**; TTFT
+  `[2.378980375,2.049937083,1.589514792,1.824817792,1.577097916]` s,
+  mean **1.884069592**. E2E
+  `[14.747662792,13.213197083,12.761139584,14.437941625,11.866768708]` s.
+  All five are 62/512, length finish, with varied, coherent collision/resizing
+  explanations. The last has a minor unmatched parenthesis. Every full text
+  and distinct digest is retained; this is a small functional quality screen.
+  Process high-water reaches 17.019164969 GB; swap stays 222.75 MiB and no
+  thermal/performance warning is reported. Unknown sampling-mode rejection
+  also passes without submitting an inference request.
+- The user accepted the result and requested stage/commit/push at a safe
+  stopping point. Closed additional benchmarking, including the contemplated
+  second sampled restart window. The two-restart comparison therefore covers
+  greedy output; the varied-seed sampled evidence is one five-request window.
+  Left the healthy task server PID 89234, parent Codex 87973, on port 30001;
+  exact arguments remain those of the independent launch above, log
+  `~/.local/share/sglang-diffusiongemma/runs/20260920/server-qualified.log`.
+  Rechecked `/health`, listener ownership, process command and unchanged swap.
+  Publication includes only this task's implementation, documentation and
+  recovery record; the earlier local notes and Cold Fusion JSON remain separate.

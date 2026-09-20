@@ -2,8 +2,31 @@
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), Windows
 2026-09-19 native DiffusionGemma trial; Apple
-2026-09-02 03:35 PDT; Git integration 2026-09-12 15:50 PDT. The upstream
+2026-09-20 Mac DiffusionGemma qualification; Git integration 2026-09-20. The upstream
 rebase preserves both platforms' measurement records.
+
+**Mac DiffusionGemma, 2026-09-20:** the separate
+[MLX-VLM setup](../native/diffusion_gemma/mac/README.md) runs the pinned
+`mlx-community/diffusiongemma-26B-A4B-it-4bit` checkpoint on the 32-GiB M1 Max.
+Explicit 64-token canvases and confidence-threshold sampling meet the requested
+20 output tok/s objective on the 62-prompt/512-output workload. Two independent
+greedy five-request windows average **39.88/39.90 end-to-end tok/s** and
+**1.40/1.39 s TTFT**. Short arithmetic returns `703` with **0.36 s mean TTFT**.
+The completed explanatory answer, parsed tools and continuation, reasoning,
+and 3935-token retrieval check pass. The longer prompt takes 6.68 s to first
+text; the advertised 262K context remains unqualified. A five-request sampled
+window averages **38.44 tok/s** and **1.88 s TTFT**, with every sample above
+34.7 tok/s. The user accepted the result and closed further benchmarking.
+
+Model, isolated environment, and raw receipts are under
+`~/.local/share/sglang-diffusiongemma`. The user's cron cleanup removed all
+of `~/.cache` during the task; only this task's artifacts were restored.
+The repository environment and Qwen/Windows implementations remain unchanged.
+The current Mac server is MLX-VLM on `http://127.0.0.1:30001/v1`; its model ID
+is the absolute persistent model directory. Its default request controls differ
+from the tuned profile, so use the README's explicit request settings.
+The Mac integration is on `main`. Pre-existing Cold Fusion notes and its
+benchmark receipt remain separate, uncommitted user work.
 
 **Native DiffusionGemma handoff, 2026-09-19:** NVIDIA's pinned
 `diffusiongemma-26B-A4B-it-NVFP4` checkpoint is downloaded and hash-verified at

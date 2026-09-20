@@ -1,12 +1,30 @@
 # Decision ledger
 
-This ledger records choices that still govern the native-Windows Qwen3.8
-system. Exact sample lists, commands, incident detail, and intermediate states
+This ledger records choices that govern the native-Windows and Apple serving
+lanes. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
 **Reconciled through:** Windows 2026-09-12 retained checkpoint/cache decisions;
-Apple 2026-09-02 committed-MTP history selection. September 12 Git integration
+Apple 2026-09-20 DiffusionGemma interactive profile. September 12 Git integration
 preserves the distinct measured Windows and official coding sampling profiles.
+
+## Selected Mac DiffusionGemma request profile — September 20
+
+Use the pinned MLX-community 4-bit checkpoint through the isolated MLX-VLM
+0.7.1 environment, with explicit 64-token minimum/maximum canvases,
+confidence-threshold sampling at 0.9, and the checkpoint's 48-step denoising
+limit. Direct-answer mode disables thinking. Two independent greedy windows
+average 39.88/39.90 end-to-end tok/s with 1.40/1.39-second TTFT; one varied-seed
+sampled window averages 38.44 tok/s with 1.88-second TTFT. The user accepted
+this result. These measurements cover the 62-prompt/512-output workload.
+
+The 32-token entropy-bound candidate is excluded after malformed text and
+14.25 tok/s. Keep the 256-token entropy-bound measurement as a control. This
+selection applies to the documented request profile; the installed server's
+defaults and all Qwen/Windows defaults remain unchanged. Preserve model,
+environment, and receipts under `~/.local/share/sglang-diffusiongemma`, outside
+the host's automatic `.cache` cleanup. Build and API commands are in the
+[Mac setup](../native/diffusion_gemma/mac/README.md).
 
 ## DavidAU NVFP4 candidate closed, 2026-09-16
 

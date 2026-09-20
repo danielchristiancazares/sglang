@@ -1234,6 +1234,21 @@ code changes, or process state matter.
   production promotion was started. Qwen defaults are unchanged, test processes
   are stopped, and the native executable, checkpoint and evidence are retained.
 
+## 2026-09-20 — Mac DiffusionGemma interactive setup
+
+- Established an isolated MLX-VLM runtime for the pinned MLX-community 4-bit
+  checkpoint on the 32-GiB M1 Max, with a C++23 client measuring actual visible
+  TTFT and whole-request throughput. No Python source was authored.
+- Selected explicit 64-token blocks and confidence-threshold sampling. Two
+  independent greedy windows average 39.88/39.90 tok/s and 1.40/1.39-second
+  TTFT; one sampled five-seed window averages 38.44 tok/s and 1.88-second TTFT.
+  Complete answers, arithmetic, reasoning, tool round trips, and 3935-token
+  retrieval pass. Context capacity beyond this workload remains unmeasured.
+- The user's `.cache` cron job removed the initial setup. Restored only this
+  task's pinned files and recovered receipts under persistent `.local/share`.
+  The user accepted the result, closed further benchmarking, and authorized
+  publication. The separate MLX server remains available on port 30001.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:

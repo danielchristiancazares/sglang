@@ -1,5 +1,8 @@
 # Native-Windows DiffusionGemma trial
 
+The separate [Apple-silicon setup](mac/README.md) uses MLX-VLM and a 4-bit
+checkpoint on the M1 Max.
+
 This directory contains a C++ executable and C++ runtime adapters for the pinned
 `nvidia/diffusiongemma-26B-A4B-it-NVFP4` checkpoint. All authored launch,
 loading, routing, and SGLang integration code is C++. The executable embeds the

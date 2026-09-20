@@ -652,6 +652,41 @@ measurements. The final promotion still requires the real 131K pool, sampled
 tool call, reasoning continuity, language-only metadata, restart-default
 launch, and Codex 0.151.0 `xhigh` integration.
 
+## Mac DiffusionGemma interactive workload
+
+This separate workload targets the M1 Max with 32 GiB unified memory using
+MLX-VLM and the pinned MLX-community 4-bit DiffusionGemma checkpoint. It leaves
+the Qwen comparison and capacity contracts unchanged. Keep its model,
+environment, and results under `~/.local/share/sglang-diffusiongemma` because
+this host periodically removes `~/.cache`.
+
+The C++23 client `benchmark/mac/bench_diffusiongemma.cpp` measures from request
+submission through the SSE terminator. TTFT ends at the first nonempty visible
+content delta. Primary throughput is reported output tokens divided by full
+request wall time, including the initial wait. Diffusion emits whole blocks;
+chunk spacing and the server's post-first-block rate are supplementary metrics.
+Output-token counts include generated special tokens according to server usage.
+
+Use `benchmark/mac/prompts/diffusiongemma_explanation.txt` with a 512-token
+budget for the throughput comparison and `diffusiongemma_arithmetic.txt` with
+a 32-token budget for short-response correctness. The fixed-work comparison
+uses temperature zero, seed 42, thinking disabled, natural EOS, and explicit
+sampler and canvas size. Record actual prompt/output counts, finish reason,
+complete output, peak memory, TTFT, and end-to-end time for every sample. A
+budget-limited explanation qualifies timing only; check completed answers
+separately. Changing canvas size or sampler can change the output and quality.
+
+Separate cold first-request and first-shape samples from warmed five-request
+windows. Select a setting using both latency and the 20 output tok/s objective,
+then repeat a five-request window after an independent server restart. Also
+run `sampled` mode: temperature one retains the checkpoint's 0.4–0.8
+denoising schedule; per-sample seeds 42, 43, ... exercise varied outputs.
+Keep
+requests sequential, retain source checkpoint bytes, check swap/thermals and
+GPU ownership, and verify coherent arithmetic, completed explanatory output,
+HTTP/SSE accounting, and a longer prompt before recording the handoff. The
+checkpoint's advertised context size remains unqualified unless measured.
+
 ## Tree and SWOR experiments
 
 The retained tree machinery is opt-in experimental infrastructure. Its
