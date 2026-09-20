@@ -25177,3 +25177,303 @@ mean 13.929045  17.125658 446.051        39.730
   performance, and Apple runtime gates have not been rerun on this source.
   The prior production records remain historical, and no performance
   promotion or new tuning branch is authorized by this Git task.
+
+## 2026-09-19: DiffusionGemma native-Windows compatibility integration
+
+- User requested downloading `nvidia/diffusiongemma-26B-A4B-it-NVFP4` and
+  wiring a trial launcher, then explicitly requested folding in model support.
+  User requires native Windows and declined both a Linux/Docker route and an
+  exception for new Python or PowerShell integration code. All new runtime,
+  binding, and launch code must therefore be C++/CUDA. Qwen defaults and the
+  existing user-owned edits remain protected.
+- Starting branch is `main`, HEAD
+  `c7f2f89f5def59890d143c553f47de52699499fe`. Eighteen paths were already dirty:
+  four recovery documents, the Qwen launcher, three kernel import repairs,
+  engine/scheduler/deepseek/DSpark repairs, three Responses modules, and three
+  unit-test files. No product code was changed during initial investigation.
+- Pinned source revision is `ec4ff3df205028f4e81c954c2227f9312b3ec2ea`.
+  Download completed at
+  `C:\Users\Daniel\models\diffusiongemma-26B-A4B-it-NVFP4`, separately from
+  every existing checkpoint. Exact successful command:
+  `uv tool run --python C:\Users\Daniel\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe --from huggingface-hub==1.32.0 hf download nvidia/diffusiongemma-26B-A4B-it-NVFP4 --revision ec4ff3df205028f4e81c954c2227f9312b3ec2ea --local-dir C:\Users\Daniel\models\diffusiongemma-26B-A4B-it-NVFP4 --max-workers 3`.
+  The interrupted tool call left the authorized downloader running; its
+  verified tree was `uv 32996 -> hf 31984 -> Python 24676 -> Python 36176`.
+  No duplicate downloader was started.
+- Both safetensors sizes and SHA-256 hashes match the pinned Hugging Face
+  metadata: shard 1 is 10,002,097,536 bytes,
+  `24f1257810848d296cc42fd2f6186c8dd6c2a562482c4c1bc8463a087a2c6554`;
+  shard 2 is 8,821,758,352 bytes,
+  `5015731988fbfc21042032ed9ea4c9af335bfe70bcd7529d09b8f2438d5fdd0e`.
+  The 32,169,626-byte tokenizer hash also matches:
+  `cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f`.
+- Initial CLI attempts failed: global `hf` exited 1 silently, and the checkout
+  `hf.exe` reported the missing base interpreter
+  `C:\Users\Daniel\AppData\Local\Programs\Python\Python313\python.exe`.
+  `.venv\pyvenv.cfg` still points to that removed installation. The Microsoft
+  Store CPython 3.13.14 and uv-managed CPython 3.12.14 remain installed. The
+  download used an isolated uv tool environment; `.venv` is unchanged.
+- Source investigation: no DiffusionGemma implementation exists in this
+  checkout. Upstream PR #34061, head
+  `ef90bf677e4e6b280bf796f1c5f4ef0f05dda27f`, is an unmerged BF16 reference
+  that explicitly excludes quantized loading. Its Python additions were not
+  imported. The installed Transformers already contains the encoder/decoder,
+  self-conditioning, and entropy-bound generation implementation. Investigating
+  compiled native runtime adapters and the existing NVFP4 MoE CUDA primitives.
+- Initial preflight found ports 30000/30001/8000/8080 free, no serving or CUDA
+  compiler tree, and RTX 5090 driver 616.92 with 2,931 MiB used / 29,257 MiB
+  free, 1% utilization, 29 C, and 39.11 W. No Docker/WSL instance was started,
+  no GPU inference ran, and unrelated processes were preserved. Recheck this
+  snapshot before any compilation or GPU gate.
+- Native implementation is in progress under `native/diffusion_gemma/`:
+  `launcher.cpp`, `runtime.cpp`, and CMake build configuration. All authored
+  runtime and binding logic is C++; no Python or PowerShell source was added
+  or changed. The design uses the installed Transformers DiffusionGemma model
+  and generation implementation through compiled adapters, with packed NVFP4
+  experts executed by FlashInfer's existing CUDA MoE implementation. The
+  SGLang registry/configuration/request/worker adapters are scoped to the native
+  launcher process. They are unqualified at this checkpoint.
+- Initial CMake configuration failed without the SDK link environment
+  (`kernel32.lib`); initializing the existing
+  `scripts/windows/initialize_cuda_build_env.ps1 -MaxJobs 2` fixed that.
+  The Microsoft Store Python executable must be invoked through its app alias,
+  and the resulting embedding attempt failed with Windows DLL-load error 5.
+  Installed standalone CPython 3.13.14 with `uv python install 3.13.14 --no-bin`.
+  No `.venv` dependency or configuration changed. Its base path is
+  `C:\Users\Daniel\AppData\Roaming\uv\python\cpython-3.13-windows-x86_64-none`.
+- Successful native build configuration:
+  `cmake -S native/diffusion_gemma -B scratch/diffusiongemma-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=C:/Users/Daniel/AppData/Roaming/uv/python/cpython-3.13-windows-x86_64-none/python.exe -DPython3_INCLUDE_DIR=C:/Users/Daniel/AppData/Roaming/uv/python/cpython-3.13-windows-x86_64-none/include -DPython3_LIBRARY=C:/Users/Daniel/AppData/Roaming/uv/python/cpython-3.13-windows-x86_64-none/libs/python313.lib`;
+  build with `cmake --build scratch/diffusiongemma-build --parallel 2` after
+  the same CUDA/MSVC environment initialization. The native `inspect` command
+  passed: Torch `2.13.0+cu130`, Transformers `5.12.1`, DiffusionGemma class
+  available, FlashInfer `0.6.17`.
+- At 22:37 PDT started the isolated native `verify-moe` command after checking
+  no serving/compiler tree and 2,918 MiB display residency / 29,270 MiB free,
+  1%, 29 C, 49.43 W. It loads only expert layer zero and compares fused MoE
+  with independent NVFP4 expert GEMMs plus tanh-GELU. Layer-zero packed shapes
+  and equal gate/up global scales pass. At 22:50 the initial FlashInfer JIT
+  build is still running (90 CUDA compilation units, Ninja `-j 2`), so no
+  parity result exists yet. Verified tree: native launcher 32892 -> Ninja
+  26668 -> its two NVCC trees. Cache is
+  `C:\_fij\0.6.17\120f\cached_ops\fused_moe_120`; unified-exec session is
+  `88461`. Do not start another compiler or GPU gate while it remains active.
+  An unrelated interactive Python 3.14 process (PID 17496 at inspection)
+  belongs to the user and was preserved.
+- Source has advanced beyond the binary running that first verifier: the
+  SGLang adapter and dependency-free meta-model loading still need compilation
+  and runtime tests after the isolated CUDA tree exits. No full checkpoint
+  inference, server launch, API qualification, or performance promotion has
+  occurred. Next: finish the isolated parity gate, build current C++ sources,
+  fix any native integration failures, then run bounded full-model and API
+  checks. `git diff --check` currently passes.
+- The first `verify-moe` run exited 1 during FlashInfer CUDA compilation:
+  `moe_gemm_tma_ws_launcher.inl:65` attempted to initialize a CUTLASS epilogue
+  scalar `float` with `const float**` in SM120 grouped-GEMM specializations.
+  No kernel executed and no numerical parity result was obtained. The native
+  launcher/Ninja/NVCC tree exited completely; a fresh check found ports
+  30000/30001 free, only the unrelated interactive Python 17496, and 3,201 MiB
+  display residency / 28,987 MiB free, 1%, 28 C, 42.16 W. Existing installed
+  FlashInfer source and protected compatibility headers remain unchanged.
+- Replaced the experimental fused-MoE adapter with C++ expert routing over
+  FlashInfer's installed NVFP4 matrix-multiplication kernels. This eager path
+  preserves packed weights, shared activation scales, padded gate/up halves,
+  tanh-GELU, and weighted reduction. It favors a working compatibility trial;
+  it is not a production throughput candidate. Rebuilding and isolated parity
+  are the next gates; the new path has not yet run.
+- The routed-GEMM source compiled with MSVC. Its first isolated run compiled
+  the FP4 quantizer but failed linking `c10.lib`: the installed Windows JIT
+  derives Torch/TVM library directories from `sys.executable`, which now names
+  the native launcher. Added the real installed library directories to the
+  native process's linker search path, leaving installed source untouched.
+  Also made the chat tokenizer's tensor return explicit and bound retained
+  reply slices to the exact scheduler request object to handle reused public
+  request IDs after cancellation. The updated native build passes.
+- Isolated routed-GEMM gate passed after first-use JIT completion. Exact
+  command remained `diffusiongemma.exe verify-moe` under the initialized
+  two-job environment. Sixteen BF16 rows, experts 0 through 7, and equal
+  routing weights produced relative-L2 error **0.00164566** against independent
+  gate/up/down NVFP4 GEMMs with tanh-GELU (admission bound 0.03). Native PID
+  20784 and its Ninja 30844 / NVCC tree exited. Post-check: ports 30000/30001
+  free, no task compiler/runtime process, 3,279 MiB used / 28,909 MiB free,
+  0%, 29 C, 39.09 W. Interactive Python 17496 and desktop GPU clients were
+  preserved. This is kernel-level evidence only.
+- Expanded the verifier to heterogeneous routes and weights across the expert
+  bank. Added checkpoint dtype/shape/scale validation, explicit structured
+  DiffusionGemma generation-result handling, token-budget/EOS trimming, and
+  native Windows worker-bootstrap parsing. Worker startup calls the installed
+  `multiprocessing.spawn.spawn_main` function directly; it does not evaluate
+  a source string. The permanent build is now being configured under the
+  existing ignored `build/diffusiongemma` directory, using the same CMake/Python
+  options recorded above. Full-model/API gates remain pending.
+- Permanent MSVC build and expanded heterogeneous routing parity passed:
+  **0.00167094** relative L2. Empty-prompt and malformed-bootstrap CLI checks
+  both exited 1 with explicit validation errors before GPU loading.
+- First full-model command was
+  `build\diffusiongemma\bin\diffusiongemma.exe prompt 'What is 37 times 19? Give a short answer.'`
+  under the initialized environment. All 30 expert layers loaded, and the
+  process reached generation, then exited 1 without a captured traceback or
+  answer. A late-loading telemetry sample was 21,617 MiB used / 10,571 MiB free,
+  18%, 29 C, 52.88 W. The process exited fully; post-failure display residency
+  was 3,250 MiB, with no serving/compiler process or crash dump found.
+- Investigation found a borrowed pybind11 attribute accessor retained after
+  the temporary structured generation result was released. Materialized owned
+  `py::object` references at that boundary and for saved serving callbacks.
+  Also separated the real `sys.executable` from multiprocessing's native worker
+  executable, propagated installed module paths to library subprocesses, and
+  enabled the existing fault handler. The rebuilt native prompt is being
+  retried with its exact native exit code captured. No successful full-model
+  output has been obtained yet.
+- Retried full-model prompt **passed**, exited 0, and returned
+  `thought\n37 times 19 is **703**.` after loading all 30 expert layers. This
+  confirms the loaded shared language weights, NVFP4 expert integration,
+  self-conditioning and installed entropy-bound generation can run natively
+  on the RTX 5090. The direct tokenizer rendering retains the thought-channel
+  label; the server's Gemma4 parser is still to be tested. Post-run GPU was
+  3,236 MiB used / 28,952 MiB free, 8%, 31 C, 72.63 W. No task process or
+  listener remained; the unrelated Python 17496 was preserved. A SGLang
+  `diffusiongemma.exe serve` launch on localhost:30001 is the next gate.
+- Initial serving launch exited during CLI validation: removed
+  `--disable-piecewise-cuda-graph` is unsupported. Updated the C++ argument
+  list to `--cuda-graph-backend-decode disabled --cuda-graph-backend-prefill disabled`.
+  The next launch (`outputs/diffusiongemma-20260919/serve-02.log`) stopped
+  before worker startup because `--language-only` invokes encoder
+  disaggregation. Switched to this checkout's text-only
+  `--language-model-only`, matching the existing Qwen launcher semantics.
+  Both trees exited; pre-rebuild checks found only unrelated Python 17496,
+  3,245 MiB display residency / 28,943 MiB free. The rebuilt launch is logged
+  at `outputs/diffusiongemma-20260919/serve-03.log`.
+- The text-only flag also has an architecture capability allow-list; the
+  C++ registration now adds DiffusionGemma to that process-local list.
+  `serve-04.log` reached real native worker startup, loaded the full model in
+  24.93 s (SGLang reported 17.77 GB weight memory), and allocated its 4096-token
+  scheduler KV pool (0.47 GB K + 0.47 GB V). Initialization then called the
+  ordinary autoregressive model-forward path for FlashInfer autotuning, which
+  the diffusion facade deliberately rejects. Added the supported
+  `--disable-flashinfer-autotune` flag for this eager trial. No fake logits or
+  dummy user-facing inference path was introduced. The failed tree exited;
+  pre-rebuild GPU was 3,176 MiB used / 29,012 MiB free, with only unrelated
+  Python 17496 remaining. Next launch will be captured in `serve-05.log`.
+- `serve-05.log` reached readiness at 23:28:13 PDT. API/native launcher 41152
+  (parent PowerShell 16036), native workers 29220/11600; port 30000 stayed
+  free. `/v1/models` and `/model_info` returned the expected alias, 2048 limit,
+  Gemma4 parsers, and image/audio understanding disabled. Weight load took
+  17.07 s; both CUDA graph phases are disabled and the scheduler has one
+  running-request slot, 256-token chunks, and a 4096-token accounting pool.
+- First chat request returned HTTP 200 with `thought\n37 times 19 is **703**.`,
+  prompt/completion/total counts 24/17/41 and stop token 1. Saved response:
+  `outputs/diffusiongemma-20260919/chat-arithmetic-01.json`. The channel label
+  leaked because SGLang's Gemma4 token-retention classification did not yet
+  include DiffusionGemma; the native chat initializer now establishes that
+  tokenizer-format fact before the existing parser runs. Direct CLI rendering
+  also now uses the installed Gemma4 detector with channel markers retained.
+- `/health` failed its 20-second internal deadline because its hard-coded
+  autoregressive temperature=0 was rejected by the native sampling boundary.
+  A separate real `/generate` call with the checkpoint schedule, input ID 0
+  and one requested token succeeded in **25.8607169 s**, returning token
+  236770 (`1`), finish `length`, and 1/1 prompt/completion counts. Saved at
+  `health-generation-schedule.json`. The C++ boundary now translates only
+  SGLang's reserved one-token health-probe shape to the checkpoint schedule,
+  and the native process sets the supported health timeout to 90 seconds.
+  Ordinary temperature overrides remain rejected. Health still performs real
+  inference; no liveness bypass was enabled.
+- Stopped the verified fifth-launch tree leaf-first (29220/11600, then 41152)
+  after both requests completed. Ports 30000/30001 and task workers cleared;
+  3,199 MiB display residency / 28,989 MiB free. Rebuild passed. The next
+  launch, with channel and health integration fixes, is `serve-06.log`.
+- Sixth launch reached readiness at 23:35:29 PDT. Verified native API process
+  41076 (parent PowerShell 25784), workers 9232/31348, localhost port 30001;
+  port 30000 remained free. `/health` passed real inference with HTTP 200.
+  Arithmetic returned clean `37 times 19 is **703**.`, 24 prompt / 17 completion
+  tokens, stop 106, in 3.8688303 s client wall time. SSE returned exactly
+  `NATIVE WINDOWS READY`, finish/usage and `[DONE]`, 21/10 tokens, in 2.2399017 s.
+  A 1089-token prompt requesting numbers 1 through 200 produced 320 output
+  tokens in 8.2046796 s (finish length), crossing multiple prefill and output
+  chunks without missing or duplicated complete numbers. These are individual
+  warmed functional samples, not a repeated performance window. Full replies
+  are generated before HTTP slices are delivered; scheduler prefill throughput
+  logs are not an inference-performance measurement for this adapter.
+- Temperature 0, max_tokens 1025, and out-of-vocabulary input 262144 all returned
+  HTTP 400. Thinking enabled at max_tokens 128 produced parsed reasoning but
+  exhausted the budget before the final answer. Usage incorrectly reported
+  zero reasoning tokens: the synchronous DLLM result path skips SGLang's
+  existing reasoning-accounting owner. Added a C++-scoped result adapter that
+  invokes that owner for native token slices before streaming. Also tightened
+  sampling validation for unknown keys, noninteger budgets, beam search and
+  custom parameters. These latest source changes await rebuild/relaunch.
+- Automatic tools passed: exactly one `multiply({"a":37,"b":19})`, finish
+  `tool_calls`, 79/21 tokens, 2.4169 s. Supplying tool result 703 produced
+  `37 times 19 is 703.`, stop 106, 53/17 tokens, 2.55 s. Saved artifacts are
+  `outputs/diffusiongemma-20260919/chat-arithmetic-02.json`, `chat-stream.txt`,
+  `chat-multiblock.json`, `chat-reasoning.json`, `chat-tool.json` and
+  `chat-tool-result.json`. Requests used `/v1/chat/completions`, the native
+  alias, default diffusion sampling, and explicit chat-template thinking mode.
+- Stopped the freshly verified sixth-launch workers 9232/31348, then API
+  process 41076. Both ports cleared, no task runtime or compiler remained,
+  and GPU returned to 3,074 MiB used / 29,114 MiB free, 0%, 29 C. The previously
+  observed unrelated interactive Python had already exited independently.
+  No user process was stopped. Next: build, verify reasoning accounting and
+  strict request failures, then test direct CLI rendering and finish handoff.
+- Seventh MSVC build passed and `serve-07.log` reached readiness at 23:47:54
+  PDT. Exact command was the existing environment initializer with `-MaxJobs 2`,
+  then `build\diffusiongemma\bin\diffusiongemma.exe serve` with stdout/stderr
+  redirected to that log. Native API 41556 (PowerShell parent 21212), workers
+  9800/28536. Weight load 11.23 s, tokenizer startup 25.17 s; resolved settings
+  still have context 2048, scheduler pool 4096, one request, no CUDA graphs,
+  no overlap/radix reuse, Gemma4 parsers, and text-only operation. Real `/health`
+  returned 200 within the configured 90-second deadline.
+- The final reasoning request (`Work out 37 times 19. Give the final number.`,
+  `max_tokens=512`, `chat_template_kwargs.enable_thinking=true`) returned
+  visible answer `703` and nonempty reasoning, stop 106, 31 prompt / 294
+  completion tokens, **290 reasoning tokens**, in **17.1482081 s** client wall
+  time. The accounting crossed more than one scheduler output slice. Saved at
+  `chat-reasoning-final.json`. This single thinking-enabled sample complements
+  the earlier 2-4 s short thinking-disabled samples; it is not a speed window.
+- `/generate` negative cases all returned HTTP 400: `beam_width=2`, unknown
+  `unrecognized_knob=7`, fractional `max_new_tokens=1.5`, and a JSON integer
+  beyond the protocol's integer range. A subsequent streamed non-thinking
+  request returned exact `NATIVE WINDOWS READY`, 21/10 tokens, zero reasoning
+  tokens, finish stop, usage and `[DONE]`; retained at `chat-stream-final.txt`.
+  `/v1/models` and `/model_info` still report the intended alias and architecture,
+  context 2048, and image/audio understanding disabled.
+- Removed only the obsolete task-owned `scratch/diffusiongemma-build` directory
+  after resolving and checking its absolute path. The permanent ignored
+  `build/diffusiongemma` executable/DLL, sources, downloaded checkpoint and
+  all result logs remain. Build artifacts are reproducible from CMake.
+- Before shutdown, verified exact ancestry again and preserved a newly visible
+  unrelated interactive Python 21228. Stopped native workers 9800/28536 then
+  API 41556 after requests completed. Last resident sample was 25,194 MiB used /
+  6,994 MiB free, 25%, 32 C, 70.81 W. Final direct-prompt rendering and stopped
+  GPU/process checks are next.
+- Final direct CLI command, under the same initialized environment, was
+  `build\diffusiongemma\bin\diffusiongemma.exe prompt 'What is 37 times 19? Give a short answer.'`.
+  It returned clean `37 times 19 is **703**.` and exited 0. Output is retained
+  at `outputs/diffusiongemma-20260919/prompt-final.log`. This confirms the
+  installed Gemma4 detector removes the channel label in standalone rendering.
+  Final process inspection found only unrelated interactive Python 21228;
+  native runtime/compiler trees were absent, ports 30000/30001 free, GPU
+  3,070 MiB used / 29,118 MiB free, 7%, 31 C, 73.53 W display residency.
+  No production setting or dependency was changed. The user requested staging,
+  committing and pushing this task; pre-existing unrelated edits will remain
+  outside that commit.
+- The single final adversarial review found one request-boundary gap: a
+  nonnumeric sampling value could raise a pybind cast exception outside the
+  API's ValueError-to-400 translation. Added explicit numeric/JSON-boolean
+  validation inside the C++ protocol adapter. This does not change generation.
+  Rebuild and focused malformed-request/ordinary-request checks are required
+  before committing. The protected clean-port CUDA header still hashes to
+  `304C9CDDB08FA69E680E6ABE46C02C17F992F904A4AF20B978E4CC4B767EADBD`.
+  `git diff --check` and whitespace checks on all four new files passed.
+- Boundary-correction build passed. Eighth launch (`serve-08.log`) reached
+  readiness at 23:54:53 PDT with native API 33464 (PowerShell parent 36568),
+  workers 29276/41388; weight load 11.57 s and tokenizer startup 26.76 s.
+  `/generate` rejected string temperature, Boolean temperature, and string
+  `ignore_eos` with HTTP 400. A subsequent ordinary chat returned clean
+  `37 times 19 is **703**.`, 24 prompt / 17 output tokens, zero reasoning
+  tokens, finish stop 106; saved as `chat-commit-gate.json`. Only request
+  validation changed after the earlier numerical and reasoning/tool gates.
+- Reverified exact process ancestry and stopped workers 29276/41388 then
+  API 33464. Unrelated interactive Python and Hauberk CPU-check processes
+  were preserved. `origin` fetch succeeded with no remote-main divergence.
+  Staging is limited to the four new native files and this task's hunks in
+  current-state, timeline and experiment-log; the original 18 dirty paths
+  retain their user-owned changes outside the commit. Runtime qualification
+  used those existing Windows source repairs, as documented in the README.

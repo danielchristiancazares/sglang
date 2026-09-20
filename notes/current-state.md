@@ -1,9 +1,40 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), Windows
-2026-09-12 DeepSeek V4.1 admission and pinned TurboQuant35 layouts; Apple
+2026-09-19 native DiffusionGemma trial; Apple
 2026-09-02 03:35 PDT; Git integration 2026-09-12 15:50 PDT. The upstream
 rebase preserves both platforms' measurement records.
+
+**Native DiffusionGemma handoff, 2026-09-19:** NVIDIA's pinned
+`diffusiongemma-26B-A4B-it-NVFP4` checkpoint is downloaded and hash-verified at
+`C:\Users\Daniel\models\diffusiongemma-26B-A4B-it-NVFP4`. The
+[native trial](../native/diffusion_gemma/README.md) adds a compiled C++ launcher,
+NVFP4 expert routing and process-local SGLang adapters. All newly authored
+program code is C++; the executable embeds installed CPython and calls the
+existing Transformers/Torch/FlashInfer/SGLang libraries. No Python or
+PowerShell source was added or changed for this task.
+
+The permanent entry point is
+`build\diffusiongemma\bin\diffusiongemma.exe prompt "your prompt"` or `serve`,
+after the existing CUDA/MSVC environment initializer. Serving uses
+`http://127.0.0.1:30001/v1`, alias `diffusiongemma-26b-a4b-nvfp4`, one running
+request, a 2048-token prompt-plus-output limit and at most 1024 output tokens.
+Expert parity, direct arithmetic, health, chat/SSE, reasoning with token usage,
+multi-chunk output, parsed tools and tool-result continuation pass. Requests
+use the checkpoint's diffusion schedule; unsupported generation controls fail
+validation. This eager text-only compatibility path buffers generation before
+HTTP output, has no CUDA graphs or prefix reuse, and has no throughput
+qualification. Individual warmed functional samples took 2.2-3.9 s for short
+thinking-disabled replies, 8.2 s for 1089 input / 320 output tokens, and 17.1 s
+for 294 output tokens with thinking enabled.
+
+The DiffusionGemma test server and direct-prompt process are stopped; ports
+30000/30001 are free and the GPU has returned to ordinary display residency.
+The checkpoint, permanent build and result logs are retained. Qwen production
+defaults, dependencies and pre-existing worktree changes remain unchanged.
+The existing `.venv` executable still names a missing base interpreter; the
+native launcher uses standalone CPython 3.13.14 without changing that metadata.
+Full commands and qualification limits are in the September 19 experiment log.
 
 **Source handoff:** `main` is rebased onto `upstream/main` at
 `b5a2aebc7eccd4ee0afa8c435585d7462d7d7a61`, with merge topology retained.

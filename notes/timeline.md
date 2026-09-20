@@ -1208,6 +1208,19 @@ code changes, or process state matter.
   defaults stay unchanged; the MTP-bearing AttnNVFP4 target and explicit
   DSpark-v2 draft remain selected.
 
+## 2026-09-19 — native-Windows DiffusionGemma compatibility trial
+
+- Downloaded NVIDIA's pinned NVFP4 checkpoint and verified both weight shards
+  and the tokenizer. Added only C++ program source for launch, loading, expert
+  routing and process-local SGLang integration through the installed libraries.
+- Expert parity and full-model text generation pass, along with health,
+  chat/SSE, reasoning usage, multi-chunk requests, parsed tools and continuation.
+  The local trial admits one request, 2048 total tokens and 1024 output tokens.
+- Eager per-expert execution and buffered output remain compatibility limits.
+  Individual functional samples are recorded; no performance branch or
+  production promotion was started. Qwen defaults are unchanged, test processes
+  are stopped, and the native executable, checkpoint and evidence are retained.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
