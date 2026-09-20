@@ -25271,6 +25271,32 @@ mean 13.929045  17.125658 446.051        39.730
   process. GPU residency returned to 2,495 MiB used / 29,693 MiB free, 4%
   utilization, 47 C and 50.22 W. No process was terminated by this task.
 
+## 2026-09-13 20:35 PDT — Requested temperature-0.7 coding trial
+
+- User requested the launcher default temperature change to `0.7` before a
+  separately recorded retry of Rust baseline problem 1. This is an experimental
+  sampling change; inference behavior and reasoning length remain unmeasured.
+- Checkout: `main`, HEAD `c7f2f89f5def59890d143c553f47de52699499fe`.
+  Existing changes in the current-state/log notes, kernel operations, engine,
+  scheduler, DeepSeek utilities, DSpark worker, and speculative unit test were
+  preserved.
+- `scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1` now selects
+  `--sampling-defaults model` and serves a temporary sibling model view.
+  Its private `generation_config.json` changes only temperature; other files,
+  including weights, are hard-linked. The source checkpoint remains unchanged.
+  The view is removed within the launcher's owning cleanup scope.
+- Traced the configuration through `ModelConfig.get_default_sampling_params`
+  and the OpenAI Responses/Chat sampling conversion. Explicit request sampling
+  values continue to take precedence over model defaults.
+- A CPU-only execution of the actual launcher with CUDA initialization and
+  serving replaced by a probe passed PowerShell parsing, temperature `0.7`,
+  retained top-k `20` / top-p `0.95`, hard-link identity, unchanged source
+  configuration, and cleanup after both successful and failing serving calls.
+  No server launch, model request, GPU gate, or process termination was performed.
+- Next: user restarts with the usual launcher command. Verify the resolved
+  default temperature, then record problem 1's retry separately from the
+  original baseline answers and retain its server sampling provenance.
+
 ## 2026-09-19: DiffusionGemma native-Windows compatibility integration
 
 - User requested downloading `nvidia/diffusiongemma-26B-A4B-it-NVFP4` and
@@ -25626,3 +25652,23 @@ mean 13.929045  17.125658 446.051        39.730
   passes for the three changed Responses modules and their two test files.
   Staged whitespace checks pass. The remaining launcher and historical notes
   do not affect these CPU tests. No live Responses/Codex request was made.
+
+### Launcher sampling-default commit
+
+- The retained launcher sets `--sampling-defaults model`, creates a temporary
+  sibling checkpoint view, hard-links the source files, and writes a private
+  `generation_config.json` with temperature **1.0**. The earlier September 13
+  record describes the initial 0.7 trial. The source being committed preserves
+  the later 1.0 setting already present when this commit sweep began.
+- Traced `ModelConfig.get_default_sampling_params` and
+  `ResponsesRequest.to_sampling_params`: explicit request sampling values
+  retain precedence. Inspected the launcher's `finally` cleanup and resolved
+  parent-directory check. Its checkpoint source and other launch defaults are
+  unchanged by this sweep.
+- `[System.Management.Automation.Language.Parser]::ParseFile` reports zero
+  errors for `scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1`.
+  `git diff --cached --check` passes. The preceding protocol suite passed on
+  these same sampling-conversion inputs. No declared launcher unit suite was
+  found. Validation here consists of parsing and manual staged-diff review,
+  with the original CPU launcher probe retained as historical evidence.
+  No launcher execution or checkpoint view was created during this sweep.

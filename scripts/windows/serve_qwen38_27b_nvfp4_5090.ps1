@@ -13,6 +13,8 @@ workspace. NEXTN remains available as an explicit compatibility and control
 mode.
 The checkpoint is loaded as a standalone language model, preserving VRAM that
 the unused vision encoder would otherwise consume.
+Requests that omit temperature use 1.0. A temporary hard-linked model view
+provides the sampling configuration while preserving the checkpoint files.
 #>
 
 [CmdletBinding()]
@@ -133,6 +135,11 @@ if ($MaxTotalTokens -gt $ContextLength) {
 }
 
 $ResolvedModelPath = (Resolve-Path -LiteralPath $ModelPath).Path
+$SamplingTemperature = 1.0
+$SamplingModelParent = Split-Path -Parent $ResolvedModelPath
+$SamplingModelPath = Join-Path $SamplingModelParent (
+    '.{0}.sampling-{1}' -f (Split-Path -Leaf $ResolvedModelPath), [guid]::NewGuid().ToString('N')
+)
 $RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $SGLang = Join-Path $RepoRoot '.venv\Scripts\sglang.exe'
 
@@ -145,7 +152,7 @@ if (-not (Test-Path -LiteralPath $SGLang -PathType Leaf)) {
 
 $ServeArgs = @(
     'serve'
-    '--model-path', $ResolvedModelPath
+    '--model-path', $SamplingModelPath
     '--served-model-name', $ServedModelName
     '--host', $ListenAddress
     '--port', $Port
@@ -156,6 +163,7 @@ $ServeArgs = @(
     '--prefill-attention-backend', $PrefillAttentionBackend
     '--decode-attention-backend', $DecodeAttentionBackend
     '--sampling-backend', $SamplingBackend
+    '--sampling-defaults', 'model'
     '--fp8-gemm-backend', $Fp8GemmBackend
     '--fp4-gemm-backend', $Fp4GemmBackend
     '--kv-cache-dtype', $KvCacheDtype
@@ -330,7 +338,35 @@ $HadDSparkStaticGraphKvCommit =
 $PreviousDSparkStaticGraphKvCommit =
     $env:SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT
 
+$SamplingModelDirectory = New-Item -ItemType Directory -Path $SamplingModelPath
 try {
+    $GenerationConfig = Get-Content -LiteralPath (
+        Join-Path $ResolvedModelPath 'generation_config.json'
+    ) -Raw | ConvertFrom-Json -AsHashtable | ForEach-Object {
+        if ($_ -is [System.Collections.IDictionary]) { $_ }
+        else { throw 'generation_config.json must contain a JSON object' }
+    }
+    $GenerationConfig['temperature'] = $SamplingTemperature
+    foreach ($CheckpointFile in Get-ChildItem -LiteralPath $ResolvedModelPath -File -Recurse -Force) {
+        $RelativeCheckpointFile = [System.IO.Path]::GetRelativePath(
+            $ResolvedModelPath, $CheckpointFile.FullName
+        )
+        $SamplingFilePath = Join-Path $SamplingModelDirectory.FullName $RelativeCheckpointFile
+        [System.IO.Directory]::CreateDirectory(
+            [System.IO.Path]::GetDirectoryName($SamplingFilePath)
+        ) | Out-Null
+        if ($RelativeCheckpointFile -eq 'generation_config.json') {
+            [System.IO.File]::WriteAllText(
+                $SamplingFilePath,
+                ($GenerationConfig | ConvertTo-Json -Depth 100),
+                [System.Text.UTF8Encoding]::new()
+            )
+        }
+        else {
+            New-Item -ItemType HardLink -Path $SamplingFilePath -Value $CheckpointFile.FullName | Out-Null
+        }
+    }
+    Write-Host "Default sampling temperature: $SamplingTemperature"
     if (-not $DisableTorchCompile) {
         $env:SGLANG_TORCH_COMPILE_MODE = $TorchCompileMode
     }
@@ -411,6 +447,11 @@ finally {
         Remove-Item Env:SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT `
             -ErrorAction SilentlyContinue
     }
+    $ResolvedSamplingModelPath = (Resolve-Path -LiteralPath $SamplingModelDirectory.FullName).Path
+    if ((Split-Path -Parent $ResolvedSamplingModelPath) -ne $SamplingModelParent) {
+        throw "Sampling-view cleanup escaped its owning directory: $ResolvedSamplingModelPath"
+    }
+    Remove-Item -LiteralPath $ResolvedSamplingModelPath -Recurse
 }
 
 exit $ExitCode
