@@ -68,6 +68,9 @@ from sglang.srt.entrypoints.openai.protocol import (
     UsageInfo,
 )
 from sglang.srt.entrypoints.openai.responses_adapters import (
+    NonEmptyString,
+    ResponseToolAddress,
+    UndeclaredToolCall,
     custom_tool_description,
     custom_tool_names,
     custom_tool_parameters,
@@ -77,6 +80,8 @@ from sglang.srt.entrypoints.openai.responses_adapters import (
     encode_custom_tool_input,
     encode_reasoning_state,
     label_developer_content,
+    response_tool_call_address,
+    response_tool_declarations,
 )
 from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
 from sglang.srt.entrypoints.openai.tool_server import MCPToolServer, ToolServer
@@ -100,26 +105,6 @@ logger = logging.getLogger(__name__)
 
 class _MediaInputValidationError(ValueError):
     pass
-
-
-def _response_tool_wire_name(
-    request: ResponsesRequest, emitted_name: Optional[str], tool_type: str
-) -> Optional[str]:
-    """Resolve Qwen's optional ``functions.`` namespace to a Responses tool."""
-    if not emitted_name:
-        return None
-    names = {
-        tool.name
-        for tool in request.tools
-        if tool.type == tool_type and tool.name is not None
-    }
-    if emitted_name in names:
-        return emitted_name
-    if emitted_name.startswith("functions."):
-        unqualified = emitted_name.removeprefix("functions.")
-        if unqualified in names:
-            return unqualified
-    return None
 
 
 def _custom_tool_input(name: str, arguments: str) -> str:
@@ -350,20 +335,22 @@ class OpenAIServingResponses(OpenAIServingChat):
         # FIXME: If the engine is dead, raise an error
         # This is required for the streaming case
 
+        try:
+            callable_tools = response_tool_declarations(request.tools)
+            tool_choice = request.effective_tool_choice()
+        except ValueError as exc:
+            return self.create_error_response(str(exc), param="tools")
         # ``tool_choice="required"`` needs a tool the parser can actually force.
-        if request.tool_choice == "required" and not any(
-            tool.type in ("function", "custom") for tool in (request.tools or [])
-        ):
+        if request.tool_choice == "required" and len(callable_tools) == 0:
             return self.create_error_response(
                 'tool_choice="required" requires at least one tool with '
                 'type="function" or type="custom"; other built-in tool types '
                 "cannot be forced."
             )
 
-        tool_choice = request.effective_tool_choice()
         if isinstance(tool_choice, dict) and not any(
-            tool.type in ("function", "custom") and tool.name == tool_choice["name"]
-            for tool in request.tools or []
+            address.model_name().text == tool_choice["name"]
+            for address, tool in callable_tools
         ):
             return self.create_error_response(
                 f"Tool {tool_choice['name']!r} is not declared in tools",
@@ -688,6 +675,10 @@ class OpenAIServingResponses(OpenAIServingChat):
                     require_reasoning=require_reasoning,
                 )
                 return result
+            except UndeclaredToolCall as exc:
+                return self.create_error_response(
+                    str(exc), err_type="server_error", status_code=HTTPStatus.BAD_GATEWAY
+                )
             except Exception as e:
                 return self.create_error_response(str(e))
         return self.create_error_response("Unknown error")
@@ -952,24 +943,24 @@ class OpenAIServingResponses(OpenAIServingChat):
 
     @staticmethod
     def _make_tool_call_item(
-        name: str, arguments: str, custom_names: set[str]
+        address: ResponseToolAddress, arguments: str, custom_names: set[str]
     ) -> Union[ResponseFunctionToolCall, ResponseCustomToolCall]:
         """A call against a ``custom`` tool reports its freeform payload rather
         than the JSON arguments of the shim function tool."""
         call_id = f"call_{random_uuid()[:24]}"
-        if name in custom_names:
+        if address.model_name().text in custom_names:
             return ResponseCustomToolCall(
                 type="custom_tool_call",
                 id=f"ctc_{random_uuid()[:8]}",
                 call_id=call_id,
-                name=name,
-                input=_custom_tool_input(name, arguments),
+                **address.wire_fields(),
+                input=_custom_tool_input(address.local_name().text, arguments),
             )
         return ResponseFunctionToolCall(
             arguments=arguments,
             call_id=call_id,
             type="function_call",
-            name=name,
+            **address.wire_fields(),
             id=f"fc_{random_uuid()[:8]}",
             status="completed",
         )
@@ -1118,14 +1109,16 @@ class OpenAIServingResponses(OpenAIServingChat):
                     for call_info in call_info_list:
                         tool_call_items.append(
                             self._make_tool_call_item(
-                                _response_tool_wire_name(request, call_info.name, "custom")
-                                or _response_tool_wire_name(request, call_info.name, "function")
-                                or call_info.name,
+                                response_tool_call_address(
+                                    request.tools, NonEmptyString(call_info.name)
+                                ),
                                 call_info.parameters or "",
                                 custom_names,
                             )
                         )
                     parsed_via_native = bool(call_info_list)
+                except UndeclaredToolCall:
+                    raise
                 except Exception as e:
                     logger.error("Tool call parsing error: %s", e)
 
@@ -1149,14 +1142,16 @@ class OpenAIServingResponses(OpenAIServingChat):
                         )
                         tool_call_items.append(
                             self._make_tool_call_item(
-                                _response_tool_wire_name(request, tool["name"], "custom")
-                                or _response_tool_wire_name(request, tool["name"], "function")
-                                or tool["name"],
+                                response_tool_call_address(
+                                    request.tools, NonEmptyString(tool["name"])
+                                ),
                                 arguments,
                                 custom_names,
                             )
                         )
                     content = ""
+            except UndeclaredToolCall:
+                raise
             except Exception as e:
                 logger.error("Required tool JSON parse error: %s", e)
 
@@ -1218,7 +1213,7 @@ class OpenAIServingResponses(OpenAIServingChat):
         # ``function`` and ``custom`` tools flow to chat; built-ins go through
         # harmony. A custom tool is shimmed into a single-string function tool.
         chat_tools = []
-        for tool in request.tools:
+        for address, tool in response_tool_declarations(request.tools):
             if tool.type == "function":
                 description, parameters = tool.description, tool.parameters
             elif tool.type == "custom" and tool.name:
@@ -1230,7 +1225,7 @@ class OpenAIServingResponses(OpenAIServingChat):
                 Tool(
                     type="function",
                     function=Function(
-                        name=tool.name,
+                        name=address.model_name().text,
                         description=description,
                         parameters=parameters,
                         strict=tool.strict,
@@ -1314,7 +1309,12 @@ class OpenAIServingResponses(OpenAIServingChat):
                 {
                     "id": message.get("call_id") or message.get("id"),
                     "type": "function",
-                    "function": {"name": name, "arguments": arguments},
+                    "function": {
+                        "name": ResponseToolAddress.from_call(
+                            {**message, "name": name}
+                        ).model_name().text,
+                        "arguments": arguments,
+                    },
                 }
             ],
         }
@@ -1434,9 +1434,28 @@ class OpenAIServingResponses(OpenAIServingChat):
                 and merged
                 and isinstance(merged[-1], dict)
                 and merged[-1].get("role") == "assistant"
-                and merged[-1].get("phase") == msg.get("phase")
             ):
+                # Reasoning and tool-call items carry no message phase. They
+                # belong to the surrounding assistant turn. A final-answer
+                # message seals that turn; explicit phase changes stay separate.
+                match (merged[-1], msg):
+                    case ({"phase": "final_answer"}, {"phase": "final_answer"}):
+                        pass
+                    case ({"phase": "final_answer"}, _):
+                        merged.append(msg)
+                        continue
+                    case ({"tool_calls": [_, *_]}, {"phase": "final_answer"}):
+                        merged.append(msg)
+                        continue
+                    case ({"phase": "commentary"}, {"phase": "final_answer"}):
+                        merged.append(msg)
+                        continue
                 prev = merged[-1] = dict(merged[-1])
+                match msg:
+                    case {"phase": "commentary"}:
+                        prev["phase"] = "commentary"
+                    case {"phase": "final_answer"}:
+                        prev["phase"] = "final_answer"
                 # Lift mixed str/list content to list parts so non-text parts
                 # (e.g. image_url) survive when the two sides differ in shape.
                 new_content = msg.get("content")
@@ -2274,7 +2293,7 @@ class OpenAIServingResponses(OpenAIServingChat):
                     type="custom_tool_call",
                     id=state["item_id"],
                     call_id=state["call_id"],
-                    name=state["name"] or "",
+                    **state["address"].wire_fields(),
                     input=payload,
                 )
                 events.append(
@@ -2292,7 +2311,7 @@ class OpenAIServingResponses(OpenAIServingChat):
                 completed_item = ResponseFunctionToolCall(
                     arguments=arguments,
                     call_id=state["call_id"],
-                    name=state["name"] or "",
+                    **state["address"].wire_fields(),
                     type="function_call",
                     id=state["item_id"],
                     status="completed",
@@ -2305,7 +2324,7 @@ class OpenAIServingResponses(OpenAIServingChat):
                             item_id=state["item_id"],
                             output_index=state["output_index"],
                             arguments=arguments,
-                            name=state["name"] or "",
+                            **state["address"].wire_fields(),
                         )
                     )
                 )
@@ -2473,13 +2492,11 @@ class OpenAIServingResponses(OpenAIServingChat):
                                     for ev in _close_tool_call_state(other_index):
                                         yield ev
                             current_output_index += 1
-                            name = (
-                                _response_tool_wire_name(request, call.name, "custom")
-                                or _response_tool_wire_name(request, call.name, "function")
-                                or call.name
-                                or ""
+                            address = response_tool_call_address(
+                                request.tools, NonEmptyString(call.name)
                             )
-                            is_custom = name in custom_names
+                            name = address.local_name().text
+                            is_custom = address.model_name().text in custom_names
                             state = {
                                 "item_id": (
                                     f"ctc_{random_uuid()[:8]}"
@@ -2489,6 +2506,7 @@ class OpenAIServingResponses(OpenAIServingChat):
                                 "call_id": f"call_{random_uuid()[:24]}",
                                 "output_index": current_output_index,
                                 "name": name,
+                                "address": address,
                                 "arguments": "",
                                 "custom": is_custom,
                                 "payload": "",
@@ -2503,14 +2521,14 @@ class OpenAIServingResponses(OpenAIServingChat):
                                     type="custom_tool_call",
                                     id=state["item_id"],
                                     call_id=state["call_id"],
-                                    name=state["name"],
+                                    **state["address"].wire_fields(),
                                     input="",
                                 )
                             else:
                                 added_item = ResponseFunctionToolCall(
                                     arguments="",
                                     call_id=state["call_id"],
-                                    name=state["name"],
+                                    **state["address"].wire_fields(),
                                     type="function_call",
                                     id=state["item_id"],
                                     status="in_progress",

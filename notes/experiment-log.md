@@ -25608,3 +25608,21 @@ mean 13.929045  17.125658 446.051        39.730
 - No GPU gate, model request, server launch, process termination, dependency
   update, or performance promotion was performed. GPU/server ownership was
   not remeasured for this Git task. Historical runtime records remain snapshots.
+
+### Responses tool and assistant-turn commit
+
+- The retained adapter expands nested namespace declarations into qualified
+  model-facing names, preserves local names and namespaces on wire calls and
+  replay, rejects ambiguous declarations and undeclared calls, and keeps
+  reasoning/commentary/tool-call items together until a final-answer boundary.
+  The existing global `functions.` compatibility alias remains supported.
+- With the same standalone interpreter and process-local CPU environment,
+  ran `-X utf8 -m pytest -q --tb=short
+  test/registered/unit/entrypoints/openai/test_protocol.py
+  test/registered/unit/entrypoints/openai/test_responses_custom_tools.py
+  test/registered/unit/entrypoints/openai/test_serving_responses.py`.
+  Result: **122 passed, 36 subtests passed**, 5.98 s. Warnings concern the
+  CPU environment and existing deprecated API surfaces. `-X utf8 -m py_compile`
+  passes for the three changed Responses modules and their two test files.
+  Staged whitespace checks pass. The remaining launcher and historical notes
+  do not affect these CPU tests. No live Responses/Codex request was made.

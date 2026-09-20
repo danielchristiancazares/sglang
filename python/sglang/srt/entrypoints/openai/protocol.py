@@ -1824,7 +1824,16 @@ class ResponsesRequest(BaseModel):
             "name"
         )
         if tool_choice.get("type") in ("function", "custom") and name:
-            return {"type": "function", "name": name}
+            from sglang.srt.entrypoints.openai.responses_adapters import (
+                ResponseToolAddress,
+            )
+
+            return {
+                "type": "function",
+                "name": ResponseToolAddress.from_call(
+                    {**tool_choice, "name": name}
+                ).model_name().text,
+            }
         return "auto"
 
     def to_sampling_params(

@@ -37,6 +37,82 @@ register_cpu_ci(est_time=10, suite="base-a-test-cpu")
 
 
 class InputMessageConstructionTestCase(CustomTestCase):
+    def test_codex_commentary_keeps_reasoning_and_custom_call_in_one_turn(self):
+        serving = make_serving()
+        request = ResponsesRequest(
+            model="x",
+            input=[
+                {"role": "user", "content": "Create ready.txt."},
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [{"type": "summary_text", "text": "Create the file."}],
+                },
+                {"role": "assistant", "phase": "commentary", "content": "Creating it."},
+                {
+                    "type": "custom_tool_call",
+                    "id": "ctc_1",
+                    "call_id": "call_patch",
+                    "name": "exec",
+                    "input": "text(await tools.apply_patch('patch'));",
+                },
+                {"type": "custom_tool_call_output", "call_id": "call_patch", "output": "Created."},
+            ],
+        )
+        user, assistant, result = serving._construct_input_messages(request)
+        self.assertEqual(user["content"], "Create ready.txt.")
+        self.assertEqual(assistant["reasoning_content"], "Create the file.")
+        self.assertEqual(assistant["content"], "Creating it.")
+        self.assertEqual(assistant["phase"], "commentary")
+        self.assertEqual(assistant["tool_calls"][0]["id"], "call_patch")
+        self.assertEqual(result["content"], "Created.")
+
+    def test_final_answer_seals_the_previous_assistant_turn(self):
+        serving = make_serving()
+        request = ResponsesRequest(
+            model="x",
+            input=[
+                {"role": "assistant", "phase": "final_answer", "content": "First answer."},
+                {
+                    "type": "reasoning",
+                    "id": "rs_next",
+                    "summary": [{"type": "summary_text", "text": "Next operation."}],
+                },
+                {"role": "assistant", "phase": "commentary", "content": "Checking next."},
+                {
+                    "type": "custom_tool_call",
+                    "id": "ctc_next",
+                    "call_id": "call_next",
+                    "name": "exec",
+                    "input": "text('NEXT');",
+                },
+            ],
+        )
+        final, following = serving._construct_input_messages(request)
+        self.assertEqual(final["content"], "First answer.")
+        self.assertEqual(final["phase"], "final_answer")
+        self.assertNotIn("reasoning_content", final)
+        self.assertEqual(following["reasoning_content"], "Next operation.")
+        self.assertEqual(following["phase"], "commentary")
+        self.assertEqual(following["tool_calls"][0]["id"], "call_next")
+
+    def test_final_answer_after_a_tool_only_turn_remains_separate(self):
+        request = ResponsesRequest(
+            model="x",
+            input=[
+                {
+                    "type": "custom_tool_call", "id": "ctc_1",
+                    "call_id": "call_1", "name": "exec", "input": "text('READY');",
+                },
+                {"role": "assistant", "phase": "final_answer", "content": "Done."},
+            ],
+        )
+        tool_turn, final = make_serving()._construct_input_messages(request)
+        self.assertEqual(tool_turn["tool_calls"][0]["id"], "call_1")
+        self.assertNotIn("content", tool_turn)
+        self.assertEqual(final["content"], "Done.")
+        self.assertNotIn("tool_calls", final)
+
     def test_codex_custom_call_round_trip_constructs_chat_messages(self):
         serving = make_serving()
         request = ResponsesRequest(

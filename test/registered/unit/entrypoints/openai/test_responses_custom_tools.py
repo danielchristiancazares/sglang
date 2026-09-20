@@ -19,6 +19,7 @@ from sglang.srt.entrypoints.openai.responses_adapters import (
     encode_custom_tool_input,
     encode_reasoning_state,
     label_developer_content,
+    response_tool_declarations,
 )
 from sglang.srt.entrypoints.openai.serving_responses import OpenAIServingResponses
 from sglang.test.ci.ci_register import register_cpu_ci
@@ -157,6 +158,157 @@ class CustomToolShimTestCase(CustomTestCase):
             self.assertEqual(result.status_code, 400)
             self.assertIn(b"tool_choice", result.body)
         serving.tokenizer_manager.generate_request.assert_not_called()
+
+
+class NamespacedToolAdapterTestCase(CustomTestCase):
+    def request(self) -> ResponsesRequest:
+        return ResponsesRequest(
+            model="x",
+            input="Create ready.txt and inspect it.",
+            tools=[
+                {"type": "custom", "name": "exec", "format": {"type": "text"}},
+                {
+                    "type": "namespace",
+                    "name": "workspace",
+                    "tools": [
+                        {
+                            "type": "custom",
+                            "name": "apply_patch",
+                            "description": "Apply the supplied patch.",
+                            "format": {"type": "text"},
+                        },
+                        {
+                            "type": "function",
+                            "name": "inspect",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"path": {"type": "string"}},
+                                "required": ["path"],
+                            },
+                        },
+                    ],
+                },
+            ],
+        )
+
+    def test_all_declared_tools_reach_the_chat_template(self):
+        tools = OpenAIServingResponses._response_tools_to_chat_tools(self.request())
+        self.assertEqual(
+            [tool.function.name for tool in tools],
+            ["exec", "workspace.apply_patch", "workspace.inspect"],
+        )
+        self.assertEqual(tools[1].function.parameters["required"], ["input"])
+        self.assertEqual(tools[2].function.parameters["required"], ["path"])
+
+    def test_custom_call_preserves_namespace_through_streaming_and_replay(self):
+        serving = make_serving()
+        serving.tool_call_parser = "qwen3_coder"
+        request = self.request()
+        payload = "*** Begin Patch\n*** Add File: ready.txt\n+READY 😀\n*** End Patch"
+        raw = (
+            "<tool_call>\n<function=workspace.apply_patch>\n<parameter=input>\n"
+            + payload + "\n</parameter>\n</function>\n</tool_call>"
+        )
+        events = StreamFixture(serving, request).run([
+            engine_chunk(raw[:11]),
+            engine_chunk(raw[:56], 2),
+            engine_chunk(raw[:-9], 3),
+            engine_chunk(raw, 4, finish=True),
+        ])
+        final = find_completed_event(events)["response"]
+        (call,) = final["output"]
+        self.assertEqual(call["type"], "custom_tool_call")
+        self.assertEqual(call["name"], "apply_patch")
+        self.assertEqual(call["namespace"], "workspace")
+        self.assertEqual(call["input"], payload)
+        deltas = "".join(
+            item["delta"] for item in event_payloads(events)
+            if item["type"] == "response.custom_tool_call_input.delta"
+        )
+        self.assertEqual(deltas, payload)
+        replay = serving._normalize_response_message_for_chat(call)
+        self.assertEqual(replay["tool_calls"][0]["function"]["name"], "workspace.apply_patch")
+        self.assertEqual(
+            decode_custom_tool_input(replay["tool_calls"][0]["function"]["arguments"]),
+            payload,
+        )
+
+    def test_function_call_preserves_namespace_in_full_response(self):
+        serving = make_serving()
+        serving.tool_call_parser = "qwen3_coder"
+        raw = (
+            "<tool_call>\n<function=workspace.inspect>\n"
+            "<parameter=path>\nready.txt\n</parameter>\n</function>\n</tool_call>"
+        )
+        (call,) = serving._make_response_output_items(
+            self.request(), raw, tokenizer=Mock(), require_reasoning=False,
+        )
+        wire = call.model_dump()
+        self.assertEqual(wire["name"], "inspect")
+        self.assertEqual(wire["namespace"], "workspace")
+        replay = serving._normalize_response_message_for_chat(wire)
+        self.assertEqual(replay["tool_calls"][0]["function"]["name"], "workspace.inspect")
+
+    def test_named_choice_qualifies_the_namespace(self):
+        request = self.request()
+        request.tool_choice = {"type": "custom", "name": "apply_patch", "namespace": "workspace"}
+        self.assertEqual(
+            request.effective_tool_choice(),
+            {"type": "function", "name": "workspace.apply_patch"},
+        )
+
+    def test_undeclared_calls_raise_a_protocol_failure(self):
+        serving = make_serving()
+        serving.tool_call_parser = "qwen3_coder"
+        raw = "<tool_call><function=workspace.delete_all></function></tool_call>"
+        with self.assertRaisesRegex(ValueError, "undeclared tool"):
+            serving._make_response_output_items(
+                self.request(), raw, tokenizer=Mock(), require_reasoning=False,
+            )
+        events = StreamFixture(serving, self.request()).run([
+            engine_chunk(raw, 1, finish=True),
+        ])
+        self.assertIn("response.failed", event_types(events))
+        self.assertNotIn("response.completed", event_types(events))
+
+    def test_nested_namespaces_retain_the_complete_address(self):
+        request = ResponsesRequest(
+            model="x", input="Use the nested tool.",
+            tools=[{
+                "type": "namespace", "name": "outer",
+                "tools":[{
+                    "type": "namespace", "name": "inner",
+                    "tools":[{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+                }],
+            }],
+        )
+        (tool,) = OpenAIServingResponses._response_tools_to_chat_tools(request)
+        self.assertEqual(tool.function.name, "outer.inner.lookup")
+
+    def test_empty_namespace_keeps_an_empty_callable_collection(self):
+        request = ResponsesRequest(
+            model="x", input="hi",
+            tools=[{"type": "namespace", "name": "workspace", "tools": []}],
+        )
+        self.assertEqual(OpenAIServingResponses._response_tools_to_chat_tools(request), [])
+
+    def test_malformed_and_ambiguous_namespaces_are_rejected_before_generation(self):
+        declarations = (
+            {"type": "namespace", "name": "workspace"},
+            {"type": "namespace", "name": "workspace", "tools": [{"type": "function"}]},
+            {"type": "namespace", "name": "workspace", "tools": [{"type": "web_search"}]},
+        )
+        for declaration in declarations:
+            with self.subTest(declaration=declaration):
+                serving = make_serving()
+                request = ResponsesRequest(model="x", input="hi", tools=[declaration])
+                response = asyncio.run(serving.create_responses(request))
+                self.assertEqual(response.status_code, 400)
+                serving.tokenizer_manager.generate_request.assert_not_called()
+        request = self.request()
+        request.tools.append(request.tools[0].model_copy())
+        with self.assertRaisesRegex(ValueError, "ambiguous tool address"):
+            response_tool_declarations(request.tools)
 
 
 class CustomToolReplayTestCase(CustomTestCase):

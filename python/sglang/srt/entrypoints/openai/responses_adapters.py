@@ -17,9 +17,148 @@ from __future__ import annotations
 import base64
 import json
 import zlib
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Set, Tuple
+
+if TYPE_CHECKING:
+    from sglang.srt.entrypoints.openai.protocol import ResponseTool
 
 CUSTOM_TOOL_INPUT_KEY = "input"
+
+
+class NonEmptyString:
+    """Validated text used by the Responses tool-address boundary."""
+
+    __slots__ = ("_text",)
+
+    def __init__(self, value: object):
+        match value:
+            case str() as text:
+                if len(text.strip()) == 0:
+                    raise ValueError("tool names and namespaces must contain text")
+                self._text = text
+            case _:
+                raise ValueError("tool names and namespaces must be strings")
+
+    @property
+    def text(self) -> str:
+        return self._text
+
+
+class ResponseToolAddress:
+    """A tool's local name and its complete enclosing namespace path."""
+
+    __slots__ = ("_name", "_namespaces")
+
+    def __init__(
+        self, name: NonEmptyString, namespaces: tuple[NonEmptyString, ...]
+    ):
+        self._name = name
+        self._namespaces = namespaces
+
+    @classmethod
+    def from_call(cls, message: dict) -> ResponseToolAddress:
+        name = NonEmptyString(message["name"])
+        match message.get("namespace"):
+            case None:
+                return cls(name, ())
+            case str() as namespace:
+                return cls(name, (NonEmptyString(namespace),))
+            case _:
+                raise ValueError("tool-call namespace must be a string")
+
+    def model_name(self) -> NonEmptyString:
+        return NonEmptyString(
+            ".".join(part.text for part in (*self._namespaces, self._name))
+        )
+
+    def local_name(self) -> NonEmptyString:
+        return self._name
+
+    def wire_fields(self) -> dict[str, str]:
+        match self._namespaces:
+            case ():
+                return {"name": self._name.text}
+            case namespaces:
+                return {
+                    "name": self._name.text,
+                    "namespace": ".".join(part.text for part in namespaces),
+                }
+
+
+class UndeclaredToolCall(ValueError):
+    def __init__(self, name: NonEmptyString):
+        self.name = name
+        super().__init__(f"model called an undeclared tool: {name.text}")
+
+
+def response_tool_declarations(
+    tools: object,
+) -> tuple[tuple[ResponseToolAddress, ResponseTool], ...]:
+    """Expand wire declarations at the Responses/chat adapter boundary.
+
+    Metadata remains in its wire DTO while addressing is admitted into a
+    complete path. Namespace members are validated with the same wire model
+    as top-level tools. Model-facing name collisions are rejected.
+    """
+    from sglang.srt.entrypoints.openai.protocol import ResponseTool
+
+    match tools:
+        case None:
+            return ()
+        case list() as items:
+            pending = [((), tool) for tool in reversed(items)]
+        case _:
+            raise ValueError("Responses tools must be a list")
+    declarations = []
+    model_names: set[str] = set()
+    while pending:
+        namespaces, tool = pending.pop()
+        match tool.type:
+            case "namespace":
+                enclosing = (*namespaces, NonEmptyString(tool.name))
+                match tool.tools:
+                    case list() as members:
+                        for member in reversed(members):
+                            admitted = ResponseTool.model_validate(member)
+                            if admitted.type not in ("namespace", "function", "custom"):
+                                raise ValueError("namespace members must be callable tools or namespaces")
+                            pending.append((enclosing, admitted))
+                    case _:
+                        raise ValueError("tool namespaces require a tools list")
+            case "function" | "custom":
+                address = ResponseToolAddress(NonEmptyString(tool.name), namespaces)
+                if address.model_name().text in model_names:
+                    raise ValueError(f"ambiguous tool address: {address.model_name().text}")
+                model_names.add(address.model_name().text)
+                declarations.append((address, tool))
+            case (
+                "web_search" | "web_search_preview" | "code_interpreter"
+                | "file_search" | "image_generation" | "computer_use_preview"
+                | "local_shell" | "mcp" | "tool_search"
+            ):
+                # Built-in tools retain their separate Harmony routing.
+                continue
+            case _:
+                raise ValueError(f"unsupported Responses tool type: {tool.type}")
+    return tuple(declarations)
+
+
+def response_tool_call_address(
+    tools: object, emitted_name: NonEmptyString
+) -> ResponseToolAddress:
+    declarations = response_tool_declarations(tools)
+    for address, _ in declarations:
+        if address.model_name().text == emitted_name.text:
+            return address
+    # Existing Qwen clients sometimes add the functions. prefix to a global
+    # tool. Exact namespace declarations take precedence over that legacy alias.
+    if emitted_name.text.startswith("functions."):
+        unqualified = emitted_name.text.removeprefix("functions.")
+        for address, _ in declarations:
+            if address.model_name().text == unqualified:
+                return address
+    raise UndeclaredToolCall(emitted_name)
+
 
 _SIMPLE_ESCAPES = {
     '"': '"',
@@ -69,7 +208,11 @@ def custom_tool_description(
 
 
 def custom_tool_names(tools: Any) -> Set[str]:
-    return {tool.name for tool in tools or [] if tool.type == "custom" and tool.name}
+    return {
+        address.model_name().text
+        for address, tool in response_tool_declarations(tools)
+        if tool.type == "custom"
+    }
 
 
 def encode_custom_tool_input(payload: str) -> str:
