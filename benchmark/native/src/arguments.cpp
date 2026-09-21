@@ -37,6 +37,7 @@ options:
                                 speculative proposal sampling may remain nondeterministic
   --skip-warmup                 skip every configured warmup
   --disable-thinking            set enable_thinking and preserve_thinking false
+  --diagnostics                 add HTTP/SSE timing and reported prefix-cache usage
 )";
 
 constexpr std::string_view kAcceptanceHelp =
@@ -262,6 +263,9 @@ parse_stream_arguments(std::span<const std::string_view> arguments) {
     if (option.name == "--help") {
       failure = reject_flag_value<StreamOptions>(option);
       requested_help = !failure.has_value();
+    } else if (option.name == "--diagnostics") {
+      failure = reject_flag_value<StreamOptions>(option);
+      options.diagnostics = !failure.has_value();
     } else if (option.name == "--base-url") {
       failure =
           set_string<StreamOptions>(option, arguments, index, options.base_url);

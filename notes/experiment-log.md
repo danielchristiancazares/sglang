@@ -27025,3 +27025,68 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
   directories remain intact, with no inference process running. Leave the
   server stopped following the user's accepted stopping point. Restart via
   the foreground command in `native/diffusion_gemma/mac/README.md`.
+
+## 2026-09-20 Windows TTFT implementation recovery
+
+- User authorized implementation of the investigated TTFT ideas on a new
+  branch. Recovered existing `perf/windows-ttft-native`, HEAD
+  `f29e80d5c4885c96e4f629231068327475abf5cf`, at 20:29 PDT on the Mac
+  `/Users/daniel/sglang` checkout. No new worktree, commit, or push.
+- `git status --short --branch --untracked-files=all`, `git log -1`, and
+  `git diff --stat` confirm four modified native benchmark headers/sources
+  (59 added lines) and four untracked native CMake/TTFT-probe files. These
+  match the previous implementation handoff. Production PowerShell/Python
+  and CUDA headers are unchanged. The initial patch has not been built or
+  tested; CMake still references missing launcher and TTFT test sources.
+- Reread current-state, benchmark contract, decisions, the current launcher,
+  native tests, `/server_info`, and the FlashInfer autotune key. Selected
+  source defaults are DSpark-v2, chunk 4096, five FP32 Mamba slots, exact
+  200000 context/target/draft pools, FP8 target/draft KV, and online-FP8
+  draft. The root AGENTS August 30 NEXTN/chunk7680 snapshot and the older
+  decisions row saying large-EXTEND is enabled do not override this launcher.
+  Large-EXTEND is currently off. The new probe uses official-thinking
+  presence penalty 0.0, distinct from historical presence-1.5 records.
+- Prior continuation attempted
+  `ssh -T -o BatchMode=yes -o ConnectTimeout=8 -o ConnectionAttempts=1
+  desktop-46ijva5 'whoami'`: exit 255, local resolution of
+  `desktop-46ijva5.local` failed before remote contact. No current Windows
+  listener, GPU owner, serving health, or toolchain is established. No
+  Windows write, launch, GPU benchmark, or implementation-phase build ran.
+- Continue with the C++ opt-in stable sampling-view launcher, separate
+  page-aligned/large-EXTEND identities, portable focused tests, and a
+  baseline-vs-proposed regression review. Preserve production defaults;
+  host/source checks cannot promote a Windows performance candidate.
+
+### 2026-09-20 20:47 PDT — newer Windows evidence supplied by the user
+
+- The user supplied a fresh Windows checkout/runtime correction. That checkout
+  has five user-owned modified paths: `AGENTS.md`, `README.md`,
+  `notes/decisions.md`, `notes/experiment-log.md`, and
+  `nvfp4_marlin_relayout.cuh` (+53 lines for
+  `MarlinToTransposedCutlass4xKernel`). Do not call it clean, overwrite those
+  changes, or recreate that kernel. This Mac branch still has the separate
+  native benchmark/launcher implementation edits at `f29e80d5c488`; the Windows
+  changes and new measurement entries are not present here.
+- User-verified September 20 TTFT screen, chunk 4096: unthresholded page-aligned
+  prefill regressed exact `6213+512` TTFT **17.23%**, from **0.556833** to
+  **0.652750 s**. Exact `199000+16` clean-cluster mean improved **1.56%**,
+  **69.04 to 67.97 s**. Chunk 7680 plus page64 regressed every short sample
+  (approximately **1.2–1.5 s**). These supplied current-DSpark results supersede
+  the older NEXTN rationale. The raw route is rejected; a prefix-length
+  admission threshold or an overhead fix is a separate, unimplemented
+  follow-on. Individual samples/environment remain in the Windows ledger;
+  these are user-supplied evidence, not measurements run from this Mac.
+- The user also verified five approximately 989-byte autotune-cache directories
+  created today under `~/.cache/sglang/flashinfer/autotune/0.6.17/sm120/`, one per
+  GUID model-view launch. Stable cache identity remains justified for restart
+  reuse and tactic-selection reproducibility, not as a claimed warmed-TTFT
+  speedup. Existing Codex turn-two reuse of 9728 tokens is confirmed; the probe
+  investigates reuse boundaries rather than enabling an already active cache.
+- Local source recheck confirms both page-table updater fixtures omit
+  `kv_index_translator`, which `call_begin_forward` accesses unconditionally.
+  No fixture/CUDA test was run and no Python change is authorized. Preserve
+  this known fixture defect as a qualification limitation.
+- Implementation adjustment: removed the new launcher's raw page-aligned
+  switch and explicitly pin it off. Continue stable sampling views, optional
+  isolated large-EXTEND identity, default-off stream diagnostics, and the
+  prefix-boundary probe. No Windows contact, launch, build, or GPU action.

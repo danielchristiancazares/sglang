@@ -34,6 +34,7 @@ struct StreamOptions final {
   std::optional<std::int64_t> seed;
   bool skip_warmup{false};
   bool disable_thinking{false};
+  bool diagnostics{false};
 };
 
 struct AcceptanceOptions final {
