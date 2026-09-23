@@ -1,0 +1,13 @@
+health.txt: ok
+health_generate.txt: ok
+metrics.txt: failed status=404 error={"detail":"Not Found"}
+model_info.json: ok
+server_info.json: ok
+loads_all.json: ok
+loads_core_queues_disagg.json: ok
+hicache_storage_backend.json: failed status=400 error={"error":"This endpoint requires admin API key, but this server was started without one (admin-api-key). Restart with --admin-api-key to enable."}
+
+This bundle is read-only. It does not start profiling or change trace level.
+HiCache status may fail if admin_api_key is not configured or the wrong bearer token was used.
+loads_all.json is the best point-in-time load snapshot in this bundle.
+metrics.txt is raw Prometheus text intended for follow-up parsing.

@@ -1,0 +1,67 @@
+{
+  "ok": true,
+  "status": 200,
+  "path": "/v1/loads?include=all",
+  "json": {
+    "timestamp": "2026-09-23T04:16:00.302686+00:00",
+    "version": "0.5.18.dev717+gc7840626d",
+    "accelerator": "NVIDIA GeForce RTX 5090",
+    "num_accelerators": 1,
+    "loads": [
+      {
+        "timestamp": 1790136960.3017454,
+        "dp_rank": 0,
+        "num_running_reqs": 0,
+        "num_waiting_reqs": 0,
+        "num_waiting_uncached_tokens": 0,
+        "num_used_tokens": 0,
+        "num_total_tokens": 0,
+        "num_active_tokens": 0,
+        "num_prealloc_ready_tokens": 0,
+        "max_total_num_tokens": 200000,
+        "max_running_requests": 1,
+        "token_usage": 0.0,
+        "gen_throughput": 0.0,
+        "cache_hit_rate": 0.0,
+        "utilization": 0.0,
+        "total_prefill_uncached_tokens": 25404,
+        "total_prefill_busy_us": 7228076,
+        "decode_moments": [
+          1120.0,
+          1120.0,
+          30394613.0,
+          1120.0,
+          30394613.0,
+          3233.0
+        ],
+        "memory": {
+          "weight_gb": 16.209,
+          "kv_cache_gb": 6.105,
+          "graph_gb": 0.091,
+          "token_capacity": 200000
+        },
+        "speculative": {
+          "accept_length": 2.875,
+          "accept_rate": 0.0
+        },
+        "disaggregation": {
+          "mode": "null",
+          "prefill_bootstrap_queue_reqs": 0,
+          "prefill_inflight_queue_reqs": 0,
+          "decode_prealloc_queue_reqs": 0,
+          "decode_transfer_queue_reqs": 0,
+          "decode_retracted_queue_reqs": 0,
+          "kv_transfer_speed_gb_s": 0.0,
+          "kv_transfer_latency_ms": 0.0
+        },
+        "queues": {
+          "waiting": 0,
+          "grammar": 0,
+          "paused": 0,
+          "retracted": 0,
+          "prealloc_ready": 0
+        }
+      }
+    ]
+  }
+}

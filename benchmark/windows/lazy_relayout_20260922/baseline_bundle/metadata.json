@@ -1,0 +1,7 @@
+{
+  "artifact_type": "incident_bundle",
+  "base_url": "http://127.0.0.1:30000",
+  "collected_at": "20260922_211558",
+  "token_provided": false,
+  "timeout_seconds": 10.0
+}

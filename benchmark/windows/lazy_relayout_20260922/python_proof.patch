@@ -1,0 +1,410 @@
+diff --git a/python/sglang/srt/environ.py b/python/sglang/srt/environ.py
+index 00ce63a7ee..bcc6298033 100644
+--- a/python/sglang/srt/environ.py
++++ b/python/sglang/srt/environ.py
+@@ -973,6 +973,7 @@ class Envs:
+     SGLANG_CPU_QUANTIZATION = EnvBool(False)
+     SGLANG_USE_DYNAMIC_MXFP4_LINEAR = EnvBool(False)
+     SGLANG_FORCE_FP8_MARLIN = EnvBool(False)
++    SGLANG_ENABLE_NVFP4_MARLIN_LAZY_RELAYOUT = EnvBool(False)
+     SGLANG_MOE_NVFP4_DISPATCH = EnvBool(False)
+     SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN = EnvBool(False)
+     SGLANG_NVFP4_CKPT_FP8_NEXTN_MOE = EnvBool(False)
+diff --git a/python/sglang/srt/layers/quantization/modelopt_quant.py b/python/sglang/srt/layers/quantization/modelopt_quant.py
+index aff869ce6e..b015acac08 100755
+--- a/python/sglang/srt/layers/quantization/modelopt_quant.py
++++ b/python/sglang/srt/layers/quantization/modelopt_quant.py
+@@ -2029,6 +2029,13 @@ class ModelOptFp4LinearMethod(LinearMethodBase):
+                     x.numel() // x.shape[-1]
+                 )
+             )
++            if (
++                getattr(layer, "_nvfp4_hybrid_marlin_check_layout", False)
++                and use_marlin != layer._nvfp4_hybrid_marlin_layout_marlin
++            ):
++                raise RuntimeError(
++                    "Hybrid NVFP4 Marlin dispatch does not match the prepared weight layout."
++                )
+             if use_marlin:
+                 return apply_fp4_marlin_linear(
+                     input=x,
+diff --git a/python/sglang/srt/layers/quantization/nvfp4_hybrid_marlin.py b/python/sglang/srt/layers/quantization/nvfp4_hybrid_marlin.py
+index 9edadac8b5..cf345666c1 100644
+--- a/python/sglang/srt/layers/quantization/nvfp4_hybrid_marlin.py
++++ b/python/sglang/srt/layers/quantization/nvfp4_hybrid_marlin.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import logging
++import sys
+ from typing import TYPE_CHECKING
+ 
+ import torch
+@@ -10,6 +11,7 @@ from sglang.kernels.ops.quantization.nvfp4_marlin_relayout import (
+     nvfp4_marlin_scale_relayout_,
+     preload_nvfp4_marlin_relayout,
+ )
++from sglang.srt.environ import envs
+ from sglang.srt.layers.quantization.marlin_utils import marlin_make_workspace
+ from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+     nvfp4_marlin_process_global_scale,
+@@ -112,8 +114,15 @@ class Nvfp4HybridMarlinManager:
+         active_layers = prepared_layers if enabled else ()
+         for layer in prepared_layers:
+             layer._nvfp4_hybrid_marlin_active = enabled
++            layer._nvfp4_hybrid_marlin_layout_marlin = False
++            layer._nvfp4_hybrid_marlin_check_layout = False
+         self.layers = active_layers
+         self._marlin_layout = False
++        self._lazy_relayout = (
++            sys.platform == "win32"
++            and envs.SGLANG_ENABLE_NVFP4_MARLIN_LAZY_RELAYOUT.get()
++        )
++        self._layout_checks_pending = self._lazy_relayout
+         self.scratch = None
+         if not self.layers:
+             return
+@@ -130,15 +139,24 @@ class Nvfp4HybridMarlinManager:
+             len(self.layers),
+             max_bytes / (1 << 20),
+         )
++        if self._lazy_relayout:
++            logger.info(
++                "Hybrid NVFP4 Marlin defers final-prefill relayout to the next forward."
++            )
+ 
+     def prepare_for_forward(self, forward_batch: ForwardBatch) -> None:
+         if not self.layers:
+             return
+         self._switch(use_hybrid_marlin_for_num_tokens(forward_batch.input_ids.numel()))
++        if self._layout_checks_pending:
++            for layer in self.layers:
++                layer._nvfp4_hybrid_marlin_check_layout = True
++            self._layout_checks_pending = False
+ 
+     def finish_forward(self, forward_batch: ForwardBatch) -> None:
+         if (
+             not self.layers
++            or self._lazy_relayout
+             or self._marlin_layout
+             or forward_batch.is_prefill_only
+             or not forward_batch.contains_last_prefill_chunk
+@@ -166,4 +184,5 @@ class Nvfp4HybridMarlinManager:
+                 size_k=layer.input_size_per_partition,
+                 to_marlin=to_marlin,
+             )
++            layer._nvfp4_hybrid_marlin_layout_marlin = to_marlin
+         self._marlin_layout = to_marlin
+diff --git a/test/registered/jit/quantization/test_nvfp4_marlin_relayout.py b/test/registered/jit/quantization/test_nvfp4_marlin_relayout.py
+index 78c3b881e4..4bd42ea38e 100644
+--- a/test/registered/jit/quantization/test_nvfp4_marlin_relayout.py
++++ b/test/registered/jit/quantization/test_nvfp4_marlin_relayout.py
+@@ -1,5 +1,6 @@
+ import unittest
+ from types import SimpleNamespace
++from unittest.mock import patch
+ 
+ import torch
+ 
+@@ -9,10 +10,18 @@ from sglang.kernels.ops.quantization.gptq_marlin_repack import (
+ from sglang.kernels.ops.quantization.nvfp4_marlin_relayout import (
+     nvfp4_marlin_relayout_,
+ )
++from sglang.srt.environ import envs
++from sglang.srt.layers.quantization.marlin_utils import marlin_permute_scales
+ from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+     apply_fp4_marlin_linear,
++    nvfp4_marlin_process_scales,
+     prepare_nvfp4_layer_for_marlin,
+ )
++from sglang.srt.layers.quantization.nvfp4_hybrid_marlin import (
++    Nvfp4HybridMarlinManager,
++    prepare_nvfp4_layer_for_hybrid_marlin,
++)
++from sglang.srt.model_executor.forward_batch_info import ForwardMode
+ from sglang.test.ci.ci_register import register_cuda_ci
+ from sglang.test.quant_ref_utils import quantize_nvfp4_shard
+ from sglang.test.test_utils import CustomTestCase
+@@ -122,6 +131,205 @@ class TestNvfp4MarlinRelayout(CustomTestCase):
+                     atol=0,
+                 )
+ 
++    def _hybrid_fixture(self, *, lazy=True, enabled=True):
++        torch.manual_seed(62065)
++        model = torch.nn.ModuleList()
++        references = []
++        for size_n, size_k in ((128, 128), (256, 256)):
++            source = torch.randn(
++                size_n, size_k, device="cuda", dtype=torch.bfloat16
++            ) / 10
++            weight, scales, quant_scale, dequantized = quantize_nvfp4_shard(source)
++            layer = torch.nn.Module()
++            layer.weight = torch.nn.Parameter(weight, requires_grad=False)
++            layer.weight_scale = torch.nn.Parameter(scales, requires_grad=False)
++            layer.output_size_per_partition = size_n
++            layer.input_size_per_partition = size_k
++            layer.params_dtype = torch.bfloat16
++            prepare_nvfp4_layer_for_hybrid_marlin(
++                layer, weight_global_scale=(1.0 / quant_scale).reshape(1)
++            )
++            self.assertTrue(layer._nvfp4_hybrid_marlin)
++            expected_weight = gptq_marlin_repack(
++                b_q_weight=weight.view(torch.int32).T.contiguous(),
++                perm=torch.empty(0, dtype=torch.int32, device="cuda"),
++                size_k=size_k,
++                size_n=size_n,
++                num_bits=4,
++            )
++            expected_scale = nvfp4_marlin_process_scales(
++                marlin_permute_scales(
++                    scales.T.contiguous().to(torch.bfloat16),
++                    size_k=size_k,
++                    size_n=size_n,
++                    group_size=16,
++                )
++            )
++            swizzled = (
++                scales.reshape(size_n // 128, 4, 32, size_k // 64, 4)
++                .permute(0, 3, 2, 1, 4)
++                .contiguous()
++                .reshape_as(scales)
++            )
++            layer.weight_scale.data.copy_(swizzled)
++            references.append(
++                (
++                    weight.clone(),
++                    swizzled.view(torch.uint8).clone(),
++                    expected_weight,
++                    expected_scale.view(torch.uint8),
++                    dequantized,
++                )
++            )
++            model.append(layer)
++        with (
++            envs.SGLANG_ENABLE_NVFP4_MARLIN_LAZY_RELAYOUT.override(lazy),
++            patch(
++                "sglang.srt.layers.quantization.nvfp4_hybrid_marlin.sys",
++                SimpleNamespace(platform="win32"),
++            ),
++        ):
++            manager = Nvfp4HybridMarlinManager(
++                model=model, device="cuda", is_draft_worker=False, enabled=enabled
++            )
++        return model, manager, references
++
++    def _hybrid_batch(self, num_tokens, **kwargs):
++        fields = dict(
++            input_ids=torch.empty(num_tokens, device="cuda", dtype=torch.int64),
++            forward_mode=ForwardMode.EXTEND,
++            is_prefill_only=False,
++            contains_last_prefill_chunk=True,
++        )
++        fields.update(kwargs)
++        return SimpleNamespace(**fields)
++
++    def _hybrid_linear(self, layer, x):
++        return apply_fp4_marlin_linear(
++            input=x,
++            weight=layer.weight_marlin,
++            weight_scale=layer.weight_scale_marlin,
++            weight_global_scale=layer.weight_global_scale_marlin,
++            workspace=layer.workspace_marlin,
++            size_n=layer.output_size_per_partition,
++            size_k=layer.input_size_per_partition,
++        )
++
++    def test_lazy_prefill_preserves_bytes_until_verify(self):
++        model, manager, references = self._hybrid_fixture()
++        addresses = [
++            (layer.weight.data_ptr(), layer.weight_scale.data_ptr()) for layer in model
++        ]
++        for num_tokens in (9, 4096, 9):
++            with self.subTest(num_tokens=num_tokens):
++                batch = self._hybrid_batch(num_tokens)
++                manager.prepare_for_forward(batch)
++                manager.finish_forward(batch)
++                self.assertFalse(manager._marlin_layout)
++                for layer, ref in zip(model, references):
++                    torch.testing.assert_close(layer.weight, ref[0], rtol=0, atol=0)
++                    torch.testing.assert_close(
++                        layer.weight_scale.view(torch.uint8), ref[1], rtol=0, atol=0
++                    )
++                for verify_tokens in (8, 1, 8):
++                    manager.prepare_for_forward(self._hybrid_batch(verify_tokens))
++                    self.assertTrue(manager._marlin_layout)
++                    for layer, ref in zip(model, references):
++                        torch.testing.assert_close(
++                            layer.weight_marlin, ref[2], rtol=0, atol=0
++                        )
++                        torch.testing.assert_close(
++                            layer.weight_scale_marlin.view(torch.uint8),
++                            ref[3],
++                            rtol=0,
++                            atol=0,
++                        )
++                self.assertEqual(
++                    [
++                        (layer.weight.data_ptr(), layer.weight_scale.data_ptr())
++                        for layer in model
++                    ],
++                    addresses,
++                )
++
++    def test_lazy_relayout_preserves_captured_gemm_replay(self):
++        model, manager, references = self._hybrid_fixture()
++        layer = model[0]
++        x = torch.randn(
++            8, layer.input_size_per_partition, device="cuda", dtype=torch.bfloat16
++        ) / 10
++        verify = self._hybrid_batch(8, forward_mode=ForwardMode.TARGET_VERIFY)
++        stream = torch.cuda.Stream()
++        stream.wait_stream(torch.cuda.current_stream())
++        with torch.cuda.stream(stream):
++            manager.prepare_for_forward(verify)
++            for _ in range(3):
++                self._hybrid_linear(layer, x)
++        torch.cuda.current_stream().wait_stream(stream)
++        graph = torch.cuda.CUDAGraph()
++        with torch.cuda.graph(graph):
++            output = self._hybrid_linear(layer, x)
++        for num_tokens in (9, 4096, 9):
++            batch = self._hybrid_batch(num_tokens)
++            manager.prepare_for_forward(batch)
++            manager.finish_forward(batch)
++            self.assertFalse(manager._marlin_layout)
++            x.copy_(torch.randn_like(x) / 10)
++            manager.prepare_for_forward(verify)
++            graph.replay()
++            expected = self._hybrid_linear(layer, x)
++            torch.testing.assert_close(output, expected, rtol=0, atol=0)
++            torch.testing.assert_close(
++                output,
++                torch.matmul(x.float(), references[0][4].T).to(x.dtype),
++                rtol=0.04,
++                atol=0.04,
++            )
++
++    def test_hybrid_finish_preserves_default_and_nonfinal_policies(self):
++        for lazy, enabled, prefill_only, last, mode in (
++            (False, True, False, True, ForwardMode.EXTEND),
++            (False, True, False, True, ForwardMode.MIXED),
++            (False, True, True, True, ForwardMode.EXTEND),
++            (False, True, False, False, ForwardMode.EXTEND),
++            (True, True, False, False, ForwardMode.EXTEND),
++            (True, True, True, True, ForwardMode.EXTEND),
++            (True, False, False, True, ForwardMode.EXTEND),
++            (False, True, False, True, ForwardMode.TARGET_VERIFY),
++        ):
++            with self.subTest(
++                lazy=lazy,
++                enabled=enabled,
++                prefill_only=prefill_only,
++                last=last,
++                mode=mode,
++            ):
++                model, manager, references = self._hybrid_fixture(
++                    lazy=lazy, enabled=enabled
++                )
++                batch = self._hybrid_batch(
++                    9,
++                    forward_mode=mode,
++                    is_prefill_only=prefill_only,
++                    contains_last_prefill_chunk=last,
++                )
++                manager.prepare_for_forward(batch)
++                manager.finish_forward(batch)
++                expected = (
++                    enabled
++                    and not lazy
++                    and not prefill_only
++                    and last
++                    and mode in (ForwardMode.EXTEND, ForwardMode.MIXED)
++                )
++                self.assertEqual(manager._marlin_layout, expected)
++                if not expected:
++                    for layer, ref in zip(model, references):
++                        torch.testing.assert_close(layer.weight, ref[0], rtol=0, atol=0)
++                        torch.testing.assert_close(
++                            layer.weight_scale.view(torch.uint8), ref[1], rtol=0, atol=0
++                        )
++
+     def test_rejects_invalid_public_inputs(self):
+         weight = torch.zeros(64 * 64, dtype=torch.uint8, device="cuda")
+         scratch = torch.empty_like(weight)
+diff --git a/test/registered/unit/layers/quantization/test_modelopt_nvfp4.py b/test/registered/unit/layers/quantization/test_modelopt_nvfp4.py
+index aa0bad5296..2da303c8b8 100644
+--- a/test/registered/unit/layers/quantization/test_modelopt_nvfp4.py
++++ b/test/registered/unit/layers/quantization/test_modelopt_nvfp4.py
+@@ -1,20 +1,25 @@
+ import unittest
++from types import SimpleNamespace
+ from unittest.mock import patch
+ 
+ import torch
+ import torch.nn as nn
+ 
++from sglang.srt.environ import envs
+ from sglang.srt.layers.linear import MergedColumnParallelLinear, QKVParallelLinear
+ from sglang.srt.layers.parameter import PerTensorScaleParameter
++from sglang.srt.layers.quantization import fp4_utils
+ from sglang.srt.layers.quantization.modelopt_quant import (
+     ModelOptFp4Config,
+     ModelOptFp4LinearMethod,
+ )
++from sglang.srt.layers.quantization.nvfp4_hybrid_marlin import Nvfp4HybridMarlinManager
+ from sglang.srt.layers.quantization.nvfp4_online import (
+     ModelOptNvFp4OnlineLinearMethod,
+     NvFp4OnlineConfig,
+ )
+ from sglang.srt.model_loader.weight_utils import default_weight_loader
++from sglang.srt.runtime_context import get_context
+ from sglang.test.ci.ci_register import register_cpu_ci
+ from sglang.test.test_utils import CustomTestCase
+ 
+@@ -129,6 +134,46 @@ class TestModelOptNvfp4(CustomTestCase):
+         self.assertIs(layer.quant_config, config)
+         self.assertFalse(config.is_awq)
+ 
++    def test_hybrid_dispatch_rejects_stale_layout(self):
++        with (
++            get_context().override_server_args(fp4_gemm_runner_backend="hybrid_marlin"),
++            patch.object(fp4_utils, "FP4_GEMM_RUNNER_BACKEND", None),
++        ):
++            fp4_utils.initialize_fp4_gemm_config()
++            method = ModelOptFp4LinearMethod(ModelOptFp4Config())
++            layer = nn.Module()
++            layer._nvfp4_hybrid_marlin_active = True
++            layer._nvfp4_hybrid_marlin_check_layout = True
++            for num_tokens, layout_marlin in ((1, False), (8, False), (9, True)):
++                with self.subTest(num_tokens=num_tokens, layout_marlin=layout_marlin):
++                    layer._nvfp4_hybrid_marlin_layout_marlin = layout_marlin
++                    x = torch.empty(num_tokens, 64, dtype=torch.bfloat16)
++                    with self.assertRaisesRegex(RuntimeError, "prepared weight layout"):
++                        method.apply(layer, x)
++
++    def test_lazy_relayout_is_windows_opt_in_and_empty_manager_is_safe(self):
++        for platform, enabled, expected in (
++            ("win32", False, False),
++            ("win32", True, True),
++            ("linux", True, False),
++        ):
++            with (
++                self.subTest(platform=platform, enabled=enabled),
++                envs.SGLANG_ENABLE_NVFP4_MARLIN_LAZY_RELAYOUT.override(enabled),
++                patch(
++                    "sglang.srt.layers.quantization.nvfp4_hybrid_marlin.sys",
++                    SimpleNamespace(platform=platform),
++                ),
++            ):
++                manager = Nvfp4HybridMarlinManager(
++                    model=nn.Module(), device="cpu", is_draft_worker=False, enabled=True
++                )
++                self.assertEqual(manager._lazy_relayout, expected)
++                manager.prepare_for_forward(None)
++                manager.finish_forward(None)
++                self.assertFalse(manager._marlin_layout)
++                self.assertIsNone(manager.scratch)
++
+     @patch(
+         "sglang.srt.layers.quantization.modelopt_quant.envs."
+         "SGLANG_FLASHINFER_NVFP4_PER_TOKEN_ACTIVATION.get",

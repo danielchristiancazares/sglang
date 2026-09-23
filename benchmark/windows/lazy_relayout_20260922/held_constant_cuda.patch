@@ -1,0 +1,78 @@
+diff --git a/python/sglang/kernels/jit/csrc/gemm/marlin/nvfp4_marlin_relayout.cuh b/python/sglang/kernels/jit/csrc/gemm/marlin/nvfp4_marlin_relayout.cuh
+index 496b41627e..3212525fd1 100644
+--- a/python/sglang/kernels/jit/csrc/gemm/marlin/nvfp4_marlin_relayout.cuh
++++ b/python/sglang/kernels/jit/csrc/gemm/marlin/nvfp4_marlin_relayout.cuh
+@@ -200,6 +200,48 @@ __global__ void MarlinToTransposedCutlassKernel(
+   transposed_cutlass[raw_word_index] = raw;
+ }
+ 
++__global__ void MarlinToTransposedCutlass4xKernel(
++    const uint32_t* __restrict__ marlin, uint32_t* __restrict__ transposed_cutlass, uint32_t size_n, uint32_t size_k) {
++  const uint64_t base_index = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
++  const uint32_t packed_k_count = size_k / kPackedValues;
++  const uint64_t raw_word_count = static_cast<uint64_t>(packed_k_count) * size_n;
++  if (base_index >= raw_word_count / 4) return;
++
++  const uint32_t n_tiles = size_n / kTileN;
++  const uint32_t lane = static_cast<uint32_t>(base_index % 32);
++  const uint64_t tile_index = base_index / 32;
++  const uint32_t tensor_col = lane % 8;
++  const uint32_t warp_id = lane / 8;
++  const uint32_t tile_n = static_cast<uint32_t>(tile_index % n_tiles);
++  const uint32_t tile_k = static_cast<uint32_t>(tile_index / n_tiles);
++  const uint64_t marlin_tile_offset =
++      (static_cast<uint64_t>(tile_k) * n_tiles + tile_n) * kWordsPerTile;
++  uint32_t packed[4];
++#pragma unroll
++  for (uint32_t pair = 0; pair < 4; ++pair) {
++    const uint32_t thread_id = tensor_col * 4 + pair;
++    packed[pair] = marlin[marlin_tile_offset + thread_id * 4 + warp_id];
++  }
++
++#pragma unroll
++  for (uint32_t second_k = 0; second_k < 2; ++second_k) {
++#pragma unroll
++    for (uint32_t second_n = 0; second_n < 2; ++second_n) {
++      uint32_t raw = 0;
++      const uint32_t even_nibble = second_k ? (second_n ? 3 : 1) : (second_n ? 2 : 0);
++      const uint32_t odd_nibble = even_nibble + 4;
++#pragma unroll
++      for (uint32_t pair = 0; pair < 4; ++pair) {
++        raw |= ((packed[pair] >> (even_nibble * 4)) & 0xf) << (pair * 8);
++        raw |= ((packed[pair] >> (odd_nibble * 4)) & 0xf) << (pair * 8 + 4);
++      }
++      const uint32_t packed_k = tile_k * 2 + second_k;
++      const uint32_t n = tile_n * kTileN + warp_id * 16 + second_n * 8 + tensor_col;
++      transposed_cutlass[static_cast<uint64_t>(packed_k) * size_n + n] = raw;
++    }
++  }
++}
++
+ }  // namespace device::nvfp4_marlin_relayout
+ 
+ void nvfp4_marlin_relayout_inplace(
+@@ -259,6 +301,16 @@ void nvfp4_marlin_relayout_inplace(
+         static_cast<int>(size_n));
+   } else {
+     const uint64_t raw_word_count = static_cast<uint64_t>(packed_k) * size_n;
++#if defined(_WIN32)
++    const uint32_t inverse_blocks = static_cast<uint32_t>(
++        div_ceil(raw_word_count / 4, device::nvfp4_marlin_relayout::kInverseBlockSize));
++    LaunchKernel(inverse_blocks, device::nvfp4_marlin_relayout::kInverseBlockSize, stream)(
++        device::nvfp4_marlin_relayout::MarlinToTransposedCutlass4xKernel,
++        reinterpret_cast<const uint32_t*>(weight.data_ptr()),
++        reinterpret_cast<uint32_t*>(scratch.data_ptr()),
++        static_cast<uint32_t>(size_n),
++        static_cast<uint32_t>(size_k));
++#else
+     const uint32_t inverse_blocks =
+         static_cast<uint32_t>(div_ceil(raw_word_count, device::nvfp4_marlin_relayout::kInverseBlockSize));
+     LaunchKernel(inverse_blocks, device::nvfp4_marlin_relayout::kInverseBlockSize, stream)(
+@@ -267,6 +319,7 @@ void nvfp4_marlin_relayout_inplace(
+         reinterpret_cast<uint32_t*>(scratch.data_ptr()),
+         static_cast<uint32_t>(size_n),
+         static_cast<uint32_t>(size_k));
++#endif
+ 
+     const dim3 transpose_blocks(
+         div_ceil(static_cast<uint32_t>(size_n), device::nvfp4_marlin_relayout::kTransposeTile),

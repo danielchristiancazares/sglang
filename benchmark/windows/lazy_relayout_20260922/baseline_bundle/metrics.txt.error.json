@@ -1,0 +1,6 @@
+{
+  "ok": false,
+  "status": 404,
+  "path": "/metrics",
+  "error": "{\"detail\":\"Not Found\"}"
+}
