@@ -63,6 +63,7 @@ template <typename... Values>
   CHECK(!value.seed.has_value());
   CHECK(!value.skip_warmup);
   CHECK(!value.disable_thinking);
+  CHECK(!value.diagnostics);
   return true;
 }
 
@@ -163,6 +164,10 @@ template <typename... Values>
   CHECK(parse_stream("--skip-warmup=true").status == ParseStatus::kError);
   CHECK(parse_acceptance("--timeout", "--top-k", "4").status ==
         ParseStatus::kError);
+  CHECK(parse_stream("--diagnostics").options.diagnostics);
+  CHECK(parse_stream("--diagnostics", "--diagnostics").status ==
+        ParseStatus::kError);
+  CHECK(parse_stream("--diagnostics=true").status == ParseStatus::kError);
   return true;
 }
 

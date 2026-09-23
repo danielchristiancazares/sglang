@@ -647,6 +647,26 @@ JsonValue StreamAccumulator::finalize(HttpTimePoint started_at,
   return JsonValue(std::move(result));
 }
 
+std::optional<std::int64_t> StreamAccumulator::cached_prompt_tokens() const {
+  const JsonValue *details = usage_.find("prompt_tokens_details");
+  if (details == nullptr || details->is_null()) {
+    return std::nullopt;
+  }
+  if (!details->is_object()) {
+    throw std::runtime_error(
+        "stream usage.prompt_tokens_details must be an object");
+  }
+  const JsonValue *cached = details->find("cached_tokens");
+  if (cached == nullptr || cached->is_null()) {
+    return std::nullopt;
+  }
+  if (!cached->is_int() || cached->as_int() < 0 ||
+      cached->as_int() > optional_usage_integer(usage_, "prompt_tokens")) {
+    throw std::runtime_error("stream cached_tokens is outside the prompt");
+  }
+  return cached->as_int();
+}
+
 JsonValue stream_request(HttpTransport &transport,
                          const StreamRequestOptions &options) {
   const std::string base = normalize_base_url(options.base_url);
@@ -723,12 +743,17 @@ JsonValue stream_request(HttpTransport &transport,
   StreamAccumulator accumulator;
   SseParser parser;
   std::exception_ptr callback_error;
+  std::optional<HttpTimePoint> first_body_at;
+  std::optional<HttpTimePoint> first_sse_data_at;
 
   const SseEventCallback on_event = [&](const SseEvent &event) {
     if (callback_error != nullptr) {
       return false;
     }
     try {
+      if (options.diagnostics && !first_sse_data_at) {
+        first_sse_data_at = event.line_completed_at;
+      }
       if (event.kind == SseEventKind::kDone) {
         static_cast<void>(
             accumulator.consume_data_with_clock("[DONE]", options.now));
@@ -747,6 +772,9 @@ JsonValue stream_request(HttpTransport &transport,
                                              HttpTimePoint received_at) {
     if (callback_error != nullptr) {
       return false;
+    }
+    if (options.diagnostics && !bytes.empty() && !first_body_at) {
+      first_body_at = received_at;
     }
     const SseParseStatus status = parser.feed(bytes, received_at, on_event);
     if (status == SseParseStatus::kError) {
@@ -772,11 +800,39 @@ JsonValue stream_request(HttpTransport &transport,
                                std::string(parser.error()));
     }
   }
-  JsonValue result = accumulator.finalize(response.request_started_at,
-                                          response.completed_at);
+  JsonValue result =
+      accumulator.finalize(response.request_started_at, response.completed_at);
   if (options.include_output_text) {
     result.as_object().emplace("reasoning_text", accumulator.reasoning_text());
     result.as_object().emplace("content_text", accumulator.content_text());
+  }
+  if (options.diagnostics) {
+    if ((first_body_at && *first_body_at < response.headers_completed_at) ||
+        (first_sse_data_at &&
+         (!first_body_at || *first_sse_data_at < *first_body_at))) {
+      throw std::runtime_error(
+          "HTTP header/body/SSE timestamps are out of order");
+    }
+    const auto latency = [&](std::optional<HttpTimePoint> at) -> JsonValue {
+      if (!at) {
+        return nullptr;
+      }
+      if (*at < response.request_started_at || *at > response.completed_at) {
+        throw std::runtime_error("HTTP diagnostic timestamps are out of order");
+      }
+      return seconds_between(response.request_started_at, *at);
+    };
+    const auto cached = accumulator.cached_prompt_tokens();
+    result.as_object().emplace(
+        "diagnostics",
+        JsonObject{
+            {"headers_s", latency(response.headers_completed_at)},
+            {"first_body_byte_s", latency(first_body_at)},
+            {"first_sse_data_s", latency(first_sse_data_at)},
+            {"sse_done", parser.done()},
+            {"cached_prompt_tokens_reported",
+             cached ? JsonValue(*cached) : JsonValue(nullptr)},
+        });
   }
   return result;
 }
@@ -891,6 +947,7 @@ JsonValue run_stream_benchmark(HttpTransport &transport,
     request.presence_penalty = options.presence_penalty;
     request.repetition_penalty = options.repetition_penalty;
     request.enable_thinking = enable_thinking;
+    request.diagnostics = options.diagnostics;
     request.now = now;
     return request;
   };

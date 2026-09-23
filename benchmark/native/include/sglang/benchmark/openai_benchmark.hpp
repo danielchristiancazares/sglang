@@ -42,6 +42,9 @@ struct StreamRequestOptions final {
   bool ignore_eos{true};
   std::optional<std::string> reasoning_effort;
   bool include_output_text{false};
+  // Additive, default-off diagnostics; never change the meaningful-output
+  // TTFT boundary or infer zero cache hits when the server omits the field.
+  bool diagnostics{false};
   BenchmarkNow now{[] { return HttpClock::now(); }};
 };
 
@@ -65,8 +68,13 @@ public:
   [[nodiscard]] JsonValue finalize(HttpTimePoint started_at,
                                    HttpTimePoint ended_at) const;
   [[nodiscard]] bool done() const noexcept { return done_; }
-  [[nodiscard]] const std::string& reasoning_text() const { return reasoning_text_; }
-  [[nodiscard]] const std::string& content_text() const { return content_text_; }
+  [[nodiscard]] const std::string &reasoning_text() const {
+    return reasoning_text_;
+  }
+  [[nodiscard]] const std::string &content_text() const {
+    return content_text_;
+  }
+  [[nodiscard]] std::optional<std::int64_t> cached_prompt_tokens() const;
 
 private:
   [[nodiscard]] bool consume_data_impl(std::string_view data,

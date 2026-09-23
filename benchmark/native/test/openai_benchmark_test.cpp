@@ -333,10 +333,113 @@ private:
   const JsonValue natural_body = JsonValue::parse(transport.observed.body);
   CHECK(!natural_body.at("ignore_eos").as_bool());
   CHECK(natural_body.at("reasoning_effort").as_string() == "xhigh");
-  CHECK(natural_body.at("chat_template_kwargs").at("enable_thinking").as_bool());
+  CHECK(
+      natural_body.at("chat_template_kwargs").at("enable_thinking").as_bool());
   CHECK(retained.at("reasoning_text").as_string() == "a");
   CHECK(retained.at("content_text").as_string().empty());
-  CHECK(retained.at("decode_tps").as_double() == result.at("decode_tps").as_double());
+  CHECK(retained.at("decode_tps").as_double() ==
+        result.at("decode_tps").as_double());
+  return true;
+}
+
+[[nodiscard]] bool DiagnosticsAreAdditiveAndDoNotRedefineTtft() {
+  StreamTransport transport;
+  transport.chunks = {
+      {": keepalive\n", at(200ms)},
+      {"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n",
+       at(400ms)},
+      {"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"x\"}}]}",
+       at(700ms)},
+      {"\n", at(1s)},
+      {"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}],"
+       "\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_"
+       "tokens\":12,"
+       "\"prompt_tokens_details\":{\"cached_tokens\":6}}}\n",
+       at(2s)},
+      {"data: [DONE]\n", at(3s)}};
+  StreamRequestOptions options;
+  options.base_url = "http://localhost:30000";
+  options.model = "model";
+  options.content = "prompt";
+  options.output_tokens = 2;
+  options.timeout_seconds = 10;
+  options.now = [] { return at(1200ms); };
+  const auto legacy = stream_request(transport, options);
+  const auto payload = transport.observed.body;
+  CHECK(!legacy.contains("diagnostics"));
+  options.diagnostics = true;
+  auto diagnostic = stream_request(transport, options);
+  CHECK(transport.observed.body == payload);
+  CHECK(diagnostic.at("ttft_s").as_double() == 1.2);
+  const auto &details = diagnostic.at("diagnostics");
+  CHECK(details.at("headers_s").as_double() == 0.1);
+  CHECK(details.at("first_body_byte_s").as_double() == 0.2);
+  CHECK(details.at("first_sse_data_s").as_double() == 0.4);
+  CHECK(details.at("cached_prompt_tokens_reported").as_int() == 6);
+  CHECK(details.at("sse_done").as_bool());
+  diagnostic.as_object().erase("diagnostics");
+  CHECK(diagnostic == legacy);
+  return true;
+}
+
+[[nodiscard]] bool CachedUsagePreservesUnknownZeroAndRejectsMalformed() {
+  for (const auto &details :
+       std::vector<JsonValue>{nullptr, JsonValue::object{},
+                              JsonValue::object{{"cached_tokens", nullptr}},
+                              JsonValue::object{{"cached_tokens", 0}},
+                              JsonValue::object{{"cached_tokens", 10}}}) {
+    StreamAccumulator accumulator;
+    const JsonValue value(JsonValue::object{
+        {"usage", JsonValue::object{{"prompt_tokens", 10},
+                                    {"prompt_tokens_details", details}}}});
+    CHECK(!accumulator.consume_data_at(value.dump(), at(1s)));
+    const auto cached = accumulator.cached_prompt_tokens();
+    const auto *expected = details.find("cached_tokens");
+    if (expected == nullptr || expected->is_null()) {
+      CHECK(!cached.has_value());
+    } else {
+      CHECK(cached == expected->as_int());
+    }
+  }
+  for (const auto &details :
+       std::vector<JsonValue>{JsonValue::array{}, "invalid",
+                              JsonValue::object{{"cached_tokens", -1}},
+                              JsonValue::object{{"cached_tokens", 11}},
+                              JsonValue::object{{"cached_tokens", 2.5}},
+                              JsonValue::object{{"cached_tokens", "2"}},
+                              JsonValue::object{{"cached_tokens", true}}}) {
+    StreamAccumulator accumulator;
+    CHECK(!accumulator.consume_data_at(
+        JsonValue(JsonValue::object{
+                      {"usage",
+                       JsonValue::object{{"prompt_tokens", 10},
+                                         {"prompt_tokens_details", details}}}})
+            .dump(),
+        at(1s)));
+    // Legacy finalization never interprets the optional cache-details field.
+    CHECK(accumulator.finalize(at(0ms), at(2s)).at("prompt_tokens").as_int() ==
+          10);
+    CHECK(
+        throws([&] { static_cast<void>(accumulator.cached_prompt_tokens()); }));
+  }
+  return true;
+}
+
+[[nodiscard]] bool DiagnosticsRejectImpossibleTransportTimingOnlyWhenEnabled() {
+  StreamTransport transport;
+  transport.chunks = {
+      {"data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n", at(0ms)},
+      {"data: [DONE]\n", at(2s)}};
+  StreamRequestOptions options;
+  options.base_url = "http://localhost:30000";
+  options.model = "model";
+  options.content = "prompt";
+  options.output_tokens = 2;
+  options.timeout_seconds = 10;
+  options.now = [] { return at(1s); };
+  CHECK(stream_request(transport, options).at("ttft_s").as_double() == 1.0);
+  options.diagnostics = true;
+  CHECK(throws([&] { static_cast<void>(stream_request(transport, options)); }));
   return true;
 }
 
@@ -545,13 +648,19 @@ private:
 
 using Test = bool (*)();
 
-constexpr std::array<std::pair<std::string_view, Test>, 11> kTests{{
+constexpr std::array<std::pair<std::string_view, Test>, 14> kTests{{
     {"ConstantsAndPayloadHelpersMatchLegacyTool",
      ConstantsAndPayloadHelpersMatchLegacyTool},
     {"AccumulatorPreservesUnicodeOrderHashesAndTiming",
      AccumulatorPreservesUnicodeOrderHashesAndTiming},
     {"StreamRequestUsesSseTimestampsAndOptionalOmission",
      StreamRequestUsesSseTimestampsAndOptionalOmission},
+    {"DiagnosticsAreAdditiveAndDoNotRedefineTtft",
+     DiagnosticsAreAdditiveAndDoNotRedefineTtft},
+    {"CachedUsagePreservesUnknownZeroAndRejectsMalformed",
+     CachedUsagePreservesUnknownZeroAndRejectsMalformed},
+    {"DiagnosticsRejectImpossibleTransportTimingOnlyWhenEnabled",
+     DiagnosticsRejectImpossibleTransportTimingOnlyWhenEnabled},
     {"CalibrationPreservesBinarySearchAndFillerShape",
      CalibrationPreservesBinarySearchAndFillerShape},
     {"LlamaTemplateTokenizeProtocolIsPreserved",
