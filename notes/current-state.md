@@ -1,7 +1,8 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), Windows
-2026-09-23 lazy-Marlin promotion and native TTFT launcher removal; Apple
+2026-09-23 lazy-Marlin promotion, native TTFT launcher removal and stable FP4
+tuning identity; Apple
 2026-09-20 Mac DiffusionGemma qualification; Git integration 2026-09-20. The upstream
 rebase preserves both platforms' measurement records.
 
@@ -31,6 +32,22 @@ controls, proof patches and traces are under
 `benchmark/windows/lazy_relayout_20260922/`. See the September 22 and 23
 ledger entries.
 
+**Stable FP4 tuning identity, launcher change 2026-09-23:** the PowerShell
+launcher now serves the checkpoint from its own path and checks that the
+checkpoint's `generation_config.json` carries temperature 1.0; the random-named
+hard-link sampling view is gone. The checkpoint's own generation configuration
+already held the qualified temperature 1.0, top-k 20 and top-p 0.95, so the
+served sampling defaults are unchanged. The FlashInfer FP4 tuning cache key is
+therefore fixed across launches, and its directory was seeded with the
+September 22 tactic file (`M1/M2/M4/M8` tactics 4/0/4/4). Two argument-free
+launches hit that cache without reprofiling and passed arithmetic, tool call,
+non-thinking, acceptance and exact `199000+16` gates. The two five-sample
+sampled windows averaged **0.594839 / 0.493254 s TTFT** and **146.885 /
+148.503 decode tok/s**; the first window's opening sample was a clock-ramp
+sample at 104.350 tok/s. The launcher change and receipts under
+`benchmark/windows/tuning_identity_20260923/` are uncommitted. OpenCode2 and
+Codex round trips were not rerun. All test servers are stopped.
+
 **Native Windows TTFT tooling, updated 2026-09-23:** the opt-in C++ launcher
 `native/windows_ttft` is removed; the PowerShell launcher remains the only
 production entry point. The launcher's one runtime effect was a persistent
@@ -45,9 +62,8 @@ is lost if that stash is dropped. An earlier version is committed on branch
 native probe`. Its `.sglang-ttft` hard-link copies were deleted and
 the source checkpoints are intact. The uncommitted `bench_ttft` probe and stream
 `--diagnostics` flag remain: the benchmark project builds and passes five of
-five host suites under MSVC, with no live-server gate yet. Open gap: every
-PowerShell launch serves a randomly named sampling copy and therefore retunes;
-see the September 23 decision entry.
+five host suites under MSVC, with no live-server gate yet. The per-launch
+retuning gap is closed; see the tuning identity paragraph above.
 
 **Mac DiffusionGemma, 2026-09-20:** the separate
 [MLX-VLM setup](../native/diffusion_gemma/mac/README.md) runs the pinned

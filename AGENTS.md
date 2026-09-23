@@ -252,7 +252,12 @@ Its default profile at this source revision is:
   additional large-EXTEND autotune pass inactive;
 - scheduler receive interval four, stream interval four, incremental output,
   a 128 MiB FlashInfer workspace, language-only loading, Qwen3 reasoning,
-  and Qwen3 Coder tool parsing.
+  and Qwen3 Coder tool parsing;
+- the checkpoint served from its own path with model sampling defaults, so
+  the FlashInfer FP4 tuning cache key is stable across launches; the current
+  cache is the seeded September 22 tactic file, and a deliberate tactic change
+  replaces that file and requalifies (see the
+  [September 23 tuning identity entry](notes/experiment-log.md#2026-09-23---stable-fp4-tuning-identity-in-the-powershell-launcher)).
 
 The [September 1 DSpark qualification](notes/experiment-log.md#2026-09-01-0624-pdt---dspark-v2-150-toks-objective-fully-qualified-and-promoted) includes
 exact capacity, behavior, OpenCode2, Codex, and independent sampled windows.

@@ -23982,3 +23982,105 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
   here. The decision ledger marks the lost selected tactic cache.
 - The log and the other edited notes as they stood before this cleanup are
   saved in `C:\Users\Daniel\sglang-notes-backup\2026-09-23-before-log-cleanup\`.
+
+## 2026-09-23 - stable FP4 tuning identity in the PowerShell launcher
+
+- User request: "Fix the FP4 tuning identity." Branch
+  `perf/windows-qwen38-ttft` at `docs: clean experiment log and add writing
+  rules`, working tree clean before the change. Earlier in the session a second
+  look withdrew the Marlin relayout overlap as an E2E candidate: on the retained
+  September 22 native trace the request-start and final-prefill switches cost
+  about 28 ms and 27 ms per request, a 1.4% ceiling below the spread between
+  identical-code windows.
+- Cause. `flashinfer_autotune_cache_path` hashes the literal served model path
+  with dtype, quantization, MoE backend, parallel sizes, config class name and
+  skip ops. Since the September 13 temperature-0.7 trial, committed on
+  September 20 as `fix(windows): apply Qwen sampling defaults through a model
+  view`, the launcher served a `.<checkpoint>.sampling-<guid>` hard-link view
+  whose only edit was `temperature` in `generation_config.json`. The source
+  checkpoint's `generation_config.json`, unmodified since its September 12
+  download, already carries temperature 1.0, top_k 20 and top_p 0.95. The view
+  therefore reproduced the checkpoint's own defaults under a new random path,
+  and every launch retuned.
+- Key formula check: the first 16 hex characters of the SHA-256 of the
+  pipe-joined key string
+  `<path>|torch.bfloat16|None|auto|1|1|1|1|Qwen3_5Config|skip_ops=fp8_gemm`
+  reproduce the September 22 stable-copy cache directory `5650857b11f34b94`
+  from its served view path and give `3e012a7fcd47ffd8` for the original
+  checkpoint path
+  `C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4`.
+- Launcher change, `scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1`,
+  uncommitted: `--model-path` is the resolved checkpoint path; the view
+  creation, hard-linking and cleanup are removed; `--sampling-defaults model`
+  stays; a startup check requires the checkpoint's `generation_config.json` to
+  be a JSON object whose `temperature` equals the launcher's 1.0 and throws
+  otherwise. The PowerShell parser reports zero errors and `git diff --check`
+  passes. The guard passed on the real checkpoint and threw on temperature 0.7,
+  on a missing temperature and on a JSON array.
+- Tactic selection: instead of persisting a fresh random draw, the new cache
+  directory was seeded with a copy of the September 22 21:10 file, `M1/M2/M4/M8`
+  tactics 4/0/4/4, which backed the September 22 native windows. A copy is
+  `benchmark/windows/tuning_identity_20260923/seeded_tactics_from_5650857b11f34b94.json`.
+  The eight-row verify tactic 4 was the majority pick in seven of nine fresh
+  draws; no throughput evidence ranks it against tactics 12 and 18.
+- Launch 1, argument-free
+  `pwsh -NoProfile -File scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1`,
+  log `launch1_startup.log` in the artifact directory: the log names the cache
+  `...\3e012a7fcd47ffd8\rank_tp0_pp0_dp0.json` and autotune completed within
+  two logged seconds. A tool comparison found the seeded file byte-identical
+  afterwards with its pre-launch modification time, so no shape was
+  reprofiled. Both graphs captured with exact 200000 pools and 1.84 GB
+  available after capture. `/get_model_info` reports the original checkpoint
+  path with image and audio false. The startup log reports the chat sampling
+  defaults from the model generation config as temperature 1.0, top_k 20,
+  top_p 0.95.
+- Launch 1 gates: thinking arithmetic `703` in 82 completion tokens; one parsed
+  `multiply({"a":37,"b":19})` call with `finish_reason=tool_calls`;
+  non-thinking exact `NVFP4 READY` with zero reasoning tokens. Five
+  authority-client samples, `launch1_short.jsonl`, used the exact September 22
+  baseline command (`--input-tokens 6213 --output-tokens 512
+  --warmup-output-tokens 16 --warmup-runs 1 --timeout 600 --temperature 1.0
+  --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 0.0
+  --repetition-penalty 1.0`):
+
+  | Sample | TTFT s | E2E s | Decode tok/s |
+  |---:|---:|---:|---:|
+  | 1 | 0.922259 | 5.819244 | 104.350 |
+  | 2 | 0.510296 | 3.797965 | 155.429 |
+  | 3 | 0.542681 | 4.243666 | 138.071 |
+  | 4 | 0.508829 | 3.510959 | 170.212 |
+  | 5 | 0.490132 | 3.561683 | 166.365 |
+  | Mean | 0.594839 | 4.186703 | 146.885 |
+
+  Every sample returned exact 6213/512/6725 with length finish. Sample 1 was
+  the first request after startup; telemetry shows the SM clock at 900 MHz and
+  32% utilization mid-request with unchanged memory use, a clock-ramp sample
+  rather than a competing client. Samples 2-5 average 0.512985 s TTFT,
+  3.778568 s E2E and 157.519 decode tok/s. Acceptance,
+  `launch1_acceptance.jsonl`: accepted length 2.925714, rate 0.274286,
+  336/1225 correct/proposed over 175 verifies, histogram
+  `[47,46,31,17,11,12,4,7]`. Exact `199000+16`, `launch1_capacity.jsonl`:
+  199016 total, length finish, 68.185418 s TTFT, 68.618162 s E2E,
+  2918.513 prompt tok/s; a tool comparison found its output digest identical
+  to the September 22 and 23 default-on, native-default and Python-candidate
+  capacity receipts. Physical free VRAM was 319-606 MiB during the gates,
+  `launch1_telemetry.log`.
+- Launch 2, same command, `launch2_startup.log`: the same cache path, autotune
+  completed within one logged second, the file still byte-identical with the
+  pre-launch modification time, and no new cache directory. Health 200 and
+  arithmetic `703`. Five samples, `launch2_short.jsonl`, same command:
+
+  | Sample | TTFT s | E2E s | Decode tok/s |
+  |---:|---:|---:|---:|
+  | 1 | 0.495025 | 3.720231 | 158.439 |
+  | 2 | 0.500813 | 3.688485 | 160.305 |
+  | 3 | 0.488135 | 4.030606 | 144.250 |
+  | 4 | 0.501351 | 4.164904 | 139.482 |
+  | 5 | 0.480948 | 4.129956 | 140.038 |
+  | Mean | 0.493254 | 3.946836 | 148.503 |
+
+  Every sample returned exact 6213/512/6725 with length finish.
+- Both servers were stopped leaf-first after a cache flush without exception.
+  Not run: OpenCode2 and Codex round trips. The change alters only the served
+  path and the source of the sampling defaults, which the gates above exercise.
+  The nine per-launch cache directories from September 20-23 remain in place.

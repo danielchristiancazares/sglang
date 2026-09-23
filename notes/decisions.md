@@ -7,8 +7,8 @@ remain in [`experiment-log.md`](experiment-log.md).
 Recurring failure-prevention rules and their platform-specific scope live in
 [AGENTS.md](../AGENTS.md). Use this ledger for individual configuration choices.
 
-**Reconciled through:** Windows 2026-09-23 lazy Marlin handoff promotion and
-native TTFT launcher removal; Apple 2026-09-20 DiffusionGemma interactive
+**Reconciled through:** Windows 2026-09-23 lazy Marlin handoff promotion,
+native TTFT launcher removal and stable FP4 tuning identity; Apple 2026-09-20 DiffusionGemma interactive
 profile. September 12 Git integration preserves the distinct measured Windows
 and official coding sampling profiles.
 
@@ -32,18 +32,34 @@ control lane or the PowerShell tuning parameters. Replacing the PowerShell
 launcher would have required porting those and a full requalification for that
 one-second benefit.
 
-The underlying gap remains open. Since about September 13, each PowerShell
-launch has served a randomly named sampling copy, so every startup retunes. The
-change was committed on September 20 as `fix(windows): apply Qwen sampling
-defaults through a model view`. The live cache holds nine fresh selections from
-September 20 to 23. In them, the eight-row verify shape chose tactic 4 seven
-times and tactics 12 and 18 once each. The smaller shapes varied more. On
-August 20, fresh startup selection was rejected because it caused material
-long-generation variance. The selected 20,928-byte cache in the table below
-belonged to that NEXTN large-EXTEND profile; neither it nor its saved copy
-exists any more. Candidate remedy: a stable tuning identity in the existing
-launcher, qualified with a matched window. Evidence and the stash label are in
-the September 23 experiment-log entry.
+The underlying gap is closed later on September 23; see the next entry. Since
+about September 13, each PowerShell launch had served a randomly named sampling
+copy, so every startup retuned. The change was committed on September 20 as
+`fix(windows): apply Qwen sampling defaults through a model view`. The live
+cache holds nine fresh selections from September 20 to 23. In them, the
+eight-row verify shape chose tactic 4 seven times and tactics 12 and 18 once
+each. The smaller shapes varied more. On August 20, fresh startup selection was
+rejected because it caused material long-generation variance. The selected
+20,928-byte cache in the table below belonged to that NEXTN large-EXTEND
+profile; neither it nor its saved copy exists any more. Evidence and the stash
+label are in the September 23 experiment-log entry.
+
+## Stable FP4 tuning identity in the launcher — September 23
+
+The launcher serves the checkpoint from its own path and no longer builds the
+random-named hard-link sampling view. The view's only edit, temperature 1.0 in
+`generation_config.json`, duplicated the value the unmodified checkpoint
+already carries with top-k 20 and top-p 0.95, so the served sampling defaults
+are unchanged; the launcher now checks that temperature at startup and refuses
+to start otherwise. With the path fixed, the FlashInfer FP4 tuning cache key is
+stable across launches. Its directory was seeded with the September 22 tactic
+file (`M1/M2/M4/M8` tactics 4/0/4/4, the majority eight-row pick) rather than a
+fresh draw; the seed copy is kept beside the receipts. Two argument-free
+launches hit the cache without reprofiling and passed the behavior, acceptance
+and exact `199000+16` gates; their sampled windows averaged 146.885 and
+148.503 decode tok/s. To change tactics deliberately, replace that one file and
+requalify; do not reintroduce a per-launch path. Evidence is in the September
+23 tuning identity experiment-log entry.
 
 ## Native lazy Marlin handoff promoted to launcher default — September 23
 
@@ -350,6 +366,7 @@ production performance status stays closed unless the cost topology changes.
 | Fresh large-EXTEND profiling on every launch | Rejected | Exact prompt remained strong at **3043.747**, but independently selected tactics reduced long generation to **101.162 tok/s**; retain the qualified cache instead |
 | 232K production context/pool | Rejected | Exact `231000+16` passed, but only 98 MiB remained before cache flush |
 | NVML polling or keepalive | Rejected | Apparent gains failed to persist; WDDM client traffic explained the variance |
+| Random-named sampling view as the served path | Closed | Every launch retuned the FP4 tactics under a new cache key while the checkpoint already held the intended sampling defaults; the launcher serves the checkpoint path with a seeded stable cache |
 
 ### Exact tree and SWOR experiments
 

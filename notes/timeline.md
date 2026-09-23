@@ -1250,6 +1250,16 @@ code changes, or process state matter.
   publication. The checkpoint, isolated environment, and restart commands
   remain available; the task server is stopped at the publication handoff.
 
+## 2026-09-23 — stable FP4 tuning identity
+
+- Found that the launcher's random-named sampling view forced a fresh
+  FlashInfer FP4 tactic draw at every start, while the checkpoint already held
+  the intended sampling defaults.
+- The launcher now serves the checkpoint path directly and checks its
+  generation configuration. The stable cache key was seeded with the September
+  22 tactic file. Two launches hit the cache without reprofiling and passed the
+  arithmetic, tool, non-thinking, acceptance and exact `199000+16` gates.
+
 ## Supersession map
 
 Use these results when older “final” checkpoints conflict:
