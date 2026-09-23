@@ -1,9 +1,53 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), Windows
-2026-09-19 native DiffusionGemma trial; Apple
+2026-09-23 lazy-Marlin promotion and native TTFT launcher removal; Apple
 2026-09-20 Mac DiffusionGemma qualification; Git integration 2026-09-20. The upstream
 rebase preserves both platforms' measurement records.
+
+**Native Windows lazy-Marlin handoff, launcher default since 2026-09-23:** the
+approved Python-first proof on `perf/windows-qwen38-ttft` is now a C++/CUDA
+layout-state and batched submission implementation with thin Python bindings.
+The PowerShell launcher enables it for DSpark through
+`-EnableLazyMarlinRelayout` (default on; `:$false` restores eager). It defers
+the final-prefill Cutlass-to-Marlin conversion until the next forward needs
+it. The literal argument-free relaunch averaged **0.500741 s TTFT / 3.845786 s
+E2E / 153.282 decode tok/s** and passed acceptance, exact `199000+16`,
+behavior, OpenCode2 and Codex (one Codex retry after the model ran an extra
+verification command). The code, tests and launcher are committed on the
+branch; notes, the user-owned four-word inverse kernel and native tooling stay
+uncommitted. Earlier September 22 evidence: matched eager
+controls averaged **0.523715 s TTFT / 3.767892 s E2E**; the native window was
+**0.502523 / 3.764051 s**, about **21 ms / 4% lower TTFT**, with identical
+outputs and acceptance. E2E is effectively unchanged, not a demonstrated win.
+An independent argument-free PowerShell launch with the flag opted in averaged
+**0.493384 s TTFT / 152.674 decode tok/s** under fresh ordinary sampling.
+Exact `199000+16`, both graphs, reasoning/arithmetic, parsed tools and
+continuation, non-thinking, language-only metadata, Codex and OpenCode2 pass.
+CUDA coverage passes 12 tests / 18 subtests and host coverage 8 / 3. Online
+weight replacement is rejected while the handoff is active; restart the
+runner instead. All test servers are stopped with port 30000 free. Raw
+controls, proof patches and traces are under
+`benchmark/windows/lazy_relayout_20260922/`. See the September 22 and 23
+ledger entries.
+
+**Native Windows TTFT tooling, updated 2026-09-23:** the opt-in C++ launcher
+`native/windows_ttft` is removed; the PowerShell launcher remains the only
+production entry point. The launcher's one runtime effect was a persistent
+model path, which let FlashInfer reuse its path-keyed tuning cache across
+restarts. Under the current default that cache holds four small-batch FP4
+tactics and no prefill shapes; a hit saved about one second of startup. Its
+fingerprint also changed with every source or environment edit, so it could not
+hold tactics fixed across A/B arms. The removed working copy survives only as a
+local `git stash` entry labelled "removed native/windows_ttft launcher", which
+is lost if that stash is dropped. An earlier version is committed on branch
+`perf/windows-ttft-native` as `feat(windows): add opt-in TTFT launcher and
+native probe`. Its `.sglang-ttft` hard-link copies were deleted and
+the source checkpoints are intact. The uncommitted `bench_ttft` probe and stream
+`--diagnostics` flag remain: the benchmark project builds and passes five of
+five host suites under MSVC, with no live-server gate yet. Open gap: every
+PowerShell launch serves a randomly named sampling copy and therefore retunes;
+see the September 23 decision entry.
 
 **Mac DiffusionGemma, 2026-09-20:** the separate
 [MLX-VLM setup](../native/diffusion_gemma/mac/README.md) runs the pinned
@@ -1675,9 +1719,9 @@ FlashInfer 0.6.17 stores file hits in process-global `_file_configs`, which
 later draft autotune contexts replace. The retained adapter promotes only
 target EXTEND file hits actually exercised by the pass into the runner-keyed
 process cache. A clean relaunch promoted 110 entries from the selected
-20,928-byte cache, SHA-256
-`8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`,
-without re-profiling. Its five exact prompts averaged **3047.309 tok/s**.
+20,928-byte cache without re-profiling. Its five exact prompts averaged
+**3047.309 tok/s**. That cache and its saved copy have since been lost; see the
+decision ledger.
 
 Long generation is the stable generation authority because exact-16 measures
 only 15 post-first-token intervals. Three selected-cache `199000+512` requests

@@ -1,73 +1,74 @@
-# Qwen3.8 Windows performance record
+# Experiment notes
 
-This directory is the durable record for the native-Windows Qwen3.8-27B
-SGLang work. It contains both compact decision-oriented documents and the full
-chronological evidence migrated from the former root `NOTES.md`.
-
-**Last reconciled:** 2026-08-20 12:29 PDT.
+This directory preserves the Windows CUDA and Apple-silicon MPS/MLX
+experiment history, including Qwen3.8 and DiffusionGemma. The full notebook
+contains exact samples, commands, failures, and recovery checkpoints.
+Recurring lessons live in the repository instructions so each new task can
+use them immediately.
 
 ## Read only what the task needs
 
 | Need | Read |
 |---|---|
-| Resume the work or recover after compaction | [`current-state.md`](current-state.md) |
-| Choose or review a runtime setting | [`decisions.md`](decisions.md) |
-| Reproduce or compare a measurement | [`benchmark-contract.md`](benchmark-contract.md) |
-| Understand how the current result was reached | [`timeline.md`](timeline.md) |
-| Inspect exact samples, commands, logs, PIDs, failures, and intermediate state | [`experiment-log.md`](experiment-log.md) |
+| Apply recurring working rules and avoid previously diagnosed failures | [AGENTS.md](../AGENTS.md) |
+| Resume work or recover the latest platform handoff | [current-state.md](current-state.md), then later dated entries for that lane |
+| Choose or revisit a runtime setting or rejected candidate | [decisions.md](decisions.md) |
+| Reproduce or compare a measurement | [benchmark-contract.md](benchmark-contract.md) |
+| Understand the sequence of experiments | [timeline.md](timeline.md) |
+| Recover exact samples, commands, failures, and incidents | [experiment-log.md](experiment-log.md) |
 
-For a normal continuation, `current-state.md` is the complete minimum read.
-Add `benchmark-contract.md` before measuring and `decisions.md` before changing
-a selected default. Use `experiment-log.md` when exact evidence or recovery
-detail matters.
+## Find the platform-specific lessons
+
+| Area | Entry points |
+|---|---|
+| Shared measurement and correctness | [Measurement discipline](../AGENTS.md#measurement-discipline) and [numerical/state contracts](../AGENTS.md#shared-numerical-and-state-contracts) |
+| Windows CUDA | [Launcher contract](../AGENTS.md#qualified-production-contract), [GPU/process safety](../AGENTS.md#native-windows-gpu-and-process-safety), and [kernel boundaries](../AGENTS.md#windows-cuda) |
+| macOS / Apple silicon | [Residency, attention, MTP history, and Metal lessons](../AGENTS.md#macos-and-apple-silicon-lessons) |
+| Closed experiments | [Reopening rules](../AGENTS.md#closed-branches-and-retained-experiments) and the [detailed decision ledger](decisions.md) |
+
+The complete experiment notebook remains at its existing path. The durable
+rules link directly to supporting entries; the notebook retains every
+historical sample and incident. Search by date, model, mechanism, or experiment
+identifier when more detail is needed.
 
 ## Source precedence and freshness
 
 1. Fresh source inspection, worktree state, launcher resolution, endpoint
    checks, process ownership, and measurements establish live truth.
-2. A later entry in `experiment-log.md` supersedes every earlier notebook
-   entry and compact summary.
-3. `current-state.md` carries the latest reconciled production conclusion.
-4. `decisions.md` records selected and closed choices; `timeline.md` remains an
-   orientation map across superseded phases.
-5. “Qualified” means a configuration passed the recorded measurement,
-   behavior, capacity, and production gates. Runtime liveness always requires
-   a fresh check.
+2. A later dated entry for the same platform, checkpoint, and workload can
+   supersede an earlier conclusion. Cross-machine appends can appear out of
+   date order; document position alone does not establish recency.
+3. `current-state.md` carries reconciled handoffs and production conclusions.
+   Check the date and scope of the relevant section.
+4. `decisions.md` records selected and closed choices; `timeline.md` provides
+   an orientation map through the earlier phases.
+5. Qualification covers the recorded measurement, behavior, capacity, and
+   client gates. Each change of model, sampling, implementation, hardware, or
+   workload needs the applicable checks again.
 
-Process IDs, GPU contention, installed packages, dependency versions,
-worktree state, and reported free VRAM are timestamped observations. Reverify
-them before acting.
+Process IDs, contention, installed packages, dependency versions, worktree
+state, and free memory are timestamped observations. Reverify them before
+acting. Historical goals and running-server entries remain historical context.
 
-## Document roles
+## Keep durable guidance concise
 
-- `current-state.md` contains the accepted production contract, latest
-  measurements, invariants, retained experimental infrastructure, and handoff.
-- `decisions.md` contains choices whose reasoning should survive the raw
-  experiment stream, including rejected branches and conditions for reopening.
-- `benchmark-contract.md` defines comparable workloads, environment capture,
-  safety procedure, promotion gates, and interpretation rules.
-- `timeline.md` condenses the full sequence and identifies which later result
-  supersedes each older “final” checkpoint.
-- `experiment-log.md` is the lossless chronological notebook. It preserves the
-  former root `NOTES.md` content, including raw samples and incident recovery.
+Give each new finding a clear home:
 
-## Maintenance pattern
+- Put an established, recurring failure-prevention rule in `AGENTS.md`.
+  State what to do, when it applies, and link the evidence. Update its existing
+  statement when the remedy or scope changes.
+- Put a selected configuration, rejected candidate, and reopening conditions
+  in `decisions.md`.
+- Update `current-state.md` when the qualified winner or immediate handoff
+  changes.
+- Update `benchmark-contract.md` when workloads, environment requirements,
+  measurement definitions, or acceptance gates change.
+- Add a phase to `timeline.md` for a material new direction.
+- Append evidence to `experiment-log.md` after meaningful changes, launches,
+  measurements, failures, promotions, and cleanup, following the writing rules
+  at the top of that file. Keep individual samples and incident narration
+  there, without process IDs, hashes, or handoff lines.
 
-Keep the two layers synchronized:
-
-- append raw evidence and recovery checkpoints to `experiment-log.md` after
-  meaningful changes, launches, measurements, failures, promotions, and
-  cleanup;
-- update `current-state.md` whenever the qualified winner or immediate handoff
-  changes;
-- add a row to `decisions.md` when a candidate is selected, rejected, or
-  reopened by materially new evidence;
-- update `benchmark-contract.md` when workloads, environment requirements,
-  safety constraints, or acceptance gates change;
-- add one phase to `timeline.md` for a material new direction;
-- keep raw logs, transient PIDs, complete sample lists, and incident narration
-  in `experiment-log.md`.
-
-The repository root no longer owns a separate notebook. Continue the recovery
-ledger in `notes/experiment-log.md` so durable guidance and its evidence remain
-together.
+Preserve original measurements with their actual settings and qualification
+limits. Link summaries to those entries so the short instructions and complete
+record remain connected.

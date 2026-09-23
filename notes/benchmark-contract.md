@@ -40,8 +40,10 @@ The record profile is the Windows launcher default: selective target
 checkpoint, trained DSpark-v2 online-FP8 draft, gamma seven/eight verify rows,
 chunk 4096, five FP32 Mamba slots, FP8 target/draft KV, Triton draft attention,
 static target-graph draft-KV commit, selected target GEMM tactics, and in-place
-Cutlass-prefill/Marlin-decode gate/up weights. The NEXTN/chunk-7680 and base
-RadixArk routes remain explicit controls.
+Cutlass-prefill/Marlin-decode gate/up weights with the native final-prefill
+handoff deferred to the first verify. The NEXTN/chunk-7680 and base RadixArk
+routes remain explicit controls; `-EnableLazyMarlinRelayout:$false` is the
+eager-handoff control.
 
 ## Qualified reference
 
@@ -206,23 +208,39 @@ a fresh official-profile window before they can qualify a new default.
 ## Native C++23 client candidate
 
 The portable, framework-free client implementation lives under
-[`../benchmark/native`](../benchmark/native). It provides two CPU-only C++23
+[`../benchmark/native`](../benchmark/native). It provides three CPU-only C++23
 executables:
 
 - `bench_openai_stream.cpp`, covering the OpenAI-compatible streaming,
   calibration, warmup, cache, timing, token, fragment, and digest contract;
 - `bench_spec_acceptance.cpp`, covering exact raw-token `/generate` requests
-  and fail-closed speculative-counter validation.
+  and fail-closed speculative-counter validation;
+- `bench_ttft.cpp`, covering fixed official-thinking TTFT and retained-prefix
+  sequences with startup/configuration identity and reported cache usage.
 
 The client process owns host orchestration while the serving process owns GPU
 execution. This keeps the load generator free of a second CUDA context and
 preserves both native Windows and Apple use. The public headers enforce C++23
 through `config.hpp`.
 
-On Windows, enter the existing native toolchain environment and compile either
-entry point with the shared source set. MSVC's `c++latest` mode is the current
-C++23-capable switch on this toolchain; the source-level guard verifies the
-resolved language version:
+The standalone CMake project is the build and host-test authority for all three
+clients. Keep outputs outside the checkout:
+
+```powershell
+. .\scripts\windows\initialize_cuda_build_env.ps1 -MaxJobs 2
+$NativeBuild = Join-Path $env:TEMP 'sglang-native-bench'
+cmake -S .\benchmark\native -B $NativeBuild -G Ninja `
+  -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build $NativeBuild --parallel 2
+ctest --test-dir $NativeBuild --output-on-failure
+```
+
+The project applies warnings-as-errors under MSVC and GCC/Clang and links
+Winsock for every Windows compiler.
+
+The original direct build remains valid for either legacy entry point. MSVC's
+`c++latest` mode is the current C++23-capable switch on this toolchain; the
+source-level guard verifies the resolved language version:
 
 ```powershell
 . .\scripts\windows\initialize_cuda_build_env.ps1 -MaxJobs 2
@@ -310,7 +328,25 @@ absolute executable path:
   --top-p 0.95 `
   --top-k 20 `
   --presence-penalty 0.0
+
+& (Join-Path $NativeBuild 'bin\bench_ttft.exe') `
+  --base-url http://127.0.0.1:30000 `
+  --model qwen3.8-27b `
+  --label control `
+  --input-tokens 6213 `
+  --output-tokens 512 `
+  --samples 5 `
+  --continuation-tokens 32768 `
+  --timeout 600
 ```
+
+`bench_ttft` requires an idle one-request server with cache reporting enabled.
+Each sequence is `flush -> seed -> identical replay -> optional longer prompt`;
+it deliberately retains cache within that sequence. Its cache-flushed phase is
+comparable only to the same native protocol. Replays and continuations are
+prefix-reuse diagnostics, not uncached scoreboard samples. Preserve the manifest,
+all per-request receipts, and phase summaries together; the probe withholds
+summaries if startup, resolved configuration, or model identity changes.
 
 Add `--disable-thinking` to both members of a paired profile when qualifying
 the non-thinking route. Carry every explicit Python override into its native

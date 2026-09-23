@@ -4,9 +4,84 @@ This ledger records choices that govern the native-Windows and Apple serving
 lanes. Exact sample lists, commands, incident detail, and intermediate states
 remain in [`experiment-log.md`](experiment-log.md).
 
-**Reconciled through:** Windows 2026-09-12 retained checkpoint/cache decisions;
-Apple 2026-09-20 DiffusionGemma interactive profile. September 12 Git integration
-preserves the distinct measured Windows and official coding sampling profiles.
+Recurring failure-prevention rules and their platform-specific scope live in
+[AGENTS.md](../AGENTS.md). Use this ledger for individual configuration choices.
+
+**Reconciled through:** Windows 2026-09-23 lazy Marlin handoff promotion and
+native TTFT launcher removal; Apple 2026-09-20 DiffusionGemma interactive
+profile. September 12 Git integration preserves the distinct measured Windows
+and official coding sampling profiles.
+
+## Native TTFT launcher removed — September 23
+
+The opt-in C++ launcher `native/windows_ttft` is removed without promotion.
+`scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1` stays the only production
+launcher. The removed launcher's one runtime effect was a persistent model path.
+FlashInfer keys its tuning cache on that path, so tactics survived restarts.
+Under the current DSpark default, with the large-EXTEND pass off, the cache
+holds four FP4 tactics for the MLP down projection at 1, 2, 4 and 8 rows. It
+holds no prefill shapes. A cache hit saved about one second of startup.
+
+The launcher also fingerprinted sources, installed metadata, arguments and
+environment. Any edit therefore produced a new path and a fresh tuning key, so
+it could not hold tactics fixed across A/B arms. The September 22 matched
+windows kept one key only by pointing `sglang serve` at a prepared copy
+directly; the launcher would have rejected their environment flag. It
+hardcoded a copy of the PowerShell arguments without lazy relayout, the NEXTN
+control lane or the PowerShell tuning parameters. Replacing the PowerShell
+launcher would have required porting those and a full requalification for that
+one-second benefit.
+
+The underlying gap remains open. Since about September 13, each PowerShell
+launch has served a randomly named sampling copy, so every startup retunes. The
+change was committed on September 20 as `fix(windows): apply Qwen sampling
+defaults through a model view`. The live cache holds nine fresh selections from
+September 20 to 23. In them, the eight-row verify shape chose tactic 4 seven
+times and tactics 12 and 18 once each. The smaller shapes varied more. On
+August 20, fresh startup selection was rejected because it caused material
+long-generation variance. The selected 20,928-byte cache in the table below
+belonged to that NEXTN large-EXTEND profile; neither it nor its saved copy
+exists any more. Candidate remedy: a stable tuning identity in the existing
+launcher, qualified with a matched window. Evidence and the stash label are in
+the September 23 experiment-log entry.
+
+## Native lazy Marlin handoff promoted to launcher default — September 23
+
+At the user's direction, the DSpark launcher now enables the native handoff by
+default through `-EnableLazyMarlinRelayout` (default on), which sets
+`SGLANG_ENABLE_NVFP4_MARLIN_LAZY_RELAYOUT=1` for DSpark with at least one
+speculative step and `0` otherwise. `-EnableLazyMarlinRelayout:$false` is the
+matched eager control. The underlying descriptor stays default-off for other
+entry points. The native-Windows C++/CUDA owner handles layout decisions,
+validation and batched weight/scale submission. It leaves final-prefill
+weights in Cutlass layout until a subsequent small-M forward needs Marlin,
+preserving the shared scratch, numerical kernels, layer eligibility and graph
+addresses.
+
+The literal argument-free launch enabled it without external environment,
+captured both graphs with exact 200K pools and averaged 0.500741 s TTFT /
+3.845786 s E2E / 153.282 decode tok/s over five fresh sampled requests. It
+passed native acceptance, exact 199016, arithmetic/reasoning, one parsed tool
+call and continuation, non-thinking, language-only metadata, OpenCode2 and
+Codex. The first Codex attempt ran a second verification command; the
+retained retry executed exactly one. The off switch restored the eager path.
+
+The Python-first A/B/A/B proof averaged 25.1 ms lower short TTFT. The native
+fixed-view window averaged 0.502523 s versus 0.523715 s across the two eager
+controls (about 4% lower), with exact output/fragment/acceptance parity. E2E
+was 3.764051 versus 3.767892 s: treat it as unchanged. The independent
+PowerShell-default-topology launch, explicitly opted in, retained 200K pools,
+passed exact 199016, both graphs, behavior and both real clients, and averaged
+0.493384 s TTFT / 152.674 decode tok/s under a new seed. Its separate tactic
+identity and outputs make it repeatability evidence, not another paired speed
+comparison. Do not claim a long-prefill or decode-kernel improvement.
+
+The handoff is qualified for the tested batch-one, compile-disabled DSpark-v2
+lane, not every hybrid model or topology. Native descriptors are fixed to the
+post-load tensors: online disk/distributed/tensor/IPC weight updates fail
+closed when active. Restart for replacement weights. Exact commands, samples,
+initial contended windows and cleanup are retained in the September 22 and 23
+ledger entries.
 
 ## Selected Mac DiffusionGemma request profile — September 20
 
@@ -66,7 +141,8 @@ user request; commands and individual samples are in the September 16 ledger.
 | Eager MLP activation quantization | Exact native SwiGLU-to-NVFP4 producer outside `torch.compile`; preserve the former compiled M3 path | All-finite-BF16, production-shape, graph, and tuple-consumer gates pass. Exact prompt improved **0.914%** versus PERF-028 with both deterministic digests restored |
 | GEMM tuning | FP4 autotune plus large EXTEND; skip FP8 GEMM autotune | Selected target file hits improve long prefill; launcher enables the retained path |
 | Gate/up decode | In-place Cutlass-prefill/Marlin-decode layout for all 64 target gate/up projections | Canonical repack parity and round-trip tests pass; exact record beats all prior metrics while reusing one 85 MiB scratch buffer |
-| Selective tactic cache | Keep the independently selected 20,928-byte cache | SHA-256 `8219484FA86EBB0E6DDA54F2D15447DBC502EBCEA9007B3E1BB917B9001F9ADF`; fresh selection regressed long generation and requires requalification |
+| Final-prefill Marlin handoff | Native C++/CUDA lazy handoff, launcher default for DSpark; `-EnableLazyMarlinRelayout:$false` restores eager | About 21 ms / 4% lower short TTFT with identical outputs and acceptance; E2E unchanged. Literal default relaunch passes capacity, behavior and both clients |
+| Selective tactic cache | Lost: the independently selected 20,928-byte NEXTN large-EXTEND cache and its saved copy no longer exist, so every launch tunes afresh | Fresh selection regressed long generation on August 20; re-selecting a cache requires a matched window and requalification |
 | Workspace | 128 MiB | Wins decode and long prefill; 64 MiB fails required graph allocation |
 | Compile mode | Disabled for the selected DSpark-v2 launcher | Current DSpark target/draft CUDA graphs capture directly and the independently restarted default clears all throughput and behavior gates |
 | Scheduling | Receive interval 4; stream interval 4; incremental output | Measured fixed-work wins while retaining client streaming behavior |
