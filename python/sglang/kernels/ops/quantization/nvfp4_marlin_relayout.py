@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import torch
+import tvm_ffi
 
 from sglang.kernels.jit.utils import cache_once, load_jit
 
@@ -21,8 +22,38 @@ def _jit_nvfp4_marlin_relayout_module() -> Module:
                 "nvfp4_marlin_scale_relayout_inplace",
                 "nvfp4_marlin_scale_relayout_inplace",
             ),
+            (
+                "register_nvfp4_hybrid_marlin_state",
+                "register_nvfp4_hybrid_marlin_state",
+            ),
         ],
     )
+
+
+@cache_once
+def _nvfp4_hybrid_marlin_state_cls():
+    _jit_nvfp4_marlin_relayout_module().register_nvfp4_hybrid_marlin_state()
+
+    @tvm_ffi.register_object("sgl.Nvfp4HybridMarlinState")
+    class Nvfp4HybridMarlinState(tvm_ffi.Object):
+        __slots__ = ()
+
+        def __init__(self, lazy_relayout: bool):
+            self.__ffi_init__(lazy_relayout)
+
+    return Nvfp4HybridMarlinState
+
+
+def create_nvfp4_hybrid_marlin_state(layers, *, lazy_relayout: bool):
+    state = _nvfp4_hybrid_marlin_state_cls()(lazy_relayout)
+    for layer in layers:
+        state.add_layer(
+            tvm_ffi.from_dlpack(layer.weight.view(torch.uint8).view(-1)),
+            tvm_ffi.from_dlpack(layer.weight_scale.view(torch.uint8).view(-1)),
+            layer.output_size_per_partition,
+            layer.input_size_per_partition,
+        )
+    return state
 
 
 def preload_nvfp4_marlin_relayout() -> None:

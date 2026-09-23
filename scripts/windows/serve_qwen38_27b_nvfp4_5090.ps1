@@ -8,9 +8,9 @@ the selective target-NVFP4 RadixArk checkpoint, matching online-FP8 DSpark-v2
 draft, 4,096-token prefill chunks, five FP32 Mamba cache slots, FP8 target and
 draft KV, Cutlass prefill plus Marlin gate/up decode, TRT-LLM/XQA target decode,
 Triton draft attention, folded draft proposal/sampling graphs, FlashInfer
-sampling, static target-graph draft-KV commit, and the minimum safe 128 MiB
-workspace. NEXTN remains available as an explicit compatibility and control
-mode.
+sampling, static target-graph draft-KV commit, a native final-prefill Marlin
+handoff deferred to the first verify, and the minimum safe 128 MiB workspace.
+NEXTN remains available as an explicit compatibility and control mode.
 The checkpoint is loaded as a standalone language model, preserving VRAM that
 the unused vision encoder would otherwise consume.
 Requests that omit temperature use 1.0. A temporary hard-linked model view
@@ -116,6 +116,7 @@ param(
     [switch] $EnableTopK1DeltaProposal = $true,
     [switch] $EnableDSparkTruncatedDraftSampling,
     [switch] $EnableDSparkStaticGraphKvCommit = $true,
+    [switch] $EnableLazyMarlinRelayout = $true,
     [string[]] $FlashInferAutotuneSkipOps = @('fp8_gemm'),
     [ValidateSet('default', 'max-autotune-no-cudagraphs')]
     [string] $TorchCompileMode = 'default',
@@ -337,6 +338,10 @@ $HadDSparkStaticGraphKvCommit =
     Test-Path Env:SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT
 $PreviousDSparkStaticGraphKvCommit =
     $env:SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT
+$HadLazyMarlinRelayout =
+    Test-Path Env:SGLANG_ENABLE_NVFP4_MARLIN_LAZY_RELAYOUT
+$PreviousLazyMarlinRelayout =
+    $env:SGLANG_ENABLE_NVFP4_MARLIN_LAZY_RELAYOUT
 
 $SamplingModelDirectory = New-Item -ItemType Directory -Path $SamplingModelPath
 try {
@@ -389,6 +394,9 @@ try {
         $env:SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT =
             if ($EnableDSparkStaticGraphKvCommit) { '1' } else { '0' }
     }
+    $env:SGLANG_ENABLE_NVFP4_MARLIN_LAZY_RELAYOUT =
+        if ($EnableLazyMarlinRelayout -and $SpeculativeAlgorithm -eq 'DSPARK' -and
+            $SpeculativeNumSteps -gt 0) { '1' } else { '0' }
     & $SGLang @ServeArgs
     $ExitCode = $LASTEXITCODE
 }
@@ -445,6 +453,14 @@ finally {
     }
     else {
         Remove-Item Env:SGLANG_DSPARK_STATIC_GRAPH_KV_COMMIT `
+            -ErrorAction SilentlyContinue
+    }
+    if ($HadLazyMarlinRelayout) {
+        $env:SGLANG_ENABLE_NVFP4_MARLIN_LAZY_RELAYOUT =
+            $PreviousLazyMarlinRelayout
+    }
+    else {
+        Remove-Item Env:SGLANG_ENABLE_NVFP4_MARLIN_LAZY_RELAYOUT `
             -ErrorAction SilentlyContinue
     }
     $ResolvedSamplingModelPath = (Resolve-Path -LiteralPath $SamplingModelDirectory.FullName).Path

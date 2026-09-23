@@ -139,6 +139,12 @@ class WeightUpdater:
                 f"Restart with --weight-cache-mode off to use this operation."
             )
 
+        hybrid_marlin = getattr(
+            self.get_model_runner(), "nvfp4_hybrid_marlin_manager", None
+        )
+        if hybrid_marlin is not None:
+            hybrid_marlin.assert_weight_update_allowed()
+
     def update_weights_from_disk(
         self: WeightUpdater,
         model_path: str,

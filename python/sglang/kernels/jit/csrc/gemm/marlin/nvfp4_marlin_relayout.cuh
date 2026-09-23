@@ -4,8 +4,14 @@
 
 #include <sgl_kernel/utils.cuh>
 
+#include <tvm/ffi/reflection/registry.h>
+
 #include "gptq_marlin_repack.cuh"
+#include <algorithm>
 #include <cstdint>
+#include <mutex>
+#include <utility>
+#include <vector>
 
 namespace sglang {
 
@@ -326,6 +332,153 @@ void nvfp4_marlin_scale_relayout_inplace(
   }
   RuntimeDeviceCheck(cudaMemcpyAsync(
       scale.data_ptr(), scratch.data_ptr(), static_cast<std::size_t>(scale_count), cudaMemcpyDeviceToDevice, stream));
+}
+
+class Nvfp4HybridMarlinState : public tvm::ffi::Object {
+ public:
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("sgl.Nvfp4HybridMarlinState", Nvfp4HybridMarlinState, tvm::ffi::Object);
+  static constexpr bool _type_mutable = true;
+
+  explicit Nvfp4HybridMarlinState(bool lazy_relayout) : lazy_relayout_(lazy_relayout) {
+    device_.set_options<kDLCUDA>();
+  }
+
+  void add_layer(tvm::ffi::Tensor weight, tvm::ffi::Tensor scale, int64_t size_n, int64_t size_k) {
+    using namespace host;
+    CHECK_HOST(!prepared_) << "Cannot register hybrid Marlin layers after the first forward";
+    CHECK_HOST(size_n > 0 && size_n % 128 == 0 && size_k > 0 && size_k % 64 == 0)
+        << "Hybrid Marlin requires positive N%128=0 and K%64=0";
+    CHECK_HOST(size_n <= (kMaxWeightBytes * 2) / size_k) << "Hybrid Marlin weight exceeds the 128 MiB limit";
+    const int64_t weight_bytes = size_n * size_k / 2;
+    const int64_t scale_bytes = size_n * size_k / 16;
+    const tvm::ffi::TensorView weight_view{weight};
+    const tvm::ffi::TensorView scale_view{scale};
+    TensorMatcher({weight_bytes}).with_dtype<uint8_t>().with_device(device_).verify(weight_view);
+    TensorMatcher({scale_bytes}).with_dtype<uint8_t>().with_device(device_).verify(scale_view);
+    CHECK_HOST(reinterpret_cast<uintptr_t>(weight_view.data_ptr()) % 16 == 0)
+        << "Hybrid Marlin weight must be 16-byte aligned";
+    CHECK_HOST(!overlaps(weight_view, scale_view)) << "Hybrid Marlin weight and scale must not alias";
+    for (const auto& layer : layers_) {
+      CHECK_HOST(
+          !overlaps(weight_view, layer.weight) && !overlaps(weight_view, layer.scale) &&
+          !overlaps(scale_view, layer.weight) && !overlaps(scale_view, layer.scale))
+          << "Hybrid Marlin layers must not alias";
+    }
+    layers_.push_back({std::move(weight), std::move(scale), size_n, size_k});
+    scratch_bytes_ = std::max(scratch_bytes_, weight_bytes);
+  }
+
+  bool prepare(tvm::ffi::TensorView scratch, int64_t num_tokens) {
+    CHECK_HOST(num_tokens >= 0) << "Hybrid Marlin token count must be non-negative";
+    CHECK_HOST(!poisoned_) << "Hybrid Marlin state is invalid after a failed relayout";
+    if (layers_.empty()) return marlin_layout_;
+    switch_layout(scratch, num_tokens <= kMaxMarlinTokens);
+    prepared_ = true;
+    return marlin_layout_;
+  }
+
+  bool finish(tvm::ffi::TensorView scratch, bool prefill_only, bool last_prefill_chunk, bool extend_or_mixed) {
+    CHECK_HOST(!poisoned_) << "Hybrid Marlin state is invalid after a failed relayout";
+    if (!lazy_relayout_ && !layers_.empty() && !marlin_layout_ && !prefill_only && last_prefill_chunk &&
+        extend_or_mixed) {
+      switch_layout(scratch, true);
+    }
+    return marlin_layout_;
+  }
+
+  void validate_dispatch(bool use_marlin) const {
+    CHECK_HOST(!poisoned_) << "Hybrid Marlin state is invalid after a failed relayout";
+    CHECK_HOST(!prepared_ || use_marlin == marlin_layout_)
+        << "Hybrid NVFP4 Marlin dispatch does not match the prepared weight layout";
+  }
+
+  bool select_dispatch(int64_t num_tokens, bool tensor_input) const {
+    CHECK_HOST(!tensor_input || num_tokens >= 0) << "Hybrid Marlin token count must be non-negative";
+    const bool use_marlin = tensor_input && num_tokens <= kMaxMarlinTokens;
+    validate_dispatch(use_marlin);
+    return use_marlin;
+  }
+
+  int64_t transition_count() const {
+    return transition_count_;
+  }
+
+  void assert_weight_update_allowed() const {
+    CHECK_HOST(layers_.empty())
+        << "Online weight updates are not supported by native hybrid Marlin; restart the runner to rebuild layout "
+           "descriptors";
+  }
+
+ private:
+  struct Layer {
+    tvm::ffi::Tensor weight;
+    tvm::ffi::Tensor scale;
+    int64_t size_n;
+    int64_t size_k;
+  };
+
+  static constexpr int64_t kMaxWeightBytes = 128LL << 20;
+  static constexpr int64_t kMaxMarlinTokens = 8;
+
+  static bool overlaps(tvm::ffi::TensorView a, tvm::ffi::TensorView b) {
+    const auto a_ptr = reinterpret_cast<uintptr_t>(a.data_ptr());
+    const auto b_ptr = reinterpret_cast<uintptr_t>(b.data_ptr());
+    return a_ptr <= b_ptr ? b_ptr - a_ptr < static_cast<uintptr_t>(a.numel())
+                          : a_ptr - b_ptr < static_cast<uintptr_t>(b.numel());
+  }
+
+  void switch_layout(tvm::ffi::TensorView scratch, bool to_marlin) {
+    using namespace host;
+    if (marlin_layout_ == to_marlin) return;
+    auto scratch_bytes = SymbolicSize{"scratch_bytes"};
+    TensorMatcher({scratch_bytes}).with_dtype<uint8_t>().with_device(device_).verify(scratch);
+    CHECK_HOST(scratch_bytes.unwrap() >= scratch_bytes_) << "Hybrid Marlin scratch is too small";
+    CHECK_HOST(reinterpret_cast<uintptr_t>(scratch.data_ptr()) % 16 == 0)
+        << "Hybrid Marlin scratch must be 16-byte aligned";
+    for (const auto& layer : layers_) {
+      CHECK_HOST(!overlaps(scratch, layer.weight) && !overlaps(scratch, layer.scale))
+          << "Hybrid Marlin scratch must not alias weights or scales";
+    }
+    cudaStreamCaptureStatus status;
+    CHECK_CUDA(cudaStreamIsCapturing(LaunchKernel::resolve_device(device_.unwrap()), &status));
+    CHECK_HOST(status == cudaStreamCaptureStatusNone)
+        << "Stateful hybrid Marlin relayout must occur outside CUDA graph capture";
+    poisoned_ = true;
+    for (const auto& layer : layers_) {
+      nvfp4_marlin_relayout_inplace(layer.weight, scratch, layer.size_n, layer.size_k, to_marlin);
+      nvfp4_marlin_scale_relayout_inplace(layer.scale, scratch, layer.size_n, layer.size_k, to_marlin);
+    }
+    marlin_layout_ = to_marlin;
+    ++transition_count_;
+    poisoned_ = false;
+  }
+
+  host::SymbolicDevice device_;
+  std::vector<Layer> layers_;
+  int64_t scratch_bytes_ = 0;
+  int64_t transition_count_ = 0;
+  bool lazy_relayout_;
+  bool marlin_layout_ = false;
+  bool prepared_ = false;
+  bool poisoned_ = false;
+};
+
+void register_nvfp4_hybrid_marlin_state() {
+#if !defined(__CUDA_ARCH__)
+  static std::once_flag once;
+  std::call_once(once, [] {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<Nvfp4HybridMarlinState>()
+        .def(refl::init<bool>(), "__init__")
+        .def("add_layer", &Nvfp4HybridMarlinState::add_layer)
+        .def("prepare", &Nvfp4HybridMarlinState::prepare)
+        .def("finish", &Nvfp4HybridMarlinState::finish)
+        .def("validate_dispatch", &Nvfp4HybridMarlinState::validate_dispatch)
+        .def("select_dispatch", &Nvfp4HybridMarlinState::select_dispatch)
+        .def("transition_count", &Nvfp4HybridMarlinState::transition_count)
+        .def("assert_weight_update_allowed", &Nvfp4HybridMarlinState::assert_weight_update_allowed);
+  });
+#endif
 }
 
 }  // namespace sglang

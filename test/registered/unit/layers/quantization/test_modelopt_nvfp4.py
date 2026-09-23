@@ -1,15 +1,18 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
 import torch.nn as nn
 
+from sglang.srt.environ import envs
 from sglang.srt.layers.linear import MergedColumnParallelLinear, QKVParallelLinear
 from sglang.srt.layers.parameter import PerTensorScaleParameter
 from sglang.srt.layers.quantization.modelopt_quant import (
     ModelOptFp4Config,
     ModelOptFp4LinearMethod,
 )
+from sglang.srt.layers.quantization.nvfp4_hybrid_marlin import Nvfp4HybridMarlinManager
 from sglang.srt.layers.quantization.nvfp4_online import (
     ModelOptNvFp4OnlineLinearMethod,
     NvFp4OnlineConfig,
@@ -128,6 +131,29 @@ class TestModelOptNvfp4(CustomTestCase):
         self.assertEqual(layer.logical_widths, [16, 32])
         self.assertIs(layer.quant_config, config)
         self.assertFalse(config.is_awq)
+
+    def test_lazy_relayout_is_windows_opt_in_and_empty_manager_is_safe(self):
+        for platform, enabled, expected in (
+            ("win32", False, False),
+            ("win32", True, True),
+            ("linux", True, False),
+        ):
+            with (
+                self.subTest(platform=platform, enabled=enabled),
+                envs.SGLANG_ENABLE_NVFP4_MARLIN_LAZY_RELAYOUT.override(enabled),
+                patch(
+                    "sglang.srt.layers.quantization.nvfp4_hybrid_marlin.sys",
+                    SimpleNamespace(platform=platform),
+                ),
+            ):
+                manager = Nvfp4HybridMarlinManager(
+                    model=nn.Module(), device="cpu", is_draft_worker=False, enabled=True
+                )
+                self.assertEqual(manager._lazy_relayout, expected)
+                manager.prepare_for_forward(None)
+                manager.finish_forward(None)
+                self.assertFalse(manager._marlin_layout)
+                self.assertIsNone(manager.scratch)
 
     @patch(
         "sglang.srt.layers.quantization.modelopt_quant.envs."

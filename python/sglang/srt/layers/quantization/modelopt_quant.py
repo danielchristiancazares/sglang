@@ -2022,13 +2022,18 @@ class ModelOptFp4LinearMethod(LinearMethodBase):
                 use_hybrid_marlin_for_num_tokens,
             )
 
-            use_marlin = (
-                getattr(layer, "_nvfp4_hybrid_marlin_active", False)
-                and isinstance(x, torch.Tensor)
-                and use_hybrid_marlin_for_num_tokens(
-                    x.numel() // x.shape[-1]
+            native_state = getattr(layer, "_nvfp4_hybrid_marlin_state", None)
+            if native_state is not None:
+                tensor_input = isinstance(x, torch.Tensor)
+                use_marlin = native_state.select_dispatch(
+                    x.numel() // x.shape[-1] if tensor_input else 0, tensor_input
                 )
-            )
+            else:
+                use_marlin = (
+                    getattr(layer, "_nvfp4_hybrid_marlin_active", False)
+                    and isinstance(x, torch.Tensor)
+                    and use_hybrid_marlin_for_num_tokens(x.numel() // x.shape[-1])
+                )
             if use_marlin:
                 return apply_fp4_marlin_linear(
                     input=x,

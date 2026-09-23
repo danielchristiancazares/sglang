@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TYPE_CHECKING
 
 import torch
 
 from sglang.kernels.ops.quantization.nvfp4_marlin_relayout import (
+    create_nvfp4_hybrid_marlin_state,
     nvfp4_marlin_relayout_,
     nvfp4_marlin_scale_relayout_,
     preload_nvfp4_marlin_relayout,
 )
+from sglang.srt.environ import envs
 from sglang.srt.layers.quantization.marlin_utils import marlin_make_workspace
 from sglang.srt.layers.quantization.marlin_utils_fp4 import (
     nvfp4_marlin_process_global_scale,
@@ -112,8 +115,14 @@ class Nvfp4HybridMarlinManager:
         active_layers = prepared_layers if enabled else ()
         for layer in prepared_layers:
             layer._nvfp4_hybrid_marlin_active = enabled
+            layer._nvfp4_hybrid_marlin_state = None
         self.layers = active_layers
         self._marlin_layout = False
+        self._lazy_relayout = (
+            sys.platform == "win32"
+            and envs.SGLANG_ENABLE_NVFP4_MARLIN_LAZY_RELAYOUT.get()
+        )
+        self._native_state = None
         self.scratch = None
         if not self.layers:
             return
@@ -130,13 +139,41 @@ class Nvfp4HybridMarlinManager:
             len(self.layers),
             max_bytes / (1 << 20),
         )
+        if self._lazy_relayout:
+            self._native_state = create_nvfp4_hybrid_marlin_state(
+                self.layers, lazy_relayout=True
+            )
+            for layer in self.layers:
+                layer._nvfp4_hybrid_marlin_state = self._native_state
+            logger.info(
+                "Native hybrid NVFP4 Marlin defers final-prefill relayout to the next forward."
+            )
+
+    def assert_weight_update_allowed(self) -> None:
+        if self._native_state is not None:
+            self._native_state.assert_weight_update_allowed()
 
     def prepare_for_forward(self, forward_batch: ForwardBatch) -> None:
         if not self.layers:
             return
-        self._switch(use_hybrid_marlin_for_num_tokens(forward_batch.input_ids.numel()))
+        if self._native_state is not None:
+            self._marlin_layout = self._native_state.prepare(
+                self.scratch, forward_batch.input_ids.numel()
+            )
+        else:
+            self._switch(
+                use_hybrid_marlin_for_num_tokens(forward_batch.input_ids.numel())
+            )
 
     def finish_forward(self, forward_batch: ForwardBatch) -> None:
+        if self._native_state is not None:
+            self._marlin_layout = self._native_state.finish(
+                self.scratch,
+                forward_batch.is_prefill_only,
+                forward_batch.contains_last_prefill_chunk,
+                forward_batch.forward_mode in (ForwardMode.EXTEND, ForwardMode.MIXED),
+            )
+            return
         if (
             not self.layers
             or self._marlin_layout
