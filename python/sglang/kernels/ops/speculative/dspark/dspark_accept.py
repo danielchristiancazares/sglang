@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, Optional
 
 import msgspec
@@ -8,16 +9,25 @@ import triton
 import triton.language as tl
 
 from sglang.kernels.jit.utils import cache_once, load_jit
-from sglang.kernels.ops.speculative.dspark.dispatch import inputs_on_cuda
-from sglang.kernels.ops.speculative.reject_sampling import (
-    chain_speculative_sampling_triton,
+from sglang.kernels.ops.speculative.dflash import (
+    compute_dflash_correct_drafts_and_bonus,
 )
+from sglang.kernels.ops.speculative.dspark.dispatch import inputs_on_cuda
 from sglang.srt.speculative.dflash_info_v2 import DFlashDraftInputV2
 from sglang.srt.speculative.dflash_utils import (
     _get_or_create_chain_verify_buffers,
-    build_dflash_verify_target_probs,
-    compute_dflash_correct_drafts_and_bonus,
+    build_speculative_verify_target_probs,
 )
+from sglang.srt.utils import is_npu
+
+_is_npu = is_npu()
+
+if _is_npu:
+    from sgl_kernel_npu.sample import chain_speculative_sampling_triton
+else:
+    from sglang.kernels.ops.speculative.reject_sampling import (
+        chain_speculative_sampling_triton,
+    )
 
 if TYPE_CHECKING:
     from tvm_ffi.module import Module
@@ -144,6 +154,7 @@ class AcceptSampling:
         gamma: int,
         verify_num_draft_tokens: int,
         cutoff_verify_lens: Optional[torch.Tensor] = None,
+        block_verification: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return accept_sampling(
             candidates=candidates,
@@ -154,6 +165,7 @@ class AcceptSampling:
             gamma=gamma,
             verify_num_draft_tokens=verify_num_draft_tokens,
             cutoff_verify_lens=cutoff_verify_lens,
+            block_verification=block_verification,
         )
 
     @classmethod
@@ -168,6 +180,7 @@ class AcceptSampling:
         gamma: int,
         verify_num_draft_tokens: int,
         cutoff_verify_lens: Optional[torch.Tensor] = None,
+        block_verification: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return accept_sampling_triton(
             candidates=candidates,
@@ -178,6 +191,7 @@ class AcceptSampling:
             gamma=gamma,
             verify_num_draft_tokens=verify_num_draft_tokens,
             cutoff_verify_lens=cutoff_verify_lens,
+            block_verification=block_verification,
         )
 
 
@@ -191,6 +205,7 @@ def _accept_sampling_core(
     gamma: int,
     verify_num_draft_tokens: int,
     cutoff_verify_lens: Optional[torch.Tensor],
+    block_verification: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     bs = candidates.shape[0]
     device = candidates.device
@@ -201,7 +216,7 @@ def _accept_sampling_core(
             rows_per_request=verify_num_draft_tokens,
         ).view(bs, verify_num_draft_tokens, -1)
     else:
-        target_probs = build_dflash_verify_target_probs(
+        target_probs = build_speculative_verify_target_probs(
             next_token_logits=target_logits,
             sampling_info=sampling_info,
             draft_token_num=verify_num_draft_tokens,
@@ -221,9 +236,18 @@ def _accept_sampling_core(
         draft_token_num=verify_num_draft_tokens,
         device=device,
     )
-    uniform_samples = torch.rand((bs, gamma), dtype=torch.float32, device=device)
+    # The NPU implementation uses the candidate width as its row stride.  The
+    # last value is intentionally unused because candidate slot 0 is the root.
+    uniform_width = candidates.shape[1] if _is_npu else gamma
+    uniform_samples = torch.rand(
+        (bs, uniform_width), dtype=torch.float32, device=device
+    )
     uniform_samples_final = torch.rand((bs,), dtype=torch.float32, device=device)
-    chain_speculative_sampling_triton(
+    sampling_fn = chain_speculative_sampling_triton
+    if block_verification:
+        # Startup validation rejects NPU, whose sampler has no block mode.
+        sampling_fn = partial(sampling_fn, block_verification=True)
+    sampling_fn(
         predicts=predicts,
         accept_index=accept_index,
         accept_token_num=accept_token_num,
@@ -259,6 +283,7 @@ def accept_sampling(
     gamma: int,
     verify_num_draft_tokens: int,
     cutoff_verify_lens: Optional[torch.Tensor] = None,
+    block_verification: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     bs = candidates.shape[0]
     device = candidates.device
@@ -271,6 +296,7 @@ def accept_sampling(
         gamma=gamma,
         verify_num_draft_tokens=verify_num_draft_tokens,
         cutoff_verify_lens=cutoff_verify_lens,
+        block_verification=block_verification,
     )
     row_ids = torch.arange(bs, dtype=torch.long, device=device)
     accept_pos = accept_index[row_ids, correct_len.to(torch.long)].to(torch.long)
@@ -327,6 +353,7 @@ def accept_sampling_triton(
     gamma: int,
     verify_num_draft_tokens: int,
     cutoff_verify_lens: Optional[torch.Tensor] = None,
+    block_verification: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     correct_len, cap_trim_lens, accept_index, predicts = _accept_sampling_core(
         candidates=candidates,
@@ -337,6 +364,7 @@ def accept_sampling_triton(
         gamma=gamma,
         verify_num_draft_tokens=verify_num_draft_tokens,
         cutoff_verify_lens=cutoff_verify_lens,
+        block_verification=block_verification,
     )
     bonus = gather_two_level_bonus_triton(
         accept_index=accept_index, predicts=predicts, correct_len=correct_len
@@ -350,6 +378,7 @@ except ImportError:
     _flashinfer_softmax = None
 
 
+# Not sampling.softmax: the FlashInfer and Triton paths are not bitwise torch.softmax(x / t).
 class SoftmaxTemp:
     @classmethod
     def execute(cls, *args, **kwargs) -> torch.Tensor:
@@ -676,12 +705,14 @@ class AcceptGreedy:
         target_logits: torch.Tensor,
         verify_num_draft_tokens: int,
         cutoff_verify_lens: Optional[torch.Tensor] = None,
+        fused_argmax: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return accept_greedy(
             candidates=candidates,
             target_logits=target_logits,
             verify_num_draft_tokens=verify_num_draft_tokens,
             cutoff_verify_lens=cutoff_verify_lens,
+            fused_argmax=fused_argmax,
         )
 
     @classmethod
@@ -692,12 +723,14 @@ class AcceptGreedy:
         target_logits: torch.Tensor,
         verify_num_draft_tokens: int,
         cutoff_verify_lens: Optional[torch.Tensor] = None,
+        fused_argmax: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return accept_greedy_triton(
             candidates=candidates,
             target_logits=target_logits,
             verify_num_draft_tokens=verify_num_draft_tokens,
             cutoff_verify_lens=cutoff_verify_lens,
+            fused_argmax=fused_argmax,
         )
 
 
@@ -707,9 +740,10 @@ def accept_greedy(
     target_logits: torch.Tensor,
     verify_num_draft_tokens: int,
     cutoff_verify_lens: Optional[torch.Tensor] = None,
+    fused_argmax: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     bs = candidates.shape[0]
-    target_predict = torch.argmax(target_logits, dim=-1).view(
+    target_predict = _row_argmax(target_logits, fused=fused_argmax).view(
         bs, verify_num_draft_tokens
     )
     correct_len, bonus = compute_dflash_correct_drafts_and_bonus(
@@ -753,15 +787,38 @@ def gather_row_bonus_triton(*, table: torch.Tensor, idx: torch.Tensor) -> torch.
     return out
 
 
+def _row_argmax(logits: torch.Tensor, fused: bool = False) -> torch.Tensor:
+    # torch.argmax uses one block per row; at few rows x wide vocab that is ~7x
+    # off the memory the reduction touches. The fused kernel does not reproduce
+    # torch.argmax's NaN selection, hence the opt-in.
+    if (
+        fused
+        and logits.is_cuda
+        and logits.dim() == 2
+        and logits.dtype == torch.float32
+        and logits.stride(1) == 1
+        and (
+            logits.shape[0] <= 64
+            or (logits.shape[0] <= 384 and logits.shape[1] >= 65536)
+        )
+        and logits.shape[1] >= 4096
+    ):
+        from sglang.kernels.ops.speculative.row_argmax import row_argmax
+
+        return row_argmax(logits)
+    return torch.argmax(logits, dim=-1)
+
+
 def accept_greedy_triton(
     *,
     candidates: torch.Tensor,
     target_logits: torch.Tensor,
     verify_num_draft_tokens: int,
     cutoff_verify_lens: Optional[torch.Tensor] = None,
+    fused_argmax: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     bs = candidates.shape[0]
-    target_predict = torch.argmax(target_logits, dim=-1).view(
+    target_predict = _row_argmax(target_logits, fused=fused_argmax).view(
         bs, verify_num_draft_tokens
     )
     correct_len, bonus = compute_dflash_correct_drafts_and_bonus(

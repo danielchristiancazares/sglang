@@ -24188,3 +24188,35 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
   was not launched. Arithmetic, tool continuation, capacity, throughput and
   real-client gates were not run.
 - Final PowerShell AST parsing and `git diff --check` passed.
+
+### 2026-10-24 01:44 PDT - Upstream NVFP4 W4A16 integration
+
+- On `main`, integrated upstream's split/dense W4A16 serving change and the
+  later MegaMoE replacement changes, including online PTQ and the FlashInfer
+  0.7.2 dependency line. The closed standalone MegaMoE PR was superseded by
+  the merged startup-tuning and W4A16/SiTU changes. The local native-Windows,
+  Apple, Responses, DSpark and experimental EAGLE lines were preserved. The
+  previously rejected truncated DSpark proposal was not carried into the new
+  upstream sampler; the September 1 full-model acceptance rejection remains
+  authoritative. Sparse accept and static-graph KV commit remain.
+- Conflict resolution retained upstream's KV planning, residual-boundary,
+  deterministic sampling and MegaMoE autotune structures. It also retained
+  native-Windows import guards, the MPS working-set/host-memory distinction,
+  qualified Responses namespace/undeclared-call behavior, Rust model metadata,
+  macOS shared-memory synchronization and non-POSIX inline fallback. Windows
+  absolute media paths now reach the existing local-file prefetch path.
+- Validation passed:
+  - `.\.venv\Scripts\python.exe -X utf8 -m compileall -q python\sglang test\registered`
+  - Responses and namespace suites: 59 passed, 42 subtests passed.
+  - Additional Responses suite: 81 passed, 10 subtests passed.
+  - Speculative/model suites: 53 passed, 32 subtests passed.
+  - Focused TRT-LLM checks: 10 passed.
+  - `cargo test -p sglang-server --lib`: 358 passed.
+  - `cargo fmt --all -- --check` and `cargo check -p sglang-server --locked`
+    passed. Scoped staged and unstaged `git diff --check` passed, with no
+    conflict markers remaining.
+- Inkling tests were not run because `tml-renderers` is unavailable on native
+  Windows. No full-model GPU qualification, production relaunch or throughput
+  benchmark was run. The full staged whitespace check reports unrelated
+  trailing whitespace in upstream-added files; the conflict-resolution files
+  pass their scoped check.

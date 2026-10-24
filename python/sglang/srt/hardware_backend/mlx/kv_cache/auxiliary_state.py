@@ -17,7 +17,8 @@ import torch
 
 from sglang.srt.mem_cache.base_prefix_cache import EvictParams, InsertResult
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
-from sglang.srt.mem_cache.unified_cache.components.mamba_component import (
+from sglang.srt.mem_cache.unified_cache.components.base import TreeComponent
+from sglang.srt.mem_cache.unified_cache.components.mamba import (
     MambaComponent,
 )
 
@@ -225,21 +226,8 @@ class MlxAuxiliaryStatePool:
 
 
 class MlxAuxiliaryStateReqToTokenPool(ReqToTokenPool):
-    """Req-to-token pool with MLX auxiliary-state slot bookkeeping.
-
-    Auxiliary-slot release has exactly one owner per configuration:
-
-    * Radix cache enabled: the ``MlxAuxiliaryStateComponent`` of the unified
-      radix cache owns release — on finish it either frees the slot or
-      transfers it to the tree, nulling ``req.kv.mamba_pool_idx`` before the
-      request row is freed. The pool must NOT free auxiliary slots itself.
-    * Radix cache disabled (``ChunkCache``): no tree component exists, and
-      ``release_kv_cache``'s ``free_mamba_cache`` fallback is gated on
-      ``HybridReqToTokenPool``, which this pool is not — so the pool itself
-      owns release. Construct with ``owns_auxiliary_state_release=True`` and
-      ``free(req)`` returns the slot together with the request row; without
-      this, every finished request leaks its slot until allocation asserts.
-    """
+    """Req-to-token pool with MLX auxiliary-state slot bookkeeping. It never
+    frees auxiliary slots: ``MlxAuxiliaryStateComponent`` owns their release."""
 
     def __init__(
         self,
@@ -249,7 +237,6 @@ class MlxAuxiliaryStateReqToTokenPool(ReqToTokenPool):
         device: str,
         enable_memory_saver: bool,
         auxiliary_state_size: int,
-        owns_auxiliary_state_release: bool = False,
     ):
         super().__init__(
             size=size,
@@ -257,7 +244,6 @@ class MlxAuxiliaryStateReqToTokenPool(ReqToTokenPool):
             device=device,
             enable_memory_saver=enable_memory_saver,
         )
-        self._owns_auxiliary_state_release = owns_auxiliary_state_release
         self.mamba_pool = MlxAuxiliaryStatePool(
             size=auxiliary_state_size,
             device=device,
@@ -311,6 +297,7 @@ class MlxAuxiliaryStateReqToTokenPool(ReqToTokenPool):
             if mamba_ping_pong_track_buffer_to_keep is None:
                 self.auxiliary_state_pool.free(track_buffer)
             req.kv.mamba_ping_pong_track_buffer = None
+            req.kv.mamba_ping_pong_empty = None
             req.kv.mamba_next_track_idx = None
             req.kv.mamba_last_track_idx = None
 
@@ -319,16 +306,6 @@ class MlxAuxiliaryStateReqToTokenPool(ReqToTokenPool):
             req,
             mamba_ping_pong_track_buffer_to_keep=track_buffer_to_keep,
         )
-
-    def free(self, req):
-        if self._owns_auxiliary_state_release:
-            # No-radix configuration: nothing else will ever release the
-            # auxiliary slot, so return it with the request row. Keyed on
-            # req.kv.mamba_pool_idx (None-safe, nulled by free_mamba_cache), NOT
-            # on req_index_to_auxiliary_state_index_mapping, which may point
-            # at a slot the radix tree owns.
-            self.free_mamba_cache(req)
-        super().free(req)
 
     def clear(self):
         super().clear()
@@ -428,6 +405,7 @@ class MlxAuxiliaryStateComponent(MambaComponent):
                 if track_buffer is not None:
                     self.cache.req_to_token_pool.auxiliary_state_pool.free(track_buffer)
                 req.kv.mamba_ping_pong_track_buffer = None
+                req.kv.mamba_ping_pong_empty = None
                 req.kv.mamba_next_track_idx = None
                 req.kv.mamba_last_track_idx = None
             req.kv.mamba_last_track_seqlen = None
@@ -453,6 +431,7 @@ class MlxAuxiliaryStateComponent(MambaComponent):
             if track_buffer is not None:
                 self.cache.req_to_token_pool.auxiliary_state_pool.free(track_buffer)
                 req.kv.mamba_ping_pong_track_buffer = None
+                req.kv.mamba_ping_pong_empty = None
                 req.kv.mamba_next_track_idx = None
                 req.kv.mamba_last_track_idx = None
             req.kv.mamba_pool_idx = None

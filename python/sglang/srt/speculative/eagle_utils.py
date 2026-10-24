@@ -5,13 +5,21 @@ import logging
 import math
 import sys
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
 import torch
 
+from sglang.kernels.ops.sampling import softmax as sampling_softmax
+from sglang.kernels.ops.sampling.renorm import top_k_renorm_prob, top_p_renorm_prob
 from sglang.kernels.ops.speculative.spec_tree import (
-    sgl_build_tree_kernel_efficient_triton,
-    verify_tree_greedy_kernel_triton,
+    TreeMaskMode,
+    build_tree_kernel_efficient_func,
+    verify_tree_greedy_func,
+)
+from sglang.kernels.ops.speculative.verify_sampling import (
+    chain_speculative_sampling_triton,
+    tree_speculative_sampling_target_only,
 )
 from sglang.srt.hardware_backend.npu.dsv4.dsv4_common_hooks import (
     maybe_build_dsv4_verify_bundle,
@@ -22,7 +30,6 @@ from sglang.srt.mem_cache.allocation_sizing import (
     page_aligned_decode_alloc_lens,
 )
 from sglang.srt.runtime_context import get_parallel, get_spec
-from sglang.srt.speculative.tree_mask import TreeMaskMode, default_tree_mask_mode
 from sglang.srt.utils import (
     is_cpu,
     is_cuda,
@@ -42,12 +49,11 @@ if TYPE_CHECKING:
     from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
     from sglang.srt.model_executor.model_runner import ModelRunner
     from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
+    from sglang.srt.sampling.watermarking.core import WatermarkState
     from sglang.srt.speculative.eagle_info import EagleVerifyInput
 
 _is_cuda = is_cuda()
 _is_hip = is_hip()
-_is_npu = is_npu()
-_is_musa = is_musa()
 _is_xpu = is_xpu()
 _is_cpu = is_cpu()
 _is_mps = is_mps()
@@ -429,6 +435,12 @@ def organize_draft_results(
         )
 
     return parent_list, top_scores_index, draft_tokens
+
+
+def default_tree_mask_mode() -> TreeMaskMode:
+    # The CPU verify attention kernel (intel_amx) consumes the qlen x qlen
+    # QLEN_ONLY tree mask directly; FULL_MASK is for the GPU kernels.
+    return TreeMaskMode.QLEN_ONLY if _is_cpu else TreeMaskMode.FULL_MASK
 
 
 def build_tree_kernel_efficient(
@@ -866,7 +878,7 @@ def _sample_mps_chain_target_only(
     batch_size, draft_token_num, vocab_size = target_probs.shape
     flat_probs = target_probs.reshape(batch_size * draft_token_num, vocab_size)
     max_top_k = sampling_info.max_top_k
-    if 0 < max_top_k < vocab_size:
+    if max_top_k is not None and 0 < max_top_k < vocab_size:
         probs_sort, probs_idx = torch.topk(
             flat_probs, max_top_k, dim=-1, largest=True, sorted=True
         )
@@ -1012,14 +1024,19 @@ def eagle_prepare_for_verify(
         # Uniform variant: end offsets (= start + draft_token_num) are computed
         # inside the kernel, keeping the eager `seq_lens + N` add off the host
         # critical path (bs=1 MTP inter-phase seam).
-        batch.out_cache_loc = assign_extend_cache_locs_uniform_func(
-            req_pool_indices=batch.req_pool_indices,
-            req_to_token=req_to_token_pool.req_to_token,
-            start_offset=batch.seq_lens,
-            batch_size=bs,
-            draft_token_num=verify_input.draft_token_num,
-            device=device,
-        )
+        if verify_input.prepared_out_cache_loc is not None:
+            batch.out_cache_loc = verify_input.prepared_out_cache_loc
+        else:
+            batch.out_cache_loc = assign_extend_cache_locs_uniform_func(
+                req_pool_indices=batch.req_pool_indices,
+                req_to_token=req_to_token_pool.req_to_token,
+                start_offset=batch.seq_lens,
+                batch_size=bs,
+                draft_token_num=verify_input.draft_token_num,
+                device=device,
+            )
+        if batch.hisparse_coordinator is not None:
+            batch.hisparse_coordinator.prepare_spec_verify(batch)
 
         batch.out_cache_loc_dsv4 = maybe_build_dsv4_verify_bundle(
             batch, verify_input.draft_token_num
@@ -1047,6 +1064,8 @@ def eagle_prepare_for_verify(
         target_worker.model_runner,
         capture_hidden_mode=capture_mode,
         return_hidden_states_before_norm=False,
+        spec_mrope_positions=verify_input.prepared_mrope_positions,
+        kv_loc_plan=verify_input.kv_loc_plan,
     )
 
     # Run attention backend plan and cuda graph preparation
@@ -1082,11 +1101,9 @@ def _seeded_verify_coins(
     per-draft rejection coins; column draft_token_num drives the final
     fallback-sampling coin.
 
-    Scope: this seeds only the verify-side RNG. With rejection sampling the
-    draft workers still pick candidates via unseeded multinomial
-    (fast_sample in eagle_worker_v2), so that mode stays non-deterministic
-    until the draft RNG is seeded in a follow-up; top-k/greedy draft
-    selection is already deterministic.
+    Draft proposal draws use a separate domain-separated seeded stream in
+    ``fast_sample``. Keeping the streams separate preserves the independence
+    required by rejection sampling.
     """
     from sglang.kernels.ops.sampling.murmur_hash import murmur_hash32
 
@@ -1138,6 +1155,24 @@ def _verify_coins(
     return coins, coins_for_final_sampling
 
 
+def _verify_uses_greedy(
+    *,
+    is_all_greedy: bool,
+    is_cpu: bool,
+    is_hip: bool,
+    is_xpu: bool,
+    use_rejection_sampling: bool,
+) -> bool:
+    """Whether EAGLE verify must commit argmax instead of taking the sampling path.
+
+    HIP has no CUDA/MUSA sampling-verify kernels, so it used to be listed here
+    unconditionally. Rejection sampling routes it through the pure-Triton chain
+    sampler instead, so only a HIP run without that still has to go greedy. Every
+    other platform reduces to the original predicate.
+    """
+    return is_all_greedy or is_cpu or is_xpu or (is_hip and not use_rejection_sampling)
+
+
 def _can_use_sparse_uno_tree_target_sampling(
     max_top_k: Optional[int],
     sampling_info: SamplingBatchInfo,
@@ -1169,7 +1204,11 @@ def _renorm_target_probs_top_p(
     )
     from sglang.srt.speculative.spec_utils import use_sparse_top_p_renorm
 
-    if use_sparse_top_p_renorm() and 0 < sampling_info.max_top_k <= 32:
+    if (
+        use_sparse_top_p_renorm()
+        and sampling_info.max_top_k is not None
+        and 0 < sampling_info.max_top_k <= 32
+    ):
         from sglang.kernels.ops.sampling.sparse_top_p_renorm import (
             sparse_top_p_renorm,
         )
@@ -1184,17 +1223,20 @@ def eagle_sample(
     logits_output: LogitsProcessorOutput,
     grammar_mask: Optional[GrammarMask] = None,
     uno_target_max_top_k: Optional[int] = None,
+    *,
+    watermark_state: Optional[WatermarkState] = None,
+    watermark_full_mask: bool = True,
 ):
     """
     Verify and find accepted tokens based on logits output and batch
     (which contains spec decoding information).
     """
-    import torch.nn.functional as F
-
-    from sglang.srt.distributed import get_tp_group
     from sglang.srt.layers.dp_attention import (
         is_dp_attention_enabled,
     )
+    import torch.nn.functional as F
+    from sglang.srt.distributed import get_tp_group
+    from sglang.srt.runtime_context import get_parallel
     from sglang.srt.sampling.penaltylib.repetition_penalty import (
         apply_scaling_penalties,
     )
@@ -1250,6 +1292,46 @@ def eagle_sample(
     if grammar_mask is not None:
         grammar_mask.apply(next_token_logits)
 
+    watermark_context_hashes = None
+    watermark_selected = None
+    if watermark_state is not None and sampling_info.has_watermark_candidates:
+        if batch.return_logprob:
+            # compute_spec_logprobs reads logits_output after verify.
+            next_token_logits = next_token_logits.clone()
+        if next_token_logits.is_cuda:
+            watermark_context_hashes, watermark_selected = (
+                watermark_state.force_speculative_from_tree(
+                    logits=next_token_logits,
+                    req_pool_indices=batch.req_pool_indices,
+                    draft_tokens=verify_input.draft_token,
+                    custom_mask=verify_input.custom_mask,
+                    positions=verify_input.positions,
+                    sampling_info=sampling_info,
+                    draft_token_num=verify_input.draft_token_num,
+                    full_mask=watermark_full_mask,
+                )
+            )
+        else:
+            contexts, context_lengths = watermark_state.speculative_contexts(
+                req_pool_indices=batch.req_pool_indices,
+                draft_tokens=verify_input.draft_token,
+                custom_mask=verify_input.custom_mask,
+                positions=verify_input.positions,
+                draft_token_num=verify_input.draft_token_num,
+                full_mask=watermark_full_mask,
+                context_windows=watermark_state.context_windows(sampling_info),
+            )
+            watermark_context_hashes, watermark_selected = (
+                watermark_state.force_speculative(
+                    logits=next_token_logits,
+                    req_pool_indices=batch.req_pool_indices,
+                    contexts=contexts,
+                    context_lengths=context_lengths,
+                    sampling_info=sampling_info,
+                    draft_token_num=verify_input.draft_token_num,
+                )
+            )
+
     candidates = verify_input.draft_token.reshape(bs, verify_input.draft_token_num)
     predict_shape = list(next_token_logits.shape)[:-1]
     predict = torch.zeros(predict_shape, dtype=torch.int32, device=device).flatten()
@@ -1260,7 +1342,14 @@ def eagle_sample(
 
     # Sample tokens
     target_predict = None
-    if sampling_info.is_all_greedy or _is_cpu or _is_hip or _is_xpu:
+    use_rejection_sampling = get_spec().speculative_use_rejection_sampling
+    if _verify_uses_greedy(
+        is_all_greedy=sampling_info.is_all_greedy,
+        is_cpu=_is_cpu,
+        is_hip=_is_hip,
+        is_xpu=_is_xpu,
+        use_rejection_sampling=use_rejection_sampling,
+    ):
         target_predict = torch.argmax(next_token_logits, dim=-1)
         target_predict = target_predict.reshape(bs, verify_input.draft_token_num)
         predict, accept_index, num_correct_drafts = verify_tree_greedy_func(
@@ -1320,13 +1409,10 @@ def eagle_sample(
         )
 
     else:
-        if _is_npu:
-            from sgl_kernel_npu.sample import (
-                chain_speculative_sampling_triton,
-                top_k_renorm_prob,
-                top_p_renorm_prob,
-                tree_speculative_sampling_target_only,
-            )
+        if use_rejection_sampling:
+            sampling_fn = chain_speculative_sampling_triton
+            if get_spec().speculative_use_block_verification:
+                sampling_fn = partial(sampling_fn, block_verification=True)
         else:
             from sglang.kernels.ops.speculative.reject_sampling import (
                 chain_speculative_sampling_triton,
@@ -1384,8 +1470,8 @@ def eagle_sample(
             sampling_info.temperatures, verify_input.draft_token_num, dim=0
         )  # (bs * num_draft_tokens, 1)
 
-        target_probs = F.softmax(
-            next_token_logits / expanded_temperature, dim=-1
+        target_probs = sampling_softmax(
+            next_token_logits, temperatures=expanded_temperature
         )  # (bs * num_draft_tokens, vocab_size)
         maybe_detect_nan(target_probs, "v2 verify: target_probs after softmax")
         if sampling_info.need_top_k_sampling:
@@ -1581,13 +1667,20 @@ def eagle_sample(
     # `num_correct_drafts` stays drafts-only inside this function; the returned
     # tensor includes the trailing/bonus token via out-of-place +1 so the
     # name no longer flips semantics mid-function (naming doc C2).
-    return predict, num_correct_drafts + 1, accept_index
+    accept_lens = num_correct_drafts + 1
+    if watermark_state is not None and sampling_info.has_watermark_candidates:
+        watermark_state.record_speculative(
+            batch.req_pool_indices,
+            watermark_context_hashes,
+            watermark_selected,
+            accept_index,
+            accept_lens,
+        )
+    return predict, accept_lens, accept_index
 
 
 def eagle_prepare_for_decode(batch: ScheduleBatch):
     batch.maybe_evict_swa()
-
-    bs = batch.batch_size()
 
     # Accumulate penalty
     # This is a relaxed version of penalties for speculative decoding.

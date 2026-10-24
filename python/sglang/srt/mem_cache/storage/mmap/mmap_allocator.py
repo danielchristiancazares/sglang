@@ -42,7 +42,11 @@ _MAP_HUGE_2MB = 21 << 26  # 0x1400000
 _MAP_HUGE_1GB = 30 << 26  # 0x78000000
 _MAP_FAILED = ctypes.c_void_p(-1).value
 _MADV_POPULATE_WRITE = getattr(mmap, "MADV_POPULATE_WRITE", 23)
-_PROT_RW = mmap.PROT_READ | mmap.PROT_WRITE
+_PROT_RW = (
+    mmap.ACCESS_READ | mmap.ACCESS_WRITE
+    if os.name == "nt"
+    else mmap.PROT_READ | mmap.PROT_WRITE
+)
 
 
 @functools.cache

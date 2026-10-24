@@ -67,7 +67,7 @@ class TestEagleDraftCudaGraphRunner(CustomTestCase):
         self.addCleanup(reset_context)
         publish(ServerArgs(model_path="dummy"), role="tokenizer")
 
-    def _build_runner(self, backend):
+    def _build_runner(self, backend, graph_output=None):
         runner = EAGLEDraftCudaGraphRunner.__new__(EAGLEDraftCudaGraphRunner)
         runner.deepep_adapter = SimpleNamespace(replay=lambda: None)
         runner.buffers = SimpleNamespace(
@@ -79,6 +79,7 @@ class TestEagleDraftCudaGraphRunner(CustomTestCase):
             topk_p=torch.empty(CAPTURE_BS, 1, dtype=torch.float32),
             topk_index=torch.empty(CAPTURE_BS, 1, dtype=torch.int64),
             draft_probs=None,
+            sampling_seed=None,
             diagnostic_draft_logits=None,
             hidden_states=torch.empty(CAPTURE_BS, 2, dtype=torch.float32),
             req_pool_indices=torch.empty(CAPTURE_BS, dtype=torch.int32),
@@ -92,10 +93,11 @@ class TestEagleDraftCudaGraphRunner(CustomTestCase):
         runner.draft_sampling_top_k = None
         runner.draft_top_ps = None
         runner.draft_additive_penalties = None
+        runner.top_ks = torch.ones(CAPTURE_BS, dtype=torch.int32)
         runner.require_mlp_tp_gather = False
         runner.require_gathered_buffer = False
         runner.model_runner = SimpleNamespace(
-            model_config=SimpleNamespace(vocab_size=8),
+            model_config=SimpleNamespace(vocab_size=8, model_is_mrope=False),
             server_args=SimpleNamespace(speculative_use_rejection_sampling=False),
             device_timer=None,
             draft_attn_backend=backend,
@@ -106,7 +108,7 @@ class TestEagleDraftCudaGraphRunner(CustomTestCase):
         def replay_graph_stub(shape_key, forward_batch):
             # Observe again during graph replay to catch a premature restore.
             backend.observe("graph_replay", forward_batch)
-            return None
+            return graph_output
 
         runner._replay_graph = replay_graph_stub
         return runner
@@ -227,6 +229,7 @@ class TestEagleDraftCudaGraphRunner(CustomTestCase):
         forward_batch.sampling_info = SimpleNamespace(
             temperatures=torch.tensor([[0.75], [1.25]], dtype=torch.float32),
             top_ps=torch.tensor([0.8, 0.95], dtype=torch.float32),
+            top_ks=torch.tensor([20, 20], dtype=torch.int32),
             acc_additive_penalties=additive,
             logit_bias=logit_bias,
         )
@@ -270,6 +273,16 @@ class TestEagleDraftCudaGraphRunner(CustomTestCase):
             runner.buffers.diagnostic_draft_logits[2:],
             torch.zeros((2, vocab_size), dtype=torch.float32),
         )
+    def test_execute_leaves_graph_output_ownership_to_caller(self):
+        backend = _RecordingDraftBackend()
+        pooled_probs = torch.ones(CAPTURE_BS, NUM_STEPS, 8)
+        graph_output = (None, None, None, pooled_probs)
+        runner = self._build_runner(backend, graph_output=graph_output)
+        forward_batch = self._build_forward_batch([3, 4, 5, 6], 18)
+
+        output = runner.execute(forward_batch)
+
+        self.assertIs(output[-1], pooled_probs)
 
 
 if __name__ == "__main__":

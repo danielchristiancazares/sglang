@@ -1,12 +1,24 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), Windows
+2026-10-24 upstream NVFP4 W4A16 integration;
 2026-09-26 ThinkingCap launcher selection and 131,072-token configuration;
 2026-09-23 lazy-Marlin promotion, native TTFT launcher removal, stable FP4
 tuning identity, Responses tool-call forwarding and console Ctrl+C worker
 shutdown; Apple
 2026-09-20 Mac DiffusionGemma qualification; Git integration 2026-09-20. The upstream
 rebase preserves both platforms' measurement records.
+
+**Upstream integration, 2026-10-24:** `main` includes upstream's split/dense
+and MegaMoE NVFP4 W4A16 serving changes and the FlashInfer 0.7.2 dependency
+line. The merge preserves the native-Windows, Apple, Responses, DSpark and
+experimental EAGLE behavior. CPU validation passes 59 Responses/namespace
+tests plus 42 subtests, 81 additional Responses tests plus 10 subtests, 53
+speculative/model tests plus 32 subtests, 10 TRT-LLM checks and 358 Rust
+tests. Python compilation, Rust formatting, locked Rust checking and scoped
+`git diff --check` pass. Inkling tests were not run because `tml-renderers`
+is unavailable on native Windows. No full-model GPU qualification or serving
+benchmark was run; the ThinkingCap 131,072-token gates below remain open.
 
 **ThinkingCap launcher, 2026-09-26:** the PowerShell launcher defaults to the
 downloaded `bottlecapai/ThinkingCap-Qwen3.8-27B-NVFP4A4-AWQ` snapshot, pinned

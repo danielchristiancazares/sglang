@@ -17,7 +17,7 @@ from __future__ import annotations
 import base64
 import json
 import zlib
-from typing import TYPE_CHECKING, Any, Dict, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional, Set, Tuple
 
 if TYPE_CHECKING:
     from sglang.srt.entrypoints.openai.protocol import ResponseTool
@@ -87,6 +87,8 @@ class ResponseToolAddress:
 
 def response_tool_declarations(
     tools: object,
+    *,
+    expand_namespaces: bool = True,
 ) -> tuple[tuple[ResponseToolAddress, ResponseTool], ...]:
     """Expand wire declarations at the Responses/chat adapter boundary.
 
@@ -109,11 +111,21 @@ def response_tool_declarations(
         namespaces, tool = pending.pop()
         match tool.type:
             case "namespace":
+                if not expand_namespaces:
+                    continue
                 enclosing = (*namespaces, NonEmptyString(tool.name))
                 match tool.tools:
                     case list() as members:
                         for member in reversed(members):
-                            admitted = ResponseTool.model_validate(member)
+                            if isinstance(member, dict) and member.get(
+                                "type", "function"
+                            ) == "function":
+                                function = member.get("function", member)
+                                admitted = ResponseTool.model_validate(
+                                    {**function, "type": "function"}
+                                )
+                            else:
+                                admitted = ResponseTool.model_validate(member)
                             if admitted.type not in ("namespace", "function", "custom"):
                                 raise ValueError("namespace members must be callable tools or namespaces")
                             pending.append((enclosing, admitted))
@@ -138,9 +150,11 @@ def response_tool_declarations(
 
 
 def response_tool_call_address(
-    tools: object, emitted_name: NonEmptyString
+    tools: object, emitted_name: NonEmptyString, *, expand_namespaces: bool = True
 ) -> ResponseToolAddress:
-    declarations = response_tool_declarations(tools)
+    declarations = response_tool_declarations(
+        tools, expand_namespaces=expand_namespaces
+    )
     for address, _ in declarations:
         if address.model_name().text == emitted_name.text:
             return address
@@ -204,11 +218,34 @@ def custom_tool_description(
     return "\n\n".join(parts) or None
 
 
-def custom_tool_names(tools: Any) -> Set[str]:
+def custom_tool_names(tools: Any, *, expand_namespaces: bool = True) -> Set[str]:
     return {
         address.model_name().text
-        for address, tool in response_tool_declarations(tools)
+        for address, tool in response_tool_declarations(
+            tools, expand_namespaces=expand_namespaces
+        )
         if tool.type == "custom"
+    }
+
+
+def namespace_functions(tool: Any) -> Iterator[Dict[str, Any]]:
+    """Unwrap the flat and OpenAI-wrapped members accepted by Muse's template."""
+    for member in tool.tools or []:
+        if member.get("type", "function") != "function":
+            continue
+        function = member.get("function", member)
+        if isinstance(function, dict) and function.get("name"):
+            yield function
+
+
+def namespace_function_names(tools: Any) -> Dict[str, Tuple[str, str]]:
+    """Map each namespace member's call name ``<namespace>.<function>`` to
+    ``(namespace, function)``."""
+    return {
+        f"{tool.name}.{member['name']}": (tool.name, member["name"])
+        for tool in tools or []
+        if tool.type == "namespace" and tool.name
+        for member in namespace_functions(tool)
     }
 
 
