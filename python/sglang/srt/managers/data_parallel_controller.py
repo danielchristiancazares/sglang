@@ -67,6 +67,7 @@ from sglang.srt.utils.common import (
     CHILD_FAILURE_SIGNAL,
     configure_logger,
     kill_itself_when_parent_died,
+    leave_sigint_to_parent,
     maybe_reindex_device_id,
 )
 from sglang.srt.utils.network import (
@@ -831,6 +832,7 @@ def run_data_parallel_controller_process(
     setproctitle.setproctitle("sglang::data_parallel_controller")
     faulthandler.enable()
     kill_itself_when_parent_died()
+    leave_sigint_to_parent()
     parent_process = psutil.Process().parent()
 
     # This process reads the config namespaces before spawning schedulers.

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 from unittest.mock import Mock
 
@@ -257,19 +258,24 @@ class NamespacedToolAdapterTestCase(CustomTestCase):
             {"type": "function", "name": "workspace.apply_patch"},
         )
 
-    def test_undeclared_calls_raise_a_protocol_failure(self):
+    def test_undeclared_calls_preserve_the_emitted_address(self):
         serving = make_serving()
         serving.tool_call_parser = "qwen3_coder"
         raw = "<tool_call><function=workspace.delete_all></function></tool_call>"
-        with self.assertRaisesRegex(ValueError, "undeclared tool"):
-            serving._make_response_output_items(
-                self.request(), raw, tokenizer=Mock(), require_reasoning=False,
-            )
+        (call,) = serving._make_response_output_items(
+            self.request(), raw, tokenizer=Mock(), require_reasoning=False,
+        )
+        self.assertEqual(call.type, "function_call")
+        self.assertEqual(call.name, "workspace.delete_all")
+        self.assertNotIn("namespace", call.model_dump(exclude_none=True))
         events = StreamFixture(serving, self.request()).run([
             engine_chunk(raw, 1, finish=True),
         ])
-        self.assertIn("response.failed", event_types(events))
-        self.assertNotIn("response.completed", event_types(events))
+        self.assertNotIn("response.failed", event_types(events))
+        (stream_call,) = find_completed_event(events)["response"]["output"]
+        self.assertEqual(stream_call["type"], "function_call")
+        self.assertEqual(stream_call["name"], "workspace.delete_all")
+        self.assertNotIn("namespace", stream_call)
 
     def test_nested_namespaces_retain_the_complete_address(self):
         request = ResponsesRequest(
@@ -309,6 +315,80 @@ class NamespacedToolAdapterTestCase(CustomTestCase):
         request.tools.append(request.tools[0].model_copy())
         with self.assertRaisesRegex(ValueError, "ambiguous tool address"):
             response_tool_declarations(request.tools)
+
+
+class UndeclaredToolOutputTestCase(CustomTestCase):
+    def test_direct_patch_call_and_following_code_mode_call_survive_streaming(self):
+        serving = make_serving()
+        serving.tool_call_parser = "qwen3_coder"
+        request = _custom_request(
+            tools=[{"type": "custom", "name": "exec", "format": {"type": "text"}}],
+            tool_choice="auto",
+        )
+        patch = "*** Begin Patch\n*** Add File: ready.txt\n+READY 😀\n*** End Patch"
+        code = 'text(await tools.apply_patch("patch"));'
+        for emitted_name in ("apply_patch", "functions.apply_patch"):
+            with self.subTest(emitted_name=emitted_name):
+                raw = (
+                    f"<tool_call><function={emitted_name}><parameter=input>\n"
+                    + patch + "\n</parameter></function></tool_call>"
+                    + "<tool_call><function=exec><parameter=input>\n"
+                    + code + "\n</parameter></function></tool_call>"
+                )
+                full_calls = serving._make_response_output_items(
+                    request, raw, tokenizer=Mock(), require_reasoning=False,
+                )
+                self.assertEqual(len(full_calls), 2)
+                self.assertEqual(full_calls[0].type, "function_call")
+                self.assertEqual(full_calls[0].name, emitted_name)
+                self.assertEqual(json.loads(full_calls[0].arguments), {"input": patch})
+                self.assertEqual(full_calls[1].type, "custom_tool_call")
+                self.assertEqual(full_calls[1].input, code)
+
+                events = StreamFixture(serving, request).run(
+                    [engine_chunk(raw[:i], i) for i in range(1, len(raw))]
+                    + [engine_chunk(raw, len(raw), finish=True)]
+                )
+                self.assertNotIn("response.failed", event_types(events))
+                completed = find_completed_event(events)["response"]
+                self.assertEqual(completed["status"], "completed")
+                call, following = completed["output"]
+                self.assertEqual(call["type"], "function_call")
+                self.assertEqual(call["name"], emitted_name)
+                self.assertEqual(json.loads(call["arguments"]), {"input": patch})
+                self.assertEqual(following["type"], "custom_tool_call")
+                self.assertEqual(following["name"], "exec")
+                self.assertEqual(following["input"], code)
+                deltas = "".join(
+                    event["delta"] for event in event_payloads(events)
+                    if event["type"] == "response.function_call_arguments.delta"
+                )
+                self.assertEqual(deltas, call["arguments"])
+                replay = serving._normalize_response_message_for_chat(call)
+                function = replay["tool_calls"][0]["function"]
+                self.assertEqual(function["name"], emitted_name)
+                self.assertEqual(function["arguments"], call["arguments"])
+
+    def test_required_json_full_output_preserves_unknown_calls(self):
+        serving = make_serving()
+        request = _custom_request()
+        raw = '[{"name":"missing","parameters":{"path":"ready.txt","count":3}}]'
+        (call,) = serving._make_response_output_items(
+            request, raw, tokenizer=Mock(), require_reasoning=False,
+        )
+        self.assertEqual(call.type, "function_call")
+        self.assertEqual(call.name, "missing")
+        self.assertEqual(json.loads(call.arguments), {"path": "ready.txt", "count": 3})
+
+    def test_legacy_prefix_still_resolves_a_declared_custom_tool(self):
+        serving = make_serving()
+        raw = '[{"name":"functions.emit_command","parameters":{"input":"pwd"}}]'
+        (call,) = serving._make_response_output_items(
+            _custom_request(), raw, tokenizer=Mock(), require_reasoning=False,
+        )
+        self.assertEqual(call.type, "custom_tool_call")
+        self.assertEqual(call.name, "emit_command")
+        self.assertEqual(call.input, "pwd")
 
 
 class CustomToolReplayTestCase(CustomTestCase):

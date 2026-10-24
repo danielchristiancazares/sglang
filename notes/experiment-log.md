@@ -24084,3 +24084,107 @@ sample=9 candidate=1 cached_tokens=1804 prefill_seconds=0.007829084 output_token
   Not run: OpenCode2 and Codex round trips. The change alters only the served
   path and the source of the sampling defaults, which the gates above exercise.
   The nine per-launch cache directories from September 20-23 remain in place.
+
+### 2026-09-23 - forward parsed undeclared Responses calls to the client
+
+- On `perf/windows-qwen38-ttft`, based on `docs(windows): record the stable FP4
+  tuning identity`, investigated the reported 16:52:11 streaming failure for
+  `apply_patch`. The Responses address resolver raised `UndeclaredToolCall`,
+  which became `response.failed` with `server_error`. The Qwen3 Coder parser
+  preserves the model's emitted name. The failed request body was unavailable,
+  so the investigation does not establish its exact tool declarations.
+- With the user's explicit exception to the repository's no-new-Python rule,
+  changed the existing adapter to preserve an unmatched name as a function
+  call, and removed the obsolete exception and handlers. Declared namespace
+  and custom-tool conversions, legacy aliases, declaration validation and
+  named-choice validation are unchanged. The server infers no namespace or
+  custom-tool schema for an unmatched name.
+- Regression coverage exercises direct `apply_patch` and `functions.apply_patch`
+  output in full responses and character-fragmented Qwen streams, including
+  argument reconstruction, replay and a following declared Code Mode custom
+  call. An initial test also expected unknown calls from the constrained JSON
+  streaming parser. Inspection showed that parser filters undeclared names
+  upstream of the adapter; the test was narrowed to the full-response JSON path
+  affected by this change. That parser's existing policy remains unchanged.
+- CPU command in the existing Windows environment:
+
+  ```powershell
+  .venv/Scripts/python.exe -X utf8 -m pytest test/registered/unit/entrypoints/openai/test_responses_custom_tools.py test/registered/unit/entrypoints/openai/test_responses_protocol.py test/registered/unit/entrypoints/openai/test_serving_responses.py test/registered/unit/entrypoints/openai/test_serving_responses_stream.py -q --tb=short
+  ```
+
+  Result: **119 passed, 19 subtests passed**, 6.62 s. The nine warnings concern
+  existing FastAPI and Torch deprecated APIs. No model inference, checkpoint
+  change, server restart or live client qualification was performed.
+- The inspected Codex dispatcher returns unknown tools as
+  model-visible errors, but treats a registered custom tool receiving a
+  function payload as fatal. The server cannot infer that undeclared tool's
+  required payload kind. This patch fixes the Responses stream failure;
+  custom-tool mismatch recovery remains a client concern.
+
+### 2026-09-23 19:51 PDT - worker processes leave console Ctrl+C to the parent
+
+- On `perf/windows-qwen38-ttft`, based on `docs(windows): record the stable
+  FP4 tuning identity`. Stopping the native server with Ctrl+C printed
+  `Process Process-1` and a `KeyboardInterrupt` traceback from the scheduler's
+  idle invariant check, followed by the parent's normal uvicorn shutdown and
+  its kill of the process tree. Cause: a Windows console delivers Ctrl+C to
+  every attached process, so each spawned worker raised `KeyboardInterrupt`
+  from its own event loop while the parent was already shutting down. The
+  scheduler's `except Exception` does not cover it, so multiprocessing printed
+  the traceback and the worker exited with code 1, which the subprocess
+  watchdog can also read as a crash.
+- A hidden-console probe outside the repository, with console Ctrl+C
+  processing restored because this shell inherits it disabled, reproduced the
+  traceback with a plain `multiprocessing` child. The same child ignoring
+  SIGINT survived the Ctrl+C until the parent terminated it, while the parent
+  still received `KeyboardInterrupt`.
+- With the user's explicit exception to the no-new-Python rule, scoped to
+  Windows, added `leave_sigint_to_parent` beside `kill_itself_when_parent_died`
+  and called it from the scheduler, detokenizer, data parallel controller and
+  detokenizer router entry points. Off Windows the function does nothing. The
+  parent's shutdown path is unchanged. A Ctrl+C that lands while a worker is
+  still importing, before its entry point runs, can still print a traceback;
+  the probe showed this once when it fired during the sglang import.
+- Repeated the probe with the repository helper and a readiness handshake:
+  default handler, child exit code 1 with the traceback; helper active, child
+  alive after the Ctrl+C and the parent interrupted.
+- CPU command in the existing Windows environment:
+
+  ```powershell
+  .venv/Scripts/python.exe -X utf8 -m pytest test/registered/unit/utils/test_leave_sigint_to_parent.py -q --tb=short
+  ```
+
+  Result: **2 passed**, 16.15 s. The 14 warnings are the existing Torch JIT
+  deprecation. Pinned ruff formatting and lint pass on the changed files; the
+  three formatting differences it reports in the scheduler module predate this
+  change. No server launch, checkpoint change or client qualification was
+  performed.
+
+### 2026-09-26 - ThinkingCap AWQ launcher setup
+
+- On `perf/windows-qwen38-ttft`, based on `docs(windows): record the stable
+  FP4 tuning identity`, selected the user-downloaded
+  `bottlecapai/ThinkingCap-Qwen3.8-27B-NVFP4A4-AWQ` snapshot as the PowerShell
+  launcher's default. `ModelPath` pins its existing snapshot beneath
+  `$env:USERPROFILE\models`. All four safetensors files resolve to local
+  blobs. The checkpoint remains unmodified.
+- The checkpoint uses compressed-tensors mixed NVFP4 W4A4 and FP8 schemes.
+  Selected `Fp4GemmBackend=flashinfer_cutlass` and disabled the default
+  ModelOpt-specific lazy Marlin relayout. Retained DSpark-v2, model alias
+  `qwen3.8-27b`, language-only loading, Qwen parsers and sampling defaults
+  temperature 1.0, top-p 0.95 and top-k 20.
+- In the existing native-Windows RTX 5090 environment, PowerShell 7,
+  Python 3.13.14, CUDA 13.3 and NVIDIA driver 616.92, ran
+  `.\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1` with its then-current
+  `ContextLength=65536` and `MaxTotalTokens=65536`. Target loading used
+  20.62 GiB and the FP8 DSpark draft used 3.49 GiB. Both target-verify and
+  folded draft CUDA graphs captured. The launcher reached readiness and
+  `/health`, `/v1/models` and `/model_info` returned HTTP 200. Metadata showed
+  the selected snapshot, alias and 65,536-token window, with image and audio
+  understanding disabled.
+- The user clarified that the requested context window is 131,072 tokens.
+  Set both `ContextLength` and `MaxTotalTokens` to 131072, leaving output
+  limits unchanged, and aligned the setup documentation. This configuration
+  was not launched. Arithmetic, tool continuation, capacity, throughput and
+  real-client gates were not run.
+- Final PowerShell AST parsing and `git diff --check` passed.

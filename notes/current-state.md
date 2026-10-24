@@ -1,16 +1,52 @@
 # Current state
 
 **Reconciled through:** [`experiment-log.md`](experiment-log.md), Windows
-2026-09-23 lazy-Marlin promotion, native TTFT launcher removal and stable FP4
-tuning identity; Apple
+2026-09-26 ThinkingCap launcher selection and 131,072-token configuration;
+2026-09-23 lazy-Marlin promotion, native TTFT launcher removal, stable FP4
+tuning identity, Responses tool-call forwarding and console Ctrl+C worker
+shutdown; Apple
 2026-09-20 Mac DiffusionGemma qualification; Git integration 2026-09-20. The upstream
 rebase preserves both platforms' measurement records.
 
-**Native Windows lazy-Marlin handoff, launcher default since 2026-09-23:** the
+**ThinkingCap launcher, 2026-09-26:** the PowerShell launcher defaults to the
+downloaded `bottlecapai/ThinkingCap-Qwen3.8-27B-NVFP4A4-AWQ` snapshot, pinned
+in `ModelPath`, with FlashInfer Cutlass and lazy Marlin relayout off. Context
+and token-pool defaults are both 131,072, as requested; output limits are
+unchanged. The `qwen3.8-27b` alias and DSpark-v2 configuration are retained.
+A startup at the earlier 65,536-token settings loaded both models, captured
+target and draft graphs, and passed health and language-only metadata checks.
+The test server is stopped. The 131,072-token configuration, arithmetic/tool
+behavior and real-client gates remain untested. RadixArk performance and
+capacity results below retain their original checkpoint scope.
+
+**Responses tool-call forwarding, 2026-09-23:** the adapter preserves parsed
+undeclared model calls as function calls with their emitted names and arguments.
+Declared custom tools, namespaces and the existing global `functions.` alias
+retain their conversions. Request declaration and named-choice validation are
+unchanged. This removes the `UndeclaredToolCall` stream failure reported for a
+direct `apply_patch` call. CPU coverage passes 119 tests and 19 subtests. The
+running server was not restarted and no live client qualification was run.
+End-to-end recovery still depends on the client: the inspected Codex dispatcher
+treats an unknown tool as model-visible feedback, but a registered custom tool
+receiving a function payload is fatal. The constrained JSON streaming parser's
+existing undeclared-name filtering is unchanged. See the September 23 Responses
+entry in the experiment log.
+
+**Console Ctrl+C worker shutdown, 2026-09-23:** on Windows, the scheduler,
+detokenizer, data parallel controller and detokenizer router now ignore
+SIGINT through `leave_sigint_to_parent`, so a console Ctrl+C reaches only the
+parent, which stops uvicorn and kills the process tree as before. This removes
+the `Process Process-1` `KeyboardInterrupt` traceback printed at server stop.
+Other platforms are unchanged. Verified by a hidden-console probe and a CPU
+unit test; a launcher stop of the production server has not exercised it yet.
+See the September 23 Ctrl+C entry in the experiment log.
+
+**Native Windows RadixArk lazy-Marlin handoff, qualified 2026-09-23:** the
 approved Python-first proof on `perf/windows-qwen38-ttft` is now a C++/CUDA
 layout-state and batched submission implementation with thin Python bindings.
-The PowerShell launcher enables it for DSpark through
-`-EnableLazyMarlinRelayout` (default on; `:$false` restores eager). It defers
+The RadixArk control enables it for DSpark through
+`-Fp4GemmBackend hybrid_marlin -EnableLazyMarlinRelayout` (`:$false` restores
+eager). It defers
 the final-prefill Cutlass-to-Marlin conversion until the next forward needs
 it. The literal argument-free relaunch averaged **0.500741 s TTFT / 3.845786 s
 E2E / 153.282 decode tok/s** and passed acceptance, exact `199000+16`,

@@ -350,6 +350,7 @@ from sglang.srt.utils import (
     is_hip,
     is_mps,
     kill_itself_when_parent_died,
+    leave_sigint_to_parent,
     rank_consensus_checker,
     require_mlp_sync,
     set_gpu_proc_affinity,
@@ -5771,6 +5772,7 @@ def configure_scheduler_process(
     display_* ranks are cosmetic; runtime ranks stay local.
     """
     kill_itself_when_parent_died()
+    leave_sigint_to_parent()
 
     # Generate the logger prefix
     if dp_rank is None and "SGLANG_DP_RANK" in os.environ:

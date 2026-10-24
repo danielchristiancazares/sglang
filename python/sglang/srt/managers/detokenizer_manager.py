@@ -55,6 +55,7 @@ from sglang.srt.utils import (
     configure_logger,
     freeze_gc,
     kill_itself_when_parent_died,
+    leave_sigint_to_parent,
 )
 from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 from sglang.srt.utils.network import get_zmq_socket
@@ -546,6 +547,7 @@ def run_detokenizer_process(
     detokenizer_manager_class=DetokenizerManager,
 ):
     kill_itself_when_parent_died()
+    leave_sigint_to_parent()
     setproctitle.setproctitle("sglang::detokenizer")
     configure_logger(server_args)
     publish(server_args, role="detokenizer")

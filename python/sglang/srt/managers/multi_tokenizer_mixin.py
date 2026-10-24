@@ -69,6 +69,7 @@ from sglang.srt.utils import (
     configure_logger,
     kill_itself_when_parent_died,
     kill_process_tree,
+    leave_sigint_to_parent,
 )
 from sglang.srt.utils.network import get_zmq_socket
 from sglang.utils import get_exception_traceback
@@ -639,6 +640,7 @@ def run_multi_detokenizer_router_process(
     port_args: PortArgs,
 ):
     kill_itself_when_parent_died()
+    leave_sigint_to_parent()
     setproctitle.setproctitle("sglang::detokenizer_router")
     configure_logger(server_args)
     parent_process = psutil.Process().parent()

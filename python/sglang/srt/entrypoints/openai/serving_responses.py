@@ -70,7 +70,6 @@ from sglang.srt.entrypoints.openai.protocol import (
 from sglang.srt.entrypoints.openai.responses_adapters import (
     NonEmptyString,
     ResponseToolAddress,
-    UndeclaredToolCall,
     custom_tool_description,
     custom_tool_names,
     custom_tool_parameters,
@@ -675,10 +674,6 @@ class OpenAIServingResponses(OpenAIServingChat):
                     require_reasoning=require_reasoning,
                 )
                 return result
-            except UndeclaredToolCall as exc:
-                return self.create_error_response(
-                    str(exc), err_type="server_error", status_code=HTTPStatus.BAD_GATEWAY
-                )
             except Exception as e:
                 return self.create_error_response(str(e))
         return self.create_error_response("Unknown error")
@@ -1117,8 +1112,6 @@ class OpenAIServingResponses(OpenAIServingChat):
                             )
                         )
                     parsed_via_native = bool(call_info_list)
-                except UndeclaredToolCall:
-                    raise
                 except Exception as e:
                     logger.error("Tool call parsing error: %s", e)
 
@@ -1150,8 +1143,6 @@ class OpenAIServingResponses(OpenAIServingChat):
                             )
                         )
                     content = ""
-            except UndeclaredToolCall:
-                raise
             except Exception as e:
                 logger.error("Required tool JSON parse error: %s", e)
 

@@ -7,10 +7,23 @@ remain in [`experiment-log.md`](experiment-log.md).
 Recurring failure-prevention rules and their platform-specific scope live in
 [AGENTS.md](../AGENTS.md). Use this ledger for individual configuration choices.
 
-**Reconciled through:** Windows 2026-09-23 lazy Marlin handoff promotion,
+**Reconciled through:** Windows 2026-09-26 ThinkingCap launcher selection;
+2026-09-23 lazy Marlin handoff promotion,
 native TTFT launcher removal and stable FP4 tuning identity; Apple 2026-09-20 DiffusionGemma interactive
 profile. September 12 Git integration preserves the distinct measured Windows
 and official coding sampling profiles.
+
+## ThinkingCap launcher selection — September 26
+
+The user selected `bottlecapai/ThinkingCap-Qwen3.8-27B-NVFP4A4-AWQ` and a
+131,072-token context. The PowerShell launcher pins the downloaded snapshot
+and gives the target/draft pools the same 131,072-token capacity. Output
+limits are unchanged. Its compressed-tensors mixed NVFP4/FP8 schemes use
+FlashInfer Cutlass; the ModelOpt-specific hybrid Marlin and lazy relayout
+remain explicit controls. The model alias and DSpark-v2 settings are retained.
+The startup check used 65,536-token pools before the context correction;
+ThinkingCap has no full behavior, capacity or performance qualification.
+See the September 26 experiment-log entry.
 
 ## Native TTFT launcher removed — September 23
 

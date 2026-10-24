@@ -85,12 +85,6 @@ class ResponseToolAddress:
                 }
 
 
-class UndeclaredToolCall(ValueError):
-    def __init__(self, name: NonEmptyString):
-        self.name = name
-        super().__init__(f"model called an undeclared tool: {name.text}")
-
-
 def response_tool_declarations(
     tools: object,
 ) -> tuple[tuple[ResponseToolAddress, ResponseTool], ...]:
@@ -157,7 +151,10 @@ def response_tool_call_address(
         for address, _ in declarations:
             if address.model_name().text == unqualified:
                 return address
-    raise UndeclaredToolCall(emitted_name)
+    # Model output may name a tool outside the request's declarations. Preserve
+    # that call for the client's dispatcher to handle; the adapter cannot infer
+    # a custom-tool schema or namespace for it.
+    return ResponseToolAddress(emitted_name, ())
 
 
 _SIMPLE_ESCAPES = {

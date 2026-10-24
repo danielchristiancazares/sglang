@@ -71,25 +71,25 @@ Maintain the compact layer when conclusions change:
 ## Start Qwen3.8-27B for Codex
 
 This is the local Codex setup for the native-Windows lane. The repository
-launcher includes five FP32 Mamba slots for multi-chunk repository prompts
-in its default DSpark-v2 profile. The derived target checkpoint
-is a local artifact assembled from the immutable RadixArk base and NVFP4
-donor; its `selective-nvfp4-manifest.json` is part of the checkpoint
-provenance.
+launcher defaults to `bottlecapai/ThinkingCap-Qwen3.8-27B-NVFP4A4-AWQ` with
+131,072-token context and token pools, FlashInfer Cutlass NVFP4, and five FP32
+Mamba slots in its DSpark-v2 profile. The selected downloaded snapshot is
+pinned in the launcher's `ModelPath` default. See
+[`notes/current-state.md`](notes/current-state.md) for its verification status.
+The qualified RadixArk 200K control is described separately below.
 
 ### One-time setup
 
 From PowerShell 7 at the repository root, confirm that the local virtual
-environment, target checkpoint, manifest, and DSpark-v2 draft are present:
+environment, selected target snapshot, and DSpark-v2 draft are present.
 
 ```powershell
 Test-Path .\.venv\Scripts\sglang.exe
-Test-Path C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4
-Test-Path C:\Users\Daniel\models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4\selective-nvfp4-manifest.json
-Test-Path C:\Users\Daniel\models\Qwen3.8-27B-DSpark-v2
+Test-Path "$env:USERPROFILE\models\models--bottlecapai--ThinkingCap-Qwen3.8-27B-NVFP4A4-AWQ\snapshots\32c92c6fd22fe633bf382609839050147e23f98a\config.json"
+Test-Path "$env:USERPROFILE\models\Qwen3.8-27B-DSpark-v2"
 ```
 
-All four commands must return `True`. The launcher initializes the qualified
+All three commands must return `True`. The launcher initializes the qualified
 MSVC/CUDA 13.3 environment itself. Keep the model artifact at its recorded path
 or pass a fully qualified `-ModelPath`; never modify the downloaded source
 checkpoints in place.
@@ -123,8 +123,8 @@ profile `C:\Users\Daniel\.codex\qwen38.config.toml` with this content:
 ```toml
 model = "qwen3.8-27b"
 model_provider = "sglang-qwen38"
-model_context_window = 200000
-model_auto_compact_token_limit = 180000
+model_context_window = 131072
+model_auto_compact_token_limit = 118000
 service_tier = "default"
 
 [model_providers.sglang-qwen38]
@@ -136,8 +136,8 @@ requires_openai_auth = false
 
 This profile layers over the regular Codex configuration only when selected;
 it leaves the ordinary cloud model and authentication configuration unchanged.
-The 180K compaction threshold reserves room inside the server's real 200K
-token pool for instructions, tool results, and the next response. Codex appends
+The 118,000-token compaction threshold reserves room inside the server's
+131,072-token pool for instructions, tool results, and the next response. Codex appends
 `/responses` to the provider base URL, so keep `/v1` in `base_url`.
 
 ### Preflight and start
@@ -156,12 +156,13 @@ Set-Location C:\Users\Daniel\sglang
 .\scripts\windows\serve_qwen38_27b_nvfp4_5090.ps1
 ```
 
-This retains the selected checkpoint, reasoning and tool parsers, real 200K
+This selects ThinkingCap, the reasoning and tool parsers, 131,072-token
 context/token pools, one-request scheduler, CUDA graphs, and speculative-decode
 settings. Preserve the fifth Mamba slot: unfinished-prefill cache donation
 needs transient state beyond the four-slot startup floor. Both the earlier
 Codex lane and DSpark-v2 exposed this boundary. Five slots passed multi-chunk
-clients, retained-cache pressure, exact `199000+16`, and post-capacity reuse.
+clients, retained-cache pressure, exact `199000+16`, and post-capacity reuse
+with the RadixArk control.
 See [the Codex failure](notes/experiment-log.md#2026-08-30-1342-pdt---five-slot-codex-lane-fixes-multi-chunk-stream-failure) and
 [the DSpark OpenCode repair](notes/experiment-log.md#2026-09-01-0318-pdt---fifth-mamba-slot-closes-the-opencode2-failure-boundary).
 
@@ -169,7 +170,8 @@ Leave the launcher terminal open. Startup loads the checkpoint, JIT-compiles
 kernels, and captures the selected topology's CUDA graphs. Wait for the ready
 message before sending traffic. The resolved `server_args` must include
 `max_mamba_cache_size=5`, `max_running_requests=1`,
-`max_total_tokens=200000`, `context_length=200000`,
+`max_total_tokens=131072`, `context_length=131072`,
+`fp4_gemm_backend='flashinfer_cutlass'`,
 `speculative_algorithm='DSPARK'`, and `chunked_prefill_size=4096`. Confirm
 target verification and the folded draft graph complete. NEXTN controls have
 a separate draft-extend phase. Use one bounded readiness check after the
@@ -234,7 +236,8 @@ workers, and GPU residency are clear afterward.
 
 The executable source of truth is
 [`scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1`](scripts/windows/serve_qwen38_27b_nvfp4_5090.ps1).
-Its default profile at this source revision is:
+The qualified RadixArk 200,000-token control uses the following profile.
+ThinkingCap's current defaults and verification status are described above.
 
 - native Windows on the RTX 5090, attention-selective RadixArk NVFP4 target,
   served model `qwen3.8-27b` at `http://127.0.0.1:30000/v1`;
@@ -381,6 +384,9 @@ work has frozen the desktop.
 - Stop only the verified server tree, leaf-first, using exact PIDs. Preserve
   unrelated MCP servers, OpenCode/ZCode processes, desktop clients, and every
   user-owned process.
+- Spawned workers call `leave_sigint_to_parent` right after
+  `kill_itself_when_parent_died`, so a console Ctrl+C reaches only the parent,
+  which owns shutdown. Give any new child entry point both calls.
 - After shutdown, confirm the known PIDs are absent, port 30000 is free, CUDA
   and compiler workers are gone, and the GPU has returned to ordinary display
   residency.
@@ -425,11 +431,12 @@ work has frozen the desktop.
   the actual post-load block-swizzled representation. See the
   [tuple-layout failure](notes/experiment-log.md#2026-09-01-0129-pdt---tuple-safe-broad-hybrid-reaches-152260-first-window-but-149393-over-ten) and
   [post-load scale failure](notes/experiment-log.md#2026-09-01-0249-pdt---first-in-place-scale-full-model-gate-rejected-on-acceptance).
-- The native lazy handoff is a DSpark launcher default via
-  `-EnableLazyMarlinRelayout`, which sets
+- The native lazy handoff is an explicit DSpark option for ModelOpt checkpoints
+  via `-Fp4GemmBackend hybrid_marlin -EnableLazyMarlinRelayout`, which sets
   `SGLANG_ENABLE_NVFP4_MARLIN_LAZY_RELAYOUT`; the descriptor itself stays
-  default-off elsewhere. Use `-EnableLazyMarlinRelayout:$false` as the matched
-  eager control. Preserve real stream ordering and graph addresses, and reject
+  default-off. ThinkingCap's compressed-tensors path uses Cutlass with this
+  option off. Use `-EnableLazyMarlinRelayout:$false` as the matched eager
+  ModelOpt control. Preserve real stream ordering and graph addresses, and reject
   online weight updates while its fixed post-load descriptors are active;
   restart the runner instead. The measured benefit is short TTFT, not a
   demonstrated E2E or long-prefill gain. Qualification is scoped to batch-one,

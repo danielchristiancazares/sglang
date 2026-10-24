@@ -3259,6 +3259,22 @@ def kill_itself_when_parent_died():
         logger.warning("kill_itself_when_parent_died is unsupported on this platform.")
 
 
+def leave_sigint_to_parent():
+    """Ignore Ctrl+C in a worker process on Windows; the parent owns shutdown.
+
+    A console Ctrl+C on Windows reaches every process attached to the console,
+    so each spawned worker would raise ``KeyboardInterrupt`` from the middle
+    of its event loop and exit with a traceback. The parent already handles
+    the interrupt, stops its HTTP server and then kills the process tree, so
+    the worker only has to stay quiet until then.
+
+    Other platforms keep upstream behavior: the terminal delivers SIGINT to
+    the foreground process group and the default handler stays installed.
+    """
+    if sys.platform == "win32":
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
 class UvicornAccessLogFilter(logging.Filter):
     """Filter uvicorn access logs by request path.
 

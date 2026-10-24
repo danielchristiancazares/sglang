@@ -1,15 +1,17 @@
 <#
 .SYNOPSIS
-Starts the native NVFP4 Qwen3.8-27B checkpoint through Windows SGLang.
+Starts ThinkingCap-Qwen3.8-27B-NVFP4A4-AWQ through native Windows SGLang.
 
 .DESCRIPTION
-The measured defaults select the native-Windows DSpark-v2 exact-200K profile:
-the selective target-NVFP4 RadixArk checkpoint, matching online-FP8 DSpark-v2
-draft, 4,096-token prefill chunks, five FP32 Mamba cache slots, FP8 target and
-draft KV, Cutlass prefill plus Marlin gate/up decode, TRT-LLM/XQA target decode,
-Triton draft attention, folded draft proposal/sampling graphs, FlashInfer
-sampling, static target-graph draft-KV commit, a native final-prefill Marlin
-handoff deferred to the first verify, and the minimum safe 128 MiB workspace.
+The defaults load bottlecapai/ThinkingCap-Qwen3.8-27B-NVFP4A4-AWQ from its
+downloaded snapshot with a 131,072-token context. Its mixed compressed-tensors
+NVFP4/FP8 layers use FlashInfer Cutlass. The setup retains the online-FP8
+DSpark-v2 draft, 4,096-token prefill chunks, five FP32 Mamba cache slots, FP8
+target and draft KV, TRT-LLM/XQA target decode, Triton draft attention, folded
+draft proposal/sampling graphs, FlashInfer sampling, static target-graph
+draft-KV commit, and a 128 MiB workspace.
+Hybrid Marlin and its lazy relayout remain explicit options for ModelOpt
+checkpoints; the compressed-tensors NVFP4 path uses Cutlass.
 NEXTN remains available as an explicit compatibility and control mode.
 The checkpoint is loaded as a standalone language model, preserving VRAM that
 the unused vision encoder would otherwise consume.
@@ -21,7 +23,7 @@ and the selected FP4 tactics stay stable across launches.
 
 [CmdletBinding()]
 param(
-    [string] $ModelPath = (Join-Path $env:USERPROFILE 'models\Qwen3.8-27B-NVFP4-RadixArk-AttnNVFP4'),
+    [string] $ModelPath = (Join-Path $env:USERPROFILE 'models\models--bottlecapai--ThinkingCap-Qwen3.8-27B-NVFP4A4-AWQ\snapshots\32c92c6fd22fe633bf382609839050147e23f98a'),
     [string] $ServedModelName = 'qwen3.8-27b',
     [string] $ListenAddress = '127.0.0.1',
     [ValidateRange(1, 65535)]
@@ -29,9 +31,9 @@ param(
     [ValidateRange(-1, 2147483647)]
     [int] $RandomSeed = -1,
     [ValidateRange(2048, 262144)]
-    [int] $ContextLength = 200000,
+    [int] $ContextLength = 131072,
     [ValidateRange(2048, 262144)]
-    [int] $MaxTotalTokens = 200000,
+    [int] $MaxTotalTokens = 131072,
     [ValidateRange(0.1, 0.98)]
     [double] $MemoryFraction = 0.98,
     [ValidateSet('auto', 'fp8_e4m3', 'bf16', 'bfloat16', 'nvfp4', 'fp4_mx_block16')]
@@ -81,7 +83,7 @@ param(
     [ValidateSet('triton', 'flashinfer', 'cutedsl')]
     [string] $LinearAttentionVerifyBackend = 'triton',
     [ValidateSet('auto', 'flashinfer_cutlass', 'flashinfer_cudnn', 'hybrid_marlin', 'marlin')]
-    [string] $Fp4GemmBackend = 'hybrid_marlin',
+    [string] $Fp4GemmBackend = 'flashinfer_cutlass',
     [ValidateSet('NEXTN', 'DSPARK')]
     [string] $SpeculativeAlgorithm = 'DSPARK',
     [string] $SpeculativeDraftModelPath = (Join-Path $env:USERPROFILE 'models\Qwen3.8-27B-DSpark-v2'),
@@ -118,7 +120,7 @@ param(
     [switch] $EnableTopK1DeltaProposal = $true,
     [switch] $EnableDSparkTruncatedDraftSampling,
     [switch] $EnableDSparkStaticGraphKvCommit = $true,
-    [switch] $EnableLazyMarlinRelayout = $true,
+    [switch] $EnableLazyMarlinRelayout,
     [string[]] $FlashInferAutotuneSkipOps = @('fp8_gemm'),
     [ValidateSet('default', 'max-autotune-no-cudagraphs')]
     [string] $TorchCompileMode = 'default',
